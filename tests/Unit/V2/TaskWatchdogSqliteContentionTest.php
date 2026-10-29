@@ -178,6 +178,130 @@ final class TaskWatchdogSqliteContentionTest extends TestCase
         yield 'busy-looking model callback' => [true];
     }
 
+    public static function writerHandoffs(): iterable
+    {
+        foreach (['DELETE', 'WAL'] as $journal) {
+            for ($repeat = 0; $repeat < 3; ++$repeat) {
+                yield $journal . ' handoff ' . $repeat => [$journal];
+            }
+        }
+    }
+
+    #[DataProvider('writerHandoffs')]
+    public function testWaitingWriterRunsBetweenMaintenanceCandidates(string $journal): void
+    {
+        Queue::fake();
+        $storage = DB::connection('watchdog_sqlite');
+        $storage->getPdo()
+            ->exec('PRAGMA journal_mode=' . $journal);
+        $storage->getPdo()
+            ->exec('PRAGMA busy_timeout=20');
+        $storage->statement('CREATE TABLE watchdog_writer_probe (id INTEGER PRIMARY KEY)');
+        $runs = [];
+        $tasks = [];
+        for ($index = 0; $index < 2; ++$index) {
+            $workflow = WorkflowStub::make(TestGreetingWorkflow::class);
+            $workflow->start('Ada');
+            $runs[] = $workflow->runId();
+            $tasks[] = WorkflowTask::query()->where('workflow_run_id', $workflow->runId())->sole();
+        }
+        foreach ($tasks as $index => $task) {
+            $task->forceFill([
+                'available_at' => now()
+                    ->subMinutes(2 - $index),
+                'last_dispatched_at' => now()
+                    ->subMinute(),
+                'created_at' => now()
+                    ->subMinutes(2 - $index),
+            ])->save();
+        }
+        WorkerCompatibilityFleet::heartbeat();
+        $saved = [0, 0];
+        WorkflowTask::saved(static function (WorkflowTask $row) use ($tasks, &$saved): void {
+            foreach ($tasks as $index => $task) {
+                if ($row->id === $task->id) {
+                    ++$saved[$index];
+                    if ($index === 1) {
+                        // Keep a repeated winner's next transaction observable.
+                        usleep(400_000);
+                    }
+                }
+            }
+        });
+        $program = <<<'PHP'
+            $writer = new PDO('sqlite:'.$argv[1]);
+            $writer->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $writer->exec('PRAGMA busy_timeout=0');
+            echo "ready\n";
+            flush();
+            usleep(50_000);
+            $deadline = hrtime(true) + 150_000_000;
+            do {
+                try {
+                    $writer->exec('BEGIN IMMEDIATE');
+                    $writer->exec('INSERT INTO watchdog_writer_probe (id) VALUES (1)');
+                    usleep(300_000);
+                    $writer->exec('COMMIT');
+                    echo 'admitted';
+                    exit(0);
+                } catch (PDOException $error) {
+                    if (!in_array($error->errorInfo[1] ?? null, [5, 6], true)) {
+                        throw $error;
+                    }
+                    usleep(10_000);
+                }
+            } while (hrtime(true) < $deadline);
+            echo 'starved';
+            exit(2);
+            PHP;
+        $child = null;
+        $pipes = [];
+        $database = $this->database;
+        $storage->getEventDispatcher()
+            ->listen(
+                TransactionCommitted::class,
+                static function ($event) use ($storage, &$saved, &$child, &$pipes, $program, $database): void {
+                    if ($child === null && $saved[0] > 0 && $event->connection === $storage
+                        && $storage->transactionLevel() === 0) {
+                        $child = proc_open([PHP_BINARY, '-r', $program, $database], [
+                            1 => ['pipe', 'w'],
+                            2 => ['pipe', 'w'],
+                        ], $pipes);
+                        self::assertIsResource($child);
+                        self::assertSame("ready\n", fgets($pipes[1]));
+                    }
+                }
+            );
+        try {
+            $report = TaskWatchdog::runPass(runIds: $runs);
+        } finally {
+            self::assertIsResource($child);
+            $output = stream_get_contents($pipes[1]);
+            $error = stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $status = proc_close($child);
+        }
+        $this->assertSame(0, $status, $output . $error);
+        $this->assertSame('admitted', $output);
+        $this->assertSame(1, $storage->table('watchdog_writer_probe')->count());
+        $this->assertSame([], $report['existing_task_failures']);
+        $this->assertSame(1, $report['repaired_existing_tasks']);
+        $this->assertSame(1, $report['dispatched_tasks']);
+        $this->assertSame([[
+            'candidate_id' => $tasks[1]->id,
+            'phase' => 'repair',
+            'reason' => 'sqlite_writer_busy',
+        ]], $report['deferred_existing_tasks'] ?? []);
+        $this->assertSame([2, 0], $saved);
+        $recovered = TaskWatchdog::runPass(runIds: $runs);
+        $this->assertSame([], $recovered['existing_task_failures']);
+        $this->assertSame([], $recovered['deferred_existing_tasks'] ?? []);
+        $this->assertSame(1, $recovered['repaired_existing_tasks']);
+        $this->assertSame([2, 2], $saved);
+        Queue::assertNothingPushed();
+    }
+
     #[DataProvider('genuineFailures')]
     public function testGenuineFailuresAreNotDeferred(bool $bodyFailure): void
     {

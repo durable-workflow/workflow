@@ -512,6 +512,7 @@ final class ServiceCallScheduler
                     'message' => $failure->getMessage(),
                 ];
             }
+            SqliteMaintenanceYield::pause(self::dispatchQuery()->getModel()->getConnection());
         }
 
         return $report;

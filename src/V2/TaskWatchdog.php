@@ -30,6 +30,7 @@ use Workflow\V2\Support\LinkedServiceCallCloser;
 use Workflow\V2\Support\RequestedTaskScope;
 use Workflow\V2\Support\ServiceCallDeadline;
 use Workflow\V2\Support\ServiceCallScheduler;
+use Workflow\V2\Support\SqliteMaintenanceYield;
 use Workflow\V2\Support\SqliteTransaction;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
@@ -165,6 +166,7 @@ final class TaskWatchdog
                     'reason' => 'sqlite_writer_busy',
                 ];
             }
+            SqliteMaintenanceYield::pause((new WorkflowTask())->getConnection());
         }
 
         foreach ($missingRunIds as $runId) {
@@ -181,6 +183,7 @@ final class TaskWatchdog
                     'message' => $result['error'],
                 ];
             }
+            SqliteMaintenanceYield::pause((new WorkflowRun())->getConnection());
         }
 
         $deadlineExpiredRunIds = self::deadlineExpiredRunIds($runIds, $instanceId, $connection, $queue);
@@ -204,6 +207,7 @@ final class TaskWatchdog
                     'message' => $result['error'],
                 ];
             }
+            SqliteMaintenanceYield::pause((new WorkflowRun())->getConnection());
         }
 
         $serviceCallIds = ServiceCallDeadline::expiredCallIds(
@@ -230,6 +234,9 @@ final class TaskWatchdog
                     'message' => $failure->getMessage(),
                 ];
             }
+            SqliteMaintenanceYield::pause(
+                ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)->getModel()->getConnection()
+            );
         }
 
         $serviceCallDispatch = ServiceCallScheduler::repairDue(
@@ -288,6 +295,7 @@ final class TaskWatchdog
                     'message' => $throwable->getMessage(),
                 ];
             }
+            SqliteMaintenanceYield::pause((new ActivityExecution())->getConnection());
         }
 
         return $report;

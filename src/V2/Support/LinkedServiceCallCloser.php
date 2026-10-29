@@ -283,6 +283,7 @@ final class LinkedServiceCallCloser
                     'message' => $failure->getMessage(),
                 ];
             }
+            SqliteMaintenanceYield::pause($call->getConnection());
         }
         return $report;
     }
