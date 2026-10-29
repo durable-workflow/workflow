@@ -77,12 +77,11 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             ->getModel()
             ->getConnection();
         if (($key !== null || $explicitCallId !== null) && $connection->transactionLevel() === 0) {
-            return $connection->transaction(fn (): array => $this->execute(
-                $endpointName,
-                $serviceName,
-                $operationName,
-                $options,
-            ), attempts: $hostQuery ? 3 : 1);
+            $prepare = fn (): array => $this->execute($endpointName, $serviceName, $operationName, $options);
+
+            return $hostQuery
+                ? SqliteTransaction::run($prepare, attempts: 3, connection: $connection)
+                : $connection->transaction($prepare);
         }
 
         $idempotent = $explicitCallId === null

@@ -5,6 +5,10 @@
 - Require Laravel 10.50.4 or later on the Laravel 10 line so TokenGuard rejects
   non-string tokens in both user lookup and credential validation. Laravel 9
   retains the documented upgrade or drain requirement (#922).
+- Back off between SQLite host-query preparation and dispatch-claim retries
+  after a proven root rollback, so a brief competing writer does not exhaust
+  all attempts immediately. Preserve caller-owned transactions and durable
+  query claim fencing (#947).
 
 ## 2.14.1 - 2026-10-26
 
