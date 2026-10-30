@@ -336,6 +336,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             $task->forceFill([
                 'status' => TaskStatus::Leased,
                 'leased_at' => now(),
+                'payload' => array_replace(is_array($task->payload) ? $task->payload : [], [
+                    'history_sequence_at_claim' => (int) ($run->last_history_sequence ?? 0),
+                ]),
                 'lease_owner' => $resolvedLeaseOwner,
                 'lease_expires_at' => $leaseExpiresAt,
                 'attempt_count' => $task->attempt_count + 1,
@@ -2206,6 +2209,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             $createdTaskIds[] = $nextMessageTask->id;
         }
 
+        $this->createPendingChildResumeTask($run, $task, $createdTaskIds);
+
         if ($conditionSelectionResolution !== null
             && ! WorkflowTask::query()->where('workflow_run_id', $run->id)
                 ->where('task_type', TaskType::Workflow->value)
@@ -2229,6 +2234,66 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             self::projectRunBestEffort($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY, 'child_workflow_parent_wait');
         } else {
             self::projectRun($run, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
+        }
+    }
+
+    /**
+     * Child closure cannot change the history already held by a leased worker.
+     * Record the claim's history position on that task and offer newer child
+     * outcomes one replay after completion, without modifying the leased task
+     * from child closure or admitting a second concurrent workflow task.
+     *
+     * @param list<string> $createdTaskIds
+     */
+    private function createPendingChildResumeTask(WorkflowRun $run, WorkflowTask $task, array &$createdTaskIds): void
+    {
+        if (self::hasOpenWorkflowTask($run->id)) {
+            return;
+        }
+
+        $payload = is_array($task->payload) ? $task->payload : [];
+        $claimedSequence = $payload['history_sequence_at_claim'] ?? null;
+        $query = ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
+            ->where('workflow_run_id', $run->id)
+            ->whereIn('event_type', array_map(
+                static fn (HistoryEventType $type): string => $type->value,
+                ChildRunHistory::resolutionEventTypes(),
+            ));
+
+        if (is_int($claimedSequence)) {
+            $query->where('sequence', '>', $claimedSequence);
+        }
+
+        // An older claim has no recorded prefix. One conservative replay is
+        // safe; its next claim records the current prefix and cannot spin.
+
+        foreach ($query->orderBy('sequence')->get() as $resolution) {
+            $parallelPath = ParallelChildGroup::metadataPathFromPayload($resolution->payload);
+            $childStatus = ChildRunHistory::resolvedStatus($resolution);
+            if ($parallelPath !== [] && $childStatus instanceof RunStatus
+                && ! ParallelChildGroup::shouldWakeParentOnChildClosure(
+                    $run,
+                    $parallelPath,
+                    $childStatus,
+                    lockHistoryForUpdate: true,
+                )) {
+                continue;
+            }
+
+            $resumeTask = ConfiguredV2Models::query('task_model', WorkflowTask::class)->create([
+                'workflow_run_id' => $run->id,
+                'namespace' => $run->namespace,
+                'task_type' => TaskType::Workflow->value,
+                'status' => TaskStatus::Ready->value,
+                'available_at' => now(),
+                'payload' => WorkflowTaskPayload::forChildResolution($resolution),
+                'connection' => $run->connection,
+                'queue' => $run->queue,
+                'compatibility' => $run->compatibility,
+            ]);
+            $createdTaskIds[] = $resumeTask->id;
+
+            return;
         }
     }
 
@@ -7412,6 +7477,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             $task->forceFill([
                 'status' => TaskStatus::Leased,
                 'leased_at' => now(),
+                'payload' => array_replace(is_array($task->payload) ? $task->payload : [], [
+                    'history_sequence_at_claim' => (int) ($run->last_history_sequence ?? 0),
+                ]),
                 'lease_owner' => $taskId,
                 'lease_expires_at' => CancellationCleanupLease::forScopes($run),
                 'attempt_count' => $task->attempt_count + 1,
