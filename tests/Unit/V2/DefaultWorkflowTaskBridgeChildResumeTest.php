@@ -195,7 +195,8 @@ final class DefaultWorkflowTaskBridgeChildResumeTest extends TestCase
     {
         $parent = $this->createWaitingRun();
         $started = $this->bridge->complete(
-            $this->createLeasedTask($parent)->id,
+            $this->createLeasedTask($parent)
+->id,
             array_map(static fn (string $name): array => [
                 'type' => 'start_child_workflow',
                 'workflow_type' => 'test-greeting-workflow',
