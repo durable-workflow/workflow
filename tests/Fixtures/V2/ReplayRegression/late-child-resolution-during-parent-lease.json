@@ -1,0 +1,61 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "late-child-resolution-during-parent-lease",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestSequentialChildReplayWorkflow",
+    "arguments": ["first", "second"],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {"sequence": 1, "event_type": "WorkflowStarted", "payload": {}},
+    {
+      "sequence": 2,
+      "event_type": "ChildWorkflowScheduled",
+      "payload": {"sequence": 1, "child_workflow_type": "Tests\\Fixtures\\V2\\TestChildGreetingWorkflow"}
+    },
+    {
+      "sequence": 3,
+      "event_type": "ChildWorkflowScheduled",
+      "payload": {"sequence": 2, "child_workflow_type": "Tests\\Fixtures\\V2\\TestChildGreetingWorkflow"}
+    },
+    {
+      "sequence": 4,
+      "event_type": "ChildRunCompleted",
+      "payload": {
+        "sequence": 1,
+        "child_workflow_type": "Tests\\Fixtures\\V2\\TestChildGreetingWorkflow",
+        "child_status": "completed",
+        "output": "wwHioz3/VYAiNw4CCmNoaWxkCgpmaXJzdAA=",
+        "payload_codec": "avro"
+      }
+    },
+    {
+      "sequence": 5,
+      "event_type": "ChildRunCompleted",
+      "payload": {
+        "sequence": 2,
+        "child_workflow_type": "Tests\\Fixtures\\V2\\TestChildGreetingWorkflow",
+        "child_status": "completed",
+        "output": "wwHioz3/VYAiNw4CCmNoaWxkCgxzZWNvbmQA",
+        "payload_codec": "avro"
+      }
+    },
+    {
+      "sequence": 6,
+      "event_type": "TimerScheduled",
+      "payload": {"sequence": 3, "timer_id": "late-child-unrelated-timer", "delay_seconds": 3600}
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "children": [{"child": "first"}, {"child": "second"}],
+      "workflow_id": "regression-corpus-late-child-resolution-during-parent-lease",
+      "run_id": "regression-corpus-run-late-child-resolution-during-parent-lease"
+    },
+    "commands": [{"type": "complete_workflow"}]
+  }
+}
