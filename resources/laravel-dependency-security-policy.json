@@ -87,8 +87,8 @@
         "10",
         "11"
       ],
-      "review_by": "2026-10-31",
-      "reason": "The advisory feed includes Laravel 9-11. Laravel 10 requires 10.50.4 or later and Laravel 11 requires 11.56.1 or later; both released sources contain TokenGuard's strict string checks, while the feed still classifies these patched branches as affected. Laravel 9 remains unfixed and must not expose TokenGuard while upgrading or draining. Other declared legacy risks remain. Maintained Laravel 12/13 minimums exceed the upstream patched versions. Alerts and exact per-major auditing remain enabled; the October 31 compatibility decision concerns Laravel 9."
+      "review_by": "2026-11-07",
+      "reason": "The October 31 review retains Laravel 9 only for existing-lock upgrade and drain paths until the November 7 removal/migration review. Its latest 9.52.23 TokenGuard is still unfixed and must not be exposed. Fresh legacy dependency resolutions are outside this exception; retain the application lock, use a targeted Workflow update and migrate to patched Laravel 12 or 13 without globally disabling Composer security blocking. Laravel 10 requires 10.50.4 or later and Laravel 11 requires 11.56.1 or later; both contain the strict string checks, while the advisory feed still classifies them as affected. Other declared legacy risks, dependency alerts and exact per-major audits remain."
     }
   }
 }
