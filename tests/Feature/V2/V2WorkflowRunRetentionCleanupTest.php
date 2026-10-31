@@ -52,6 +52,94 @@ use Workflow\V2\Support\WorkflowRunRetentionCleanup;
 
 final class V2WorkflowRunRetentionCleanupTest extends TestCase
 {
+    #[DataProvider('sharedInstanceMessageReferences')]
+    public function testCopiedSharedInstanceReferencesPreserveOtherNamespaceRows(
+        string $field,
+        ?string $namespace,
+        ?string $targetNamespace,
+    ): void {
+        $target = $this->seedRun(RunStatus::Completed, true);
+        $target->forceFill([
+            'namespace' => $targetNamespace,
+        ])->save();
+        $target->instance->forceFill([
+            'namespace' => $targetNamespace,
+        ])->save();
+        $other = $this->seedRun(RunStatus::Completed, true);
+        $other->forceFill([
+            'workflow_instance_id' => $target->workflow_instance_id,
+            'run_number' => 2,
+            'namespace' => $namespace,
+        ])->save();
+        $this->seedRetainedRows($other, $target);
+        $before = [];
+        foreach ([WorkflowCommand::class, WorkflowSignal::class, WorkflowUpdate::class] as $model) {
+            $model::query()->where('workflow_run_id', $other->id)->update([
+                $field => $target->id,
+            ]);
+            $before[$model] = $model::query()->where('workflow_run_id', $other->id)
+                ->get()
+                ->map(static fn ($row): array => $row->getRawOriginal())
+                ->all();
+        }
+
+        $report = WorkflowRunRetentionCleanup::pruneRun($target);
+        $expectedDeleted = $namespace === $target->namespace ? 1 : 0;
+
+        $this->assertSame($expectedDeleted, $report['commands_deleted']);
+        $this->assertSame($expectedDeleted, $report['signals_deleted']);
+        $this->assertSame($expectedDeleted, $report['updates_deleted']);
+        foreach ($before as $model => $rows) {
+            $this->assertSame($expectedDeleted === 0 ? $rows : [], $model::query()
+                ->where('workflow_run_id', $other->id)
+                ->get()
+                ->map(static fn ($row): array => $row->getRawOriginal())
+                ->all());
+        }
+    }
+
+    public static function sharedInstanceMessageReferences(): iterable
+    {
+        foreach (['requested_workflow_run_id', 'resolved_workflow_run_id'] as $field) {
+            foreach (['default', 'other-tenant', 'DEFAULT', null] as $namespace) {
+                yield $field . '/' . ($namespace ?? 'null') => [$field, $namespace, 'default'];
+            }
+            foreach ([null, 'default'] as $namespace) {
+                yield 'embedded/' . $field . '/' . ($namespace ?? 'null') => [$field, $namespace, null];
+            }
+        }
+    }
+
+    #[DataProvider('sharedInstanceMessageReferences')]
+    public function testUnboundInstanceCommandsRequireMatchingNamespaceForPruning(
+        string $field,
+        ?string $namespace,
+        ?string $targetNamespace,
+    ): void {
+        $target = $this->seedRun(RunStatus::Completed, true);
+        $target->forceFill([
+            'namespace' => $targetNamespace,
+        ])->save();
+        $target->instance->forceFill([
+            'namespace' => $namespace,
+        ])->save();
+        $command = WorkflowCommand::query()->create([
+            'workflow_instance_id' => $target->workflow_instance_id,
+            'workflow_run_id' => null,
+            $field => $target->id,
+            'command_type' => CommandType::Signal,
+            'target_scope' => 'instance',
+            'status' => CommandStatus::Accepted,
+            'accepted_at' => now(),
+        ])->refresh();
+        $before = $command->getRawOriginal();
+
+        $report = WorkflowRunRetentionCleanup::pruneRun($target);
+
+        $this->assertSame($namespace === $target->namespace ? 1 : 0, $report['commands_deleted']);
+        $this->assertSame($namespace === $target->namespace ? null : $before, $command->fresh()?->getRawOriginal());
+    }
+
     #[DataProvider('unrelatedMessageReferences')]
     public function testCopiedMessageReferencesCannotDeleteAnotherWorkflowsRows(string $field, string $namespace): void
     {

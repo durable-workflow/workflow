@@ -368,31 +368,10 @@ final class CurrentRunResolver
      */
     private static function ownedRunsQuery(WorkflowInstance $instance): Builder
     {
-        $query = ConfiguredV2Models::query('run_model', WorkflowRun::class);
-        $column = $query->getModel()
-            ->qualifyColumn('namespace');
-        $query->where('workflow_instance_id', $instance->id)
-            ->where($column, $instance->namespace);
-        if ($instance->namespace === null) {
-            return $query;
-        }
-
-        // Namespace IDs use the same exact identity as the PHP ownership
-        // checks, even when the database's default collation folds case.
-        $column = $query->getQuery()
-            ->getGrammar()
-            ->wrap($column);
-        $comparison = match ($query->getQuery()->getConnection()->getDriverName()) {
-            'mysql', 'mariadb' => "CAST({$column} AS BINARY) = CAST(? AS BINARY)",
-            'sqlite' => "CAST({$column} AS BLOB) = CAST(? AS BLOB)",
-            'pgsql' => "CAST({$column} AS TEXT) COLLATE \"C\" = CAST(? AS TEXT) COLLATE \"C\"",
-            'sqlsrv' => "CONVERT(varbinary(max), {$column}) = CONVERT(varbinary(max), CAST(? AS nvarchar(max)))",
-            default => null,
-        };
-        if ($comparison !== null) {
-            $query->whereRaw($comparison, [$instance->namespace]);
-        }
-
-        return $query;
+        return NamespaceIdentity::constrain(
+            ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->where('workflow_instance_id', $instance->id),
+            $instance->namespace,
+        );
     }
 }

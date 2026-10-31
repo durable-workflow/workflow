@@ -14,6 +14,8 @@
 - Keep current-run resolution, pointer updates and detail views scoped when an
   older import attached runs from different namespaces to the same instance.
   Preserve valid same-namespace message handoffs and navigation (#928).
+- Require exact run or unbound-instance namespace ownership before pruning
+  messages with copied requested or resolved run references (#928).
 - Run history imports and lineage repairs on the configured storage connection.
   PostgreSQL write imports require their own serializable transaction and
   retry serialization conflicts up to three complete attempts. Preview imports

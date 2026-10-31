@@ -303,8 +303,19 @@ final class WorkflowRunRetentionCleanup
 
         return $query
             // A copied diagnostic reference cannot grant deletion authority
-            // over messages owned by a different workflow instance.
+            // over messages owned by a different instance or namespace,
+            // including legacy imports that incorrectly shared an instance.
             ->where('workflow_instance_id', $run->workflow_instance_id)
+            ->where(static function (Builder $query) use ($run): void {
+                $query->whereHas('run', static fn (Builder $owner): Builder => NamespaceIdentity::constrain(
+                    $owner->where('workflow_instance_id', $run->workflow_instance_id),
+                    $run->namespace,
+                ))->orWhere(static function (Builder $unbound) use ($run): void {
+                    $unbound->whereNull('workflow_run_id')
+                        ->whereHas('instance', static fn (Builder $owner): Builder =>
+                            NamespaceIdentity::constrain($owner, $run->namespace));
+                });
+            })
             ->where(static function (Builder $query) use ($runId): void {
                 $query
                     ->where('workflow_run_id', $runId)
