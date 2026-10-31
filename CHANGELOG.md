@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Preserve bounded SQLite history sizes for NUL-bearing JSON strings and keys
+  on older JSON1 versions, without hydrating history or rewriting payloads (#968).
+
 ## 2.15.10 - 2026-10-31
 
 - Create a follow-up workflow task when a child resolves after the parent
