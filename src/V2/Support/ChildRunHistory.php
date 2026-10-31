@@ -7,6 +7,7 @@ namespace Workflow\V2\Support;
 use RuntimeException;
 use Throwable;
 use Workflow\Serializers\Serializer;
+use Workflow\Support\AfterCommit;
 use Workflow\V2\Enums\ChildCallStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\ParentClosePolicy;
@@ -695,7 +696,7 @@ final class ChildRunHistory
         };
 
         if (ConfiguredV2Models::connection()->transactionLevel() > 0) {
-            ConfiguredV2Models::connection()->afterCommit($callback);
+            AfterCommit::on(ConfiguredV2Models::connection(), $callback);
 
             return;
         }

@@ -8,6 +8,7 @@ use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Str;
 use Throwable;
+use Workflow\Support\AfterCommit;
 use Workflow\V2\Enums\ServiceCallBindingKind;
 use Workflow\V2\Enums\ServiceCallFailureReason;
 use Workflow\V2\Enums\ServiceCallOperationMode;
@@ -137,7 +138,7 @@ final class ServiceCallScheduler
         }
 
         $connection = $call->getConnection();
-        $connection->afterCommit(static function () use ($call): void {
+        AfterCommit::on($connection, static function () use ($call): void {
             self::enqueue($call->id);
         });
     }
@@ -174,10 +175,14 @@ final class ServiceCallScheduler
             return false;
         }
 
-        $job = RunServiceCall::dispatch($serviceCallId);
-        if ($availableAt->isFuture()) {
-            $job->delay($availableAt);
-        }
+        AfterCommit::on(self::dispatchQuery()->getModel()->getConnection(), ExecutionTracing::bind(
+            static function () use ($serviceCallId, $availableAt): void {
+                $job = RunServiceCall::dispatch($serviceCallId)->beforeCommit();
+                if ($availableAt->isFuture()) {
+                    $job->delay($availableAt);
+                }
+            },
+        ));
 
         return true;
     }
