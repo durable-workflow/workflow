@@ -1,0 +1,22 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "separate-storage-interleaved-callbacks",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestConfiguredStorageWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "history": [{"sequence": 1, "event_type": "WorkflowStarted", "payload": {}}],
+  "expected": {
+    "completed": true,
+    "result": {
+      "completed": true,
+      "workflow_id": "regression-corpus-separate-storage-interleaved-callbacks",
+      "run_id": "regression-corpus-run-separate-storage-interleaved-callbacks"
+    },
+    "commands": [{"type": "complete_workflow"}]
+  }
+}

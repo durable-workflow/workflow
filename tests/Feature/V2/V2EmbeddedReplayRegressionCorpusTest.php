@@ -110,62 +110,8 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
     public function testSeparateStorageCorpusPublishesOnlyAfterItsTransactionCommits(): void
     {
-        $fixturePath = self::FIXTURE_DIR . '/separate-storage-transaction-commit.json';
-        if (! is_file($fixturePath)) {
-            $this->markTestSkipped('The separate storage transaction evidence is absent.');
-        }
-        $fixture = json_decode(file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
-        self::stopWorkers();
-        $this->executeColdReplayFixture($fixture);
-        $previous = config('workflows.storage.connection');
-        foreach ([true, false] as $commit) {
-            $path = tempnam(sys_get_temp_dir(), 'workflow-corpus-storage-');
-            config([
-                'database.connections.corpus_storage' => [
-                    'driver' => 'sqlite',
-                    'database' => $path,
-                    'prefix' => '',
-                    'foreign_key_constraints' => true,
-                ],
-                'workflows.storage.connection' => 'corpus_storage',
-                'queue.default' => 'database',
-            ]);
-            $storage = DB::connection('corpus_storage');
-            try {
-                $this->artisan('migrate', [
-                    '--database' => 'corpus_storage',
-                    '--force' => true,
-                ])->assertExitCode(0);
-                Queue::fake();
-                Event::fake([WorkflowStarted::class]);
-                $storage->beginTransaction();
-                $workflow = WorkflowStub::make($fixture['workflow']['type']);
-                $workflow->start(...$fixture['workflow']['arguments']);
-                Queue::assertNothingPushed();
-                Event::assertNotDispatched(WorkflowStarted::class);
-                $commit ? $storage->commit() : $storage->rollBack();
-                if ($commit) {
-                    Queue::assertPushed(RunWorkflowTask::class, 1);
-                    Event::assertDispatched(WorkflowStarted::class, 1);
-                } else {
-                    Queue::assertNothingPushed();
-                    Event::assertNotDispatched(WorkflowStarted::class);
-                    $this->assertSame(0, WorkflowRun::query()->count());
-                }
-            } finally {
-                if ($storage->transactionLevel() > 0) {
-                    $storage->rollBack();
-                }
-                DB::purge('corpus_storage');
-                config()
-                    ->set('workflows.storage.connection', $previous);
-                foreach (['', '-wal', '-shm'] as $suffix) {
-                    if (is_file($path . $suffix)) {
-                        unlink($path . $suffix);
-                    }
-                }
-            }
-        }
+        $this->assertStorageCorpusFixture('separate-storage-transaction-commit', false);
+        $this->assertStorageCorpusFixture('separate-storage-interleaved-callbacks', true);
     }
 
     public function testTerminalCloseCorpusRetainsEveryCancellationWithinItsHistoryReadBudget(): void
@@ -830,6 +776,85 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $fixture = json_decode((string) file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertDurableOnlyTimelineProjection($fixture);
+    }
+
+    private function assertStorageCorpusFixture(string $id, bool $interleaved): void
+    {
+        $fixturePath = self::FIXTURE_DIR . '/' . $id . '.json';
+        if (! is_file($fixturePath)) {
+            return;
+        }
+        $fixture = json_decode(file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
+        self::stopWorkers();
+        $this->executeColdReplayFixture($fixture);
+        $previous = config('workflows.storage.connection');
+        foreach ([true, false] as $commit) {
+            $path = tempnam(sys_get_temp_dir(), 'workflow-corpus-storage-');
+            config([
+                'database.connections.corpus_storage' => [
+                    'driver' => 'sqlite',
+                    'database' => $path,
+                    'prefix' => '',
+                    'foreign_key_constraints' => true,
+                ],
+                'workflows.storage.connection' => 'corpus_storage',
+                'queue.default' => 'database',
+            ]);
+            $storage = DB::connection('corpus_storage');
+            $application = DB::connection();
+            $applicationDepth = $application->transactionLevel();
+            try {
+                $this->artisan('migrate', [
+                    '--database' => 'corpus_storage',
+                    '--force' => true,
+                ])->assertExitCode(0);
+                Queue::fake();
+                Event::fake([WorkflowStarted::class]);
+                $storage->beginTransaction();
+                if ($interleaved) {
+                    $application->beginTransaction();
+                }
+                $workflow = WorkflowStub::make($fixture['workflow']['type']);
+                $workflow->start(...$fixture['workflow']['arguments']);
+                Queue::assertNothingPushed();
+                Event::assertNotDispatched(WorkflowStarted::class);
+                $commit ? $storage->commit() : $storage->rollBack();
+                $this->assertStorageCorpusPublication($commit);
+                if ($interleaved) {
+                    $commit ? $application->rollBack() : $application->commit();
+                    $this->assertStorageCorpusPublication($commit);
+                }
+            } finally {
+                if ($storage->transactionLevel() > 0) {
+                    $storage->rollBack();
+                }
+                if ($application->transactionLevel() > $applicationDepth) {
+                    $application->rollBack();
+                }
+                DB::purge('corpus_storage');
+                config()
+                    ->set('workflows.storage.connection', $previous);
+                foreach (['', '-wal', '-shm'] as $suffix) {
+                    if (is_file($path . $suffix)) {
+                        unlink($path . $suffix);
+                    }
+                }
+            }
+        }
+    }
+
+    private function assertStorageCorpusPublication(bool $committed): void
+    {
+        if ($committed) {
+            Queue::assertPushed(RunWorkflowTask::class, 1);
+            Event::assertDispatched(WorkflowStarted::class, 1);
+
+            return;
+        }
+
+        Queue::assertNothingPushed();
+        Event::assertNotDispatched(WorkflowStarted::class);
+        $this->assertSame(0, WorkflowRun::query()->count());
     }
 
     /**

@@ -17,6 +17,7 @@ use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Workflow\Models\StoredWorkflow;
 use Workflow\States\WorkflowPendingStatus;
+use Workflow\Support\AfterCommit;
 use Workflow\Support\CacheThrottle;
 
 class Watchdog implements ShouldBeEncrypted, ShouldQueue
@@ -58,7 +59,7 @@ class Watchdog implements ShouldBeEncrypted, ShouldQueue
         $queue = self::normalizeQueue($queue);
 
         $model = config('workflows.stored_workflow_model', StoredWorkflow::class);
-        $model::query()->getModel()->getConnection()->afterCommit(static function () use (
+        AfterCommit::on($model::query()->getModel()->getConnection(), static function () use (
             $connection,
             $queue,
             $timeout

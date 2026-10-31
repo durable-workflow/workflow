@@ -6,6 +6,7 @@ namespace Tests\Unit\V2;
 
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\QueryException;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
@@ -221,6 +222,86 @@ final class WorkflowStorageTransactionTest extends TestCase
         }
     }
 
+    public static function interleavedOutcomes(): array
+    {
+        $cases = [];
+        foreach (self::storageModes() as $mode => [$custom]) {
+            $cases[$mode . '/storage commits first'] = [$custom, true, true];
+            $cases[$mode . '/storage rolls back first'] = [$custom, true, false];
+            $cases[$mode . '/application rolls back first'] = [$custom, false, true];
+            $cases[$mode . '/application commits first'] = [$custom, false, false];
+        }
+
+        return $cases;
+    }
+
+    #[DataProvider('interleavedOutcomes')]
+    public function testAnotherConnectionCannotOwnStorageCallbacks(
+        bool $custom,
+        bool $storageFirst,
+        bool $commitStorage,
+    ): void {
+        $this->configureCustomModels($custom);
+        Queue::fake();
+        Event::fake([WorkflowStarted::class]);
+        $storage = DB::connection('workflow_storage');
+        $application = DB::connection();
+        $storage->beginTransaction();
+        $application->beginTransaction();
+        try {
+            WorkflowStub::make(TestConfiguredStorageWorkflow::class)->start();
+            $this->assertPublication(false);
+            $first = $storageFirst ? $storage : $application;
+            ($storageFirst ? $commitStorage : ! $commitStorage) ? $first->commit() : $first->rollBack();
+            $this->assertPublication($storageFirst && $commitStorage);
+            $last = $storageFirst ? $application : $storage;
+            ($storageFirst ? ! $commitStorage : $commitStorage) ? $last->commit() : $last->rollBack();
+            $this->assertPublication($commitStorage);
+            $this->assertSame($commitStorage ? 1 : 0, WorkflowRun::query()->count());
+            $this->assertSame($commitStorage ? 1 : 0, WorkflowTask::query()->count());
+        } finally {
+            foreach ([$storage, $application] as $connection) {
+                if ($connection->transactionLevel() > 0) {
+                    $connection->rollBack();
+                }
+            }
+        }
+    }
+
+    #[DataProvider('storageModes')]
+    public function testPhysicalQueuePublicationDoesNotJoinAnUnrelatedApplicationTransaction(bool $custom): void
+    {
+        $this->configureCustomModels($custom);
+        $storage = DB::connection('workflow_storage');
+        if (! $storage->getSchemaBuilder()->hasTable('jobs')) {
+            $storage->getSchemaBuilder()
+                ->create('jobs', static function (Blueprint $table): void {
+                    $table->bigIncrements('id');
+                    $table->string('queue')
+                        ->index();
+                    $table->longText('payload');
+                    $table->unsignedTinyInteger('attempts');
+                    $table->unsignedInteger('reserved_at')
+                        ->nullable();
+                    $table->unsignedInteger('available_at');
+                    $table->unsignedInteger('created_at');
+                });
+        }
+        $application = DB::connection();
+        $application->beginTransaction();
+        try {
+            WorkflowStub::make(TestConfiguredStorageWorkflow::class)->start();
+            $this->assertSame(1, $storage->table('jobs')->count(), 'Committed storage must publish its physical job.');
+            $application->rollBack();
+            $this->assertSame(1, WorkflowRun::query()->count());
+            $this->assertSame(1, $storage->table('jobs')->count());
+        } finally {
+            if ($application->transactionLevel() > 0) {
+                $application->rollBack();
+            }
+        }
+    }
+
     protected function getPackageProviders($app): array
     {
         return [WorkflowServiceProvider::class];
@@ -244,6 +325,7 @@ final class WorkflowStorageTransactionTest extends TestCase
         $app['config']->set('workflows.storage.connection', 'workflow_storage');
         $app['config']->set('workflows.v1.enabled', false);
         $app['config']->set('queue.default', 'database');
+        $app['config']->set('queue.connections.database.connection', 'workflow_storage');
         $app['config']->set('cache.default', 'array');
     }
 
@@ -253,6 +335,19 @@ final class WorkflowStorageTransactionTest extends TestCase
             '--database' => 'workflow_storage',
             '--force' => true,
         ])->assertExitCode(0);
+    }
+
+    private function assertPublication(bool $published): void
+    {
+        if ($published) {
+            Queue::assertPushed(RunWorkflowTask::class, 1);
+            Event::assertDispatched(WorkflowStarted::class, 1);
+
+            return;
+        }
+
+        Queue::assertNothingPushed();
+        Event::assertNotDispatched(WorkflowStarted::class);
     }
 
     private function configureCustomModels(bool $custom): void

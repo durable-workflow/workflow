@@ -20,6 +20,7 @@ use Workflow\Events\WorkflowStarted as LegacyWorkflowStarted;
 use Workflow\States\WorkflowCompletedStatus;
 use Workflow\States\WorkflowFailedStatus;
 use Workflow\States\WorkflowRunningStatus;
+use Workflow\Support\AfterCommit;
 use Workflow\V2\Events\ActivityCompleted;
 use Workflow\V2\Events\ActivityFailed;
 use Workflow\V2\Events\ActivityStarted;
@@ -119,7 +120,7 @@ final class LifecycleEventDispatcher
                 ? self::$eventConnections[$event]
                 : ConfiguredV2Models::connection();
             if ($connection->transactionLevel() > 0) {
-                $connection->afterCommit($event);
+                AfterCommit::on($connection, $event);
             } else {
                 $event();
             }
