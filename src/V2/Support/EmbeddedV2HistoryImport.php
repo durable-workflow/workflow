@@ -252,14 +252,22 @@ final class EmbeddedV2HistoryImport
         string $importId,
         CarbonInterface $importedAt,
     ): array {
+        $attempt = 0;
         $write = static function (Connection $transaction) use (
             $bundle,
             $workflow,
             $alreadyImported,
             $importId,
             $importedAt,
+            &$attempt,
         ): array {
             if ($transaction->getDriverName() === 'pgsql') {
+                if ($attempt++ > 0) {
+                    // Let a conflicting importer finish before taking a new
+                    // serializable snapshot. Laravel still owns the three
+                    // complete transaction attempts.
+                    usleep(random_int(10_000, 50_000));
+                }
                 // Row locks cannot lock a missing endpoint on PostgreSQL.
                 // Serializable predicate checks prevent reciprocal imports
                 // from both committing without seeing the other's run.

@@ -266,11 +266,14 @@ final class EmbeddedV2HistoryImportLineageTest extends TestCase
                         DB::reconnect();
                         $paused = false;
                         $beginnings = 0;
-                        $this->app['events']->listen(TransactionBeginning::class, static function () use (
-                            &$beginnings
-                        ): void {
-                            $beginnings++;
-                        });
+                        $this->app['events']->listen(
+                            TransactionBeginning::class,
+                            static function (TransactionBeginning $event) use (&$beginnings): void {
+                                if ($event->connection->transactionLevel() === 1) {
+                                    $beginnings++;
+                                }
+                            }
+                        );
                         $this->app['events']->listen(TransactionCommitting::class, static function () use (
                             &$paused,
                             $sockets
@@ -281,6 +284,7 @@ final class EmbeddedV2HistoryImportLineageTest extends TestCase
                             $paused = true;
                             fwrite($sockets[1], json_encode([
                                 'connection' => (int) DB::selectOne('SELECT pg_backend_pid() AS id')->id,
+                                'isolation' => DB::selectOne('SHOW transaction_isolation')->transaction_isolation,
                                 'runs' => WorkflowRun::query()->count(),
                                 'links' => WorkflowLink::query()->count(),
                             ], JSON_THROW_ON_ERROR) . "\n");
@@ -317,6 +321,7 @@ final class EmbeddedV2HistoryImportLineageTest extends TestCase
                 $message = fgets($sockets[0]);
                 $this->assertIsString($message);
                 $prepared[$name] = json_decode($message, true, flags: JSON_THROW_ON_ERROR);
+                $this->assertSame('serializable', $prepared[$name]['isolation'] ?? null, $message);
                 $this->assertSame(1, $prepared[$name]['runs'] ?? null, $message);
                 $this->assertSame(0, $prepared[$name]['links'] ?? null, $message);
             }
