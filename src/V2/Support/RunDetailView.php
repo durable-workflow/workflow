@@ -45,12 +45,7 @@ final class RunDetailView
 
         $run->loadMissing($relations);
 
-        if ($run->instance !== null && $run->instance->namespace !== $run->namespace) {
-            // Older imports could attach a run to an instance in another
-            // namespace and cache that instance's metadata in its summary.
-            $run->setRelation('instance', null);
-            $run->setRelation('summary', null);
-        }
+        self::detachForeignInstanceMetadata($run);
 
         $summary = $run->summary;
         $selectedRun = SelectedRunSnapshot::forRun($run, $timelineLimit);
@@ -418,6 +413,16 @@ final class RunDetailView
             'continuedWorkflows' => $lineageSnapshot['continued_workflows'],
             'chartData' => self::chartData($run, $activities),
         ];
+    }
+
+    private static function detachForeignInstanceMetadata(WorkflowRun $run): void
+    {
+        if ($run->instance !== null && $run->instance->namespace !== $run->namespace) {
+            // Older imports could attach a run to an instance in another
+            // namespace and cache that instance's metadata in its summary.
+            $run->setRelation('instance', null);
+            $run->setRelation('summary', null);
+        }
     }
 
     /**
