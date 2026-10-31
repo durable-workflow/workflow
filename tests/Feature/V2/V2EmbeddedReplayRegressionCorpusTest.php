@@ -41,6 +41,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Events\WorkflowStarted;
 use Workflow\V2\Exceptions\ActivityRetryPolicyMismatchException;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
@@ -106,6 +107,66 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     private const FIXTURE_DIR = __DIR__ . '/../../Fixtures/V2/ReplayRegression';
 
     private int $workflowNumber = 0;
+
+    public function testSeparateStorageCorpusPublishesOnlyAfterItsTransactionCommits(): void
+    {
+        $fixturePath = self::FIXTURE_DIR . '/separate-storage-transaction-commit.json';
+        if (! is_file($fixturePath)) {
+            $this->markTestSkipped('The separate storage transaction evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
+        self::stopWorkers();
+        $this->executeColdReplayFixture($fixture);
+        $previous = config('workflows.storage.connection');
+        foreach ([true, false] as $commit) {
+            $path = tempnam(sys_get_temp_dir(), 'workflow-corpus-storage-');
+            config([
+                'database.connections.corpus_storage' => [
+                    'driver' => 'sqlite',
+                    'database' => $path,
+                    'prefix' => '',
+                    'foreign_key_constraints' => true,
+                ],
+                'workflows.storage.connection' => 'corpus_storage',
+                'queue.default' => 'database',
+            ]);
+            $storage = DB::connection('corpus_storage');
+            try {
+                $this->artisan('migrate', [
+                    '--database' => 'corpus_storage',
+                    '--force' => true,
+                ])->assertExitCode(0);
+                Queue::fake();
+                Event::fake([WorkflowStarted::class]);
+                $storage->beginTransaction();
+                $workflow = WorkflowStub::make($fixture['workflow']['type']);
+                $workflow->start(...$fixture['workflow']['arguments']);
+                Queue::assertNothingPushed();
+                Event::assertNotDispatched(WorkflowStarted::class);
+                $commit ? $storage->commit() : $storage->rollBack();
+                if ($commit) {
+                    Queue::assertPushed(RunWorkflowTask::class, 1);
+                    Event::assertDispatched(WorkflowStarted::class, 1);
+                } else {
+                    Queue::assertNothingPushed();
+                    Event::assertNotDispatched(WorkflowStarted::class);
+                    $this->assertSame(0, WorkflowRun::query()->count());
+                }
+            } finally {
+                if ($storage->transactionLevel() > 0) {
+                    $storage->rollBack();
+                }
+                DB::purge('corpus_storage');
+                config()
+                    ->set('workflows.storage.connection', $previous);
+                foreach (['', '-wal', '-shm'] as $suffix) {
+                    if (is_file($path . $suffix)) {
+                        unlink($path . $suffix);
+                    }
+                }
+            }
+        }
+    }
 
     public function testTerminalCloseCorpusRetainsEveryCancellationWithinItsHistoryReadBudget(): void
     {

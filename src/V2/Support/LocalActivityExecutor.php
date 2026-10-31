@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use JsonException;
@@ -66,7 +65,7 @@ final class LocalActivityExecutor
             return $refused('invalid_local_activity_outcome');
         }
 
-        return DB::transaction(function () use (
+        return ConfiguredV2Models::connection()->transaction(function () use (
             $attemptId,
             $leaseOwner,
             $workflowTaskAttempt,
@@ -517,7 +516,12 @@ final class LocalActivityExecutor
         int $sequence,
         LocalActivityCall $activityCall,
     ): array {
-        return DB::transaction(function () use ($run, $task, $sequence, $activityCall): array {
+        return ConfiguredV2Models::connection()->transaction(function () use (
+            $run,
+            $task,
+            $sequence,
+            $activityCall
+        ): array {
             /** @var WorkflowRun $lockedRun */
             $lockedRun = WorkflowRun::query()
                 ->lockForUpdate()
@@ -759,7 +763,13 @@ final class LocalActivityExecutor
         mixed $result,
         ?Throwable $throwable,
     ): array {
-        return DB::transaction(function () use ($task, $execution, $attempt, $result, $throwable): array {
+        return ConfiguredV2Models::connection()->transaction(function () use (
+            $task,
+            $execution,
+            $attempt,
+            $result,
+            $throwable
+        ): array {
             /** @var WorkflowTask $lockedTask */
             $lockedTask = WorkflowTask::query()
                 ->lockForUpdate()

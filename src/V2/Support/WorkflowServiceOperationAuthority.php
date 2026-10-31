@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
-use Illuminate\Support\Facades\DB;
 use Workflow\V2\Contracts\ServiceBoundaryPolicy;
 use Workflow\V2\Contracts\WorkflowServiceOperationAuthorizer;
 use Workflow\V2\Enums\ServiceCallOperationMode;
@@ -30,7 +29,7 @@ final class WorkflowServiceOperationAuthority
         // Caller, call and catalog locks must share the completion transaction.
         // A separately configured model connection cannot provide atomic refusal.
         $connection = $run->getConnection();
-        if ($connection !== DB::connection()) {
+        if ($connection !== ConfiguredV2Models::connection()) {
             throw new ServiceOperationAuthorizationException('service_operation_storage_connection_mismatch');
         }
         foreach ([

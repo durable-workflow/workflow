@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Database\Eloquent\ModelNotFoundException;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use LogicException;
 use Throwable;
@@ -63,7 +62,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             return $result;
         }
 
-        DB::transaction(function () use (
+        ConfiguredV2Models::connection()->transaction(function () use (
             $instanceId,
             $failedRunId,
             $namespace,
@@ -407,7 +406,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
         $task = null;
         $instance = null;
 
-        DB::transaction(function () use (
+        ConfiguredV2Models::connection()->transaction(function () use (
             $workflowType,
             $workflowClass,
             $resolvedClass,

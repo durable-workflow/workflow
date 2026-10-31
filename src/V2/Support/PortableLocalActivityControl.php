@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
-use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use LogicException;
 use Workflow\V2\CancellationContext;
@@ -166,7 +165,7 @@ final class PortableLocalActivityControl
             return self::response('invalid_local_activity_control');
         }
 
-        return DB::transaction(static function () use (
+        return ConfiguredV2Models::connection()->transaction(static function () use (
             $attemptId,
             $leaseOwner,
             $workflowTaskAttempt,

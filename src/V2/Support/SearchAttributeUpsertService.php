@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
-use Illuminate\Support\Facades\DB;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSearchAttribute;
 
@@ -36,7 +35,13 @@ final class SearchAttributeUpsertService
     ): void {
         self::assertDeclaredTypesCompatible($call, $attributeTypes);
 
-        DB::transaction(static function () use ($run, $call, $sequence, $inheritedFromParent, $attributeTypes): void {
+        ConfiguredV2Models::connection()->transaction(static function () use (
+            $run,
+            $call,
+            $sequence,
+            $inheritedFromParent,
+            $attributeTypes
+        ): void {
             $existingAttributes = WorkflowSearchAttribute::where('workflow_run_id', $run->id)
                 ->get()
                 ->keyBy('key')
@@ -197,7 +202,11 @@ final class SearchAttributeUpsertService
         WorkflowRun $childRun,
         int $childStartSequence,
     ): void {
-        DB::transaction(static function () use ($parentRun, $childRun, $childStartSequence): void {
+        ConfiguredV2Models::connection()->transaction(static function () use (
+            $parentRun,
+            $childRun,
+            $childStartSequence
+        ): void {
             $parentAttributes = WorkflowSearchAttribute::where('workflow_run_id', $parentRun->id)
                 ->get();
 
