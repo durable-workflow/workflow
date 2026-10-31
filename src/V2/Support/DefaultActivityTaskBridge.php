@@ -113,6 +113,9 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge, ActivityLea
             $execution = is_string($executionId)
                 ? ConfiguredV2Models::query('activity_execution_model', ActivityExecution::class)->find($executionId)
                 : null;
+            if ($execution instanceof ActivityExecution && $execution->workflow_run_id !== $task->workflow_run_id) {
+                $execution = null;
+            }
 
             return [
                 'task_id' => $task->id,

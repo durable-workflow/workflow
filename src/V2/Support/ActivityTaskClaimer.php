@@ -97,6 +97,10 @@ final class ActivityTaskClaimer
                 return self::claimFailure('workflow_run_missing');
             }
 
+            if ($task->workflow_run_id !== $execution->workflow_run_id) {
+                return self::claimFailure('activity_execution_mismatch');
+            }
+
             TaskCompatibility::sync($task, $run);
 
             $backendError = TaskBackendCapabilities::recordClaimFailureIfUnsupported($task);

@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
+use Illuminate\Database\Connection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
@@ -154,10 +155,34 @@ final class EmbeddedV2HistoryImport
         );
 
         if ($existing['status'] === 'already_imported') {
+            $rows = self::emptyRows();
+            if (! $dryRun) {
+                try {
+                    $repair = static fn (Connection $_connection): int => self::repairExistingLinks(
+                        $bundle,
+                        $workflow,
+                    );
+                    $rows['workflow_links'] = DB::connection()->getDriverName() === 'sqlite'
+                        ? SqliteTransaction::run($repair, 64)
+                        : DB::transaction($repair, 3);
+                } catch (Throwable $throwable) {
+                    return [
+                        ...$base,
+                        'status' => 'rejected',
+                        'eligibility' => self::withEligibilityError(
+                            $eligibility,
+                            'target.write_failed',
+                            $throwable->getMessage(),
+                        ),
+                        'rows' => self::emptyRows(),
+                    ];
+                }
+            }
+
             return [
                 ...$base,
                 'status' => 'already_imported',
-                'rows' => self::emptyRows(),
+                'rows' => $rows,
             ];
         }
 
@@ -213,7 +238,12 @@ final class EmbeddedV2HistoryImport
         $importedAt = now();
 
         try {
-            $rows = DB::transaction(static function () use ($bundle, $workflow, $importId, $importedAt): array {
+            $write = static function (Connection $_connection) use (
+                $bundle,
+                $workflow,
+                $importId,
+                $importedAt,
+            ): array {
                 if (DB::connection()->getDriverName() === 'pgsql') {
                     // Row locks cannot lock a missing endpoint on PostgreSQL.
                     // Serializable predicate checks prevent reciprocal imports
@@ -222,7 +252,10 @@ final class EmbeddedV2HistoryImport
                 }
 
                 return self::writeBundle($bundle, $workflow, $importId, $importedAt);
-            }, 3);
+            };
+            $rows = DB::connection()->getDriverName() === 'sqlite'
+                ? SqliteTransaction::run($write, 64)
+                : DB::transaction($write, 3);
         } catch (Throwable $throwable) {
             return [
                 ...$base,
@@ -256,6 +289,10 @@ final class EmbeddedV2HistoryImport
         string $importId,
         CarbonInterface $importedAt,
     ): array {
+        $referenceErrors = EmbeddedV2ImportReferences::errors($bundle, $workflow, true);
+        if ($referenceErrors !== []) {
+            throw new InvalidArgumentException($referenceErrors[0]['message']);
+        }
         $lineageErrors = EmbeddedV2ImportLineage::errors($bundle, $workflow, true);
         if ($lineageErrors !== []) {
             throw new InvalidArgumentException($lineageErrors[0]['message']);
@@ -389,6 +426,58 @@ final class EmbeddedV2HistoryImport
         $rows['workflow_run_summaries'] = 1;
 
         return $rows;
+    }
+
+    /**
+     * Reconcile a verified imported bundle whose counterpart arrived later.
+     *
+     * @param array<string, mixed> $bundle
+     * @param array<string, mixed> $workflow
+     */
+    private static function repairExistingLinks(array $bundle, array $workflow): int
+    {
+        $referenceErrors = EmbeddedV2ImportReferences::errors($bundle, $workflow, true);
+        if ($referenceErrors !== []) {
+            throw new InvalidArgumentException($referenceErrors[0]['message']);
+        }
+        $lineageErrors = EmbeddedV2ImportLineage::errors($bundle, $workflow, true);
+        if ($lineageErrors !== []) {
+            throw new InvalidArgumentException($lineageErrors[0]['message']);
+        }
+        $runId = self::stringValue($workflow['run_id'] ?? null);
+        $instanceId = self::stringValue($workflow['instance_id'] ?? null);
+        $namespace = self::stringValue($workflow['namespace'] ?? null);
+        if ($runId === null || $instanceId === null) {
+            throw new InvalidArgumentException('Imported workflow identity is incomplete.');
+        }
+        /** @var WorkflowRun|null $stored */
+        $stored = WorkflowRun::query()->lockForUpdate()->find($runId);
+        if (! $stored instanceof WorkflowRun
+            || $stored->workflow_instance_id !== $instanceId
+            || $stored->namespace !== $namespace
+            || $stored->import_source !== EmbeddedV2ImportContract::IMPORT_SOURCE
+            || $stored->import_dedupe_key !== self::stringValue($bundle['dedupe_key'] ?? null)) {
+            throw new InvalidArgumentException('The stored imported run no longer matches this bundle identity.');
+        }
+
+        $count = self::writeLinks($bundle, $runId, $instanceId, $namespace);
+        if ($count > 0) {
+            RunSummaryProjector::project($stored->fresh([
+                'instance',
+                'tasks',
+                'activityExecutions',
+                'timers',
+                'failures',
+                'historyEvents',
+                'commands',
+                'signals',
+                'updates',
+                'childLinks.childRun.instance.currentRun',
+                'childLinks.childRun.failures',
+            ]) ?? $stored);
+        }
+
+        return $count;
     }
 
     private static function writeHistoryEvents(array $bundle, string $runId): int
@@ -1039,6 +1128,7 @@ final class EmbeddedV2HistoryImport
         }
 
         $errors = [...$errors, ...EmbeddedV2ImportMessageReferences::errors($bundle)];
+        $errors = [...$errors, ...EmbeddedV2ImportReferences::errors($bundle, $workflow)];
         $errors = [...$errors, ...EmbeddedV2ImportLineage::errors($bundle, $workflow)];
 
         return [

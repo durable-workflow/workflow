@@ -96,6 +96,10 @@ final class ActivityOutcomeRecorder
                 ->lockForUpdate()
                 ->findOrFail($lockedExecution->workflow_run_id);
 
+            if ($task->workflow_run_id !== $lockedExecution->workflow_run_id) {
+                return self::ignored('stale_task');
+            }
+
             $abandoned = ActivityAbandonment::allows($run, $lockedExecution);
             if (in_array($run->status, [RunStatus::Cancelled, RunStatus::Terminated], true) && ! $abandoned) {
                 $reason = $run->status === RunStatus::Terminated

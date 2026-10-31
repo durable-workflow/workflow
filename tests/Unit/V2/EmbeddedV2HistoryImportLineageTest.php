@@ -136,6 +136,35 @@ final class EmbeddedV2HistoryImportLineageTest extends TestCase
         }
     }
 
+    public function testIdempotentRetryRepairsALegacyOmittedEdge(): void
+    {
+        $bundles = $this->sourcePair();
+        $this->clearState();
+        foreach ($bundles as $bundle) {
+            $this->assertSame('imported', EmbeddedV2HistoryImport::import($bundle, [
+                'namespace' => 'tenant-a',
+            ])['status']);
+        }
+        WorkflowLink::query()->delete();
+        $this->assertSame(0, WorkflowLink::query()->count());
+
+        $repair = EmbeddedV2HistoryImport::import($bundles['parent'], [
+            'namespace' => 'tenant-a',
+        ]);
+
+        $this->assertSame('already_imported', $repair['status']);
+        $this->assertSame(1, $repair['rows']['workflow_links']);
+        $link = WorkflowLink::query()->sole();
+        $this->assertSame($bundles['parent']['workflow']['run_id'], $link->parent_workflow_run_id);
+        $this->assertSame($bundles['child']['workflow']['run_id'], $link->child_workflow_run_id);
+        $retry = EmbeddedV2HistoryImport::import($bundles['child'], [
+            'namespace' => 'tenant-a',
+        ]);
+        $this->assertSame('already_imported', $retry['status']);
+        $this->assertSame(0, $retry['rows']['workflow_links']);
+        $this->assertSame(1, WorkflowLink::query()->count());
+    }
+
     public function testConcurrentPostgresReciprocalImportsKeepTheirScopedEdge(): void
     {
         if (DB::connection()->getDriverName() !== 'pgsql' || ! function_exists('pcntl_fork')
@@ -251,6 +280,99 @@ final class EmbeddedV2HistoryImportLineageTest extends TestCase
                 ])['status']);
             }
             $this->assertSame(1, WorkflowLink::query()->count());
+        } finally {
+            foreach ($actors as $actor) {
+                posix_kill($actor['pid'], SIGKILL);
+                pcntl_waitpid($actor['pid'], $status);
+                fclose($actor['socket']);
+            }
+            DB::purge();
+            DB::reconnect();
+        }
+    }
+
+    public function testConcurrentMysqlAndSqliteReciprocalImportsKeepTheirScopedEdge(): void
+    {
+        if (! in_array(DB::connection()->getDriverName(), ['mysql', 'sqlite'], true)
+            || ! function_exists('pcntl_fork') || ! function_exists('posix_kill')
+            || ! function_exists('stream_socket_pair')) {
+            $this->markTestSkipped('MySQL or SQLite and process control are required for this import race.');
+        }
+        $bundles = $this->sourcePair();
+        $this->clearState();
+        DB::purge();
+        $actors = [];
+        try {
+            foreach ($bundles as $name => $bundle) {
+                $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+                $this->assertIsArray($sockets);
+                $pid = pcntl_fork();
+                $this->assertNotSame(-1, $pid);
+                if ($pid === 0) {
+                    fclose($sockets[0]);
+                    stream_set_timeout($sockets[1], 20);
+                    try {
+                        DB::reconnect();
+                        $started = false;
+                        $this->app['events']->listen(TransactionBeginning::class, static function () use (
+                            &$started,
+                            $sockets,
+                        ): void {
+                            if ($started || DB::transactionLevel() !== 1) {
+                                return;
+                            }
+                            $started = true;
+                            fwrite($sockets[1], "started\n");
+                            if (fgets($sockets[1]) !== "continue\n") {
+                                throw new RuntimeException('Import start barrier was not released.');
+                            }
+                        });
+                        $report = EmbeddedV2HistoryImport::import($bundle, [
+                            'namespace' => 'tenant-a',
+                        ]);
+                        fwrite($sockets[1], json_encode([
+                            'status' => $report['status'],
+                            'errors' => $report['eligibility']['errors'],
+                        ], JSON_THROW_ON_ERROR) . "\n");
+                        DB::disconnect();
+                        fclose($sockets[1]);
+                        exit(0);
+                    } catch (Throwable $error) {
+                        fwrite($sockets[1], json_encode([
+                            'error' => $error->getMessage(),
+                        ]) . "\n");
+                        exit(1);
+                    }
+                }
+                fclose($sockets[1]);
+                stream_set_timeout($sockets[0], 20);
+                $actors[$name] = [
+                    'pid' => $pid,
+                    'socket' => $sockets[0],
+                ];
+            }
+            foreach ($actors as $actor) {
+                $this->assertSame("started\n", fgets($actor['socket']));
+            }
+            foreach ($actors as $actor) {
+                fwrite($actor['socket'], "continue\n");
+            }
+            foreach ($actors as $name => $actor) {
+                $message = fgets($actor['socket']);
+                $this->assertIsString($message);
+                $report = json_decode($message, true, flags: JSON_THROW_ON_ERROR);
+                $this->assertSame('imported', $report['status'] ?? null, $message);
+                pcntl_waitpid($actor['pid'], $status);
+                $this->assertTrue(pcntl_wifexited($status));
+                $this->assertSame(0, pcntl_wexitstatus($status));
+                fclose($actor['socket']);
+                unset($actors[$name]);
+            }
+            DB::reconnect();
+            $this->assertSame(2, WorkflowRun::query()->count());
+            $link = WorkflowLink::query()->sole();
+            $this->assertSame($bundles['parent']['workflow']['run_id'], $link->parent_workflow_run_id);
+            $this->assertSame($bundles['child']['workflow']['run_id'], $link->child_workflow_run_id);
         } finally {
             foreach ($actors as $actor) {
                 posix_kill($actor['pid'], SIGKILL);
