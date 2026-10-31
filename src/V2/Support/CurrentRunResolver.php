@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
+use Illuminate\Database\Eloquent\Model;
 use LogicException;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -152,9 +154,7 @@ final class CurrentRunResolver
             return $loaded;
         }
 
-        $query = ConfiguredV2Models::query('run_model', WorkflowRun::class)
-            ->where('workflow_instance_id', $instance->id)
-            ->where('namespace', $instance->namespace)
+        $query = self::ownedRunsQuery($instance)
             ->whereKey($runId);
 
         if ($relations !== []) {
@@ -285,10 +285,8 @@ final class CurrentRunResolver
         }
 
         /** @var EloquentCollection<int, WorkflowRun> $runs */
-        $runs = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+        $runs = self::ownedRunsQuery($instance)
             ->select(['id', 'workflow_instance_id', 'namespace', 'run_number', 'started_at', 'created_at'])
-            ->where('workflow_instance_id', $instance->id)
-            ->where('namespace', $instance->namespace)
             ->when($lockForUpdate, static fn ($query) => $query->lockForUpdate())
             ->get();
 
@@ -348,9 +346,7 @@ final class CurrentRunResolver
         array $relations = [],
         bool $lockForUpdate = false,
     ) {
-        $query = ConfiguredV2Models::query('run_model', WorkflowRun::class)
-            ->where('workflow_instance_id', $instance->id)
-            ->where('namespace', $instance->namespace)
+        $query = self::ownedRunsQuery($instance)
             ->orderByDesc('run_number')
             ->orderByDesc('started_at')
             ->orderByDesc('created_at')
@@ -362,6 +358,39 @@ final class CurrentRunResolver
 
         if ($lockForUpdate) {
             $query->lockForUpdate();
+        }
+
+        return $query;
+    }
+
+    /**
+     * @return Builder<Model>
+     */
+    private static function ownedRunsQuery(WorkflowInstance $instance): Builder
+    {
+        $query = ConfiguredV2Models::query('run_model', WorkflowRun::class);
+        $column = $query->getModel()
+            ->qualifyColumn('namespace');
+        $query->where('workflow_instance_id', $instance->id)
+            ->where($column, $instance->namespace);
+        if ($instance->namespace === null) {
+            return $query;
+        }
+
+        // Namespace IDs use the same exact identity as the PHP ownership
+        // checks, even when the database's default collation folds case.
+        $column = $query->getQuery()
+            ->getGrammar()
+            ->wrap($column);
+        $comparison = match ($query->getQuery()->getConnection()->getDriverName()) {
+            'mysql', 'mariadb' => "CAST({$column} AS BINARY) = CAST(? AS BINARY)",
+            'sqlite' => "CAST({$column} AS BLOB) = CAST(? AS BLOB)",
+            'pgsql' => "CAST({$column} AS TEXT) COLLATE \"C\" = CAST(? AS TEXT) COLLATE \"C\"",
+            'sqlsrv' => "CONVERT(varbinary(max), {$column}) = CONVERT(varbinary(max), CAST(? AS nvarchar(max)))",
+            default => null,
+        };
+        if ($comparison !== null) {
+            $query->whereRaw($comparison, [$instance->namespace]);
         }
 
         return $query;

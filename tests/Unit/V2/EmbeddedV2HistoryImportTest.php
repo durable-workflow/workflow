@@ -391,7 +391,7 @@ final class EmbeddedV2HistoryImportTest extends TestCase
     public static function sharedInstanceMessageCommands(): iterable
     {
         foreach (['signal', 'update'] as $kind) {
-            foreach (['tenant-a', 'tenant-b', null] as $namespace) {
+            foreach (['tenant-a', 'tenant-b', 'TENANT-A', null] as $namespace) {
                 yield $kind . '/' . ($namespace ?? 'null') => [$kind, $namespace];
             }
         }
@@ -440,7 +440,7 @@ final class EmbeddedV2HistoryImportTest extends TestCase
 
     public static function sharedInstanceNamespaces(): iterable
     {
-        foreach (['tenant-a', 'tenant-b', null] as $namespace) {
+        foreach (['tenant-a', 'tenant-b', 'TENANT-A', null] as $namespace) {
             yield $namespace ?? 'null' => [$namespace];
         }
     }
