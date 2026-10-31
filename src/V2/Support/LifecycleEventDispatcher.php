@@ -438,6 +438,7 @@ final class LifecycleEventDispatcher
      */
     private static function emit(Closure $dispatch, ?Connection $connection = null): void
     {
+        $dispatch = Closure::fromCallable(ExecutionTracing::bind($dispatch));
         $connection ??= ConfiguredV2Models::connection();
         self::$eventConnections ??= new WeakMap();
         self::$eventConnections[$dispatch] = $connection;

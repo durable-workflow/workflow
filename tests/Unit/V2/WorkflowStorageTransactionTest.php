@@ -5,12 +5,15 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Database\QueryException;
+use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
 use Orchestra\Testbench\TestCase;
 use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
+use Symfony\Component\Process\Process;
 use Tests\Fixtures\V2\TestConfiguredStorageWorkflow;
 use Workflow\Providers\WorkflowServiceProvider;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
@@ -147,6 +150,77 @@ final class WorkflowStorageTransactionTest extends TestCase
         }
     }
 
+    #[DataProvider('storageModes')]
+    public function testIndependentClaimantsProduceOneLease(bool $custom): void
+    {
+        $this->configureCustomModels($custom);
+        $storage = DB::connection('workflow_storage');
+        if (! in_array($storage->getDriverName(), ['pgsql', 'mysql'], true)) {
+            $this->markTestSkipped('The physical row-lock probe requires PostgreSQL or MySQL.');
+        }
+        Queue::fake();
+        $workflow = WorkflowStub::make(TestConfiguredStorageWorkflow::class);
+        $workflow->start();
+        $task = WorkflowTask::query()->sole();
+        $directory = sys_get_temp_dir() . '/workflow-storage-claims-' . bin2hex(random_bytes(8));
+        mkdir($directory, 0700);
+        file_put_contents($directory . '/settings.json', json_encode([
+            'connection' => config('database.connections.workflow_storage'),
+            'custom' => $custom,
+            'task_id' => $task->id,
+        ], JSON_THROW_ON_ERROR));
+        $processes = [];
+        $probe = null;
+        try {
+            $processes['A'] = $this->startClaimant($directory, 'A');
+            $this->waitForClaimMarker($directory . '/A.selected', $processes['A']);
+            config()
+                ->set('database.connections.claim_probe', config('database.connections.workflow_storage'));
+            $probe = DB::connection('claim_probe');
+            $locked = false;
+            $probe->beginTransaction();
+            try {
+                $probe->table($task->getTable())
+                    ->where('id', $task->id)
+                    ->lock('for update nowait')
+                    ->first();
+            } catch (QueryException $error) {
+                $this->assertTrue(
+                    $storage->getDriverName() === 'pgsql'
+                        ? ($error->errorInfo[0] ?? null) === '55P03'
+                        : ($error->errorInfo[1] ?? null) === 3572,
+                    'The independent probe must fail specifically because the claimed row is locked.',
+                );
+                $locked = true;
+            } finally {
+                $probe->rollBack();
+            }
+            $this->assertTrue($locked, 'The storage row lock must remain held after the claim read.');
+            $processes['B'] = $this->startClaimant($directory, 'B');
+            $this->waitForClaimMarker($directory . '/B.query', $processes['B']);
+            file_put_contents($directory . '/release', 'continue');
+            $claimed = [];
+            foreach ($processes as $process) {
+                $this->assertSame(0, $process->wait(), $process->getErrorOutput());
+                $claimed[] = json_decode($process->getOutput(), true, flags: JSON_THROW_ON_ERROR)['claimed'];
+            }
+            $this->assertSame([true, false], $claimed);
+            $this->assertSame('storage-A', $task->fresh()->lease_owner);
+            $this->assertSame(1, $task->fresh()->attempt_count);
+        } finally {
+            file_put_contents($directory . '/release', 'continue');
+            foreach ($processes as $process) {
+                if ($process->isRunning()) {
+                    $process->stop(1);
+                }
+            }
+            if ($probe !== null) {
+                DB::purge('claim_probe');
+            }
+            (new Filesystem())->deleteDirectory($directory);
+        }
+    }
+
     protected function getPackageProviders($app): array
     {
         return [WorkflowServiceProvider::class];
@@ -190,6 +264,29 @@ final class WorkflowStorageTransactionTest extends TestCase
                 'workflows.v2.instance_model' => StorageTransactionInstance::class,
             ]);
         }
+    }
+
+    private function startClaimant(string $directory, string $worker): Process
+    {
+        $process = new Process([
+            PHP_BINARY,
+            __DIR__ . '/../../Fixtures/V2/storage-claim-process.php',
+            $directory,
+            $worker,
+        ]);
+        $process->setTimeout(30);
+        $process->start();
+
+        return $process;
+    }
+
+    private function waitForClaimMarker(string $path, Process $process): void
+    {
+        $deadline = hrtime(true) + 10_000_000_000;
+        while (! is_file($path) && $process->isRunning() && hrtime(true) < $deadline) {
+            usleep(10_000);
+        }
+        $this->assertFileExists($path, $process->getErrorOutput());
     }
 }
 

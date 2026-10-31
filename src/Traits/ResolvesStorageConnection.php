@@ -9,23 +9,17 @@ trait ResolvesStorageConnection
     public function getConnectionName(): ?string
     {
         $connection = config('workflows.storage.connection') ?? $this->connection;
-        if ($connection !== null) {
-            return $connection;
-        }
 
+        return $connection ?? $this->customV2StorageConnection();
+    }
+
+    private function customV2StorageConnection(): ?string
+    {
         $runModel = config('workflows.v2.run_model');
         if (! is_string($runModel) || $runModel === \Workflow\V2\Models\WorkflowRun::class
-            || ! is_subclass_of($runModel, \Workflow\V2\Models\WorkflowRun::class)) {
+            || ! is_subclass_of($runModel, \Workflow\V2\Models\WorkflowRun::class)
+            || ! $this->isV2StorageModel()) {
             return null;
-        }
-
-        // Keep legacy storage independent when only v2 models are customized.
-        $class = static::class;
-        while (! str_starts_with($class, 'Workflow\\V2\\Models\\')) {
-            $class = get_parent_class($class);
-            if ($class === false) {
-                return null;
-            }
         }
 
         // Base-model helpers and models without an override share the run's
@@ -38,5 +32,19 @@ trait ResolvesStorageConnection
         }
 
         return $runModel !== static::class ? (new $runModel())->getConnectionName() : null;
+    }
+
+    private function isV2StorageModel(): bool
+    {
+        // Keep legacy storage independent when only v2 models are customized.
+        $class = static::class;
+        do {
+            if (str_starts_with($class, 'Workflow\\V2\\Models\\')) {
+                return true;
+            }
+            $class = get_parent_class($class);
+        } while ($class !== false);
+
+        return false;
     }
 }
