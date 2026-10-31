@@ -156,8 +156,8 @@ final class WorkflowStorageTransactionTest extends TestCase
     {
         $this->configureCustomModels($custom);
         $storage = DB::connection('workflow_storage');
-        if (! in_array($storage->getDriverName(), ['pgsql', 'mysql'], true)) {
-            $this->markTestSkipped('The physical row-lock probe requires PostgreSQL or MySQL.');
+        if (! in_array($storage->getDriverName(), ['pgsql', 'mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('The physical row-lock probe requires PostgreSQL, MySQL or MariaDB.');
         }
         Queue::fake();
         $workflow = WorkflowStub::make(TestConfiguredStorageWorkflow::class);
@@ -186,11 +186,14 @@ final class WorkflowStorageTransactionTest extends TestCase
                     ->lock('for update nowait')
                     ->first();
             } catch (QueryException $error) {
+                // NOWAIT uses 3572 on MySQL and 1205 on MariaDB, both with HY000.
                 $this->assertTrue(
                     $storage->getDriverName() === 'pgsql'
                         ? ($error->errorInfo[0] ?? null) === '55P03'
-                        : ($error->errorInfo[1] ?? null) === 3572,
-                    'The independent probe must fail specifically because the claimed row is locked.',
+                        : (($error->errorInfo[0] ?? null) === 'HY000'
+                            && in_array($error->errorInfo[1] ?? null, [1205, 3572], true)),
+                    'The independent probe must fail specifically because the claimed row is locked. '
+                        . json_encode($error->errorInfo, JSON_THROW_ON_ERROR),
                 );
                 $locked = true;
             } finally {
@@ -208,6 +211,15 @@ final class WorkflowStorageTransactionTest extends TestCase
             $this->assertSame([true, false], $claimed);
             $this->assertSame('storage-A', $task->fresh()->lease_owner);
             $this->assertSame(1, $task->fresh()->attempt_count);
+            $probe->beginTransaction();
+            try {
+                $this->assertNotNull($probe->table($task->getTable())
+                    ->where('id', $task->id)
+                    ->lock('for update nowait')
+                    ->first(), 'The same probe must succeed after the claim transactions release the row.');
+            } finally {
+                $probe->rollBack();
+            }
         } finally {
             file_put_contents($directory . '/release', 'continue');
             foreach ($processes as $process) {
