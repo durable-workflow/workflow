@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
-use Illuminate\Support\Facades\DB;
 use LogicException;
+use Workflow\Support\AfterCommit;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\CancellationPolicy;
@@ -188,7 +188,7 @@ final class ActivityCancellationWait
         app(HistoryProjectionRole::class)->projectRun(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
-        DB::afterCommit(static fn () => TaskDispatcher::dispatch($task));
+        AfterCommit::on(ConfiguredV2Models::connection(), static fn () => TaskDispatcher::dispatch($task));
         return $task;
     }
 }

@@ -6,7 +6,6 @@ namespace Workflow\V2;
 
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Throwable;
 use Workflow\Queue\DatabaseTaskDelivery;
@@ -384,7 +383,7 @@ final class TaskWatchdog
             };
             $task = $atomicPollRepair
                 ? SqliteTransaction::forTaskOnce($snapshot, $repair)
-                : DB::transaction($repair);
+                : ConfiguredV2Models::connection()->transaction($repair);
 
             if ($task instanceof WorkflowTask && ! $pollDispatchHandled) {
                 TaskDispatcher::dispatch(
@@ -438,7 +437,7 @@ final class TaskWatchdog
     private static function recoverMissingTask(string $runId): array
     {
         try {
-            $task = DB::transaction(static function () use ($runId): ?WorkflowTask {
+            $task = ConfiguredV2Models::connection()->transaction(static function () use ($runId): ?WorkflowTask {
                 /** @var WorkflowRun $run */
                 $run = WorkflowRun::query()
                     ->with(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
@@ -644,7 +643,7 @@ final class TaskWatchdog
         $acquiringTask = false;
 
         try {
-            $task = DB::transaction(static function () use (
+            $task = ConfiguredV2Models::connection()->transaction(static function () use (
                 $runId,
                 &$cancellationEnforced,
                 &$acquiringTask,

@@ -20,6 +20,7 @@ use Workflow\Events\WorkflowStarted as LegacyWorkflowStarted;
 use Workflow\States\WorkflowCompletedStatus;
 use Workflow\States\WorkflowFailedStatus;
 use Workflow\States\WorkflowRunningStatus;
+use Workflow\Support\AfterCommit;
 use Workflow\V2\Events\ActivityCompleted;
 use Workflow\V2\Events\ActivityFailed;
 use Workflow\V2\Events\ActivityStarted;
@@ -117,9 +118,9 @@ final class LifecycleEventDispatcher
         foreach ($events as $event) {
             $connection = self::$eventConnections !== null && isset(self::$eventConnections[$event])
                 ? self::$eventConnections[$event]
-                : DB::connection();
+                : ConfiguredV2Models::connection();
             if ($connection->transactionLevel() > 0) {
-                $connection->afterCommit($event);
+                AfterCommit::on($connection, $event);
             } else {
                 $event();
             }
@@ -159,7 +160,7 @@ final class LifecycleEventDispatcher
             LegacyWorkflowStarted::dispatch($instanceId, $workflowClass, '[]', $committedAt);
 
             event($stateChanged);
-        });
+        }, $run->getConnection());
     }
 
     public static function workflowCompleted(WorkflowRun $run): void
@@ -185,7 +186,7 @@ final class LifecycleEventDispatcher
             LegacyWorkflowCompleted::dispatch($instanceId, '', $committedAt);
 
             event($stateChanged);
-        });
+        }, $run->getConnection());
     }
 
     public static function workflowFailed(WorkflowRun $run, string $exceptionClass, string $message): void
@@ -221,7 +222,7 @@ final class LifecycleEventDispatcher
             LegacyWorkflowFailed::dispatch($instanceId, $exceptionClass . ': ' . $message, $committedAt);
 
             event($stateChanged);
-        });
+        }, $run->getConnection());
     }
 
     public static function activityStarted(
@@ -266,7 +267,7 @@ final class LifecycleEventDispatcher
                 '[]',
                 $committedAt,
             );
-        });
+        }, $run->getConnection());
     }
 
     public static function activityCompleted(
@@ -311,7 +312,7 @@ final class LifecycleEventDispatcher
                 $activityClass,
                 $sequence,
             );
-        });
+        }, $run->getConnection());
     }
 
     public static function activityFailed(
@@ -362,7 +363,7 @@ final class LifecycleEventDispatcher
                 $activityClass,
                 $sequence,
             );
-        });
+        }, $run->getConnection());
     }
 
     public static function failureRecorded(
@@ -398,7 +399,7 @@ final class LifecycleEventDispatcher
                 $message,
                 $committedAt,
             );
-        });
+        }, $run->getConnection());
     }
 
     /**
@@ -438,23 +439,17 @@ final class LifecycleEventDispatcher
      */
     private static function emit(Closure $dispatch, ?Connection $connection = null): void
     {
-        if ($connection !== null) {
-            self::$eventConnections ??= new WeakMap();
-            self::$eventConnections[$dispatch] = $connection;
-        }
+        $dispatch = Closure::fromCallable(ExecutionTracing::bind($dispatch));
+        $connection ??= ConfiguredV2Models::connection();
+        self::$eventConnections ??= new WeakMap();
+        self::$eventConnections[$dispatch] = $connection;
         if (self::$collectors !== []) {
             self::$collectors[count(self::$collectors) - 1][] = $dispatch;
 
             return;
         }
 
-        if ($connection !== null) {
-            self::release([$dispatch]);
-
-            return;
-        }
-
-        $dispatch();
+        self::release([$dispatch]);
     }
 
     /**

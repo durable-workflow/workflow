@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
-use Illuminate\Support\Facades\DB;
 use Throwable;
 use Workflow\Queue\DatabaseTaskDelivery;
+use Workflow\Support\AfterCommit;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\WorkflowTaskRepairProjectionRole;
 use Workflow\V2\Enums\TaskStatus;
@@ -27,8 +27,10 @@ final class TaskDispatcher
         bool $queueTimerWakeup = false,
         bool $boundedWorkflowTaskProjection = false,
     ): void {
-        if (DB::transactionLevel() > 0) {
-            DB::afterCommit(
+        $connection = $task->getConnection();
+        if ($connection->transactionLevel() > 0) {
+            AfterCommit::on(
+                $connection,
                 static fn () => self::publish($task->id, $queueTimerWakeup, $boundedWorkflowTaskProjection)
             );
 
@@ -72,7 +74,9 @@ final class TaskDispatcher
             return;
         }
 
-        $job = self::makeJob($task);
+        // This dispatcher already waits for the task's storage commit. Do not
+        // let Laravel defer its transport again on an unrelated transaction.
+        $job = self::makeJob($task)->beforeCommit();
         $attemptedAt = now();
 
         if (WorkflowStub::faked()) {

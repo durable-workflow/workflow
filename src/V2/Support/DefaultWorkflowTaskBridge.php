@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -270,7 +269,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
 
     public function claimStatus(string $taskId, ?string $leaseOwner = null): array
     {
-        return DB::transaction(static function () use ($taskId, $leaseOwner): array {
+        return ConfiguredV2Models::connection()->transaction(static function () use ($taskId, $leaseOwner): array {
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()
@@ -570,7 +569,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         $nextTask = null;
 
         try {
-            $nextTask = DB::transaction(function () use ($taskId): ?WorkflowTask {
+            $nextTask = ConfiguredV2Models::connection()->transaction(function () use ($taskId): ?WorkflowTask {
                 /** @var WorkflowTask $task */
                 $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                     ->lockForUpdate()
@@ -597,7 +596,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 return $this->executor->run($run, $task);
             });
         } catch (Throwable $throwable) {
-            DB::transaction(static function () use ($taskId, $throwable): void {
+            ConfiguredV2Models::connection()->transaction(static function () use ($taskId, $throwable): void {
                 /** @var WorkflowTask|null $task */
                 $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                     ->lockForUpdate()
@@ -650,7 +649,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
 
     public function fail(string $taskId, Throwable|array|string $failure, ?string $codec = null): array
     {
-        return DB::transaction(static function () use ($taskId, $failure): array {
+        return ConfiguredV2Models::connection()->transaction(static function () use ($taskId, $failure): array {
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()
@@ -732,7 +731,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         ?int $operationSequence = null,
         int $operationSequenceSpan = 1,
     ): array {
-        return DB::transaction(function () use (
+        return ConfiguredV2Models::connection()->transaction(function () use (
             $taskId,
             $requestId,
             $sequence,
@@ -818,7 +817,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
 
     public function heartbeat(string $taskId): array
     {
-        return DB::transaction(function () use ($taskId): array {
+        return ConfiguredV2Models::connection()->transaction(function () use ($taskId): array {
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()
@@ -1584,7 +1583,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
      */
     private static function meteredTransaction(callable $body, int $attempts = 1): mixed
     {
-        [$result, $events] = DB::transaction(
+        [$result, $events] = ConfiguredV2Models::connection()->transaction(
             static fn (): array => LifecycleEventDispatcher::collect(
                 static fn (): mixed => HistoryTransactionMeter::run($body)
             ),
@@ -7437,7 +7436,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
      */
     private function claimIfReady(string $taskId): bool
     {
-        return DB::transaction(static function () use ($taskId): bool {
+        return ConfiguredV2Models::connection()->transaction(static function () use ($taskId): bool {
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()
