@@ -485,7 +485,8 @@ final class EmbeddedV2HistoryImportTest extends TestCase
         $timer = $run->timers()
             ->sole();
         $timer->forceFill([
-            'fire_at' => now()->subMinute(),
+            'fire_at' => now()
+                ->subMinute(),
         ])->save();
         $task = $this->timerTaskForRun($run, $timer->id);
 

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 2.15.11 - 2026-10-31
+
+- Keep embedded history imports and their lineage within the target namespace.
+  Reject copied references to another workflow's rows and restore missing
+  lineage edges only from matching stored relationship evidence. Preserve
+  valid imports in either endpoint order and idempotent repeat imports (#928).
+- Check ownership when reading or operating on previously imported commands,
+  failures, activity attempts and timers, including message completion,
+  recovery and retention cleanup (durable-workflow/server#765).
+- Run history imports and lineage repairs on the configured storage connection.
+  PostgreSQL write imports require their own serializable transaction and
+  retry serialization conflicts up to three complete attempts. Preview imports
+  remain available within a caller transaction (#928).
+
 ## 2.15.10 - 2026-10-31
 
 - Create a follow-up workflow task when a child resolves after the parent
