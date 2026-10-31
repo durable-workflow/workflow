@@ -18,6 +18,8 @@
   PostgreSQL write imports require their own serializable transaction and
   retry serialization conflicts up to three complete attempts. Preview imports
   remain available within a caller transaction (#928).
+- Preserve bounded SQLite history sizes for NUL-bearing JSON strings and keys
+  on older JSON1 versions, without hydrating history or rewriting payloads (#968).
 
 ## 2.15.10 - 2026-10-31
 

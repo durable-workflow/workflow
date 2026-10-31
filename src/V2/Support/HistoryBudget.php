@@ -558,6 +558,10 @@ final class HistoryBudget
      */
     private static function sqliteAggregateExpressions(string $eventType, string $payload): array
     {
+        // Older JSON1 versions truncate decoded NUL-bearing strings. This
+        // same-width control escape preserves their canonical JSON size,
+        // including literal escapes and keys, without changing stored data.
+        $lengthSafePayload = "REPLACE(COALESCE({$payload}, '[]'), '\\u0000', '\\u0001')";
         $canonicalJsonSize = <<<SQL
             (SELECT COALESCE(SUM(
                 CASE
@@ -582,7 +586,7 @@ final class HistoryBudget
                         ), CHAR(8233), '\u2029')
                     AS BLOB)) + 1 ELSE 0 END
             ), 2) - COUNT(DISTINCT history_json.parent)
-            FROM json_tree(COALESCE({$payload}, '[]')) AS history_json)
+            FROM json_tree({$lengthSafePayload}) AS history_json)
             SQL;
         $groupId = "json_extract({$payload}, '$.parallel_group_id')";
         $groupIdIsValid = "json_valid({$payload}) AND json_type({$payload}, '$.parallel_group_id') = 'text' AND COALESCE({$groupId}, '') <> ''";
