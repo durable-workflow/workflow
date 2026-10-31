@@ -95,6 +95,15 @@ final class ActivityOutcomeRecorder
                 return self::ignored('stale_task');
             }
 
+            if (! ActivityAttempt::query()
+                ->whereKey($attemptId)
+                ->where('workflow_run_id', $lockedExecution->workflow_run_id)
+                ->where('activity_execution_id', $lockedExecution->id)
+                ->where('workflow_task_id', $task->id)
+                ->exists()) {
+                return self::ignored('stale_attempt');
+            }
+
             /** @var WorkflowRun $run */
             $run = WorkflowRun::query()
                 ->lockForUpdate()
