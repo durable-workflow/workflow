@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 2.15.10 - 2026-10-31
+
+- Create a follow-up workflow task when a child resolves after the parent
+  worker has claimed its history and that worker completes into another wait.
+  Preserve task coalescing, terminal parents and parallel child barriers so
+  the result cannot remain parked behind an unrelated timer or signal (#962).
+- Limit Laravel 9 support to existing lockfiles that need to upgrade or drain.
+  Keep the documented TokenGuard exposure restriction and the next migration
+  review date in the shipped dependency security policy (#922).
+
 ## 2.15.9 - 2026-10-31
 
 - Keep engine transactions, task claims and deferred callbacks on the workflow
