@@ -21,7 +21,7 @@ final class RunUpdateView
      */
     public static function forRun(WorkflowRun $run): array
     {
-        $run->loadMissing(['commands', 'historyEvents', 'updates.command', 'updates.failure']);
+        $run->loadMissing(['commands', 'historyEvents', 'updates.command.run', 'updates.failure']);
 
         $rows = [];
         $updateEvents = $run->historyEvents
@@ -62,6 +62,7 @@ final class RunUpdateView
 
             $row = self::rowFromUpdate(
                 $update,
+                $run,
                 self::mergeEvents(
                     $eventsByUpdateId->get($update->id),
                     $update->workflow_command_id === null ? null : $eventsByCommandId->get(
@@ -135,11 +136,16 @@ final class RunUpdateView
      * @param array<string, array<string, mixed>> $failureSnapshots
      * @return array<string, mixed>
      */
-    private static function rowFromUpdate(WorkflowUpdate $update, array $events, array $failureSnapshots): array
-    {
+    private static function rowFromUpdate(
+        WorkflowUpdate $update,
+        WorkflowRun $run,
+        array $events,
+        array $failureSnapshots,
+    ): array {
         $command = $update->command;
         if (! $command instanceof WorkflowCommand || $command->workflow_instance_id !== $update->workflow_instance_id
-            || $command->command_type->value !== 'update') {
+            || $command->command_type->value !== 'update'
+            || ! $command->run instanceof WorkflowRun || $command->run->namespace !== $run->namespace) {
             $command = null;
         }
         $failure = $update->failure;

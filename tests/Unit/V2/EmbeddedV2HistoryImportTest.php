@@ -37,6 +37,7 @@ use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\ActivityOutcomeRecorder;
 use Workflow\V2\Support\ActivityTaskClaimer;
+use Workflow\V2\Support\CurrentRunResolver;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\EmbeddedV2HistoryImport;
 use Workflow\V2\Support\EmbeddedV2ImportContract;
@@ -369,6 +370,98 @@ final class EmbeddedV2HistoryImportTest extends TestCase
             foreach (['tenant-a', 'tenant-b', null] as $namespace) {
                 yield $reference . '/' . ($namespace ?? 'null') => [$reference, $namespace];
             }
+        }
+    }
+
+    #[DataProvider('sharedInstanceMessageCommands')]
+    public function testLegacySharedInstanceMessagesKeepNamespaceOwnership(string $kind, ?string $namespace): void
+    {
+        [$run, $command, $marker] = $this->sharedInstanceMessage($kind, $namespace);
+        $before = $this->workflowStateSnapshot();
+        $view = $kind === 'signal' ? RunSignalView::forRun($run) : RunUpdateView::forRun($run);
+
+        if ($namespace === $run->namespace) {
+            $this->assertStringContainsString($marker, json_encode($view, JSON_THROW_ON_ERROR));
+        } else {
+            $this->assertStringNotContainsString($marker, json_encode($view, JSON_THROW_ON_ERROR));
+        }
+        $this->assertSame($before, $this->workflowStateSnapshot());
+    }
+
+    public static function sharedInstanceMessageCommands(): iterable
+    {
+        foreach (['signal', 'update'] as $kind) {
+            foreach (['tenant-a', 'tenant-b', null] as $namespace) {
+                yield $kind . '/' . ($namespace ?? 'null') => [$kind, $namespace];
+            }
+        }
+    }
+
+    #[DataProvider('sharedInstanceNamespaces')]
+    public function testLegacySharedInstanceCurrentRunAndDetailsStayInTheirNamespace(?string $namespace): void
+    {
+        [$run, $command, $marker] = $this->sharedInstanceMessage('signal', $namespace);
+        $instance = WorkflowInstance::query()->findOrFail($command->workflow_instance_id);
+        $instance->forceFill([
+            'business_key' => $marker,
+            'visibility_labels' => [
+                'fixture' => $marker,
+            ],
+            'current_run_id' => $command->workflow_run_id,
+        ])->save();
+        $run->summary?->forceFill([
+            'business_key' => $marker,
+            'visibility_labels' => [
+                'fixture' => $marker,
+            ],
+        ])->save();
+        $before = $this->workflowStateSnapshot();
+        $current = CurrentRunResolver::forRun($run);
+        $instanceCurrent = CurrentRunResolver::forInstance($instance);
+        $detail = RunDetailView::forRun($run);
+
+        if ($namespace === $run->namespace) {
+            $this->assertSame($run->id, $current?->id);
+            $this->assertSame($run->id, $instanceCurrent?->id);
+            $this->assertContains($command->workflow_run_id, array_column($detail['run_navigation'], 'run_id'));
+            $this->assertSame($marker, $detail['business_key']);
+        } else {
+            $this->assertNull($current);
+            $this->assertSame($command->workflow_run_id, $instanceCurrent?->id);
+            $this->assertSame([], $detail['run_navigation']);
+            $this->assertNull($detail['current_run_id']);
+            $this->assertNull($detail['business_key']);
+            $this->assertSame([], $detail['visibility_labels']);
+            $foreignDetail = RunDetailView::forRun($command->run->fresh());
+            $this->assertNotContains($run->id, array_column($foreignDetail['run_navigation'], 'run_id'));
+        }
+        $this->assertSame($before, $this->workflowStateSnapshot());
+    }
+
+    public static function sharedInstanceNamespaces(): iterable
+    {
+        foreach (['tenant-a', 'tenant-b', null] as $namespace) {
+            yield $namespace ?? 'null' => [$namespace];
+        }
+    }
+
+    #[DataProvider('sharedInstanceNamespaces')]
+    public function testCurrentRunPointerCannotAdoptAnotherNamespace(?string $namespace): void
+    {
+        [$run, $command] = $this->sharedInstanceMessage('signal', $namespace);
+        $instance = WorkflowInstance::query()->findOrFail($command->workflow_instance_id);
+        $before = $this->workflowStateSnapshot();
+        if ($namespace === $run->namespace) {
+            CurrentRunResolver::syncPointer($instance, $run);
+            $this->assertSame($run->id, $instance->fresh()->current_run_id);
+        } else {
+            try {
+                CurrentRunResolver::syncPointer($instance, $run);
+                $this->fail('A foreign-namespace run must not become the current instance run.');
+            } catch (\LogicException $error) {
+                $this->assertSame('workflow_instance_current_run_mismatch', $error->getMessage());
+            }
+            $this->assertSame($before, $this->workflowStateSnapshot());
         }
     }
 
@@ -1667,6 +1760,35 @@ final class EmbeddedV2HistoryImportTest extends TestCase
             'accepted_at' => now(),
             'message_sequence' => 1,
         ])->refresh();
+    }
+
+    /**
+     * @return array{WorkflowRun, WorkflowCommand, string}
+     */
+    private function sharedInstanceMessage(string $kind, ?string $namespace): array
+    {
+        [$bundle, $messageId] = $this->messageBundle($kind);
+        $this->clearWorkflowState();
+        $this->assertSame('imported', EmbeddedV2HistoryImport::import($bundle)['status']);
+        $command = $this->otherMessageCommand($kind, $namespace);
+        $marker = 'shared-instance-command-' . Str::ulid();
+        $command->forceFill([
+            'source' => $marker,
+        ])->save();
+        $run = WorkflowRun::query()->findOrFail($bundle['workflow']['run_id']);
+        $run->forceFill([
+            'workflow_instance_id' => $command->workflow_instance_id,
+            'run_number' => 2,
+            'business_key' => null,
+            'visibility_labels' => null,
+        ])->save();
+        $model = $kind === 'signal' ? WorkflowSignal::class : WorkflowUpdate::class;
+        $model::query()->findOrFail($messageId)->forceFill([
+            'workflow_instance_id' => $command->workflow_instance_id,
+            'workflow_command_id' => $command->id,
+        ])->save();
+
+        return [$run->fresh(), $command->fresh(), $marker];
     }
 
     /**

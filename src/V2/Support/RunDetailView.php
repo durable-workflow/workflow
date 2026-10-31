@@ -45,6 +45,13 @@ final class RunDetailView
 
         $run->loadMissing($relations);
 
+        if ($run->instance !== null && $run->instance->namespace !== $run->namespace) {
+            // Older imports could attach a run to an instance in another
+            // namespace and cache that instance's metadata in its summary.
+            $run->setRelation('instance', null);
+            $run->setRelation('summary', null);
+        }
+
         $summary = $run->summary;
         $selectedRun = SelectedRunSnapshot::forRun($run, $timelineLimit);
         $currentRunResolution = $selectedRun['current_run'];
@@ -267,6 +274,7 @@ final class RunDetailView
             'created_at' => $summary?->started_at ?? $run->started_at ?? $run->created_at,
             'updated_at' => $summary?->closed_at ?? $run->last_progress_at ?? $run->updated_at,
             'run_navigation' => ($run->instance?->runs ?? collect())
+                ->filter(static fn (WorkflowRun $instanceRun): bool => $instanceRun->namespace === $run->namespace)
                 ->sortBy('run_number')
                 ->map(static function (WorkflowRun $instanceRun) use ($run, $currentRun): array {
                     $instanceRunSummary = $instanceRun->summary;

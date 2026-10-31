@@ -11,6 +11,9 @@
 - Check ownership when reading or operating on previously imported commands,
   failures, activity attempts and timers, including message completion,
   recovery and retention cleanup (durable-workflow/server#765).
+- Keep current-run resolution, pointer updates and detail views scoped when an
+  older import attached runs from different namespaces to the same instance.
+  Preserve valid same-namespace message handoffs and navigation (#928).
 - Run history imports and lineage repairs on the configured storage connection.
   PostgreSQL write imports require their own serializable transaction and
   retry serialization conflicts up to three complete attempts. Preview imports
