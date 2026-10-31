@@ -6,6 +6,7 @@ namespace Tests\Unit\V2;
 
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
@@ -19,6 +20,7 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
+use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
@@ -47,6 +49,7 @@ use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunSignalView;
 use Workflow\V2\Support\RunUpdateView;
 use Workflow\V2\Support\TaskRepair;
+use Workflow\V2\Support\TimerRecovery;
 
 final class EmbeddedV2HistoryImportTest extends TestCase
 {
@@ -426,6 +429,98 @@ final class EmbeddedV2HistoryImportTest extends TestCase
                 yield $effect . '/' . ($namespace ?? 'null') => [$effect, $namespace];
             }
         }
+    }
+
+    #[DataProvider('legacyTimerReferences')]
+    public function testImportedTimerRecoveryCannotCaptureAnotherRunsTimer(string $path, ?string $namespace): void
+    {
+        Queue::fake();
+        $bundle = $this->runningBundleWithOpenWork();
+        $this->clearWorkflowState();
+        $this->assertSame('imported', EmbeddedV2HistoryImport::import($bundle, [
+            'namespace' => 'tenant-a',
+        ])['status']);
+        $run = WorkflowRun::query()->findOrFail($bundle['workflow']['run_id']);
+        $foreignCommand = $this->otherMessageCommand('signal', $namespace);
+        $foreign = WorkflowTimer::query()->create([
+            'workflow_run_id' => $foreignCommand->workflow_run_id,
+            'sequence' => 9,
+            'status' => TimerStatus::Pending,
+            'delay_seconds' => 60,
+            'fire_at' => now()
+                ->subMinute(),
+        ])->refresh();
+        $before = $foreign->getRawOriginal();
+
+        if ($path === 'restore') {
+            $this->assertNull(TimerRecovery::restore($run, $foreign->id));
+        } else {
+            $task = $this->timerTaskForRun($run, $foreign->id);
+            (new RunTimerTask($task->id))->handle();
+            $this->assertSame($before, $foreign->fresh()->getRawOriginal());
+            $this->assertNotNull($task->fresh()->last_claim_error);
+            $this->assertSame(0, $run->historyEvents()->where('event_type', HistoryEventType::TimerFired->value)
+                ->where('payload->timer_id', $foreign->id)
+                ->count());
+        }
+        $this->assertSame($before, $foreign->fresh()->getRawOriginal());
+    }
+
+    public static function legacyTimerReferences(): iterable
+    {
+        foreach (['restore', 'worker'] as $path) {
+            foreach (['tenant-a', 'tenant-b', null] as $namespace) {
+                yield $path . '/' . ($namespace ?? 'null') => [$path, $namespace];
+            }
+        }
+    }
+
+    public function testImportedRunsOwnTimerStillFires(): void
+    {
+        Queue::fake();
+        $bundle = $this->runningBundleWithOpenWork();
+        $this->clearWorkflowState();
+        $this->assertSame('imported', EmbeddedV2HistoryImport::import($bundle)['status']);
+        $run = WorkflowRun::query()->findOrFail($bundle['workflow']['run_id']);
+        $timer = $run->timers()
+            ->sole();
+        $timer->forceFill([
+            'fire_at' => now()->subMinute(),
+        ])->save();
+        $task = $this->timerTaskForRun($run, $timer->id);
+
+        (new RunTimerTask($task->id))->handle();
+
+        $this->assertSame(TimerStatus::Fired, $timer->fresh()->status);
+        $this->assertSame(1, $run->historyEvents()->where('event_type', HistoryEventType::TimerFired->value)
+            ->where('payload->timer_id', $timer->id)
+            ->count());
+    }
+
+    public function testImportedTimerRecoveryRestoresItsOwnMissingProjection(): void
+    {
+        $bundle = $this->runningBundleWithOpenWork();
+        $this->clearWorkflowState();
+        $this->assertSame('imported', EmbeddedV2HistoryImport::import($bundle)['status']);
+        $run = WorkflowRun::query()->findOrFail($bundle['workflow']['run_id']);
+        $timer = $run->timers()
+            ->sole();
+        $this->assertSame($run->id, TimerRecovery::restore($run, $timer->id)?->workflow_run_id);
+        WorkflowHistoryEvent::record($run, HistoryEventType::TimerScheduled, [
+            'timer_id' => $timer->id,
+            'sequence' => $timer->sequence,
+            'delay_seconds' => $timer->delay_seconds,
+            'fire_at' => $timer->fire_at->toJSON(),
+        ]);
+        $timer->delete();
+
+        $restored = TimerRecovery::restore($run->fresh(), $timer->id);
+
+        $this->assertInstanceOf(WorkflowTimer::class, $restored);
+        $this->assertSame($run->id, $restored->workflow_run_id);
+        $this->assertSame(TimerStatus::Pending, $restored->status);
+        $this->assertSame($timer->sequence, $restored->sequence);
+        $this->assertSame($timer->fire_at->getTimestamp(), $restored->fire_at->getTimestamp());
     }
 
     public function testRequestedRunMayNameAnotherRunOfTheSameWorkflowInTheTargetNamespace(): void
@@ -1501,6 +1596,23 @@ final class EmbeddedV2HistoryImportTest extends TestCase
         ]);
 
         return [$run->refresh(), $foreignRun->refresh(), $task->refresh(), $execution->refresh(), $attempt->refresh()];
+    }
+
+    private function timerTaskForRun(WorkflowRun $run, string $timerId): WorkflowTask
+    {
+        return WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'namespace' => $run->namespace,
+            'task_type' => TaskType::Timer,
+            'status' => TaskStatus::Ready,
+            'available_at' => now()
+                ->subMinute(),
+            'payload' => [
+                'timer_id' => $timerId,
+            ],
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+        ]);
     }
 
     private function createRuntimeRun(string $namespace, RunStatus $status): WorkflowRun
