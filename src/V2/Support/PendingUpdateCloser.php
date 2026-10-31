@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use RuntimeException;
 use Workflow\V2\Enums\CommandOutcome;
+use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\UpdateStatus;
@@ -40,6 +41,9 @@ final class PendingUpdateCloser
                 ? null
                 : ConfiguredV2Models::query('command_model', WorkflowCommand::class)
                     ->lockForUpdate()
+                    ->where('workflow_instance_id', $run->workflow_instance_id)
+                    ->where('workflow_run_id', $run->id)
+                    ->where('command_type', CommandType::Update->value)
                     ->find($update->workflow_command_id);
             $message = sprintf(
                 'Workflow run closed as %s before accepted update %s could be applied.',

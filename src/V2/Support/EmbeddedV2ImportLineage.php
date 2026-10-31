@@ -5,7 +5,12 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use InvalidArgumentException;
+use Workflow\V2\Enums\CommandType;
+use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 
 /** @internal Checks related identities before import and under its write locks. */
@@ -51,6 +56,220 @@ final class EmbeddedV2ImportLineage
         }
 
         return $run;
+    }
+
+    /**
+     * A repeat import cannot turn an omitted edge into authority over a later
+     * unrelated endpoint. Recover missing edges only from persisted evidence.
+     *
+     * @param array<string, mixed> $bundle
+     * @param array<string, mixed> $workflow
+     * @return list<array{rule: string, message: string}>
+     */
+    public static function recoveryErrors(array $bundle, array $workflow, bool $lock = false): array
+    {
+        $runs = WorkflowRun::query();
+        if ($lock) {
+            $runs->lockForUpdate();
+        }
+        $origin = (clone $runs)->find($workflow['run_id'] ?? null);
+        if (! $origin instanceof WorkflowRun
+            || $origin->import_source !== EmbeddedV2ImportContract::IMPORT_SOURCE
+            || $origin->import_dedupe_key !== ($bundle['dedupe_key'] ?? null)) {
+            return [];
+        }
+
+        foreach ([
+            'parents' => 'parent',
+            'children' => 'child',
+        ] as $section => $prefix) {
+            foreach (self::rows($bundle['links'][$section] ?? null) as $link) {
+                $relatedId = $link[$prefix . '_workflow_run_id'] ?? null;
+                $related = is_string($relatedId) ? (clone $runs)->find($relatedId) : null;
+                if (! $related instanceof WorkflowRun || WorkflowLink::query()->whereKey(
+                    $link['id'] ?? null
+                )->exists()) {
+                    continue;
+                }
+                $parent = $section === 'parents' ? $related : $origin;
+                $child = $section === 'parents' ? $origin : $related;
+                if (! self::storedRelationship($parent, $child, $link, $lock)) {
+                    return [[
+                        'rule' => 'references.lineage_recovery_unverified',
+                        'message' => 'A missing lineage edge cannot be restored without matching stored relationship evidence.',
+                    ]];
+                }
+            }
+        }
+
+        return [];
+    }
+
+    /**
+     * Older successor exports omit the predecessor's continuation sequence.
+     * Recover it from the exact persisted event rather than changing an edge
+     * according to which endpoint bundle was imported last.
+     *
+     * @param array<string, mixed> $link
+     */
+    public static function linkSequence(array $link, WorkflowRun $parent, string $childRunId): ?int
+    {
+        if (is_int($link['sequence'] ?? null)) {
+            return $link['sequence'];
+        }
+        if (($link['type'] ?? null) !== 'continue_as_new' || ! is_string($link['id'] ?? null)) {
+            return null;
+        }
+        $event = $parent->historyEvents()
+            ->where('event_type', HistoryEventType::WorkflowContinuedAsNew->value)
+            ->where('payload->continued_to_run_id', $childRunId)
+            ->where('payload->workflow_link_id', $link['id'])
+            ->lockForUpdate()
+            ->first();
+
+        return $event instanceof WorkflowHistoryEvent && is_int($event->payload['sequence'] ?? null)
+            ? $event->payload['sequence'] : null;
+    }
+
+    /**
+     * @param array<string, mixed> $link
+     */
+    private static function storedRelationship(WorkflowRun $parent, WorkflowRun $child, array $link, bool $lock): bool
+    {
+        if ($parent->namespace !== $child->namespace || $parent->id === $child->id) {
+            return false;
+        }
+        $started = $child->historyEvents()
+            ->where('event_type', HistoryEventType::WorkflowStarted->value);
+        if ($lock) {
+            $started->lockForUpdate();
+        }
+        foreach ($started->get() as $event) {
+            if (! $event instanceof WorkflowHistoryEvent) {
+                continue;
+            }
+            $payload = $event->payload;
+            if (($link['type'] ?? null) === 'child_workflow') {
+                if (self::storedChildRelationship($parent, $child, $link, $payload, $lock)) {
+                    return true;
+                }
+            } elseif ($parent->workflow_instance_id === $child->workflow_instance_id
+                && ($payload['continued_from_run_id'] ?? null) === $parent->id
+                && is_string($link['id'] ?? null)
+                && ($payload['workflow_link_id'] ?? null) === $link['id']) {
+                $verified = match ($link['type'] ?? null) {
+                    'continue_as_new' => self::storedContinuation($parent, $child, $link, $lock),
+                    'redrive' => self::storedRedrive($parent, $child, $link, $payload, $lock),
+                    default => false,
+                };
+                if ($verified) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string, mixed> $link
+     * @param array<string, mixed> $started
+     */
+    private static function storedChildRelationship(
+        WorkflowRun $parent,
+        WorkflowRun $child,
+        array $link,
+        array $started,
+        bool $lock,
+    ): bool {
+        if (($started['parent_workflow_run_id'] ?? null) !== $parent->id
+            || ($started['parent_workflow_instance_id'] ?? null) !== $parent->workflow_instance_id
+            || ($started['parent_sequence'] ?? null) !== ($link['sequence'] ?? null)) {
+            return false;
+        }
+        $history = $parent->historyEvents()
+            ->whereIn('event_type', [
+                HistoryEventType::ChildWorkflowScheduled->value, HistoryEventType::ChildRunStarted->value,
+            ]);
+        if ($lock) {
+            $history->lockForUpdate();
+        }
+        foreach ($history->get() as $event) {
+            if ($event instanceof WorkflowHistoryEvent && self::childCallMatches(
+                $event->payload,
+                $child,
+                $link,
+                $started
+            )) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string, mixed> $call
+     * @param array<string, mixed> $link
+     * @param array<string, mixed> $started
+     */
+    private static function childCallMatches(array $call, WorkflowRun $child, array $link, array $started): bool
+    {
+        $callId = $call['child_call_id'] ?? $call['workflow_link_id'] ?? null;
+
+        return ($call['child_workflow_run_id'] ?? null) === $child->id
+            && ($call['child_workflow_instance_id'] ?? null) === $child->workflow_instance_id
+            && ($call['sequence'] ?? null) === ($link['sequence'] ?? null)
+            && is_string($callId) && $callId !== ''
+            && (($link['id'] ?? null) === $callId || ($link['id'] ?? null) === ($call['workflow_link_id'] ?? null))
+            && (! isset($started['child_call_id']) || $started['child_call_id'] === $callId);
+    }
+
+    /**
+     * @param array<string, mixed> $link
+     */
+    private static function storedContinuation(WorkflowRun $parent, WorkflowRun $child, array $link, bool $lock): bool
+    {
+        $history = $parent->historyEvents()
+            ->where('event_type', HistoryEventType::WorkflowContinuedAsNew->value)
+            ->where('payload->continued_to_run_id', $child->id)
+            ->where('payload->workflow_link_id', $link['id']);
+        if (isset($link['sequence'])) {
+            $history->where('payload->sequence', $link['sequence']);
+        }
+        if ($lock) {
+            $history->lockForUpdate();
+        }
+
+        return $history->first() instanceof WorkflowHistoryEvent;
+    }
+
+    /**
+     * @param array<string, mixed> $link
+     * @param array<string, mixed> $started
+     */
+    private static function storedRedrive(
+        WorkflowRun $parent,
+        WorkflowRun $child,
+        array $link,
+        array $started,
+        bool $lock,
+    ): bool {
+        if (($started['recovery_kind'] ?? null) !== 'redrive'
+            || ($started['resume_step_sequence'] ?? null) !== ($link['sequence'] ?? null)) {
+            return false;
+        }
+        $commands = WorkflowCommand::query()->whereKey($started['workflow_command_id'] ?? null)
+            ->where('workflow_instance_id', $child->workflow_instance_id)
+            ->where('workflow_run_id', $child->id)
+            ->where('command_type', CommandType::Redrive->value)
+            ->where('requested_workflow_run_id', $parent->id)
+            ->where('resolved_workflow_run_id', $child->id);
+        if ($lock) {
+            $commands->lockForUpdate();
+        }
+
+        return $commands->first() instanceof WorkflowCommand;
     }
 
     /**

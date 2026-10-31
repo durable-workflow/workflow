@@ -28,6 +28,7 @@ use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\CancellationPolicy;
 use Workflow\V2\Enums\ChildCallStatus;
 use Workflow\V2\Enums\CommandOutcome;
+use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\ParentClosePolicy;
@@ -2461,6 +2462,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         /** @var WorkflowCommand|null $command */
         $command = ConfiguredV2Models::query('command_model', WorkflowCommand::class)
             ->whereKey($signal->workflow_command_id)
+            ->where('workflow_instance_id', $run->workflow_instance_id)
+            ->where('workflow_run_id', $run->id)
+            ->where('command_type', CommandType::Signal->value)
             ->first();
 
         $appliedAt = now();
@@ -3140,6 +3144,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         /** @var WorkflowCommand|null $command */
         $command = ConfiguredV2Models::query('command_model', WorkflowCommand::class)
             ->whereKey($signal->workflow_command_id)
+            ->where('workflow_instance_id', $run->workflow_instance_id)
+            ->where('workflow_run_id', $run->id)
+            ->where('command_type', CommandType::Signal->value)
             ->first();
 
         $appliedAt = now();
@@ -3356,6 +3363,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             ? null
             : ConfiguredV2Models::query('command_model', WorkflowCommand::class)
                 ->whereKey($update->workflow_command_id)
+                ->where('workflow_instance_id', $run->workflow_instance_id)
+                ->where('workflow_run_id', $run->id)
+                ->where('command_type', CommandType::Update->value)
                 ->first();
 
         $fallbackCodec = self::payloadCodecForUpdate($update, $run);
@@ -3433,6 +3443,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             ? null
             : ConfiguredV2Models::query('command_model', WorkflowCommand::class)
                 ->whereKey($update->workflow_command_id)
+                ->where('workflow_instance_id', $run->workflow_instance_id)
+                ->where('workflow_run_id', $run->id)
+                ->where('command_type', CommandType::Update->value)
                 ->first();
 
         $message = self::normalizeRequiredString($command['message'] ?? null) ?? 'External update failed';

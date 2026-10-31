@@ -84,6 +84,10 @@ final class RunSignalView
     private static function rowFromSignal(WorkflowSignal $signal): array
     {
         $command = $signal->command;
+        if (! $command instanceof WorkflowCommand || $command->workflow_instance_id !== $signal->workflow_instance_id
+            || $command->command_type->value !== 'signal') {
+            $command = null;
+        }
 
         return [
             'id' => $signal->id,

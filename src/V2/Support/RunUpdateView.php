@@ -138,7 +138,14 @@ final class RunUpdateView
     private static function rowFromUpdate(WorkflowUpdate $update, array $events, array $failureSnapshots): array
     {
         $command = $update->command;
+        if (! $command instanceof WorkflowCommand || $command->workflow_instance_id !== $update->workflow_instance_id
+            || $command->command_type->value !== 'update') {
+            $command = null;
+        }
         $failure = $update->failure;
+        if (! $failure instanceof WorkflowFailure || $failure->workflow_run_id !== $update->workflow_run_id) {
+            $failure = null;
+        }
         $accepted = self::findEvent($events, HistoryEventType::UpdateAccepted);
         $rejected = self::findEvent($events, HistoryEventType::UpdateRejected);
         $applied = self::findEvent($events, HistoryEventType::UpdateApplied);

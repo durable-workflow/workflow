@@ -6,18 +6,22 @@ namespace Tests\Unit\V2;
 
 use Illuminate\Database\Events\TransactionBeginning;
 use Illuminate\Database\Events\TransactionCommitting;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Tests\TestCase;
 use Throwable;
+use Tests\Fixtures\V2\TestRedriveWorkflow;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Attributes\Type;
 use function Workflow\V2\continueAsNew;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -132,6 +136,93 @@ final class EmbeddedV2HistoryImportLineageTest extends TestCase
         foreach (['parent', 'child'] as $first) {
             foreach (['tenant-a', null] as $namespace) {
                 yield $first . '/' . ($namespace ?? 'null') => [$first, $namespace];
+            }
+        }
+    }
+
+    public function testIdempotentRetryRepairsALegacyOmittedEdge(): void
+    {
+        $bundles = $this->sourcePair();
+        $this->clearState();
+        foreach ($bundles as $bundle) {
+            $this->assertSame('imported', EmbeddedV2HistoryImport::import($bundle, [
+                'namespace' => 'tenant-a',
+            ])['status']);
+        }
+        WorkflowLink::query()->delete();
+        $this->assertSame(0, WorkflowLink::query()->count());
+
+        $repair = EmbeddedV2HistoryImport::import($bundles['parent'], [
+            'namespace' => 'tenant-a',
+        ]);
+
+        $this->assertSame('already_imported', $repair['status']);
+        $this->assertSame(1, $repair['rows']['workflow_links']);
+        $link = WorkflowLink::query()->sole();
+        $this->assertSame($bundles['parent']['workflow']['run_id'], $link->parent_workflow_run_id);
+        $this->assertSame($bundles['child']['workflow']['run_id'], $link->child_workflow_run_id);
+        $retry = EmbeddedV2HistoryImport::import($bundles['child'], [
+            'namespace' => 'tenant-a',
+        ]);
+        $this->assertSame('already_imported', $retry['status']);
+        $this->assertSame(0, $retry['rows']['workflow_links']);
+        $this->assertSame(1, WorkflowLink::query()->count());
+    }
+
+    #[DataProvider('sameInstanceLineageOrders')]
+    public function testActualSameInstanceLineageImportsAndRepairsInEitherOrder(string $kind, string $first): void
+    {
+        Queue::fake();
+        config(['workflows.v2.task_dispatch_mode' => 'poll']);
+        if ($kind === 'redrive') {
+            WorkflowStub::fake();
+            $workflow = WorkflowStub::make(TestRedriveWorkflow::class);
+            $workflow->start('Taylor');
+            $this->assertTrue($workflow->refresh()->failed());
+            $source = WorkflowRun::query()->findOrFail($workflow->runId());
+            $redrive = $this->app->make(WorkflowControlPlane::class)->redrive(
+                $source->workflow_instance_id,
+                $source->id,
+                ['namespace' => $source->namespace],
+            );
+            $this->assertTrue($redrive['accepted'], json_encode($redrive, JSON_THROW_ON_ERROR));
+            $successor = WorkflowRun::query()->findOrFail($redrive['workflow_run_id']);
+        } else {
+            $source = $this->createRun(
+                'continue-' . Str::ulid(),
+                (string) Str::ulid(),
+                'source',
+                ImportedLineageContinuationWorkflow::class,
+            );
+            WorkflowHistoryEvent::record($source, HistoryEventType::WorkflowStarted, []);
+            $successor = $this->continueImportedChild($source, 'bridge');
+        }
+        $bundles = [
+            'parent' => HistoryExport::forRun($source->fresh()),
+            'child' => HistoryExport::forRun($successor->fresh()),
+        ];
+        $this->assertSame($kind, WorkflowLink::query()->where('parent_workflow_run_id', $source->id)->sole()->link_type);
+        $this->clearState();
+        foreach ([$first, $first === 'parent' ? 'child' : 'parent'] as $selected) {
+            $report = EmbeddedV2HistoryImport::import($bundles[$selected], ['namespace' => 'tenant-a']);
+            $this->assertSame('imported', $report['status'], json_encode($report, JSON_THROW_ON_ERROR));
+        }
+        $this->assertSame(1, WorkflowLink::query()->count());
+        WorkflowLink::query()->delete();
+        $repair = EmbeddedV2HistoryImport::import($bundles['parent'], ['namespace' => 'tenant-a']);
+        $this->assertSame('already_imported', $repair['status'], json_encode($repair, JSON_THROW_ON_ERROR));
+        $this->assertSame(1, $repair['rows']['workflow_links']);
+        $this->assertSame($kind, WorkflowLink::query()->sole()->link_type);
+        $retry = EmbeddedV2HistoryImport::import($bundles['child'], ['namespace' => 'tenant-a']);
+        $this->assertSame('already_imported', $retry['status'], json_encode($retry, JSON_THROW_ON_ERROR));
+        $this->assertSame(0, array_sum($retry['rows']));
+    }
+
+    public static function sameInstanceLineageOrders(): iterable
+    {
+        foreach (['continue_as_new', 'redrive'] as $kind) {
+            foreach (['parent', 'child'] as $first) {
+                yield $kind . '/' . $first => [$kind, $first];
             }
         }
     }
@@ -262,6 +353,99 @@ final class EmbeddedV2HistoryImportLineageTest extends TestCase
         }
     }
 
+    public function testConcurrentMysqlAndSqliteReciprocalImportsKeepTheirScopedEdge(): void
+    {
+        if (! in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb', 'sqlite'], true)
+            || ! function_exists('pcntl_fork') || ! function_exists('posix_kill')
+            || ! function_exists('stream_socket_pair')) {
+            $this->markTestSkipped('MySQL, MariaDB or SQLite and process control are required for this import race.');
+        }
+        $bundles = $this->sourcePair();
+        $this->clearState();
+        DB::purge();
+        $actors = [];
+        try {
+            foreach ($bundles as $name => $bundle) {
+                $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+                $this->assertIsArray($sockets);
+                $pid = pcntl_fork();
+                $this->assertNotSame(-1, $pid);
+                if ($pid === 0) {
+                    fclose($sockets[0]);
+                    stream_set_timeout($sockets[1], 20);
+                    try {
+                        DB::reconnect();
+                        $started = false;
+                        $this->app['events']->listen(TransactionBeginning::class, static function () use (
+                            &$started,
+                            $sockets,
+                        ): void {
+                            if ($started || DB::transactionLevel() !== 1) {
+                                return;
+                            }
+                            $started = true;
+                            fwrite($sockets[1], "started\n");
+                            if (fgets($sockets[1]) !== "continue\n") {
+                                throw new RuntimeException('Import start barrier was not released.');
+                            }
+                        });
+                        $report = EmbeddedV2HistoryImport::import($bundle, [
+                            'namespace' => 'tenant-a',
+                        ]);
+                        fwrite($sockets[1], json_encode([
+                            'status' => $report['status'],
+                            'errors' => $report['eligibility']['errors'],
+                        ], JSON_THROW_ON_ERROR) . "\n");
+                        DB::disconnect();
+                        fclose($sockets[1]);
+                        exit(0);
+                    } catch (Throwable $error) {
+                        fwrite($sockets[1], json_encode([
+                            'error' => $error->getMessage(),
+                        ]) . "\n");
+                        exit(1);
+                    }
+                }
+                fclose($sockets[1]);
+                stream_set_timeout($sockets[0], 20);
+                $actors[$name] = [
+                    'pid' => $pid,
+                    'socket' => $sockets[0],
+                ];
+            }
+            foreach ($actors as $actor) {
+                $this->assertSame("started\n", fgets($actor['socket']));
+            }
+            foreach ($actors as $actor) {
+                fwrite($actor['socket'], "continue\n");
+            }
+            foreach ($actors as $name => $actor) {
+                $message = fgets($actor['socket']);
+                $this->assertIsString($message);
+                $report = json_decode($message, true, flags: JSON_THROW_ON_ERROR);
+                $this->assertSame('imported', $report['status'] ?? null, $message);
+                pcntl_waitpid($actor['pid'], $status);
+                $this->assertTrue(pcntl_wifexited($status));
+                $this->assertSame(0, pcntl_wexitstatus($status));
+                fclose($actor['socket']);
+                unset($actors[$name]);
+            }
+            DB::reconnect();
+            $this->assertSame(2, WorkflowRun::query()->count());
+            $link = WorkflowLink::query()->sole();
+            $this->assertSame($bundles['parent']['workflow']['run_id'], $link->parent_workflow_run_id);
+            $this->assertSame($bundles['child']['workflow']['run_id'], $link->child_workflow_run_id);
+        } finally {
+            foreach ($actors as $actor) {
+                posix_kill($actor['pid'], SIGKILL);
+                pcntl_waitpid($actor['pid'], $status);
+                fclose($actor['socket']);
+            }
+            DB::purge();
+            DB::reconnect();
+        }
+    }
+
     public function testPostgresWriteRefusesAnExistingTransactionWithoutAbortingIt(): void
     {
         if (DB::connection()->getDriverName() !== 'pgsql') {
@@ -293,6 +477,152 @@ final class EmbeddedV2HistoryImportLineageTest extends TestCase
             DB::rollBack();
         }
         $this->assertSame(0, WorkflowRun::query()->count());
+    }
+
+    public function testPostgresLegacyRepairRefusesAnExistingTransactionWithoutAbortingIt(): void
+    {
+        if (DB::connection()->getDriverName() !== 'pgsql') {
+            $this->markTestSkipped('The PostgreSQL transaction isolation boundary is required.');
+        }
+        $bundles = $this->sourcePair();
+        $this->clearState();
+        foreach ($bundles as $bundle) {
+            $this->assertSame('imported', EmbeddedV2HistoryImport::import($bundle, [
+                'namespace' => 'tenant-a',
+            ])['status']);
+        }
+        WorkflowLink::query()->delete();
+        DB::beginTransaction();
+        try {
+            $before = $this->snapshot();
+            $report = EmbeddedV2HistoryImport::import($bundles['parent'], [
+                'namespace' => 'tenant-a',
+            ]);
+            $this->assertSame('rejected', $report['status']);
+            $this->assertContains(
+                'target.transaction_in_progress',
+                array_column($report['eligibility']['errors'], 'rule'),
+            );
+            $this->assertSame(1, DB::transactionLevel());
+            $this->assertTrue(DB::connection()->getPdo()->inTransaction());
+            $this->assertSame($before, $this->snapshot());
+        } finally {
+            DB::rollBack();
+        }
+        $repaired = EmbeddedV2HistoryImport::import($bundles['parent'], ['namespace' => 'tenant-a']);
+        $this->assertSame('already_imported', $repaired['status']);
+        $this->assertSame(1, $repaired['rows']['workflow_links']);
+    }
+
+    public function testImportAndLegacyRepairUseConfiguredStorageWhileApplicationTransactionIsOpen(): void
+    {
+        $bundles = $this->sourcePair();
+        $this->clearState();
+        $default = (string) config('database.default');
+        $previousStorage = config('workflows.storage.connection');
+        config([
+            'database.connections.import_storage_probe' => config('database.connections.' . $default),
+            'database.connections.import_application_probe' => [
+                'driver' => 'sqlite',
+                'database' => ':memory:',
+                'prefix' => '',
+            ],
+            'workflows.storage.connection' => 'import_storage_probe',
+        ]);
+        DB::setDefaultConnection('import_application_probe');
+        Schema::clearResolvedInstance('db.schema');
+        $application = DB::connection();
+        $storage = DB::connection('import_storage_probe');
+        $serializableLevels = [];
+        DB::listen(static function (QueryExecuted $event) use (&$serializableLevels): void {
+            if ($event->connectionName === 'import_storage_probe'
+                && strtoupper($event->sql) === 'SET TRANSACTION ISOLATION LEVEL SERIALIZABLE') {
+                $serializableLevels[] = $event->connection->transactionLevel();
+            }
+        });
+        $application->statement('CREATE TABLE import_application_markers (id INTEGER PRIMARY KEY)');
+        $application->beginTransaction();
+        try {
+            $application->table('import_application_markers')->insert(['id' => 1]);
+            foreach ($bundles as $bundle) {
+                $report = EmbeddedV2HistoryImport::import($bundle, ['namespace' => 'tenant-a']);
+                $this->assertSame('imported', $report['status'], json_encode($report, JSON_THROW_ON_ERROR));
+                $this->assertSame(0, $storage->transactionLevel());
+                $this->assertSame(1, $application->transactionLevel());
+            }
+            WorkflowLink::query()->delete();
+            $repair = EmbeddedV2HistoryImport::import($bundles['parent'], ['namespace' => 'tenant-a']);
+            $this->assertSame('already_imported', $repair['status'], json_encode($repair, JSON_THROW_ON_ERROR));
+            $this->assertSame(1, $repair['rows']['workflow_links']);
+            $this->assertSame(0, $storage->transactionLevel());
+            $this->assertSame(1, $application->transactionLevel());
+            if ($storage->getDriverName() === 'pgsql') {
+                $this->assertSame([1, 1, 1], $serializableLevels);
+            }
+            $application->rollBack();
+            $this->assertSame(0, $application->table('import_application_markers')->count());
+            $this->assertSame(2, WorkflowRun::query()->count());
+            $this->assertSame(1, WorkflowLink::query()->count());
+        } finally {
+            if ($application->transactionLevel() > 0) {
+                $application->rollBack();
+            }
+            DB::setDefaultConnection($default);
+            config(['workflows.storage.connection' => $previousStorage]);
+            DB::purge('import_application_probe');
+            DB::purge('import_storage_probe');
+            Schema::clearResolvedInstance('db.schema');
+        }
+    }
+
+    #[DataProvider('lateRecoveryEndpoints')]
+    public function testIdempotentRetryCannotAttachAnUnrelatedLaterEndpoint(
+        string $selected,
+        string $namespace,
+        bool $imported,
+        bool $dryRun,
+    ): void
+    {
+        $bundles = $this->sourcePair();
+        $this->clearState();
+        $this->assertSame('imported', EmbeddedV2HistoryImport::import($bundles[$selected], [
+            'namespace' => 'tenant-a',
+        ])['status']);
+        $opposite = $bundles[$selected === 'parent' ? 'child' : 'parent']['workflow'];
+        if ($imported) {
+            $unrelated = $bundles[$selected === 'parent' ? 'child' : 'parent'];
+            $unrelated['history_events'] = [];
+            $unrelated['links'] = ['parents' => [], 'children' => []];
+            $unrelated['workflow']['workflow_type'] = 'unrelated-later';
+            $this->assertSame('imported', EmbeddedV2HistoryImport::import($this->reseal($unrelated), [
+                'namespace' => $namespace,
+            ])['status']);
+        } else {
+            $this->createRun($opposite['instance_id'], $opposite['run_id'], $namespace, 'unrelated-later');
+        }
+        $before = $this->snapshot();
+        $retry = EmbeddedV2HistoryImport::import($bundles[$selected], [
+            'namespace' => 'tenant-a',
+            'dry_run' => $dryRun,
+        ]);
+
+        $this->assertSame('rejected', $retry['status']);
+        $this->assertSame(0, array_sum($retry['rows']));
+        $this->assertSame(0, WorkflowLink::query()->count());
+        $this->assertSame($before, $this->snapshot());
+    }
+
+    public static function lateRecoveryEndpoints(): iterable
+    {
+        foreach (self::lateEndpoints() as $key => [$selected, $namespace]) {
+            foreach ([false, true] as $imported) {
+                foreach ([false, true] as $dryRun) {
+                    yield $key . ($imported ? '/imported' : '/native') . ($dryRun ? '/preview' : '/write') => [
+                        $selected, $namespace, $imported, $dryRun,
+                    ];
+                }
+            }
+        }
     }
 
     #[DataProvider('lateEndpoints')]

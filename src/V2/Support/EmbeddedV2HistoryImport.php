@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
+use Illuminate\Database\Connection;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 use Throwable;
@@ -148,19 +148,12 @@ final class EmbeddedV2HistoryImport
         }
 
         $namespace = self::stringValue($workflow['namespace'] ?? null);
+        $connection = ConfiguredV2Models::connection();
         $existing = self::existingRunOutcome(
             $workflow['run_id'],
             self::stringValue($bundle['dedupe_key'] ?? null),
             $namespace
         );
-
-        if ($existing['status'] === 'already_imported') {
-            return [
-                ...$base,
-                'status' => 'already_imported',
-                'rows' => self::emptyRows(),
-            ];
-        }
 
         if ($existing['status'] === 'conflict') {
             return [
@@ -192,12 +185,11 @@ final class EmbeddedV2HistoryImport
         if ($dryRun) {
             return [
                 ...$base,
-                'status' => 'dry_run',
-                'rows' => self::estimatedRows($bundle),
+                'status' => $existing['status'] === 'already_imported' ? 'already_imported' : 'dry_run',
+                'rows' => $existing['status'] === 'already_imported' ? self::emptyRows() : self::estimatedRows($bundle),
             ];
         }
 
-        $connection = ConfiguredV2Models::connection();
         if ($connection->getDriverName() === 'pgsql' && $connection->transactionLevel() !== 0) {
             return [
                 ...$base,
@@ -215,22 +207,32 @@ final class EmbeddedV2HistoryImport
         $importedAt = now();
 
         try {
-            $rows = $connection->transaction(static function () use (
+            $write = static function (Connection $transaction) use (
                 $bundle,
                 $workflow,
                 $importId,
                 $importedAt,
-                $connection,
+                $existing,
             ): array {
-                if ($connection->getDriverName() === 'pgsql') {
+                if ($transaction->getDriverName() === 'pgsql') {
                     // Row locks cannot lock a missing endpoint on PostgreSQL.
                     // Serializable predicate checks prevent reciprocal imports
                     // from both committing without seeing the other's run.
-                    $connection->statement('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE');
+                    $transaction->statement('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE');
+                }
+
+                if ($existing['status'] === 'already_imported') {
+                    $rows = self::emptyRows();
+                    $rows['workflow_links'] = self::repairExistingLinks($bundle, $workflow);
+
+                    return $rows;
                 }
 
                 return self::writeBundle($bundle, $workflow, $importId, $importedAt);
-            }, 3);
+            };
+            $rows = $connection->getDriverName() === 'sqlite'
+                ? SqliteTransaction::run($write, 64, connection: $connection)
+                : $connection->transaction($write, 3);
         } catch (Throwable $throwable) {
             return [
                 ...$base,
@@ -246,9 +248,11 @@ final class EmbeddedV2HistoryImport
 
         return [
             ...$base,
-            'status' => 'imported',
-            'import_id' => $importId,
-            'imported_at' => $importedAt->toJSON(),
+            'status' => $existing['status'] === 'already_imported' ? 'already_imported' : 'imported',
+            ...($existing['status'] === 'already_imported' ? [] : [
+                'import_id' => $importId,
+                'imported_at' => $importedAt->toJSON(),
+            ]),
             'rows' => $rows,
         ];
     }
@@ -264,6 +268,10 @@ final class EmbeddedV2HistoryImport
         string $importId,
         CarbonInterface $importedAt,
     ): array {
+        $referenceErrors = EmbeddedV2ImportReferences::errors($bundle, $workflow, true);
+        if ($referenceErrors !== []) {
+            throw new InvalidArgumentException($referenceErrors[0]['message']);
+        }
         $lineageErrors = EmbeddedV2ImportLineage::errors($bundle, $workflow, true);
         if ($lineageErrors !== []) {
             throw new InvalidArgumentException($lineageErrors[0]['message']);
@@ -397,6 +405,63 @@ final class EmbeddedV2HistoryImport
         $rows['workflow_run_summaries'] = 1;
 
         return $rows;
+    }
+
+    /**
+     * Reconcile a verified imported bundle whose counterpart arrived later.
+     *
+     * @param array<string, mixed> $bundle
+     * @param array<string, mixed> $workflow
+     */
+    private static function repairExistingLinks(array $bundle, array $workflow): int
+    {
+        $referenceErrors = EmbeddedV2ImportReferences::errors($bundle, $workflow, true);
+        if ($referenceErrors !== []) {
+            throw new InvalidArgumentException($referenceErrors[0]['message']);
+        }
+        $lineageErrors = EmbeddedV2ImportLineage::errors($bundle, $workflow, true);
+        if ($lineageErrors !== []) {
+            throw new InvalidArgumentException($lineageErrors[0]['message']);
+        }
+        $runId = self::stringValue($workflow['run_id'] ?? null);
+        $instanceId = self::stringValue($workflow['instance_id'] ?? null);
+        $namespace = self::stringValue($workflow['namespace'] ?? null);
+        if ($runId === null || $instanceId === null) {
+            throw new InvalidArgumentException('Imported workflow identity is incomplete.');
+        }
+        /** @var WorkflowRun|null $stored */
+        $stored = WorkflowRun::query()->lockForUpdate()->find($runId);
+        if (! $stored instanceof WorkflowRun
+            || $stored->workflow_instance_id !== $instanceId
+            || $stored->namespace !== $namespace
+            || $stored->import_source !== EmbeddedV2ImportContract::IMPORT_SOURCE
+            || $stored->import_dedupe_key !== self::stringValue($bundle['dedupe_key'] ?? null)) {
+            throw new InvalidArgumentException('The stored imported run no longer matches this bundle identity.');
+        }
+
+        $recoveryErrors = EmbeddedV2ImportLineage::recoveryErrors($bundle, $workflow, true);
+        if ($recoveryErrors !== []) {
+            throw new InvalidArgumentException($recoveryErrors[0]['message']);
+        }
+
+        $count = self::writeLinks($bundle, $runId, $instanceId, $namespace);
+        if ($count > 0) {
+            RunSummaryProjector::project($stored->fresh([
+                'instance',
+                'tasks',
+                'activityExecutions',
+                'timers',
+                'failures',
+                'historyEvents',
+                'commands',
+                'signals',
+                'updates',
+                'childLinks.childRun.instance.currentRun',
+                'childLinks.childRun.failures',
+            ]) ?? $stored);
+        }
+
+        return $count;
     }
 
     private static function writeHistoryEvents(array $bundle, string $runId): int
@@ -779,7 +844,7 @@ final class EmbeddedV2HistoryImport
             $inserted = self::insertLink([
                 'id' => self::ulidValue($link['id'] ?? null) ?? (string) Str::ulid(),
                 'link_type' => self::stringValue($link['type'] ?? null) ?? 'parent',
-                'sequence' => self::intValue($link['sequence'] ?? null),
+                'sequence' => EmbeddedV2ImportLineage::linkSequence($link, $related, $runId),
                 'parent_workflow_instance_id' => $parentInstance,
                 'parent_workflow_run_id' => $parentRun,
                 'child_workflow_instance_id' => $instanceId,
@@ -967,7 +1032,7 @@ final class EmbeddedV2HistoryImport
         $warnings = [];
         $runStatus = is_string($workflow['status'] ?? null) ? RunStatus::tryFrom($workflow['status']) : null;
 
-        if (! Schema::hasColumn('workflow_runs', 'import_source')) {
+        if (! ConfiguredV2Models::connection()->getSchemaBuilder()->hasColumn('workflow_runs', 'import_source')) {
             self::addFinding(
                 $errors,
                 'target.import_markers_missing',
@@ -1047,7 +1112,9 @@ final class EmbeddedV2HistoryImport
         }
 
         $errors = [...$errors, ...EmbeddedV2ImportMessageReferences::errors($bundle)];
+        $errors = [...$errors, ...EmbeddedV2ImportReferences::errors($bundle, $workflow)];
         $errors = [...$errors, ...EmbeddedV2ImportLineage::errors($bundle, $workflow)];
+        $errors = [...$errors, ...EmbeddedV2ImportLineage::recoveryErrors($bundle, $workflow)];
 
         return [
             'eligible' => $errors === [],

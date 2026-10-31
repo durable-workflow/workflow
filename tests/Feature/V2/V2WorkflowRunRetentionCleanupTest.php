@@ -8,6 +8,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use LogicException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Tests\TestCase;
 use Workflow\V2\Enums\ActivityAttemptStatus;
@@ -51,6 +52,51 @@ use Workflow\V2\Support\WorkflowRunRetentionCleanup;
 
 final class V2WorkflowRunRetentionCleanupTest extends TestCase
 {
+    #[DataProvider('unrelatedMessageReferences')]
+    public function testCopiedMessageReferencesCannotDeleteAnotherWorkflowsRows(string $field, string $namespace): void
+    {
+        $target = $this->seedRun(RunStatus::Completed, true);
+        $other = $this->seedRun(RunStatus::Completed, true);
+        $other->forceFill([
+            'namespace' => $namespace,
+        ])->save();
+        $other->instance->forceFill([
+            'namespace' => $namespace,
+        ])->save();
+        $this->seedRetainedRows($other, $target);
+        $before = [];
+        foreach ([WorkflowCommand::class, WorkflowSignal::class, WorkflowUpdate::class] as $model) {
+            $model::query()->where('workflow_instance_id', $other->workflow_instance_id)->update([
+                $field => $target->id,
+            ]);
+            $before[$model] = $model::query()->where('workflow_instance_id', $other->workflow_instance_id)
+                ->get()
+                ->map(static fn ($row): array => $row->getRawOriginal())
+                ->all();
+        }
+
+        $report = WorkflowRunRetentionCleanup::pruneRun($target);
+
+        $this->assertSame(0, $report['commands_deleted']);
+        $this->assertSame(0, $report['signals_deleted']);
+        $this->assertSame(0, $report['updates_deleted']);
+        foreach ($before as $model => $rows) {
+            $this->assertSame($rows, $model::query()->where('workflow_instance_id', $other->workflow_instance_id)
+                ->get()
+                ->map(static fn ($row): array => $row->getRawOriginal())
+                ->all());
+        }
+    }
+
+    public static function unrelatedMessageReferences(): iterable
+    {
+        foreach (['requested_workflow_run_id', 'resolved_workflow_run_id'] as $field) {
+            foreach (['default', 'other-tenant'] as $namespace) {
+                yield $field . '/' . $namespace => [$field, $namespace];
+            }
+        }
+    }
+
     public function testPruningMarkerPreservesUtcInstantAcrossApplicationTimezones(): void
     {
         $originalTimezone = date_default_timezone_get();

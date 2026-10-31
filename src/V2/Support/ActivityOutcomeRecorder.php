@@ -91,6 +91,10 @@ final class ActivityOutcomeRecorder
                 ->lockForUpdate()
                 ->findOrFail($activityExecutionId);
 
+            if ($task->workflow_run_id !== $lockedExecution->workflow_run_id) {
+                return self::ignored('stale_task');
+            }
+
             /** @var WorkflowRun $run */
             $run = WorkflowRun::query()
                 ->lockForUpdate()
