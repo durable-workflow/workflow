@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
-use Illuminate\Support\Facades\DB;
 use RuntimeException;
 use Throwable;
 use Workflow\Serializers\CodecRegistry;
@@ -311,7 +310,12 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge, ActivityLea
         ?array $progress = null,
         ?string $leaseOwner = null
     ): array {
-        return DB::transaction(static function () use ($attemptId, $renewLease, $progress, $leaseOwner): array {
+        return ConfiguredV2Models::connection()->transaction(static function () use (
+            $attemptId,
+            $renewLease,
+            $progress,
+            $leaseOwner
+        ): array {
             $lockedRows = self::lockedObservationRows($attemptId);
             $attempt = $lockedRows['attempt'];
 

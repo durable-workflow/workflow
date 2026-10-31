@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
-use Illuminate\Support\Facades\DB;
 use Throwable;
 use Workflow\Queue\DatabaseTaskDelivery;
 use Workflow\V2\Contracts\HistoryProjectionRole;
@@ -27,8 +26,9 @@ final class TaskDispatcher
         bool $queueTimerWakeup = false,
         bool $boundedWorkflowTaskProjection = false,
     ): void {
-        if (DB::transactionLevel() > 0) {
-            DB::afterCommit(
+        $connection = $task->getConnection();
+        if ($connection->transactionLevel() > 0) {
+            $connection->afterCommit(
                 static fn () => self::publish($task->id, $queueTimerWakeup, $boundedWorkflowTaskProjection)
             );
 

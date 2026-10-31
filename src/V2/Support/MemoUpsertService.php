@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
-use Illuminate\Support\Facades\DB;
 use Workflow\V2\Models\WorkflowMemo;
 use Workflow\V2\Models\WorkflowRun;
 
@@ -24,7 +23,12 @@ class MemoUpsertService
         int $sequence,
         bool $inheritedFromParent = false,
     ): void {
-        DB::transaction(static function () use ($run, $call, $sequence, $inheritedFromParent): void {
+        ConfiguredV2Models::connection()->transaction(static function () use (
+            $run,
+            $call,
+            $sequence,
+            $inheritedFromParent
+        ): void {
             foreach ($call->memos as $key => $value) {
                 if ($value === null) {
                     // Null value means delete
@@ -71,7 +75,11 @@ class MemoUpsertService
     ): void {
         $parentMemos = WorkflowMemo::where('workflow_run_id', $parentRun->id)->get();
 
-        DB::transaction(static function () use ($parentMemos, $childRun, $childStartSequence): void {
+        ConfiguredV2Models::connection()->transaction(static function () use (
+            $parentMemos,
+            $childRun,
+            $childStartSequence
+        ): void {
             foreach ($parentMemos as $parentMemo) {
                 $childMemo = new WorkflowMemo([
                     'workflow_run_id' => $childRun->id,

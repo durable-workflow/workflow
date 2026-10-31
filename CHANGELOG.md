@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 2.15.9 - 2026-10-31
+
+- Keep engine transactions, task claims and deferred callbacks on the workflow
+  storage connection selected by `DW_STORAGE_CONNECTION` or custom V2 models.
+  Hold claim locks until commit and roll back failed starts without partial
+  durable state. Lifecycle events wait for the outer transaction to commit and
+  retain their execution trace context (#893).
+
 - Require Laravel 10.50.4 or later on the Laravel 10 line so TokenGuard rejects
   non-string tokens in both user lookup and credential validation. Laravel 9
   retains the documented upgrade or drain requirement (#922).

@@ -4,9 +4,13 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Database\Connection;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\DB;
 use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowRun;
 
 /**
  * Resolves configurable Eloquent model classes referenced by v2 runtime and
@@ -52,6 +56,23 @@ final class ConfiguredV2Models
         $model = self::resolve($configKey, $default);
 
         return $model::query();
+    }
+
+    /**
+     * Resolve the same storage connection used by durable workflow models.
+     */
+    public static function connection(): Connection
+    {
+        $name = Config::get('workflows.storage.connection');
+        if (is_string($name) && $name !== '') {
+            return DB::connection($name);
+        }
+
+        $model = Config::get('workflows.v2.run_model');
+
+        return is_string($model) && $model !== WorkflowRun::class && is_a($model, WorkflowRun::class, true)
+            ? (new $model())->getConnection()
+            : DB::connection();
     }
 
     public static function validateConfiguration(): void

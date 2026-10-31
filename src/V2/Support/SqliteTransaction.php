@@ -7,8 +7,6 @@ namespace Workflow\V2\Support;
 use Closure;
 use Illuminate\Database\Connection;
 use Illuminate\Database\QueryException;
-use Illuminate\Support\Facades\Config;
-use Illuminate\Support\Facades\DB;
 use PDO;
 use PDOException;
 use Throwable;
@@ -150,14 +148,7 @@ final class SqliteTransaction
 
     private static function connection(): Connection
     {
-        $connection = DB::connection();
-        $storageName = Config::get('workflows.storage.connection');
-        if (! is_string($storageName) || $storageName === '') {
-            return $connection;
-        }
-        $storage = DB::connection($storageName);
-
-        return $storage->getDriverName() === 'sqlite' ? $storage : $connection;
+        return ConfiguredV2Models::connection();
     }
 
     /**

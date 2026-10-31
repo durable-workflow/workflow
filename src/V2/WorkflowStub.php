@@ -9,7 +9,6 @@ use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\App;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Illuminate\Support\Testing\Fakes\QueueFake;
@@ -1297,7 +1296,7 @@ final class WorkflowStub
         $command = null;
         $task = null;
 
-        DB::transaction(function () use (&$command, &$task): void {
+        ConfiguredV2Models::connection()->transaction(function () use (&$command, &$task): void {
             /** @var WorkflowInstance $instance */
             $instance = self::instanceQuery()
                 ->lockForUpdate()
@@ -1570,7 +1569,7 @@ final class WorkflowStub
         /** @var WorkflowCommand|null $command */
         $command = null;
 
-        DB::transaction(function () use (&$command, $reason): void {
+        ConfiguredV2Models::connection()->transaction(function () use (&$command, $reason): void {
             /** @var WorkflowInstance $instance */
             $instance = self::instanceQuery()
                 ->lockForUpdate()
@@ -2061,7 +2060,7 @@ final class WorkflowStub
         $command = null;
         $task = null;
 
-        DB::transaction(function () use (
+        ConfiguredV2Models::connection()->transaction(function () use (
             &$command,
             &$task,
             $reason,
@@ -2430,7 +2429,7 @@ final class WorkflowStub
         /** @var WorkflowTask|null $resumeTask */
         $resumeTask = null;
 
-        DB::transaction(function () use (
+        ConfiguredV2Models::connection()->transaction(function () use (
             $method,
             $arguments,
             &$command,
@@ -3293,7 +3292,7 @@ final class WorkflowStub
         $task = null;
         $startedRun = null;
 
-        DB::transaction(function () use (
+        ConfiguredV2Models::connection()->transaction(function () use (
             $name,
             $signalArguments,
             $startArguments,
@@ -5074,14 +5073,8 @@ final class WorkflowStub
 
     private static function mysqlCommandTransactionAttempts(): ?int
     {
-        $connection = DB::connection();
+        $connection = ConfiguredV2Models::connection();
         if ($connection->getDriverName() !== 'mysql' || $connection->transactionLevel() !== 0) {
-            return null;
-        }
-
-        // Retry the owned command transaction, preserving other storage and caller transactions.
-        $storageName = config('workflows.storage.connection');
-        if (is_string($storageName) && $storageName !== '' && $storageName !== $connection->getName()) {
             return null;
         }
 
