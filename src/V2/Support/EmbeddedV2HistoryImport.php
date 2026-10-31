@@ -207,32 +207,14 @@ final class EmbeddedV2HistoryImport
         $importedAt = now();
 
         try {
-            $write = static function (Connection $transaction) use (
+            $rows = self::importRows(
+                $connection,
                 $bundle,
                 $workflow,
+                $existing['status'] === 'already_imported',
                 $importId,
                 $importedAt,
-                $existing,
-            ): array {
-                if ($transaction->getDriverName() === 'pgsql') {
-                    // Row locks cannot lock a missing endpoint on PostgreSQL.
-                    // Serializable predicate checks prevent reciprocal imports
-                    // from both committing without seeing the other's run.
-                    $transaction->statement('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE');
-                }
-
-                if ($existing['status'] === 'already_imported') {
-                    $rows = self::emptyRows();
-                    $rows['workflow_links'] = self::repairExistingLinks($bundle, $workflow);
-
-                    return $rows;
-                }
-
-                return self::writeBundle($bundle, $workflow, $importId, $importedAt);
-            };
-            $rows = $connection->getDriverName() === 'sqlite'
-                ? SqliteTransaction::run($write, 64, connection: $connection)
-                : $connection->transaction($write, 3);
+            );
         } catch (Throwable $throwable) {
             return [
                 ...$base,
@@ -255,6 +237,47 @@ final class EmbeddedV2HistoryImport
             ]),
             'rows' => $rows,
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $bundle
+     * @param array<string, mixed> $workflow
+     * @return array<string, int>
+     */
+    private static function importRows(
+        Connection $connection,
+        array $bundle,
+        array $workflow,
+        bool $alreadyImported,
+        string $importId,
+        CarbonInterface $importedAt,
+    ): array {
+        $write = static function (Connection $transaction) use (
+            $bundle,
+            $workflow,
+            $alreadyImported,
+            $importId,
+            $importedAt,
+        ): array {
+            if ($transaction->getDriverName() === 'pgsql') {
+                // Row locks cannot lock a missing endpoint on PostgreSQL.
+                // Serializable predicate checks prevent reciprocal imports
+                // from both committing without seeing the other's run.
+                $transaction->statement('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE');
+            }
+            if ($alreadyImported) {
+                $rows = self::emptyRows();
+                $rows['workflow_links'] = self::repairExistingLinks($bundle, $workflow);
+
+                return $rows;
+            }
+
+            return self::writeBundle($bundle, $workflow, $importId, $importedAt);
+        };
+
+        return $connection->getDriverName() === 'sqlite'
+            ? SqliteTransaction::run($write, 64, connection: $connection)
+            : $connection->transaction($write, 3);
     }
 
     /**

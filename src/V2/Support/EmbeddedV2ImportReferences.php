@@ -35,6 +35,12 @@ final class EmbeddedV2ImportReferences
             return [];
         }
 
+        $identity = [
+            'run_id' => $runId,
+            'instance_id' => $instanceId,
+            'namespace' => $namespace,
+        ];
+
         $commands = self::ids($bundle['commands'] ?? null, static fn (array $row): bool =>
             CommandType::tryFrom(self::string($row['type'] ?? null) ?? '') !== null
             && CommandStatus::tryFrom(self::string($row['status'] ?? null) ?? '') !== null);
@@ -59,31 +65,7 @@ final class EmbeddedV2ImportReferences
             'updates' => $bundle['updates'] ?? null,
         ] as $section => $rows) {
             foreach (self::rows($rows) as $index => $row) {
-                if (! self::importableTargetRow($section, $row)) {
-                    continue;
-                }
-                $resolved = self::string($row['resolved_run_id'] ?? null);
-                if ($resolved !== null && $resolved !== $runId) {
-                    self::add(
-                        $errors,
-                        'references.resolved_run_invalid',
-                        sprintf('%s.%d.resolved_run_id must identify the imported run.', $section, $index),
-                    );
-                }
-                $requested = self::string($row['requested_run_id'] ?? null);
-                if ($requested !== null && $requested !== $runId
-                    && ! self::requestedRunAllowed($requested, $instanceId, $namespace, $lock)
-                    && ! ($section === 'commands' && self::unresolvedRedriveSource($row, $bundle, $workflow, $lock))) {
-                    self::add(
-                        $errors,
-                        'references.requested_run_invalid',
-                        sprintf(
-                            '%s.%d.requested_run_id must identify this run or another run of this workflow in the target namespace.',
-                            $section,
-                            $index,
-                        ),
-                    );
-                }
+                array_push($errors, ...self::targetRowErrors($section, $index, $row, $bundle, $identity, $lock));
             }
         }
 
@@ -95,6 +77,92 @@ final class EmbeddedV2ImportReferences
                 'workflow.archive_command_id must identify a command imported from this bundle.',
             );
         }
+
+        return [
+            ...$errors,
+            ...self::historyErrors($bundle, $identity, $commands, $tasks, $lock),
+            ...self::currentAttemptErrors($bundle, $activities, $attemptsByActivity),
+            ...self::taskErrors($bundle, [
+                'commands' => $commands,
+                'signals' => $signals,
+                'updates' => $updates,
+                'tasks' => $tasks,
+                'activities' => $activities,
+                'attempts' => $attempts,
+                'timers' => $timers,
+            ]),
+            ...self::updateFailureErrors($bundle, $runId, $failures, $lock),
+            ...self::failureActivityErrors($bundle, $activities),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @param array<string, mixed> $bundle
+     * @param array{run_id: string, instance_id: string, namespace: string|null} $identity
+     * @return list<array{rule: string, message: string}>
+     */
+    private static function targetRowErrors(
+        string $section,
+        int $index,
+        array $row,
+        array $bundle,
+        array $identity,
+        bool $lock,
+    ): array {
+        $runId = $identity['run_id'];
+        $instanceId = $identity['instance_id'];
+        $namespace = $identity['namespace'];
+        $workflow = $identity;
+        $errors = [];
+
+        if (! self::importableTargetRow($section, $row)) {
+            return [];
+        }
+        $resolved = self::string($row['resolved_run_id'] ?? null);
+        if ($resolved !== null && $resolved !== $runId) {
+            self::add(
+                $errors,
+                'references.resolved_run_invalid',
+                sprintf('%s.%d.resolved_run_id must identify the imported run.', $section, $index),
+            );
+        }
+        $requested = self::string($row['requested_run_id'] ?? null);
+        if ($requested !== null && $requested !== $runId
+            && ! self::requestedRunAllowed($requested, $instanceId, $namespace, $lock)
+            && ! ($section === 'commands' && self::unresolvedRedriveSource($row, $bundle, $workflow, $lock))) {
+            self::add(
+                $errors,
+                'references.requested_run_invalid',
+                sprintf(
+                    '%s.%d.requested_run_id must identify this run or another run of this workflow in the target namespace.',
+                    $section,
+                    $index,
+                ),
+            );
+        }
+
+        return $errors;
+    }
+
+    /**
+     * @param array<string, mixed> $bundle
+     * @param array{run_id: string, instance_id: string, namespace: string|null} $identity
+     * @param array<string, true> $commands
+     * @param array<string, true> $tasks
+     * @return list<array{rule: string, message: string}>
+     */
+    private static function historyErrors(
+        array $bundle,
+        array $identity,
+        array $commands,
+        array $tasks,
+        bool $lock,
+    ): array {
+        $runId = $identity['run_id'];
+        $instanceId = $identity['instance_id'];
+        $namespace = $identity['namespace'];
+        $errors = [];
 
         foreach (self::rows($bundle['history_events'] ?? null) as $index => $event) {
             if (HistoryEventType::tryFrom(self::string($event['type'] ?? null) ?? '') === null) {
@@ -132,6 +200,19 @@ final class EmbeddedV2ImportReferences
             }
         }
 
+        return $errors;
+    }
+
+    /**
+     * @param array<string, mixed> $bundle
+     * @param array<string, true> $activities
+     * @param array<string, array<string, true>> $attemptsByActivity
+     * @return list<array{rule: string, message: string}>
+     */
+    private static function currentAttemptErrors(array $bundle, array $activities, array $attemptsByActivity): array
+    {
+        $errors = [];
+
         foreach (self::rows($bundle['activities'] ?? null) as $index => $activity) {
             $activityId = self::string($activity['id'] ?? null);
             if ($activityId === null || ! isset($activities[$activityId])) {
@@ -150,22 +231,34 @@ final class EmbeddedV2ImportReferences
             }
         }
 
+        return $errors;
+    }
+
+    /**
+     * @param array<string, mixed> $bundle
+     * @param array<string, array<string, true>> $owned
+     * @return list<array{rule: string, message: string}>
+     */
+    private static function taskErrors(array $bundle, array $owned): array
+    {
+        $errors = [];
+
         $taskTargets = [
-            'activity_execution_id' => $activities,
-            'activity_attempt_id' => $attempts,
-            'timer_id' => $timers,
-            'workflow_signal_id' => $signals,
-            'workflow_update_id' => $updates,
-            'workflow_command_id' => $commands,
+            'activity_execution_id' => $owned['activities'],
+            'activity_attempt_id' => $owned['attempts'],
+            'timer_id' => $owned['timers'],
+            'workflow_signal_id' => $owned['signals'],
+            'workflow_update_id' => $owned['updates'],
+            'workflow_command_id' => $owned['commands'],
         ];
         $resumeTargets = [
-            'activity_execution' => $activities,
-            'activity_attempt' => $attempts,
-            'timer' => $timers,
-            'workflow_signal' => $signals,
-            'workflow_update' => $updates,
-            'workflow_command' => $commands,
-            'workflow_task' => $tasks,
+            'activity_execution' => $owned['activities'],
+            'activity_attempt' => $owned['attempts'],
+            'timer' => $owned['timers'],
+            'workflow_signal' => $owned['signals'],
+            'workflow_update' => $owned['updates'],
+            'workflow_command' => $owned['commands'],
+            'workflow_task' => $owned['tasks'],
         ];
         foreach (self::rows($bundle['tasks'] ?? null) as $index => $task) {
             if (! self::importableTask($task)) {
@@ -198,6 +291,18 @@ final class EmbeddedV2ImportReferences
             }
         }
 
+        return $errors;
+    }
+
+    /**
+     * @param array<string, mixed> $bundle
+     * @param array<string, true> $failures
+     * @return list<array{rule: string, message: string}>
+     */
+    private static function updateFailureErrors(array $bundle, string $runId, array $failures, bool $lock): array
+    {
+        $errors = [];
+
         foreach (self::rows($bundle['updates'] ?? null) as $index => $update) {
             if (UpdateStatus::tryFrom(self::string($update['status'] ?? null) ?? '') === null) {
                 continue;
@@ -223,6 +328,18 @@ final class EmbeddedV2ImportReferences
                 );
             }
         }
+
+        return $errors;
+    }
+
+    /**
+     * @param array<string, mixed> $bundle
+     * @param array<string, true> $activities
+     * @return list<array{rule: string, message: string}>
+     */
+    private static function failureActivityErrors(array $bundle, array $activities): array
+    {
+        $errors = [];
 
         foreach (self::rows($bundle['failures'] ?? null) as $index => $failure) {
             if (self::string($failure['source_kind'] ?? null) !== 'activity_execution') {
@@ -353,9 +470,21 @@ final class EmbeddedV2ImportReferences
         if ($lock) {
             $runs->lockForUpdate();
         }
-        if ($runs->first(['id']) instanceof WorkflowRun) {
-            return false;
-        }
+        return ! ($runs->first(['id']) instanceof WorkflowRun)
+            && self::recordedRedriveRequest($command, $bundle, $workflow, $requested);
+    }
+
+    /**
+     * @param array<string, mixed> $command
+     * @param array<string, mixed> $bundle
+     * @param array<string, mixed> $workflow
+     */
+    private static function recordedRedriveRequest(
+        array $command,
+        array $bundle,
+        array $workflow,
+        string $requested
+    ): bool {
         foreach (self::rows($bundle['history_events'] ?? null) as $event) {
             $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
             if (($event['type'] ?? null) !== HistoryEventType::WorkflowStarted->value
@@ -365,15 +494,33 @@ final class EmbeddedV2ImportReferences
                 || ! is_string($payload['workflow_link_id'] ?? null)) {
                 continue;
             }
-            foreach (self::rows($bundle['links']['parents'] ?? null) as $link) {
-                if (($link['type'] ?? null) === 'redrive'
-                    && ($link['id'] ?? null) === $payload['workflow_link_id']
-                    && ($link['parent_workflow_instance_id'] ?? null) === ($workflow['instance_id'] ?? null)
-                    && ($link['parent_workflow_run_id'] ?? null) === $requested
-                    && ($link['child_workflow_instance_id'] ?? null) === ($workflow['instance_id'] ?? null)
-                    && ($link['child_workflow_run_id'] ?? null) === ($workflow['run_id'] ?? null)) {
-                    return true;
-                }
+            if (self::recordedRedriveLink(
+                self::rows($bundle['links']['parents'] ?? null),
+                $workflow,
+                $requested,
+                $payload['workflow_link_id'],
+            )) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $links
+     * @param array<string, mixed> $workflow
+     */
+    private static function recordedRedriveLink(array $links, array $workflow, string $requested, string $linkId): bool
+    {
+        foreach ($links as $link) {
+            if (($link['type'] ?? null) === 'redrive'
+                && ($link['id'] ?? null) === $linkId
+                && ($link['parent_workflow_instance_id'] ?? null) === ($workflow['instance_id'] ?? null)
+                && ($link['parent_workflow_run_id'] ?? null) === $requested
+                && ($link['child_workflow_instance_id'] ?? null) === ($workflow['instance_id'] ?? null)
+                && ($link['child_workflow_run_id'] ?? null) === ($workflow['run_id'] ?? null)) {
+                return true;
             }
         }
 

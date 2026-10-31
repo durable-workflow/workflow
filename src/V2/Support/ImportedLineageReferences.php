@@ -62,9 +62,34 @@ final class ImportedLineageReferences
         if (! self::imported($parent) && ! self::imported($child)) {
             return true;
         }
-        if ($sequence === null || $sequence < 1) {
-            return false;
+        return $sequence !== null && $sequence > 0
+            && self::importedChildMatches($parent, $child, $sequence, $callId, $lock);
+    }
+
+    /**
+     * @param list<string> $relations
+     */
+    public static function resolve(WorkflowRun $origin, ?string $id, array $relations = []): ?WorkflowRun
+    {
+        if ($id === null) {
+            return null;
         }
+        /** @var WorkflowRun|null $related */
+        $related = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+            ->where('namespace', $origin->namespace)
+            ->with($relations)
+            ->find($id);
+
+        return $related instanceof WorkflowRun && self::allows($origin, $related) ? $related : null;
+    }
+
+    private static function importedChildMatches(
+        WorkflowRun $parent,
+        WorkflowRun $child,
+        int $sequence,
+        ?string $callId,
+        bool $lock,
+    ): bool {
         $edges = ConfiguredV2Models::query('link_model', WorkflowLink::class)
             ->where('link_type', 'child_workflow')
             ->where('sequence', $sequence)
@@ -75,6 +100,7 @@ final class ImportedLineageReferences
         if ($lock) {
             $edges->lockForUpdate();
         }
+        /** @var \Illuminate\Database\Eloquent\Collection<int, WorkflowLink> $links */
         $links = $edges->get();
         if ($links->isEmpty()) {
             return false;
@@ -86,7 +112,23 @@ final class ImportedLineageReferences
         if ($lock) {
             $history->lockForUpdate();
         }
-        foreach ($history->get() as $event) {
+
+        return self::historyMatchesChildEdges($parent, $child, $sequence, $callId, $history->get(), $links);
+    }
+
+    /**
+     * @param iterable<WorkflowHistoryEvent> $history
+     * @param iterable<WorkflowLink> $links
+     */
+    private static function historyMatchesChildEdges(
+        WorkflowRun $parent,
+        WorkflowRun $child,
+        int $sequence,
+        ?string $callId,
+        iterable $history,
+        iterable $links,
+    ): bool {
+        foreach ($history as $event) {
             if (! $event instanceof WorkflowHistoryEvent) {
                 continue;
             }
@@ -113,22 +155,5 @@ final class ImportedLineageReferences
         }
 
         return false;
-    }
-
-    /**
-     * @param list<string> $relations
-     */
-    public static function resolve(WorkflowRun $origin, ?string $id, array $relations = []): ?WorkflowRun
-    {
-        if ($id === null) {
-            return null;
-        }
-        /** @var WorkflowRun|null $related */
-        $related = ConfiguredV2Models::query('run_model', WorkflowRun::class)
-            ->where('namespace', $origin->namespace)
-            ->with($relations)
-            ->find($id);
-
-        return $related instanceof WorkflowRun && self::allows($origin, $related) ? $related : null;
     }
 }

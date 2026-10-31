@@ -83,22 +83,14 @@ final class EmbeddedV2ImportLineage
             'parents' => 'parent',
             'children' => 'child',
         ] as $section => $prefix) {
-            foreach (self::rows($bundle['links'][$section] ?? null) as $link) {
-                $relatedId = $link[$prefix . '_workflow_run_id'] ?? null;
-                $related = is_string($relatedId) ? (clone $runs)->find($relatedId) : null;
-                if (! $related instanceof WorkflowRun || WorkflowLink::query()->whereKey(
-                    $link['id'] ?? null
-                )->exists()) {
-                    continue;
-                }
-                $parent = $section === 'parents' ? $related : $origin;
-                $child = $section === 'parents' ? $origin : $related;
-                if (! self::storedRelationship($parent, $child, $link, $lock)) {
-                    return [[
-                        'rule' => 'references.lineage_recovery_unverified',
-                        'message' => 'A missing lineage edge cannot be restored without matching stored relationship evidence.',
-                    ]];
-                }
+            $errors = self::relatedRecoveryErrors(
+                self::rows($bundle['links'][$section] ?? null),
+                $origin,
+                $prefix,
+                $lock
+            );
+            if ($errors !== []) {
+                return $errors;
             }
         }
 
@@ -132,6 +124,35 @@ final class EmbeddedV2ImportLineage
     }
 
     /**
+     * @param list<array<string, mixed>> $links
+     * @return list<array{rule: string, message: string}>
+     */
+    private static function relatedRecoveryErrors(array $links, WorkflowRun $origin, string $prefix, bool $lock): array
+    {
+        foreach ($links as $link) {
+            $relatedId = $link[$prefix . '_workflow_run_id'] ?? null;
+            $runs = WorkflowRun::query();
+            if ($lock) {
+                $runs->lockForUpdate();
+            }
+            $related = is_string($relatedId) ? $runs->find($relatedId) : null;
+            if (! $related instanceof WorkflowRun || WorkflowLink::query()->whereKey($link['id'] ?? null)->exists()) {
+                continue;
+            }
+            $parent = $prefix === 'parent' ? $related : $origin;
+            $child = $prefix === 'parent' ? $origin : $related;
+            if (! self::storedRelationship($parent, $child, $link, $lock)) {
+                return [[
+                    'rule' => 'references.lineage_recovery_unverified',
+                    'message' => 'A missing lineage edge cannot be restored without matching stored relationship evidence.',
+                ]];
+            }
+        }
+
+        return [];
+    }
+
+    /**
      * @param array<string, mixed> $link
      */
     private static function storedRelationship(WorkflowRun $parent, WorkflowRun $child, array $link, bool $lock): bool
@@ -145,30 +166,41 @@ final class EmbeddedV2ImportLineage
             $started->lockForUpdate();
         }
         foreach ($started->get() as $event) {
-            if (! $event instanceof WorkflowHistoryEvent) {
-                continue;
-            }
-            $payload = $event->payload;
-            if (($link['type'] ?? null) === 'child_workflow') {
-                if (self::storedChildRelationship($parent, $child, $link, $payload, $lock)) {
-                    return true;
-                }
-            } elseif ($parent->workflow_instance_id === $child->workflow_instance_id
-                && ($payload['continued_from_run_id'] ?? null) === $parent->id
-                && is_string($link['id'] ?? null)
-                && ($payload['workflow_link_id'] ?? null) === $link['id']) {
-                $verified = match ($link['type'] ?? null) {
-                    'continue_as_new' => self::storedContinuation($parent, $child, $link, $lock),
-                    'redrive' => self::storedRedrive($parent, $child, $link, $payload, $lock),
-                    default => false,
-                };
-                if ($verified) {
-                    return true;
-                }
+            if ($event instanceof WorkflowHistoryEvent
+                && self::startedRelationship($parent, $child, $link, $event->payload, $lock)) {
+                return true;
             }
         }
 
         return false;
+    }
+
+    /**
+     * @param array<string, mixed> $link
+     * @param array<string, mixed> $started
+     */
+    private static function startedRelationship(
+        WorkflowRun $parent,
+        WorkflowRun $child,
+        array $link,
+        array $started,
+        bool $lock,
+    ): bool {
+        if (($link['type'] ?? null) === 'child_workflow') {
+            return self::storedChildRelationship($parent, $child, $link, $started, $lock);
+        }
+        if ($parent->workflow_instance_id !== $child->workflow_instance_id
+            || ($started['continued_from_run_id'] ?? null) !== $parent->id
+            || ! is_string($link['id'] ?? null)
+            || ($started['workflow_link_id'] ?? null) !== $link['id']) {
+            return false;
+        }
+
+        return match ($link['type'] ?? null) {
+            'continue_as_new' => self::storedContinuation($parent, $child, $link, $lock),
+            'redrive' => self::storedRedrive($parent, $child, $link, $started, $lock),
+            default => false,
+        };
     }
 
     /**

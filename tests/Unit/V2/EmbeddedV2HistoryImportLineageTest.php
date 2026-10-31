@@ -4,24 +4,24 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\Events\TransactionBeginning;
 use Illuminate\Database\Events\TransactionCommitting;
-use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
+use Tests\Fixtures\V2\TestRedriveWorkflow;
 use Tests\TestCase;
 use Throwable;
-use Tests\Fixtures\V2\TestRedriveWorkflow;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Attributes\Type;
 use function Workflow\V2\continueAsNew;
-use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Contracts\WorkflowControlPlane;
+use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -173,7 +173,9 @@ final class EmbeddedV2HistoryImportLineageTest extends TestCase
     public function testActualSameInstanceLineageImportsAndRepairsInEitherOrder(string $kind, string $first): void
     {
         Queue::fake();
-        config(['workflows.v2.task_dispatch_mode' => 'poll']);
+        config([
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
         if ($kind === 'redrive') {
             WorkflowStub::fake();
             $workflow = WorkflowStub::make(TestRedriveWorkflow::class);
@@ -183,7 +185,9 @@ final class EmbeddedV2HistoryImportLineageTest extends TestCase
             $redrive = $this->app->make(WorkflowControlPlane::class)->redrive(
                 $source->workflow_instance_id,
                 $source->id,
-                ['namespace' => $source->namespace],
+                [
+                    'namespace' => $source->namespace,
+                ],
             );
             $this->assertTrue($redrive['accepted'], json_encode($redrive, JSON_THROW_ON_ERROR));
             $successor = WorkflowRun::query()->findOrFail($redrive['workflow_run_id']);
@@ -201,19 +205,28 @@ final class EmbeddedV2HistoryImportLineageTest extends TestCase
             'parent' => HistoryExport::forRun($source->fresh()),
             'child' => HistoryExport::forRun($successor->fresh()),
         ];
-        $this->assertSame($kind, WorkflowLink::query()->where('parent_workflow_run_id', $source->id)->sole()->link_type);
+        $this->assertSame(
+            $kind,
+            WorkflowLink::query()->where('parent_workflow_run_id', $source->id)->sole()->link_type
+        );
         $this->clearState();
         foreach ([$first, $first === 'parent' ? 'child' : 'parent'] as $selected) {
-            $report = EmbeddedV2HistoryImport::import($bundles[$selected], ['namespace' => 'tenant-a']);
+            $report = EmbeddedV2HistoryImport::import($bundles[$selected], [
+                'namespace' => 'tenant-a',
+            ]);
             $this->assertSame('imported', $report['status'], json_encode($report, JSON_THROW_ON_ERROR));
         }
         $this->assertSame(1, WorkflowLink::query()->count());
         WorkflowLink::query()->delete();
-        $repair = EmbeddedV2HistoryImport::import($bundles['parent'], ['namespace' => 'tenant-a']);
+        $repair = EmbeddedV2HistoryImport::import($bundles['parent'], [
+            'namespace' => 'tenant-a',
+        ]);
         $this->assertSame('already_imported', $repair['status'], json_encode($repair, JSON_THROW_ON_ERROR));
         $this->assertSame(1, $repair['rows']['workflow_links']);
         $this->assertSame($kind, WorkflowLink::query()->sole()->link_type);
-        $retry = EmbeddedV2HistoryImport::import($bundles['child'], ['namespace' => 'tenant-a']);
+        $retry = EmbeddedV2HistoryImport::import($bundles['child'], [
+            'namespace' => 'tenant-a',
+        ]);
         $this->assertSame('already_imported', $retry['status'], json_encode($retry, JSON_THROW_ON_ERROR));
         $this->assertSame(0, array_sum($retry['rows']));
     }
@@ -509,7 +522,9 @@ final class EmbeddedV2HistoryImportLineageTest extends TestCase
         } finally {
             DB::rollBack();
         }
-        $repaired = EmbeddedV2HistoryImport::import($bundles['parent'], ['namespace' => 'tenant-a']);
+        $repaired = EmbeddedV2HistoryImport::import($bundles['parent'], [
+            'namespace' => 'tenant-a',
+        ]);
         $this->assertSame('already_imported', $repaired['status']);
         $this->assertSame(1, $repaired['rows']['workflow_links']);
     }
@@ -543,15 +558,22 @@ final class EmbeddedV2HistoryImportLineageTest extends TestCase
         $application->statement('CREATE TABLE import_application_markers (id INTEGER PRIMARY KEY)');
         $application->beginTransaction();
         try {
-            $application->table('import_application_markers')->insert(['id' => 1]);
+            $application->table('import_application_markers')
+                ->insert([
+                    'id' => 1,
+                ]);
             foreach ($bundles as $bundle) {
-                $report = EmbeddedV2HistoryImport::import($bundle, ['namespace' => 'tenant-a']);
+                $report = EmbeddedV2HistoryImport::import($bundle, [
+                    'namespace' => 'tenant-a',
+                ]);
                 $this->assertSame('imported', $report['status'], json_encode($report, JSON_THROW_ON_ERROR));
                 $this->assertSame(0, $storage->transactionLevel());
                 $this->assertSame(1, $application->transactionLevel());
             }
             WorkflowLink::query()->delete();
-            $repair = EmbeddedV2HistoryImport::import($bundles['parent'], ['namespace' => 'tenant-a']);
+            $repair = EmbeddedV2HistoryImport::import($bundles['parent'], [
+                'namespace' => 'tenant-a',
+            ]);
             $this->assertSame('already_imported', $repair['status'], json_encode($repair, JSON_THROW_ON_ERROR));
             $this->assertSame(1, $repair['rows']['workflow_links']);
             $this->assertSame(0, $storage->transactionLevel());
@@ -568,7 +590,9 @@ final class EmbeddedV2HistoryImportLineageTest extends TestCase
                 $application->rollBack();
             }
             DB::setDefaultConnection($default);
-            config(['workflows.storage.connection' => $previousStorage]);
+            config([
+                'workflows.storage.connection' => $previousStorage,
+            ]);
             DB::purge('import_application_probe');
             DB::purge('import_storage_probe');
             Schema::clearResolvedInstance('db.schema');
@@ -581,8 +605,7 @@ final class EmbeddedV2HistoryImportLineageTest extends TestCase
         string $namespace,
         bool $imported,
         bool $dryRun,
-    ): void
-    {
+    ): void {
         $bundles = $this->sourcePair();
         $this->clearState();
         $this->assertSame('imported', EmbeddedV2HistoryImport::import($bundles[$selected], [
@@ -592,7 +615,10 @@ final class EmbeddedV2HistoryImportLineageTest extends TestCase
         if ($imported) {
             $unrelated = $bundles[$selected === 'parent' ? 'child' : 'parent'];
             $unrelated['history_events'] = [];
-            $unrelated['links'] = ['parents' => [], 'children' => []];
+            $unrelated['links'] = [
+                'parents' => [],
+                'children' => [],
+            ];
             $unrelated['workflow']['workflow_type'] = 'unrelated-later';
             $this->assertSame('imported', EmbeddedV2HistoryImport::import($this->reseal($unrelated), [
                 'namespace' => $namespace,

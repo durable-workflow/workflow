@@ -18,15 +18,7 @@ final class EmbeddedV2ImportMessageReferences
      */
     public static function errors(array $bundle): array
     {
-        $commands = [];
-        foreach (self::rows($bundle['commands'] ?? null) as $command) {
-            $id = self::string($command['id'] ?? null);
-            $type = CommandType::tryFrom(self::string($command['type'] ?? null) ?? '');
-            $status = CommandStatus::tryFrom(self::string($command['status'] ?? null) ?? '');
-            if ($id !== null && $type !== null && $status !== null) {
-                $commands[$id][] = $type->value;
-            }
-        }
+        $commands = self::commandTypes($bundle['commands'] ?? null);
 
         $errors = [];
         foreach ([
@@ -59,6 +51,24 @@ final class EmbeddedV2ImportMessageReferences
         }
 
         return $errors;
+    }
+
+    /**
+     * @return array<string, list<string>>
+     */
+    private static function commandTypes(mixed $rows): array
+    {
+        $commands = [];
+        foreach (self::rows($rows) as $command) {
+            $id = self::string($command['id'] ?? null);
+            $type = CommandType::tryFrom(self::string($command['type'] ?? null) ?? '');
+            $status = CommandStatus::tryFrom(self::string($command['status'] ?? null) ?? '');
+            if ($id !== null && $type !== null && $status !== null) {
+                $commands[$id][] = $type->value;
+            }
+        }
+
+        return $commands;
     }
 
     /**

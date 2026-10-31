@@ -12,8 +12,8 @@ use RuntimeException;
 use Tests\TestCase;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
-use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\ActivityAttemptStatus;
+use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -33,9 +33,9 @@ use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
-use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\ActivityOutcomeRecorder;
 use Workflow\V2\Support\ActivityTaskClaimer;
+use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\EmbeddedV2HistoryImport;
 use Workflow\V2\Support\EmbeddedV2ImportContract;
 use Workflow\V2\Support\ExternalPayloadReference;
@@ -67,7 +67,8 @@ final class EmbeddedV2HistoryImportTest extends TestCase
                 default => 'tenant-b',
             };
             $command = $this->otherMessageCommand($kind, $namespace);
-            $foreignBefore = $command->getAttributes();
+            $foreignBefore = $command->fresh()
+                ->getAttributes();
             $bundle[$kind === 'signal' ? 'signals' : 'updates'][0]['command_id'] = $command->id;
         } elseif ($case === 'missing-command') {
             $bundle['commands'] = [];
@@ -124,7 +125,8 @@ final class EmbeddedV2HistoryImportTest extends TestCase
         [$bundle, $messageId] = $this->messageBundle($kind);
         $this->clearWorkflowState();
         $other = $this->otherMessageCommand($kind, 'tenant-b');
-        $before = $other->getAttributes();
+        $before = $other->fresh()
+            ->getAttributes();
 
         $report = EmbeddedV2HistoryImport::import($bundle);
 
@@ -152,7 +154,9 @@ final class EmbeddedV2HistoryImportTest extends TestCase
     ): void {
         $bundle = str_starts_with($case, 'signal-')
             ? $this->messageBundle('signal')[0]
-            : (str_starts_with($case, 'update-') ? $this->messageBundle('update')[0] : $this->runningBundleWithOpenWork());
+            : (str_starts_with($case, 'update-') ? $this->messageBundle(
+                'update'
+            )[0] : $this->runningBundleWithOpenWork());
         $reference = (string) Str::ulid();
         $foreignFailure = null;
         $foreignHistoryCommand = null;
@@ -163,7 +167,8 @@ final class EmbeddedV2HistoryImportTest extends TestCase
                 'type' => 'start',
                 'status' => 'accepted',
                 'sequence' => 99,
-                'accepted_at' => now()->toJSON(),
+                'accepted_at' => now()
+                    ->toJSON(),
                 $case === 'command-resolved-run' ? 'resolved_run_id' : 'requested_run_id' => $reference,
             ];
         } elseif ($case === 'signal-resolved-run') {
@@ -184,7 +189,8 @@ final class EmbeddedV2HistoryImportTest extends TestCase
                 'status' => 'completed',
                 'workflow_task_id' => $reference,
                 'attempt_number' => 1,
-                'started_at' => now()->toJSON(),
+                'started_at' => now()
+                    ->toJSON(),
             ];
         } elseif ($case === 'attempt-without-activity') {
             $bundle['activities'][0]['status'] = 'unsupported';
@@ -192,7 +198,8 @@ final class EmbeddedV2HistoryImportTest extends TestCase
                 'id' => (string) Str::ulid(),
                 'status' => 'completed',
                 'attempt_number' => 1,
-                'started_at' => now()->toJSON(),
+                'started_at' => now()
+                    ->toJSON(),
             ];
         } elseif (str_starts_with($case, 'task-')) {
             $field = substr($case, strlen('task-'));
@@ -303,7 +310,9 @@ final class EmbeddedV2HistoryImportTest extends TestCase
         $this->assertSame($update->workflow_run_id, $update->failure?->workflow_run_id);
         $before = $this->workflowStateSnapshot();
         foreach ([true, false] as $dryRun) {
-            $retry = EmbeddedV2HistoryImport::import($bundle, ['dry_run' => $dryRun]);
+            $retry = EmbeddedV2HistoryImport::import($bundle, [
+                'dry_run' => $dryRun,
+            ]);
             $this->assertSame('already_imported', $retry['status'], json_encode($retry, JSON_THROW_ON_ERROR));
             $this->assertSame(0, array_sum($retry['rows']));
             $this->assertSame($before, $this->workflowStateSnapshot());
@@ -311,15 +320,19 @@ final class EmbeddedV2HistoryImportTest extends TestCase
     }
 
     #[DataProvider('legacyImportedMessageReferences')]
-    public function testLegacyImportedMessageViewsCannotResolveAnotherWorkflowsRows(string $reference, ?string $namespace): void
-    {
+    public function testLegacyImportedMessageViewsCannotResolveAnotherWorkflowsRows(
+        string $reference,
+        ?string $namespace
+    ): void {
         $kind = $reference === 'signal-command' ? 'signal' : 'update';
         [$bundle, $messageId] = $this->messageBundle($kind);
         $this->clearWorkflowState();
         $this->assertSame('imported', EmbeddedV2HistoryImport::import($bundle)['status']);
         $foreign = $this->otherMessageCommand($kind, $namespace);
         $marker = 'foreign-message-' . Str::ulid();
-        $foreign->forceFill(['source' => $marker])->save();
+        $foreign->forceFill([
+            'source' => $marker,
+        ])->save();
         if ($reference === 'update-failure') {
             $failure = WorkflowFailure::query()->create([
                 'workflow_run_id' => $foreign->workflow_run_id,
@@ -330,10 +343,14 @@ final class EmbeddedV2HistoryImportTest extends TestCase
                 'message' => $marker,
                 'file' => '',
             ]);
-            WorkflowUpdate::query()->findOrFail($messageId)->forceFill(['failure_id' => $failure->id])->save();
+            WorkflowUpdate::query()->findOrFail($messageId)->forceFill([
+                'failure_id' => $failure->id,
+            ])->save();
         } else {
             $model = $kind === 'signal' ? WorkflowSignal::class : WorkflowUpdate::class;
-            $model::query()->findOrFail($messageId)->forceFill(['workflow_command_id' => $foreign->id])->save();
+            $model::query()->findOrFail($messageId)->forceFill([
+                'workflow_command_id' => $foreign->id,
+            ])->save();
         }
         $before = $this->workflowStateSnapshot();
         $run = WorkflowRun::query()->findOrFail($bundle['workflow']['run_id']);
@@ -353,21 +370,31 @@ final class EmbeddedV2HistoryImportTest extends TestCase
     }
 
     #[DataProvider('legacyImportedMessageEffects')]
-    public function testLegacyImportedMessageEffectsCannotUseAnotherWorkflowsCommand(string $effect, ?string $namespace): void
-    {
+    public function testLegacyImportedMessageEffectsCannotUseAnotherWorkflowsCommand(
+        string $effect,
+        ?string $namespace
+    ): void {
         $kind = $effect === 'signal' ? 'signal' : 'update';
         [$bundle, $messageId] = $this->messageBundle($kind);
         $this->clearWorkflowState();
         $this->assertSame('imported', EmbeddedV2HistoryImport::import($bundle)['status']);
         $foreign = $this->otherMessageCommand($kind, $namespace);
         $marker = 'foreign-command-' . Str::ulid();
-        $foreign->forceFill(['source' => $marker])->save();
+        $foreign->forceFill([
+            'source' => $marker,
+        ])->save();
         $model = $kind === 'signal' ? WorkflowSignal::class : WorkflowUpdate::class;
-        $model::query()->findOrFail($messageId)->forceFill(['workflow_command_id' => $foreign->id])->save();
-        $foreignBefore = $foreign->fresh()->getRawOriginal();
+        $model::query()->findOrFail($messageId)->forceFill([
+            'workflow_command_id' => $foreign->id,
+        ])->save();
+        $foreignBefore = $foreign->fresh()
+            ->getRawOriginal();
         $run = WorkflowRun::query()->findOrFail($bundle['workflow']['run_id']);
         if ($effect === 'terminal-update') {
-            $run->forceFill(['status' => RunStatus::Completed, 'closed_at' => now()])->save();
+            $run->forceFill([
+                'status' => RunStatus::Completed,
+                'closed_at' => now(),
+            ])->save();
             PendingUpdateCloser::closeForTerminalRun($run);
         } elseif ($effect === 'fail-update') {
             $bridge = app(DefaultWorkflowTaskBridge::class);
@@ -386,7 +413,10 @@ final class EmbeddedV2HistoryImportTest extends TestCase
         }
 
         $this->assertSame($foreignBefore, $foreign->fresh()->getRawOriginal());
-        $this->assertStringNotContainsString($marker, json_encode(HistoryExport::forRun($run->fresh()), JSON_THROW_ON_ERROR));
+        $this->assertStringNotContainsString(
+            $marker,
+            json_encode(HistoryExport::forRun($run->fresh()), JSON_THROW_ON_ERROR)
+        );
     }
 
     public static function legacyImportedMessageEffects(): iterable
@@ -412,7 +442,8 @@ final class EmbeddedV2HistoryImportTest extends TestCase
             'sequence' => 99,
             'requested_run_id' => $requestedRunId,
             'resolved_run_id' => $bundle['workflow']['run_id'],
-            'accepted_at' => now()->toJSON(),
+            'accepted_at' => now()
+                ->toJSON(),
         ];
         $bundle = $this->resealBundle($bundle);
         $this->clearWorkflowState();
@@ -466,11 +497,16 @@ final class EmbeddedV2HistoryImportTest extends TestCase
     {
         [$run, $foreignRun, $task, $execution, $attempt] = $this->crossRunActivityReference(TaskStatus::Ready);
         $before = [
-            $run->getAttributes(),
-            $foreignRun->getAttributes(),
-            $task->getAttributes(),
-            $execution->getAttributes(),
-            $attempt->getAttributes(),
+            $run->fresh()
+                ->getAttributes(),
+            $foreignRun->fresh()
+                ->getAttributes(),
+            $task->fresh()
+                ->getAttributes(),
+            $execution->fresh()
+                ->getAttributes(),
+            $attempt->fresh()
+                ->getAttributes(),
         ];
 
         $result = ActivityTaskClaimer::claimDetailed($task->id, 'import-worker');
@@ -478,11 +514,16 @@ final class EmbeddedV2HistoryImportTest extends TestCase
         $this->assertNull($result['claim']);
         $this->assertSame('activity_execution_mismatch', $result['reason']);
         $this->assertSame($before, [
-            $run->fresh()->getAttributes(),
-            $foreignRun->fresh()->getAttributes(),
-            $task->fresh()->getAttributes(),
-            $execution->fresh()->getAttributes(),
-            $attempt->fresh()->getAttributes(),
+            $run->fresh()
+                ->getAttributes(),
+            $foreignRun->fresh()
+                ->getAttributes(),
+            $task->fresh()
+                ->getAttributes(),
+            $execution->fresh()
+                ->getAttributes(),
+            $attempt->fresh()
+                ->getAttributes(),
         ]);
         $this->assertSame(1, ActivityAttempt::query()->count());
     }
@@ -491,11 +532,16 @@ final class EmbeddedV2HistoryImportTest extends TestCase
     {
         [$run, $foreignRun, $task, $execution, $attempt] = $this->crossRunActivityReference(TaskStatus::Leased);
         $before = [
-            $run->getAttributes(),
-            $foreignRun->getAttributes(),
-            $task->getAttributes(),
-            $execution->getAttributes(),
-            $attempt->getAttributes(),
+            $run->fresh()
+                ->getAttributes(),
+            $foreignRun->fresh()
+                ->getAttributes(),
+            $task->fresh()
+                ->getAttributes(),
+            $execution->fresh()
+                ->getAttributes(),
+            $attempt->fresh()
+                ->getAttributes(),
         ];
 
         $result = ActivityOutcomeRecorder::record($task->id, $attempt->id, 1, 'ignored', null, 1, 0);
@@ -503,40 +549,57 @@ final class EmbeddedV2HistoryImportTest extends TestCase
         $this->assertFalse($result['recorded']);
         $this->assertSame('stale_task', $result['reason']);
         $this->assertSame($before, [
-            $run->fresh()->getAttributes(),
-            $foreignRun->fresh()->getAttributes(),
-            $task->fresh()->getAttributes(),
-            $execution->fresh()->getAttributes(),
-            $attempt->fresh()->getAttributes(),
+            $run->fresh()
+                ->getAttributes(),
+            $foreignRun->fresh()
+                ->getAttributes(),
+            $task->fresh()
+                ->getAttributes(),
+            $execution->fresh()
+                ->getAttributes(),
+            $attempt->fresh()
+                ->getAttributes(),
         ]);
     }
 
     #[DataProvider('legacyAttemptExecutionStatuses')]
     public function testLostLeaseRepairNeverSettlesAnotherExecutionsCurrentAttempt(ActivityStatus $status): void
     {
-        [$run, $foreignRun, $task, $foreignExecution, $foreignAttempt] = $this->crossRunActivityReference(TaskStatus::Leased);
-        $execution = $foreignExecution->replicate()->forceFill([
-            'id' => (string) Str::ulid(),
-            'workflow_run_id' => $run->id,
-            'status' => $status,
-        ]);
+        [$run, $foreignRun, $task, $foreignExecution, $foreignAttempt] = $this->crossRunActivityReference(
+            TaskStatus::Leased
+        );
+        $execution = $foreignExecution->replicate()
+            ->forceFill([
+                'id' => (string) Str::ulid(),
+                'workflow_run_id' => $run->id,
+                'status' => $status,
+            ]);
         $execution->save();
         $task->forceFill([
-            'payload' => ['activity_execution_id' => $execution->id],
-            'lease_expires_at' => now()->subMinute(),
+            'payload' => [
+                'activity_execution_id' => $execution->id,
+            ],
+            'lease_expires_at' => now()
+                ->subMinute(),
         ])->save();
         $foreignBefore = [
-            $foreignRun->fresh()->getRawOriginal(),
-            $foreignExecution->fresh()->getRawOriginal(),
-            $foreignAttempt->fresh()->getRawOriginal(),
+            $foreignRun->fresh()
+                ->getRawOriginal(),
+            $foreignExecution->fresh()
+                ->getRawOriginal(),
+            $foreignAttempt->fresh()
+                ->getRawOriginal(),
         ];
 
         $repaired = TaskRepair::recoverExistingTask($task, $run);
 
         $this->assertSame($foreignBefore, [
-            $foreignRun->fresh()->getRawOriginal(),
-            $foreignExecution->fresh()->getRawOriginal(),
-            $foreignAttempt->fresh()->getRawOriginal(),
+            $foreignRun->fresh()
+                ->getRawOriginal(),
+            $foreignExecution->fresh()
+                ->getRawOriginal(),
+            $foreignAttempt->fresh()
+                ->getRawOriginal(),
         ]);
         if ($status === ActivityStatus::Pending) {
             $this->assertInstanceOf(WorkflowTask::class, $repaired);
@@ -554,15 +617,20 @@ final class EmbeddedV2HistoryImportTest extends TestCase
     {
         [$run, $foreignRun, $task, $execution, $attempt] = $this->crossRunActivityReference(TaskStatus::Leased);
         $task->forceFill([
-            'lease_expires_at' => now()->subMinute(),
+            'lease_expires_at' => now()
+                ->subMinute(),
         ])->save();
         $attempt->forceFill([
-            'lease_expires_at' => now()->subMinute(),
+            'lease_expires_at' => now()
+                ->subMinute(),
         ])->save();
         $foreignBefore = [
-            $foreignRun->getAttributes(),
-            $execution->getAttributes(),
-            $attempt->getAttributes(),
+            $foreignRun->fresh()
+                ->getAttributes(),
+            $execution->fresh()
+                ->getAttributes(),
+            $attempt->fresh()
+                ->getAttributes(),
         ];
 
         $recovered = TaskRepair::recoverExistingTask($task, $run);
@@ -570,9 +638,12 @@ final class EmbeddedV2HistoryImportTest extends TestCase
         $this->assertInstanceOf(WorkflowTask::class, $recovered);
         $this->assertSame(TaskStatus::Ready, $recovered->status);
         $this->assertSame($foreignBefore, [
-            $foreignRun->fresh()->getAttributes(),
-            $execution->fresh()->getAttributes(),
-            $attempt->fresh()->getAttributes(),
+            $foreignRun->fresh()
+                ->getAttributes(),
+            $execution->fresh()
+                ->getAttributes(),
+            $attempt->fresh()
+                ->getAttributes(),
         ]);
     }
 
@@ -1372,7 +1443,8 @@ final class EmbeddedV2HistoryImportTest extends TestCase
                     'status' => 'accepted',
                 ],
             ],
-            'recorded_at' => now()->toJSON(),
+            'recorded_at' => now()
+                ->toJSON(),
         ];
     }
 
@@ -1395,7 +1467,8 @@ final class EmbeddedV2HistoryImportTest extends TestCase
             'payload_codec' => CodecRegistry::defaultCodec(),
             'attempt_count' => 1,
             'current_attempt_id' => $attemptId,
-            'started_at' => now()->subMinute(),
+            'started_at' => now()
+                ->subMinute(),
         ]);
         $task = WorkflowTask::query()->create([
             'id' => (string) Str::ulid(),
@@ -1406,7 +1479,8 @@ final class EmbeddedV2HistoryImportTest extends TestCase
             'payload' => [
                 'activity_execution_id' => $execution->id,
             ],
-            'available_at' => now()->subMinutes(2),
+            'available_at' => now()
+                ->subMinutes(2),
             'leased_at' => $taskStatus === TaskStatus::Leased ? now()->subMinute() : null,
             'lease_owner' => $taskStatus === TaskStatus::Leased ? 'foreign-worker' : null,
             'lease_expires_at' => $taskStatus === TaskStatus::Leased ? now()->addMinute() : null,
@@ -1420,8 +1494,10 @@ final class EmbeddedV2HistoryImportTest extends TestCase
             'attempt_number' => 1,
             'status' => ActivityAttemptStatus::Running->value,
             'lease_owner' => 'foreign-worker',
-            'started_at' => now()->subMinute(),
-            'lease_expires_at' => now()->addMinute(),
+            'started_at' => now()
+                ->subMinute(),
+            'lease_expires_at' => now()
+                ->addMinute(),
         ]);
 
         return [$run->refresh(), $foreignRun->refresh(), $task->refresh(), $execution->refresh(), $attempt->refresh()];
