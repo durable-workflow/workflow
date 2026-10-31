@@ -108,6 +108,99 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
     private int $workflowNumber = 0;
 
+    public function testLateChildResumeCorpusCreatesDeliveryAfterALeasedParentWaits(): void
+    {
+        $path = self::FIXTURE_DIR . '/late-child-resolution-during-parent-lease.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The retained late child delivery evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        self::stopWorkers();
+        Queue::fake();
+        config([
+            'queue.default' => 'database',
+            'workflows.v2.compatibility.current' => 'build-a',
+            'workflows.v2.compatibility.supported' => ['build-a'],
+        ]);
+        $this->executeColdReplayFixture($fixture);
+        $workflow = $fixture['workflow'];
+        $stub = WorkflowStub::make($workflow['type']);
+        $stub->start(...$workflow['arguments']);
+        $bridge = $this->app->make(WorkflowTaskBridge::class);
+        $parentTask = WorkflowTask::query()->where('workflow_run_id', $stub->runId())
+            ->where('task_type', TaskType::Workflow->value)->sole();
+        $this->assertTrue($bridge->claimStatus($parentTask->id, 'corpus-parent')['claimed']);
+        $scheduled = array_values(array_filter($fixture['history'], static fn (array $event): bool =>
+            $event['event_type'] === HistoryEventType::ChildWorkflowScheduled->value));
+        $this->assertCount(2, $scheduled);
+        $commands = [];
+        foreach ($scheduled as $index => $event) {
+            $commands[] = [
+                'type' => 'start_child_workflow',
+                'workflow_type' => $event['payload']['child_workflow_type'],
+                'arguments' => Serializer::serialize([$workflow['arguments'][$index]]),
+            ];
+        }
+        $this->assertTrue($bridge->complete($parentTask->id, $commands)['completed']);
+        $childTasks = WorkflowLink::query()->where('parent_workflow_run_id', $stub->runId())
+            ->where('link_type', 'child_workflow')
+            ->orderBy('sequence')
+            ->get()
+            ->map(static fn (WorkflowLink $link): WorkflowTask => WorkflowTask::query()
+                ->where('workflow_run_id', $link->child_workflow_run_id)
+                ->where('task_type', TaskType::Workflow->value)->sole());
+        $this->assertCount(2, $childTasks);
+        $outcomes = array_values(array_filter($fixture['history'], static fn (array $event): bool =>
+            $event['event_type'] === HistoryEventType::ChildRunCompleted->value));
+        $resumeTask = null;
+        foreach ($outcomes as $index => $event) {
+            $this->assertTrue($bridge->claimStatus($childTasks[$index]->id, 'corpus-child')['claimed']);
+            $this->assertTrue($bridge->complete($childTasks[$index]->id, [[
+                'type' => 'complete_workflow',
+                'result' => $event['payload']['output'],
+                'payload_codec' => $event['payload']['payload_codec'],
+            ]])['completed']);
+            if ($index === 0) {
+                $resumeTask = WorkflowTask::query()->where('workflow_run_id', $stub->runId())
+                    ->where('task_type', TaskType::Workflow->value)->where('status', TaskStatus::Ready->value)
+                    ->sole();
+                $this->assertTrue($bridge->claimStatus($resumeTask->id, 'corpus-parent')['claimed']);
+                $history = $bridge->historyPayload($resumeTask->id);
+                $this->assertCount(1, array_filter($history['history_events'], static fn (array $event): bool =>
+                    $event['event_type'] === HistoryEventType::ChildRunCompleted->value));
+            }
+        }
+        $this->assertInstanceOf(WorkflowTask::class, $resumeTask);
+        $timer = array_values(array_filter($fixture['history'], static fn (array $event): bool =>
+            $event['event_type'] === HistoryEventType::TimerScheduled->value))[0];
+        $waiting = $bridge->complete($resumeTask->id, [[
+            'type' => 'start_timer',
+            'delay_seconds' => $timer['payload']['delay_seconds'],
+        ]]);
+        $this->assertTrue($waiting['completed']);
+        $this->assertSame(RunStatus::Waiting->value, $waiting['run_status']);
+        $ready = WorkflowTask::query()->where('workflow_run_id', $stub->runId())
+            ->where('task_type', TaskType::Workflow->value)->where('status', TaskStatus::Ready->value)->get();
+        $this->assertCount(1, $ready, 'Late child history needs delivery before the unrelated timer fires.');
+        $followUp = $ready->sole();
+        $this->assertContains($followUp->id, $waiting['created_task_ids']);
+        $this->assertTrue($followUp->available_at->lessThanOrEqualTo(now()));
+        $this->assertTrue($bridge->claimStatus($followUp->id, 'corpus-parent-replay')['claimed']);
+        $history = $bridge->historyPayload($followUp->id);
+        $step = WorkflowFiberRunner::forClass(
+            $workflow['type'],
+            $stub->id(),
+            $stub->runId(),
+            $workflow['arguments'],
+            $workflow['payload_codec'],
+            $history['history_events'],
+        )->step();
+        $this->assertTrue($step->completed);
+        $this->assertSame($fixture['expected']['result']['children'], $step->result['children']);
+        $this->assertTrue($bridge->complete($followUp->id, $step->commands)['completed']);
+        $this->assertSame(RunStatus::Completed, WorkflowRun::query()->findOrFail($stub->runId())->status);
+    }
+
     public function testSeparateStorageCorpusPublishesOnlyAfterItsTransactionCommits(): void
     {
         $this->assertStorageCorpusFixture('separate-storage-transaction-commit', false);

@@ -30,6 +30,14 @@ includes those patched branches. Laravel 9 applications affected by the
 must not expose token-guard authentication while upgrading. Keep Composer audits
 and application security updates enabled.
 
+The legacy exception requires an existing application lockfile. Keep that lock,
+use a targeted Workflow update, and drain or migrate to patched Laravel 12 or 13.
+It does not cover a fresh PHP 8.1 dependency resolution, which Composer may
+refuse because of the legacy advisories. If Composer refuses the migration,
+upgrade the framework first; do not globally disable security blocking. The
+next Laravel 9 removal/migration review is November 7, 2026; see
+[#922](https://github.com/durable-workflow/workflow/issues/922).
+
 ## Install
 
 ```bash
