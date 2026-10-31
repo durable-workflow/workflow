@@ -7,6 +7,7 @@ namespace Tests\Unit\V2;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
@@ -28,6 +29,7 @@ use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
+use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\EmbeddedV2HistoryImport;
 use Workflow\V2\Support\EmbeddedV2ImportContract;
 use Workflow\V2\Support\ExternalPayloadReference;
@@ -40,6 +42,238 @@ use Workflow\V2\Support\RunUpdateView;
 
 final class EmbeddedV2HistoryImportTest extends TestCase
 {
+    #[DataProvider('invalidMessageCommands')]
+    public function testImportRejectsMessageCommandReferencesOutsideItsBundle(
+        string $kind,
+        string $case,
+        bool $dryRun
+    ): void {
+        [$bundle, $messageId] = $this->messageBundle($kind);
+        $this->clearWorkflowState();
+        $command = null;
+        $foreignBefore = null;
+        if (in_array($case, ['foreign-namespace', 'same-namespace-other-run', 'null-namespace'], true)) {
+            $namespace = match ($case) {
+                'same-namespace-other-run' => 'tenant-a',
+                'null-namespace' => null,
+                default => 'tenant-b',
+            };
+            $command = $this->otherMessageCommand($kind, $namespace);
+            $foreignBefore = $command->getAttributes();
+            $bundle[$kind === 'signal' ? 'signals' : 'updates'][0]['command_id'] = $command->id;
+        } elseif ($case === 'missing-command') {
+            $bundle['commands'] = [];
+        } elseif ($case === 'wrong-kind') {
+            $bundle['commands'][0]['type'] = $kind === 'signal' ? 'update' : 'signal';
+        } elseif ($case === 'invalid-command-status') {
+            $bundle['commands'][0]['status'] = 'unknown';
+        } elseif ($case === 'padded-command-kind') {
+            $bundle['commands'][0]['type'] = ' ' . $kind . ' ';
+        } elseif ($case === 'padded-reference') {
+            $bundle[$kind === 'signal' ? 'signals' : 'updates'][0]['command_id'] = ' ' . $bundle['commands'][0]['id'] . ' ';
+        } else {
+            unset($bundle[$kind === 'signal' ? 'signals' : 'updates'][0]['command_id']);
+        }
+        $bundle = $this->resealBundle($bundle);
+        $before = $this->workflowStateSnapshot();
+
+        $report = EmbeddedV2HistoryImport::import($bundle, [
+            'dry_run' => $dryRun,
+        ]);
+        if (! $dryRun && $report['status'] === 'imported' && $command instanceof WorkflowCommand) {
+            // The counterfactual must reach ordinary worker application, where
+            // an unowned command ID used to change another run's command.
+            $this->applyImportedMessage($bundle, $kind, $messageId);
+        }
+
+        if ($command instanceof WorkflowCommand) {
+            $this->assertSame($foreignBefore, $command->fresh()->getAttributes());
+        }
+        $this->assertSame('rejected', $report['status']);
+        $this->assertContains(
+            'references.message_command_invalid',
+            array_column($report['eligibility']['errors'], 'rule')
+        );
+        $this->assertSame(0, array_sum($report['rows']));
+        $this->assertSame($before, $this->workflowStateSnapshot());
+    }
+
+    public static function invalidMessageCommands(): iterable
+    {
+        foreach (['signal', 'update'] as $kind) {
+            foreach (['foreign-namespace', 'same-namespace-other-run', 'null-namespace', 'missing-command',
+                'wrong-kind', 'invalid-command-status', 'missing-command-id', 'padded-command-kind', 'padded-reference'] as $case) {
+                foreach ([false, true] as $dryRun) {
+                    yield $kind . '/' . $case . ($dryRun ? '/preview' : '/write') => [$kind, $case, $dryRun];
+                }
+            }
+        }
+    }
+
+    #[DataProvider('messageKinds')]
+    public function testOwnedImportedMessageCommandsStillApplyOnTheImportedRun(string $kind): void
+    {
+        [$bundle, $messageId] = $this->messageBundle($kind);
+        $this->clearWorkflowState();
+        $other = $this->otherMessageCommand($kind, 'tenant-b');
+        $before = $other->getAttributes();
+
+        $report = EmbeddedV2HistoryImport::import($bundle);
+
+        $this->assertSame('imported', $report['status']);
+        $this->applyImportedMessage($bundle, $kind, $messageId);
+        $command = WorkflowCommand::query()->findOrFail($bundle['commands'][0]['id']);
+        $this->assertSame($bundle['workflow']['run_id'], $command->workflow_run_id);
+        $this->assertSame($bundle['workflow']['instance_id'], $command->workflow_instance_id);
+        $this->assertNotNull($command->applied_at);
+        $this->assertSame($before, $other->fresh()->getAttributes());
+        $this->assertSame('already_imported', EmbeddedV2HistoryImport::import($bundle)['status']);
+    }
+
+    public static function messageKinds(): iterable
+    {
+        yield 'signal' => ['signal'];
+        yield 'update' => ['update'];
+    }
+
+    #[DataProvider('namespaceConflicts')]
+    public function testItNeverTreatsAnotherNamespacesRunAsAnIdempotentImport(
+        ?string $target,
+        ?string $existing,
+        bool $dryRun
+    ): void {
+        $bundle = $this->runningBundleWithOpenWork();
+        $bundle['workflow']['namespace'] = $target;
+        $bundle = $this->resealBundle($bundle);
+        $this->clearWorkflowState();
+        $this->assertSame('imported', EmbeddedV2HistoryImport::import($bundle)['status']);
+        WorkflowRun::query()->update([
+            'namespace' => $existing,
+        ]);
+        WorkflowInstance::query()->update([
+            'namespace' => $existing,
+        ]);
+        $before = $this->workflowStateSnapshot();
+
+        $report = EmbeddedV2HistoryImport::import($bundle, [
+            'dry_run' => $dryRun,
+        ]);
+
+        $this->assertSame('rejected', $report['status']);
+        $this->assertContains('target.run_id_conflict', array_column($report['eligibility']['errors'], 'rule'));
+        $this->assertSame(0, array_sum($report['rows']));
+        $this->assertSame($before, $this->workflowStateSnapshot());
+    }
+
+    #[DataProvider('namespaceConflicts')]
+    public function testItNeverAttachesAnImportedRunToAnotherNamespacesInstance(
+        ?string $target,
+        ?string $existing,
+        bool $dryRun
+    ): void {
+        $bundle = $this->runningBundleWithOpenWork();
+        $bundle['workflow']['namespace'] = $target;
+        $bundle = $this->resealBundle($bundle);
+        $this->clearWorkflowState();
+        WorkflowInstance::query()->create([
+            'id' => $bundle['workflow']['instance_id'],
+            'namespace' => $existing,
+            'workflow_class' => $bundle['workflow']['workflow_class'],
+            'workflow_type' => $bundle['workflow']['workflow_type'],
+            'run_count' => 7,
+            'current_run_id' => (string) Str::ulid(),
+        ]);
+        $before = $this->workflowStateSnapshot();
+
+        $report = EmbeddedV2HistoryImport::import($bundle, [
+            'dry_run' => $dryRun,
+        ]);
+
+        $this->assertSame('rejected', $report['status']);
+        $this->assertContains(
+            'target.instance_namespace_conflict',
+            array_column($report['eligibility']['errors'], 'rule')
+        );
+        $this->assertSame(0, array_sum($report['rows']));
+        $this->assertSame($before, $this->workflowStateSnapshot());
+    }
+
+    public static function namespaceConflicts(): iterable
+    {
+        foreach ([
+            'named' => ['tenant-a', 'tenant-b'],
+            'null-target' => [null, 'tenant-b'],
+            'null-existing' => ['tenant-a', null],
+        ] as $label => [$target, $existing]) {
+            foreach ([false, true] as $dryRun) {
+                yield $label . ($dryRun ? '-preview' : '-write') => [$target, $existing, $dryRun];
+            }
+        }
+    }
+
+    public function testTheTransactionalInstanceLookupRechecksNamespaceAfterPreflight(): void
+    {
+        $bundle = $this->runningBundleWithOpenWork();
+        $bundle['workflow']['namespace'] = 'tenant-a';
+        $bundle = $this->resealBundle($bundle);
+        $this->clearWorkflowState();
+        WorkflowInstance::query()->create([
+            'id' => $bundle['workflow']['instance_id'],
+            'namespace' => 'tenant-a',
+            'workflow_class' => $bundle['workflow']['workflow_class'],
+            'workflow_type' => $bundle['workflow']['workflow_type'],
+            'run_count' => 7,
+        ]);
+        $afterTransfer = null;
+        $transferred = false;
+        DB::listen(function ($query) use (&$transferred, &$afterTransfer, $bundle): void {
+            if ($transferred || DB::transactionLevel() !== 0
+                || ! str_contains($query->sql, 'select') || ! str_contains($query->sql, 'workflow_instances')) {
+                return;
+            }
+            // The result of the preflight read is already materialized. A
+            // concurrent transfer must not authorize attaching to its old scope.
+            $transferred = true;
+            WorkflowInstance::query()->whereKey($bundle['workflow']['instance_id'])->update([
+                'namespace' => 'tenant-b',
+            ]);
+            $afterTransfer = $this->workflowStateSnapshot();
+        });
+
+        $report = EmbeddedV2HistoryImport::import($bundle);
+
+        $this->assertTrue($transferred);
+        $this->assertSame('rejected', $report['status']);
+        $this->assertContains('target.write_failed', array_column($report['eligibility']['errors'], 'rule'));
+        $this->assertSame(0, array_sum($report['rows']));
+        $this->assertSame($afterTransfer, $this->workflowStateSnapshot());
+    }
+
+    public function testItCanImportANewRunIntoAnExistingInstanceInTheSameNamespace(): void
+    {
+        $bundle = $this->runningBundleWithOpenWork();
+        $bundle['workflow']['namespace'] = 'tenant-a';
+        $bundle = $this->resealBundle($bundle);
+        $this->clearWorkflowState();
+        WorkflowInstance::query()->create([
+            'id' => $bundle['workflow']['instance_id'],
+            'namespace' => 'tenant-a',
+            'workflow_class' => $bundle['workflow']['workflow_class'],
+            'workflow_type' => $bundle['workflow']['workflow_type'],
+            'run_count' => 7,
+        ]);
+
+        $report = EmbeddedV2HistoryImport::import($bundle);
+
+        $this->assertSame('imported', $report['status']);
+        $this->assertSame(0, $report['rows']['workflow_instances']);
+        $this->assertSame(1, $report['rows']['workflow_runs']);
+        $instance = WorkflowInstance::query()->findOrFail($bundle['workflow']['instance_id']);
+        $this->assertSame('tenant-a', $instance->namespace);
+        $this->assertSame(7, (int) $instance->run_count);
+        $this->assertSame($bundle['workflow']['run_id'], $instance->current_run_id);
+    }
+
     public function testContractPublishesImportRulesAndAuditMarkers(): void
     {
         $manifest = EmbeddedV2ImportContract::manifest();
@@ -599,6 +833,126 @@ final class EmbeddedV2HistoryImportTest extends TestCase
         );
         $this->assertNull($fallbackUpdate['name']);
         $this->assertSame([], $fallbackUpdate['validation_errors']);
+    }
+
+    /**
+     * @return array{array<string, mixed>, string}
+     */
+    private function messageBundle(string $kind): array
+    {
+        $bundle = $this->runningBundleWithOpenWork();
+        $bundle['workflow']['namespace'] = 'tenant-a';
+        $commandId = (string) Str::ulid();
+        $messageId = (string) Str::ulid();
+        $bundle['commands'] = [[
+            'id' => $commandId,
+            'type' => $kind,
+            'status' => 'accepted',
+            'sequence' => 1,
+            'payload_codec' => CodecRegistry::defaultCodec(),
+            'accepted_at' => now()
+                ->toJSON(),
+        ]];
+        $bundle[$kind === 'signal' ? 'signals' : 'updates'] = [[
+            'id' => $messageId,
+            'command_id' => $commandId,
+            'name' => 'imported-message',
+            'status' => $kind === 'signal' ? 'received' : 'accepted',
+            'arguments' => Serializer::serialize(['fixture']),
+            'payload_codec' => CodecRegistry::defaultCodec(),
+            'received_at' => now()
+                ->toJSON(),
+            'accepted_at' => now()
+                ->toJSON(),
+        ]];
+        if ($kind === 'signal') {
+            $bundle['history_events'][] = [
+                'id' => (string) Str::ulid(),
+                'sequence' => 2,
+                'type' => 'SignalWaitOpened',
+                'payload' => [
+                    'sequence' => 1,
+                    'signal_name' => 'imported-message',
+                    'signal_wait_id' => 'import-wait',
+                ],
+                'recorded_at' => now()
+                    ->toJSON(),
+            ];
+            $bundle['tasks'][0]['payload'] = [
+                'resume_source_kind' => 'workflow_signal',
+                'workflow_signal_id' => $messageId,
+                'signal_name' => 'imported-message',
+                'signal_wait_id' => 'import-wait',
+            ];
+        }
+
+        return [$this->resealBundle($bundle), $messageId];
+    }
+
+    private function otherMessageCommand(string $kind, ?string $namespace): WorkflowCommand
+    {
+        $instance = WorkflowInstance::query()->create([
+            'id' => 'other-' . Str::ulid(),
+            'workflow_type' => 'other',
+            'workflow_class' => 'OtherWorkflow',
+            'namespace' => $namespace,
+            'run_count' => 1,
+        ]);
+        $run = WorkflowRun::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_type' => 'other',
+            'workflow_class' => 'OtherWorkflow',
+            'namespace' => $namespace,
+            'status' => 'waiting',
+            'payload_codec' => CodecRegistry::defaultCodec(),
+        ]);
+
+        return WorkflowCommand::query()->create([
+            'id' => (string) Str::ulid(),
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+            'command_type' => $kind,
+            'status' => 'accepted',
+            'accepted_at' => now(),
+            'message_sequence' => 1,
+        ])->refresh();
+    }
+
+    /**
+     * @param array<string, mixed> $bundle
+     */
+    private function applyImportedMessage(array $bundle, string $kind, string $messageId): void
+    {
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $taskId = $bundle['tasks'][0]['id'];
+        $this->assertTrue($bridge->claimStatus($taskId)['claimed']);
+        $commands = $kind === 'signal' ? [] : [[
+            'type' => 'complete_update',
+            'update_id' => $messageId,
+            'result' => Serializer::serialize('completed'),
+            'payload_codec' => CodecRegistry::defaultCodec(),
+        ]];
+        $result = $bridge->complete($taskId, $commands);
+        $this->assertTrue($result['completed'], json_encode($result));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function workflowStateSnapshot(): array
+    {
+        $snapshot = [];
+        foreach (['workflow_instances', 'workflow_runs', 'workflow_tasks', 'workflow_history_events',
+            'workflow_commands', 'workflow_signal_records', 'workflow_updates', 'workflow_links',
+            'activity_executions', 'activity_attempts', 'workflow_run_timers', 'workflow_failures',
+            'workflow_run_summaries', 'workflow_run_waits', 'workflow_run_timeline_entries',
+            'workflow_run_lineage_entries', 'workflow_run_timer_entries', 'workflow_memos', 'workflow_search_attributes'] as $table) {
+            $snapshot[$table] = DB::table($table)->get()->map(static fn (object $row): array => (array) $row)->all();
+        }
+
+        return $snapshot;
     }
 
     /**
