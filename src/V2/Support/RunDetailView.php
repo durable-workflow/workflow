@@ -45,6 +45,8 @@ final class RunDetailView
 
         $run->loadMissing($relations);
 
+        RunInstanceMetadata::detachForeign($run);
+
         $summary = $run->summary;
         $selectedRun = SelectedRunSnapshot::forRun($run, $timelineLimit);
         $currentRunResolution = $selectedRun['current_run'];
@@ -267,6 +269,7 @@ final class RunDetailView
             'created_at' => $summary?->started_at ?? $run->started_at ?? $run->created_at,
             'updated_at' => $summary?->closed_at ?? $run->last_progress_at ?? $run->updated_at,
             'run_navigation' => ($run->instance?->runs ?? collect())
+                ->filter(static fn (WorkflowRun $instanceRun): bool => $instanceRun->namespace === $run->namespace)
                 ->sortBy('run_number')
                 ->map(static function (WorkflowRun $instanceRun) use ($run, $currentRun): array {
                     $instanceRunSummary = $instanceRun->summary;

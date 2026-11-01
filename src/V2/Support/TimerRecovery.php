@@ -20,14 +20,14 @@ final class TimerRecovery
         $timer = $run->timers->firstWhere('id', $timerId);
 
         if ($timer instanceof WorkflowTimer) {
-            return $timer;
+            return $timer->workflow_run_id === $run->id ? $timer : null;
         }
 
         /** @var WorkflowTimer|null $timer */
         $timer = WorkflowTimer::query()->find($timerId);
 
         if ($timer instanceof WorkflowTimer) {
-            return $timer;
+            return $timer->workflow_run_id === $run->id ? $timer : null;
         }
 
         $snapshot = RunTimerView::timerById($run, $timerId);

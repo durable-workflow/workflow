@@ -112,6 +112,9 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge, ActivityLea
             $execution = is_string($executionId)
                 ? ConfiguredV2Models::query('activity_execution_model', ActivityExecution::class)->find($executionId)
                 : null;
+            if ($execution instanceof ActivityExecution && $execution->workflow_run_id !== $task->workflow_run_id) {
+                $execution = null;
+            }
 
             return [
                 'task_id' => $task->id,
@@ -408,7 +411,10 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge, ActivityLea
         $task = $attempt instanceof ActivityAttempt && is_string(
             $attempt->workflow_task_id
         ) && $attempt->workflow_task_id !== ''
-            ? WorkflowTask::query()->lockForUpdate()->find($attempt->workflow_task_id)
+            ? WorkflowTask::query()
+                ->where('workflow_run_id', $attempt->workflow_run_id)
+                ->lockForUpdate()
+                ->find($attempt->workflow_task_id)
             : null;
 
         return [

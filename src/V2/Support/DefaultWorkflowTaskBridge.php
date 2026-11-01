@@ -28,6 +28,7 @@ use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\CancellationPolicy;
 use Workflow\V2\Enums\ChildCallStatus;
 use Workflow\V2\Enums\CommandOutcome;
+use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\ParentClosePolicy;
@@ -2461,6 +2462,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         /** @var WorkflowCommand|null $command */
         $command = ConfiguredV2Models::query('command_model', WorkflowCommand::class)
             ->whereKey($signal->workflow_command_id)
+            ->where('workflow_instance_id', $run->workflow_instance_id)
+            ->where('workflow_run_id', $run->id)
+            ->where('command_type', CommandType::Signal->value)
             ->first();
 
         $appliedAt = now();
@@ -3140,6 +3144,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         /** @var WorkflowCommand|null $command */
         $command = ConfiguredV2Models::query('command_model', WorkflowCommand::class)
             ->whereKey($signal->workflow_command_id)
+            ->where('workflow_instance_id', $run->workflow_instance_id)
+            ->where('workflow_run_id', $run->id)
+            ->where('command_type', CommandType::Signal->value)
             ->first();
 
         $appliedAt = now();
@@ -3356,6 +3363,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             ? null
             : ConfiguredV2Models::query('command_model', WorkflowCommand::class)
                 ->whereKey($update->workflow_command_id)
+                ->where('workflow_instance_id', $run->workflow_instance_id)
+                ->where('workflow_run_id', $run->id)
+                ->where('command_type', CommandType::Update->value)
                 ->first();
 
         $fallbackCodec = self::payloadCodecForUpdate($update, $run);
@@ -3433,6 +3443,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             ? null
             : ConfiguredV2Models::query('command_model', WorkflowCommand::class)
                 ->whereKey($update->workflow_command_id)
+                ->where('workflow_instance_id', $run->workflow_instance_id)
+                ->where('workflow_run_id', $run->id)
+                ->where('command_type', CommandType::Update->value)
                 ->first();
 
         $message = self::normalizeRequiredString($command['message'] ?? null) ?? 'External update failed';
@@ -5378,8 +5391,30 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             ->get();
 
         $parentRunsToProject = [];
+        $trustedParentReference = null;
 
         foreach ($parentChildLinks as $parentChildLink) {
+            /** @var WorkflowRun|null $parentRun */
+            $parentRun = is_string($parentChildLink->parent_workflow_run_id)
+                && $parentChildLink->parent_workflow_run_id !== ''
+                ? ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                    ->lockForUpdate()
+                    ->find($parentChildLink->parent_workflow_run_id)
+                : null;
+            $requiresImportedEdge = ImportedLineageReferences::imported($run)
+                || ($parentRun instanceof WorkflowRun && ImportedLineageReferences::imported($parentRun));
+            if ($requiresImportedEdge && (! $parentRun instanceof WorkflowRun
+                || ! is_int($parentChildLink->sequence)
+                || ! ImportedLineageReferences::allowsChild(
+                    $parentRun,
+                    $run,
+                    $parentChildLink->sequence,
+                    $childCallId,
+                    true,
+                ))) {
+                continue;
+            }
+
             /** @var WorkflowLink $continuedChildLink */
             $continuedChildLink = WorkflowLink::query()->create([
                 'link_type' => 'child_workflow',
@@ -5393,20 +5428,17 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 'parent_close_policy' => $parentChildLink->parent_close_policy,
             ]);
 
-            if (
-                ! is_string($parentChildLink->parent_workflow_run_id)
-                || $parentChildLink->parent_workflow_run_id === ''
-                || ! is_int($parentChildLink->sequence)
-            ) {
-                continue;
+            if (ImportedLineageReferences::imported($run) && $parentRun instanceof WorkflowRun
+                && is_int($parentChildLink->sequence) && $trustedParentReference === null) {
+                $trustedParentReference = [
+                    'parent_workflow_instance_id' => $parentRun->workflow_instance_id,
+                    'parent_workflow_run_id' => $parentRun->id,
+                    'parent_sequence' => $parentChildLink->sequence,
+                ];
             }
 
-            /** @var WorkflowRun|null $parentRun */
-            $parentRun = ConfiguredV2Models::query('run_model', WorkflowRun::class)
-                ->lockForUpdate()
-                ->find($parentChildLink->parent_workflow_run_id);
-
-            if ($parentRun === null || $parentRun->status->isTerminal()) {
+            if (! $parentRun instanceof WorkflowRun || ! is_int($parentChildLink->sequence)
+                || $parentRun->status->isTerminal()) {
                 continue;
             }
 
@@ -5448,7 +5480,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             ], $parallelMetadata), static fn (mixed $value): bool => $value !== null));
         }
 
-        $parentReference = ChildRunHistory::parentReferenceForRun($run);
+        $parentReference = ImportedLineageReferences::imported($run)
+            ? $trustedParentReference
+            : ChildRunHistory::parentReferenceForRun($run);
 
         WorkflowHistoryEvent::record($continuedRun, HistoryEventType::WorkflowStarted, [
             'workflow_class' => $workflowType,

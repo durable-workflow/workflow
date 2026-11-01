@@ -92,11 +92,11 @@ final class WorkflowRunRetentionCleanup
             );
             $report['updates_deleted'] = self::deleteByAnyRunReference(
                 ConfiguredV2Models::query('update_model', WorkflowUpdate::class),
-                $runId,
+                $lockedRun,
             );
             $report['signals_deleted'] = self::deleteByAnyRunReference(
                 ConfiguredV2Models::query('signal_model', WorkflowSignal::class),
-                $runId,
+                $lockedRun,
             );
             $report['messages_deleted'] = self::deleteByRun(
                 ConfiguredV2Models::query('message_model', WorkflowMessage::class),
@@ -114,7 +114,7 @@ final class WorkflowRunRetentionCleanup
             );
             $report['commands_deleted'] = self::deleteByAnyRunReference(
                 ConfiguredV2Models::query('command_model', WorkflowCommand::class),
-                $runId,
+                $lockedRun,
             );
             $report['failures_deleted'] = self::deleteByRun(
                 ConfiguredV2Models::query('failure_model', WorkflowFailure::class),
@@ -297,9 +297,25 @@ final class WorkflowRunRetentionCleanup
     /**
      * @param Builder<Model> $query
      */
-    private static function deleteByAnyRunReference(Builder $query, string $runId): int
+    private static function deleteByAnyRunReference(Builder $query, WorkflowRun $run): int
     {
+        $runId = (string) $run->getKey();
+
         return $query
+            // A copied diagnostic reference cannot grant deletion authority
+            // over messages owned by a different instance or namespace,
+            // including legacy imports that incorrectly shared an instance.
+            ->where('workflow_instance_id', $run->workflow_instance_id)
+            ->where(static function (Builder $query) use ($run): void {
+                $query->whereHas('run', static fn (Builder $owner): Builder => NamespaceIdentity::constrain(
+                    $owner->where('workflow_instance_id', $run->workflow_instance_id),
+                    $run->namespace,
+                ))->orWhere(static function (Builder $unbound) use ($run): void {
+                    $unbound->whereNull('workflow_run_id')
+                        ->whereHas('instance', static fn (Builder $owner): Builder =>
+                            NamespaceIdentity::constrain($owner, $run->namespace));
+                });
+            })
             ->where(static function (Builder $query) use ($runId): void {
                 $query
                     ->where('workflow_run_id', $runId)
