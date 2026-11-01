@@ -437,6 +437,86 @@ final class HistoryBudgetTest extends TestCase
         );
     }
 
+    #[DataProvider('sqliteNulBudgetPayloads')]
+    public function testSqliteBoundedHistoryCountsNulBearingJsonWithoutChangingPayload(
+        array $payload,
+        bool $staleSummary,
+    ): void {
+        if (DB::connection()->getDriverName() !== 'sqlite') {
+            $this->markTestSkipped('SQLite JSON1 byte-count compatibility regression.');
+        }
+        $run = $this->createRun();
+        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityFailed, [
+            'exception' => $payload,
+        ]);
+        if ($staleSummary) {
+            WorkflowRunSummary::query()->create([
+                'id' => $run->id,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'run_number' => $run->run_number,
+                'is_current_run' => true,
+                'class' => $run->workflow_class,
+                'workflow_type' => $run->workflow_type,
+                'namespace' => $run->namespace,
+                'status' => $run->status->value,
+                'status_bucket' => $run->status->statusBucket()
+->value,
+                'history_event_count' => 0,
+                'history_size_bytes' => 0,
+                'history_fan_out' => 0,
+            ]);
+        }
+        $stored = DB::table('workflow_history_events')->where('workflow_run_id', $run->id)->value('payload');
+        $expected = HistoryBudget::forRun($run);
+        $run->unsetRelation('historyEvents');
+
+        $this->assertSame($expected, HistoryBudget::forRunBounded($run));
+        $this->assertFalse($run->relationLoaded('historyEvents'));
+        $this->assertSame(
+            $stored,
+            DB::table('workflow_history_events')->where('workflow_run_id', $run->id)->value('payload')
+        );
+    }
+
+    public static function sqliteNulBudgetPayloads(): iterable
+    {
+        $payloads = [
+            'leading NUL' => [
+                'message' => "\0start",
+            ],
+            'middle NUL and Unicode' => [
+                'message' => "before\0界/after",
+            ],
+            'trailing NUL' => [
+                'message' => "end\0",
+            ],
+            'object keys and control collision' => [
+                "key\0tail" => 'first',
+                "key\x01tail" => 'second',
+            ],
+            'NUL and literal escapes' => [
+                'message' => "\0 \\u0000 \\\\u0000 \\u0001",
+            ],
+            'nested mixed values' => [
+                'nested' => [
+                    "\0key" => ["\0\x01\u{2028}\u{2029}界\\/\"", '\\u0000', true, null, 1, 1.5],
+                ],
+            ],
+            'literal escapes only' => [
+                'message' => '\\u0000 \\\\u0000 \\u0001',
+            ],
+            'non-NUL control only' => [
+                'message' => "\x01",
+                "key\x01tail" => 'fixture',
+            ],
+        ];
+        foreach ($payloads as $name => $payload) {
+            foreach ([false, true] as $staleSummary) {
+                yield $name . '/' . ($staleSummary ? 'stale' : 'missing') => [$payload, $staleSummary];
+            }
+        }
+    }
+
     #[DataProvider('largeHistorySummaryStates')]
     public function testLargeInlineHistoryFitsDefaultMysqlSortBuffer(bool $staleSummary): void
     {

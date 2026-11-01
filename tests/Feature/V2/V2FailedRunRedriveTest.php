@@ -406,19 +406,35 @@ final class V2FailedRunRedriveTest extends TestCase
 
         $this->assertSame(0, DB::table('workflow_links')->count());
         $this->assertSame('imported', EmbeddedV2HistoryImport::import($sourceExport)['status']);
-        $this->assertSame(1, DB::table('workflow_links')->count());
-        DB::table('workflow_links')->update([
+        $this->assertSame(0, DB::table('workflow_links')->count());
+        // The successor is not present yet, so its edge is deferred. Seed a
+        // conflicting legacy edge to retain the import rollback regression.
+        $exportedLink = $sourceExport['links']['children'][0];
+        $legacyLink = WorkflowLink::query()->create([
+            'id' => $exportedLink['id'],
+            'parent_workflow_instance_id' => $exportedLink['parent_workflow_instance_id'],
+            'parent_workflow_run_id' => $exportedLink['parent_workflow_run_id'],
+            'child_workflow_instance_id' => $exportedLink['child_workflow_instance_id'],
+            'child_workflow_run_id' => $exportedLink['child_workflow_run_id'],
+            'link_type' => $exportedLink['type'],
             'sequence' => 999,
+            'is_primary_parent' => $exportedLink['is_primary_parent'],
         ]);
+        $beforeConflict = $legacyLink->fresh()
+            ->getAttributes();
         $conflictingImport = EmbeddedV2HistoryImport::import($successorExport);
         $this->assertSame('rejected', $conflictingImport['status']);
         $this->assertSame('target.write_failed', $conflictingImport['eligibility']['errors'][0]['rule']);
         $this->assertNull(WorkflowRun::query()->find($successorRunId));
+        $this->assertSame(0, array_sum($conflictingImport['rows']));
+        $this->assertSame($beforeConflict, $legacyLink->fresh()->getAttributes());
         DB::table('workflow_links')->update([
             'sequence' => $redrive['resume_step_sequence'],
         ]);
         $successorImport = EmbeddedV2HistoryImport::import($successorExport);
         $this->assertSame('imported', $successorImport['status'], json_encode($successorImport, JSON_THROW_ON_ERROR));
+        $this->assertSame(1, DB::table('workflow_links')->count());
+        $this->assertSame('already_imported', EmbeddedV2HistoryImport::import($successorExport)['status']);
         $this->assertSame(1, DB::table('workflow_links')->count());
 
         DB::purge();

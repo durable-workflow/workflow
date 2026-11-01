@@ -741,6 +741,81 @@ final class V2ActivityTaskBridgeTest extends TestCase
         $this->assertSame(0, $pinned->fresh()->attempt_count);
     }
 
+    /**
+     * @return iterable<string, array{string, string|null}>
+     */
+    public static function namespaceOwnershipRows(): iterable
+    {
+        foreach (['workflow_tasks', 'workflow_runs', 'workflow_instances'] as $table) {
+            foreach (['other', 'DEFAULT', null, 'default'] as $owner) {
+                yield $table . ' / ' . ($owner ?? 'embedded null') => [$table, $owner];
+            }
+        }
+    }
+
+    #[DataProvider('namespaceOwnershipRows')]
+    public function testNamespacedPollRequiresTheTaskRunAndInstanceOwner(string $table, ?string $owner): void
+    {
+        [$run, , $task] = $this->createActivityTask([
+            'namespace' => 'default',
+        ]);
+        $id = match ($table) {
+            'workflow_tasks' => $task->id,
+            'workflow_runs' => $run->id,
+            'workflow_instances' => $run->workflow_instance_id,
+        };
+        DB::table($table)->where('id', $id)->update([
+            'namespace' => $owner,
+        ]);
+        $before = [
+            $run->instance->fresh()
+                ->getAttributes(),
+            $run->fresh()
+                ->getAttributes(),
+            $task->fresh()
+                ->getAttributes(),
+        ];
+
+        $results = $this->bridge->poll('redis', 'default', 1, null, 'default');
+
+        $this->assertSame($owner === 'default' ? [$task->id] : [], array_column($results, 'task_id'));
+        $this->assertSame(
+            $before,
+            [$run->instance->fresh()->getAttributes(), $run->fresh()->getAttributes(), $task->fresh()->getAttributes()]
+        );
+    }
+
+    /**
+     * @return iterable<string, array{string|null}>
+     */
+    public static function foreignInstanceOwners(): iterable
+    {
+        foreach (['other', 'DEFAULT', null] as $owner) {
+            yield $owner ?? 'embedded null' => [$owner];
+        }
+    }
+
+    #[DataProvider('foreignInstanceOwners')]
+    public function testForeignLegacyTasksCannotFillANamespacedPollWindow(?string $owner): void
+    {
+        [$foreignRun] = $this->createActivityTask([
+            'namespace' => 'default',
+            'priority' => 0,
+        ]);
+        DB::table('workflow_instances')->where('id', $foreignRun->workflow_instance_id)->update([
+            'namespace' => $owner,
+        ]);
+        [, , $ownedTask] = $this->createActivityTask([
+            'namespace' => 'default',
+            'priority' => 1,
+        ]);
+
+        $results = $this->bridge->poll('redis', 'default', 1, 'build-a', 'default', ['test-greeting-activity']);
+
+        $this->assertSame([$ownedTask->id], array_column($results, 'task_id'));
+        $this->assertSame(0, $ownedTask->fresh()->attempt_count);
+    }
+
     public function testPollWithNullFiltersReturnsAllReadyTasks(): void
     {
         $this->createActivityTask();
@@ -1611,6 +1686,15 @@ final class V2ActivityTaskBridgeTest extends TestCase
     private function createActivityTask(array $taskOverrides = []): array
     {
         [$run, $execution] = $this->createActivityExecution();
+
+        if (array_key_exists('namespace', $taskOverrides)) {
+            $run->instance->forceFill([
+                'namespace' => $taskOverrides['namespace'],
+            ])->save();
+            $run->forceFill([
+                'namespace' => $taskOverrides['namespace'],
+            ])->save();
+        }
 
         /** @var WorkflowTask $task */
         $task = WorkflowTask::query()->create(array_merge([

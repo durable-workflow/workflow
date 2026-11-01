@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Database\Eloquent\Builder;
 use RuntimeException;
 use Throwable;
 use Workflow\Serializers\CodecRegistry;
@@ -83,7 +84,16 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge, ActivityLea
         }
 
         if ($namespace !== null) {
-            $query->where('namespace', $namespace);
+            // Legacy imports can disagree with their canonical owner. Exclude
+            // those rows before LIMIT so they cannot hide this owner's work.
+            NamespaceIdentity::constrain($query, $namespace)
+                ->whereHas('run', static function (Builder $run) use ($namespace): void {
+                    NamespaceIdentity::constrain($run, $namespace)
+                        ->whereHas(
+                            'instance',
+                            static fn (Builder $instance) => NamespaceIdentity::constrain($instance, $namespace)
+                        );
+                });
         }
 
         if ($activityTypes !== []) {
@@ -112,6 +122,9 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge, ActivityLea
             $execution = is_string($executionId)
                 ? ConfiguredV2Models::query('activity_execution_model', ActivityExecution::class)->find($executionId)
                 : null;
+            if ($execution instanceof ActivityExecution && $execution->workflow_run_id !== $task->workflow_run_id) {
+                $execution = null;
+            }
 
             return [
                 'task_id' => $task->id,
@@ -408,7 +421,10 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge, ActivityLea
         $task = $attempt instanceof ActivityAttempt && is_string(
             $attempt->workflow_task_id
         ) && $attempt->workflow_task_id !== ''
-            ? WorkflowTask::query()->lockForUpdate()->find($attempt->workflow_task_id)
+            ? WorkflowTask::query()
+                ->where('workflow_run_id', $attempt->workflow_run_id)
+                ->lockForUpdate()
+                ->find($attempt->workflow_task_id)
             : null;
 
         return [
