@@ -8,7 +8,11 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 
-/** @internal Keeps database namespace comparisons consistent with PHP identity. */
+/**
+ * Exact namespace predicates for Eloquent queries and relational comparisons.
+ *
+ * @api Stable class surface consumed by the standalone workflow-server.
+ */
 final class NamespaceIdentity
 {
     public static function columnsEqual(QueryBuilder $query, string $left, string $right): string
