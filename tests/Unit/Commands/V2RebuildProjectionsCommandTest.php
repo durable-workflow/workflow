@@ -949,7 +949,7 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             $table->string('id', 26)
                 ->primary();
             $table->string('workflow_instance_id', 191)
-                ->index();
+                ->index('projection_command_summary_instance_index');
             $table->unsignedInteger('run_number');
             $table->boolean('is_current_run')
                 ->default(false)
@@ -958,7 +958,7 @@ final class V2RebuildProjectionsCommandTest extends TestCase
                 ->default('v2');
             $table->unsignedSmallInteger('projection_schema_version')
                 ->nullable()
-                ->index();
+                ->index('projection_command_summary_schema_index');
             $table->string('class');
             $table->string('workflow_type');
             $table->string('namespace')
