@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Database\Eloquent\Builder;
 use RuntimeException;
 use Throwable;
 use Workflow\Serializers\CodecRegistry;
@@ -83,7 +84,16 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge, ActivityLea
         }
 
         if ($namespace !== null) {
-            $query->where('namespace', $namespace);
+            // Legacy imports can disagree with their canonical owner. Exclude
+            // those rows before LIMIT so they cannot hide this owner's work.
+            NamespaceIdentity::constrain($query, $namespace)
+                ->whereHas('run', static function (Builder $run) use ($namespace): void {
+                    NamespaceIdentity::constrain($run, $namespace)
+                        ->whereHas(
+                            'instance',
+                            static fn (Builder $instance) => NamespaceIdentity::constrain($instance, $namespace)
+                        );
+                });
         }
 
         if ($activityTypes !== []) {
