@@ -47,7 +47,10 @@ use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\MemoPayload;
 use Workflow\V2\Support\PendingUpdateCloser;
 use Workflow\V2\Support\RunDetailView;
+use Workflow\V2\Support\RunListItemView;
 use Workflow\V2\Support\RunSignalView;
+use Workflow\V2\Support\RunSummaryProjectionDrift;
+use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\RunUpdateView;
 use Workflow\V2\Support\TaskRepair;
 use Workflow\V2\Support\TimerRecovery;
@@ -443,6 +446,79 @@ final class EmbeddedV2HistoryImportTest extends TestCase
         foreach (['tenant-a', 'tenant-b', 'TENANT-A', null] as $namespace) {
             yield $namespace ?? 'null' => [$namespace];
         }
+    }
+
+    #[DataProvider('sharedInstanceProjectionPaths')]
+    public function testLegacySharedInstanceProjectionMetadataKeepsNamespaceOwnership(
+        string $path,
+        ?string $namespace,
+    ): void {
+        [$run, $command, $marker] = $this->sharedInstanceMessage('signal', $namespace);
+        $instance = WorkflowInstance::query()->findOrFail($command->workflow_instance_id);
+        $instance->forceFill([
+            'business_key' => $marker,
+            'visibility_labels' => [
+                'fixture' => $marker,
+            ],
+            'current_run_id' => $run->id,
+        ])->save();
+        $summary = $run->summary;
+        $this->assertInstanceOf(WorkflowRunSummary::class, $summary);
+        $summary->forceFill([
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'business_key' => $marker,
+            'visibility_labels' => [
+                'fixture' => $marker,
+            ],
+            'is_current_run' => true,
+            'projection_schema_version' => 2,
+        ])->save();
+        $instanceBefore = $instance->fresh()
+            ->getRawOriginal();
+        $before = $this->workflowStateSnapshot();
+
+        $view = match ($path) {
+            'projection' => RunSummaryProjector::project($run->fresh())->toArray(),
+            'claim' => $this->claimedRunSummary($run),
+            'list' => RunListItemView::fromSummary($summary->fresh()),
+            'export' => HistoryExport::forRun($run->fresh()),
+        };
+
+        if ($namespace === $run->namespace) {
+            $this->assertStringContainsString($marker, json_encode($view, JSON_THROW_ON_ERROR));
+        } else {
+            $this->assertStringNotContainsString($marker, json_encode($view, JSON_THROW_ON_ERROR));
+        }
+        $this->assertSame($instanceBefore, $instance->fresh()->getRawOriginal());
+        if (in_array($path, ['list', 'export'], true)) {
+            $this->assertSame($before, $this->workflowStateSnapshot());
+        }
+    }
+
+    public static function sharedInstanceProjectionPaths(): iterable
+    {
+        foreach (['projection', 'claim', 'list', 'export'] as $path) {
+            foreach (['tenant-a', 'tenant-b', 'TENANT-A', null] as $namespace) {
+                yield $path . '/' . ($namespace ?? 'null') => [$path, $namespace];
+            }
+        }
+    }
+
+    #[DataProvider('sharedInstanceNamespaces')]
+    public function testLegacySharedInstanceProjectionRepairDoesNotRemainStale(?string $namespace): void
+    {
+        [$run, $command] = $this->sharedInstanceMessage('signal', $namespace);
+        $instance = WorkflowInstance::query()->findOrFail($command->workflow_instance_id);
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+        $before = $instance->fresh()
+            ->getRawOriginal();
+
+        RunSummaryProjector::project($run->fresh());
+
+        $this->assertSame(0, RunSummaryProjectionDrift::staleSummaryQuery(runIds: [$run->id])->count());
+        $this->assertSame($before, $instance->fresh()->getRawOriginal());
     }
 
     #[DataProvider('sharedInstanceNamespaces')]
@@ -1789,6 +1865,21 @@ final class EmbeddedV2HistoryImportTest extends TestCase
         ])->save();
 
         return [$run->fresh(), $command->fresh(), $marker];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function claimedRunSummary(WorkflowRun $run): array
+    {
+        $task = $run->tasks()
+            ->where('task_type', TaskType::Workflow->value)->sole();
+        $claim = app(DefaultWorkflowTaskBridge::class)->claimStatus($task->id);
+        $this->assertTrue($claim['claimed'], json_encode($claim, JSON_THROW_ON_ERROR));
+
+        return $run->summary()
+            ->firstOrFail()
+            ->toArray();
     }
 
     /**

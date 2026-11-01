@@ -69,6 +69,7 @@ final class HistoryExport
             'childLinks',
         ]);
 
+        RunInstanceMetadata::detachForeign($run);
         RunCommandContract::forRun($run);
 
         $summary = $run->summary;

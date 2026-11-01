@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 2.15.11 - 2026-10-31
+## 2.15.11 - 2026-11-01
 
 - Keep embedded history imports and their lineage within the target namespace.
   Reject copied references to another workflow's rows and restore missing
@@ -16,6 +16,9 @@
   Preserve valid same-namespace message handoffs and navigation (#928).
 - Require exact run or unbound-instance namespace ownership before pruning
   messages with copied requested or resolved run references (#928).
+- Keep foreign instance metadata out of legacy run exports, lists and summary
+  projections. Advance the local summary cache schema and keep namespace-scoped
+  projection rebuilds idempotent without rewriting foreign durable rows (#928).
 - Run history imports and lineage repairs on the configured storage connection.
   PostgreSQL write imports require their own serializable transaction and
   retry serialization conflicts up to three complete attempts. Preview imports

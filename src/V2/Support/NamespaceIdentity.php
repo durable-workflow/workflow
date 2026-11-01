@@ -6,10 +6,28 @@ namespace Workflow\V2\Support;
 
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Query\Builder as QueryBuilder;
 
 /** @internal Keeps database namespace comparisons consistent with PHP identity. */
 final class NamespaceIdentity
 {
+    public static function columnsEqual(QueryBuilder $query, string $left, string $right): string
+    {
+        $left = $query->getGrammar()
+            ->wrap($left);
+        $right = $query->getGrammar()
+            ->wrap($right);
+        $comparison = match ($query->getConnection()->getDriverName()) {
+            'mysql', 'mariadb' => "CAST({$left} AS BINARY) = CAST({$right} AS BINARY)",
+            'sqlite' => "CAST({$left} AS BLOB) = CAST({$right} AS BLOB)",
+            'pgsql' => "CAST({$left} AS TEXT) COLLATE \"C\" = CAST({$right} AS TEXT) COLLATE \"C\"",
+            'sqlsrv' => "CONVERT(varbinary(max), {$left}) = CONVERT(varbinary(max), {$right})",
+            default => "{$left} = {$right}",
+        };
+
+        return "({$comparison} OR ({$left} IS NULL AND {$right} IS NULL))";
+    }
+
     /**
      * @template TModel of Model
      * @param Builder<TModel> $query

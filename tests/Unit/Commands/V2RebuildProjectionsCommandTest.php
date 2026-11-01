@@ -907,6 +907,8 @@ final class V2RebuildProjectionsCommandTest extends TestCase
             $table->unsignedInteger('run_number');
             $table->string('workflow_class');
             $table->string('workflow_type');
+            $table->string('namespace')
+                ->nullable();
             $table->string('status');
             $table->string('closed_reason')
                 ->nullable();
