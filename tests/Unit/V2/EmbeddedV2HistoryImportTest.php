@@ -1042,6 +1042,121 @@ final class EmbeddedV2HistoryImportTest extends TestCase
         $this->assertSame($afterTransfer, $this->workflowStateSnapshot());
     }
 
+    public function testTheTransactionalInstanceLookupRejectsCaseFoldedConcurrentInstance(): void
+    {
+        $bundle = $this->runningBundleWithOpenWork();
+        $bundle['workflow']['namespace'] = 'tenant-a';
+        $bundle = $this->resealBundle($bundle);
+        $this->clearWorkflowState();
+        $foreignBefore = null;
+        $inserted = false;
+        DB::listen(static function ($query) use (&$inserted, &$foreignBefore, $bundle): void {
+            if ($inserted || DB::transactionLevel() !== 0
+                || ! str_contains($query->sql, 'select') || ! str_contains($query->sql, 'workflow_instances')) {
+                return;
+            }
+            // The preflight did not find an instance. Simulate another actor
+            // creating the same ID in a namespace that compares equal only
+            // under a case-insensitive database collation.
+            $inserted = true;
+            $instance = WorkflowInstance::query()->create([
+                'id' => $bundle['workflow']['instance_id'],
+                'namespace' => 'TENANT-A',
+                'workflow_class' => $bundle['workflow']['workflow_class'],
+                'workflow_type' => $bundle['workflow']['workflow_type'],
+                'run_count' => 7,
+            ]);
+            $foreignBefore = $instance->fresh()
+                ->getAttributes();
+        });
+
+        $report = EmbeddedV2HistoryImport::import($bundle);
+
+        $this->assertTrue($inserted);
+        $this->assertSame('rejected', $report['status']);
+        $this->assertContains('target.write_failed', array_column($report['eligibility']['errors'], 'rule'));
+        $this->assertSame(0, array_sum($report['rows']));
+        $this->assertSame($foreignBefore, WorkflowInstance::query()
+            ->findOrFail($bundle['workflow']['instance_id'])
+            ->getAttributes());
+    }
+
+    public function testTheTransactionalInstanceLookupAcceptsSameNamespaceConcurrentInstance(): void
+    {
+        $bundle = $this->runningBundleWithOpenWork();
+        $bundle['workflow']['namespace'] = 'tenant-a';
+        $bundle = $this->resealBundle($bundle);
+        $this->clearWorkflowState();
+        $inserted = false;
+        DB::listen(static function ($query) use (&$inserted, $bundle): void {
+            if ($inserted || DB::transactionLevel() !== 0
+                || ! str_contains($query->sql, 'select') || ! str_contains($query->sql, 'workflow_instances')) {
+                return;
+            }
+            $inserted = true;
+            WorkflowInstance::query()->create([
+                'id' => $bundle['workflow']['instance_id'],
+                'namespace' => 'tenant-a',
+                'workflow_class' => $bundle['workflow']['workflow_class'],
+                'workflow_type' => $bundle['workflow']['workflow_type'],
+                'business_key' => 'preserved-concurrent-instance',
+                'visibility_labels' => [
+                    'fixture' => 'preserved',
+                ],
+                'run_count' => 7,
+            ]);
+        });
+
+        $report = EmbeddedV2HistoryImport::import($bundle);
+
+        $this->assertTrue($inserted);
+        $this->assertSame('imported', $report['status']);
+        $instance = WorkflowInstance::query()->findOrFail($bundle['workflow']['instance_id']);
+        $this->assertSame('tenant-a', $instance->namespace);
+        $this->assertSame($bundle['workflow']['run_id'], $instance->current_run_id);
+        $this->assertSame(7, (int) $instance->run_count);
+        $this->assertSame('preserved-concurrent-instance', $instance->business_key);
+        $this->assertSame([
+            'fixture' => 'preserved',
+        ], $instance->visibility_labels);
+        $before = $this->workflowStateSnapshot();
+        $this->assertSame('already_imported', EmbeddedV2HistoryImport::import($bundle)['status']);
+        $this->assertSame($before, $this->workflowStateSnapshot());
+    }
+
+    public function testImportRejectsAnInstanceWhoseNamespaceChangesWhenLoadedForWrite(): void
+    {
+        $bundle = $this->runningBundleWithOpenWork();
+        $bundle['workflow']['namespace'] = 'tenant-a';
+        $bundle = $this->resealBundle($bundle);
+        $this->clearWorkflowState();
+        WorkflowInstance::query()->create([
+            'id' => $bundle['workflow']['instance_id'],
+            'namespace' => 'tenant-a',
+            'workflow_class' => $bundle['workflow']['workflow_class'],
+            'workflow_type' => $bundle['workflow']['workflow_type'],
+            'run_count' => 7,
+        ]);
+        $before = $this->workflowStateSnapshot();
+        $changed = false;
+        WorkflowInstance::retrieved(static function (WorkflowInstance $instance) use (&$changed, $bundle): void {
+            if (! $changed && $instance->id === $bundle['workflow']['instance_id']
+                && $instance->getConnection()
+                    ->transactionLevel() !== 0) {
+                $changed = true;
+                $instance->namespace = 'TENANT-A';
+            }
+        });
+
+        $report = EmbeddedV2HistoryImport::import($bundle);
+
+        $this->assertTrue($changed);
+        $this->assertSame('rejected', $report['status']);
+        $this->assertContains('target.write_failed', array_column($report['eligibility']['errors'], 'rule'));
+        $this->assertSame(0, array_sum($report['rows']));
+        $this->assertSame($before, $this->workflowStateSnapshot());
+    }
+
     public function testItCanImportANewRunIntoAnExistingInstanceInTheSameNamespace(): void
     {
         $bundle = $this->runningBundleWithOpenWork();

@@ -329,8 +329,7 @@ final class EmbeddedV2HistoryImport
             : null;
 
         /** @var WorkflowInstance|null $instance */
-        $instance = WorkflowInstance::query()
-            ->where('namespace', $namespace)
+        $instance = NamespaceIdentity::constrain(WorkflowInstance::query(), $namespace)
             ->lockForUpdate()
             ->find($instanceId);
 
@@ -352,6 +351,10 @@ final class EmbeddedV2HistoryImport
                 'updated_at' => $importedAt,
             ]);
             $rows['workflow_instances']++;
+        }
+
+        if ($instance->namespace !== $namespace) {
+            throw new InvalidArgumentException('The stored workflow instance no longer matches the target namespace.');
         }
 
         /** @var WorkflowRun $run */
