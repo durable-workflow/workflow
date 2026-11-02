@@ -8,8 +8,8 @@ use DateTimeInterface;
 use DateTimeZone;
 use Illuminate\Support\Carbon;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\TestCase;
 use ReflectionMethod;
-use Tests\TestCase;
 use Workflow\V2\Models\WorkflowSchedule;
 
 /**
@@ -141,14 +141,12 @@ final class WorkflowScheduleDaylightSavingTest extends TestCase
         string $startUtc,
         array $expected,
     ): void {
-        $schedule = new WorkflowSchedule();
-        $schedule->spec = [
-            'cron_expressions' => [$expression],
-            'timezone' => $timezone,
-        ];
-
         $this->assertSame($expected, $this->occurrences(
-            static fn (DateTimeInterface $after): ?DateTimeInterface => $schedule->computeNextFireAt($after),
+            static fn (DateTimeInterface $after): ?DateTimeInterface => WorkflowSchedule::nextCronOccurrence(
+                $expression,
+                $after,
+                $timezone
+            ),
             $startUtc,
             count($expected),
         ));
