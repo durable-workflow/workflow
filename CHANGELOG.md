@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 2.15.13 - 2026-11-02
+
+- Fire a cron schedule once for a wall-clock time that repeats when daylight
+  saving time ends. A daily `30 1 * * *` schedule in `America/New_York` no
+  longer starts a second run at 01:30 EST on the day clocks go back, and
+  `30 2 * * *` no longer fires early inside the repeated hour. A time skipped
+  when clocks go forward still fires once, moved forward by the gap (02:30
+  runs at 03:30). Schedules whose hour field selects every hour (`*`,
+  `0-23` or a step of one) keep running on elapsed time, so hourly and
+  sub-hourly schedules fire through both passes of the repeated hour (#882).
+
 ## 2.15.11 - 2026-11-01
 
 - Keep embedded history imports and their lineage within the target namespace.

@@ -358,9 +358,16 @@ not convert UTC values back into ambiguous local strings.
 A cron expression selects local minutes in its schedule timezone. A minute
 missing from a spring clock change fires at the corresponding minute after
 the gap. For example, New York `30 2 * * *` on 2026-03-08 fires at 03:30
-EDT, or 07:30 UTC. A repeated minute in the fall fires at both distinct UTC
-instants. New York `30 1 * * *` on 2026-11-01 fires at 05:30 and 06:30 UTC.
-The same rules apply to other IANA timezones, including Europe/Kyiv.
+EDT, or 07:30 UTC.
+
+A minute repeated by a fall clock change fires once, at its first
+(pre-transition) instant, when the hour field names specific hours. New York
+`30 1 * * *` on 2026-11-01 fires at 05:30 UTC only, and `30 2 * * *` fires
+once at 02:30 EST, or 07:30 UTC. An hour field that selects every hour (`*`,
+`0-23` or a step of one) runs on elapsed time instead: `*/15 * * * *` keeps
+firing every 15 minutes through both passes of the repeated hour. Use UTC when a fixed interval matters more than local
+wall-clock time. The same rules apply to other IANA timezones, including
+Europe/Kyiv.
 
 Each nominal UTC occurrence may start at most one workflow, whether it is
 reached by a scheduled tick, buffer drain, or backfill. Backfill covers the
