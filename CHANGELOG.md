@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Do not export a retention-pruned run as complete history. After
+  `WorkflowRunRetentionCleanup::pruneRun()`, `HistoryExport::forRun()` sets
+  `history_complete` to `false`, adds `workflow.details_state: "pruned"` and
+  `workflow.details_pruned_at`, and appends `:details-pruned:{time}` to the
+  `dedupe_key`, so the post-prune export can't be mistaken for the full export
+  taken before cleanup. Every bundle now carries `details_state`; runs that
+  were never pruned keep their existing dedupe key. Bundle verification reports
+  pruned bundles as `history.details_pruned`, so replay verification fails
+  them, and history import rejects them (#856).
 - Drop Laravel 9 from the supported `laravel/framework` constraint, which is
   now `^10.50.4|^11.56.1|^12.69.0|^13.30.0`. Laravel 9 has no fix for the
   TokenGuard advisory GHSA-f9x3-7vq9-cph6. Composer keeps Laravel 9
