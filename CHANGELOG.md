@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Persist `StartOptions::withPriority()` and `withFairness()` on runs started
+  through the embedded `WorkflowStub`; they were accepted but not stored, so
+  embedded runs always used the default priority and fairness class (#971).
 - Give every task of a run the run's priority, fairness key and fairness
   weight. Workflow tasks that resume a run after a timer, signal, update,
   child or activity outcome, timer tasks, and repair tasks no longer fall

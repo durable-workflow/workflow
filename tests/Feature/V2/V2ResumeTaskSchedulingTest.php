@@ -42,6 +42,7 @@ final class V2ResumeTaskSchedulingTest extends TestCase
         $workflow->start(60, $this->urgentStart());
         $runId = (string) $workflow->runId();
 
+        $this->assertSame(self::RUN_SCHEDULING, $this->runFields($runId));
         $this->assertSame([self::RUN_SCHEDULING], $this->scheduling($runId, TaskType::Workflow));
 
         $this->runReady($runId, TaskType::Workflow);
@@ -72,6 +73,9 @@ final class V2ResumeTaskSchedulingTest extends TestCase
         $workflow->start($this->urgentStart());
         $runId = (string) $workflow->runId();
 
+        $this->assertSame(self::RUN_SCHEDULING, $this->runFields($runId));
+        $this->assertSame([self::RUN_SCHEDULING], $this->scheduling($runId, TaskType::Workflow));
+
         $this->runReady($runId, TaskType::Workflow);
         $workflow->signal('name-provided', 'Taylor');
 
@@ -89,6 +93,7 @@ final class V2ResumeTaskSchedulingTest extends TestCase
         $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'scheduling-explicit');
         $workflow->start(60, $this->urgentStart());
         $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $this->assertSame(self::RUN_SCHEDULING, $this->runFields($run->id));
 
         $explicit = WorkflowTask::query()->create([
             'workflow_run_id' => $run->id,
@@ -165,6 +170,7 @@ final class V2ResumeTaskSchedulingTest extends TestCase
         $workflow->start(60);
         $runId = (string) $workflow->runId();
 
+        $this->assertSame([5, null, 1], $this->runFields($runId));
         $this->runReady($runId, TaskType::Workflow);
 
         $this->assertSame([[5, null, 1]], $this->scheduling($runId, TaskType::Workflow));
@@ -220,6 +226,16 @@ final class V2ResumeTaskSchedulingTest extends TestCase
             ->map(fn (WorkflowTask $task): array => $this->fields($task))
             ->values()
             ->all();
+    }
+
+    /**
+     * @return array{int|null, string|null, int|null}
+     */
+    private function runFields(string $runId): array
+    {
+        $run = WorkflowRun::query()->findOrFail($runId);
+
+        return [$run->priority, $run->fairness_key, $run->fairness_weight];
     }
 
     /**
