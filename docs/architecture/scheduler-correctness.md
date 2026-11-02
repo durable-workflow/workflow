@@ -307,6 +307,33 @@ acceleration-layer cooperation.
   with explicit health; this contract requires that the scheduler-role
   surface NOT depend on cache coherence for deduplicated firing.
 
+### Pass size and bursts
+
+Each `workflow:v2:schedule-tick` pass starts at most `limit` due
+schedules and, separately, drains at most `limit` buffered actions.
+`limit` comes from the command's `--limit` option, otherwise from
+`workflows.v2.schedules.tick_limit` (`DW_V2_SCHEDULE_TICK_LIMIT`),
+and defaults to 100. A value that is not a positive integer makes the
+command fail without evaluating any schedule; it is never replaced by
+another size.
+
+Within a pass, both batches are shared round-robin across namespaces:
+one schedule from each namespace in turn, starting with the namespace
+whose oldest candidate is oldest, and oldest first within a namespace
+(by `next_fire_at` for due schedules, `updated_at` for buffered
+actions). One busy namespace therefore cannot hold back another.
+
+Due schedules beyond `limit` stay due and are selected by the next
+pass. When `N` schedules fall due together, every one fires once
+within `ceil(N / limit)` passes. With the every-minute recipe the last
+of them starts up to `ceil(N / limit) - 1` minutes after the first, so
+set `limit` at or above the largest burst you expect. Under sustained overload, a schedule
+whose occurrences fall due faster than it is reached fires once for
+its oldest missed occurrence and then resumes from the next future
+occurrence, so the occurrences in between are skipped. Alert on the
+operator metrics `schedules.missed`, `schedules.oldest_overdue_at` and
+`schedules.max_overdue_ms`, which read due schedules from durable rows.
+
 If the acceleration layer is unavailable, scheduled workflows
 continue to fire at their next tick cadence. If the acceleration
 layer is propagating stale signals, the scheduler still reads
@@ -502,6 +529,9 @@ and a `workflows.v2.*` config path.
   `DW_V2_TASK_REPAIR_SCAN_LIMIT`, and
   `DW_V2_TASK_REPAIR_FAILURE_BACKOFF_MAX_SECONDS` —
   bound the durable-state redelivery loop.
+- `DW_V2_SCHEDULE_TICK_LIMIT` /
+  `workflows.v2.schedules.tick_limit` — schedule-tick pass size
+  (default 100; see "Pass size and bursts").
 
 None of these keys change the correctness substrate. They tune
 how fast degraded acceleration is detected and how fast durable
