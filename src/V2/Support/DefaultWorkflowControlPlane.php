@@ -135,7 +135,17 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 return;
             }
 
-            if ($source->memos()->exists() || $source->searchAttributes()->exists()) {
+            // Start-time memos and search attributes carry to the successor.
+            // Values upserted by workflow code belong to the replayed prefix,
+            // which redrive does not copy yet.
+            if (
+                $source->memos()
+                    ->where('upserted_at_sequence', '>', 0)
+                    ->exists()
+                || $source->searchAttributes()
+                    ->where('upserted_at_sequence', '>', 0)
+                    ->exists()
+            ) {
                 $result['reason'] = 'unsupported_visibility_metadata';
                 $result['status'] = 409;
 
@@ -178,11 +188,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 ? $startedEvent->payload
                 : [];
             unset($startedPayload['command'], $startedPayload['task']);
-            if (
-                ! empty($startedPayload['memo'])
-                || ! empty($startedPayload['search_attributes'])
-                || ! empty($startedPayload['parent_workflow_run_id'])
-            ) {
+            if (! empty($startedPayload['parent_workflow_run_id'])) {
                 $result['reason'] = 'unsupported_source_metadata';
                 $result['status'] = 409;
 
@@ -302,6 +308,9 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                     'workflow_link_id' => $link->id,
                 ],
             ), null, $command);
+
+            app(MemoUpsertService::class)->inheritFromParent($source, $continuedRun, 1);
+            app(SearchAttributeUpsertService::class)->inheritFromParent($source, $continuedRun, 1);
 
             foreach ($plan['completed'] as $completion) {
                 WorkflowHistoryEvent::record($continuedRun, HistoryEventType::ActivityCompleted, [

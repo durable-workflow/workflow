@@ -60,12 +60,36 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
         string $reason,
         int $status
     ): void {
-        $source = $this->failedSource();
+        $source = $this->failedSource(match ($case) {
+            'memo upserted by workflow code' => [
+                'memo' => [
+                    'order' => [0, false, ''],
+                ],
+            ],
+            'search attribute upserted by workflow code' => [
+                'search_attributes' => [
+                    'attempt' => 0,
+                ],
+            ],
+            default => [],
+        });
         $instanceId = $source->workflow_instance_id;
         $runId = $source->id;
         $options = $this->redriveOptions();
 
         switch ($case) {
+            case 'memo upserted by workflow code':
+                $source->memos()
+                    ->update([
+                        'upserted_at_sequence' => 2,
+                    ]);
+                break;
+            case 'search attribute upserted by workflow code':
+                $source->searchAttributes()
+                    ->update([
+                        'upserted_at_sequence' => 2,
+                    ]);
+                break;
             case 'long ASCII request':
                 $options['request_id'] = str_repeat('r', 192);
                 break;
@@ -149,6 +173,9 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
             yield $case => [$case, 'run_not_found', 404];
         }
         yield 'historical run' => ['historical run', 'source_run_not_current', 409];
+        foreach (['memo upserted by workflow code', 'search attribute upserted by workflow code'] as $case) {
+            yield $case => [$case, 'unsupported_visibility_metadata', 409];
+        }
         foreach (['stored arguments', 'child workflow link'] as $case) {
             yield $case => [$case, 'unsupported_source_link_or_payload', 409];
         }
