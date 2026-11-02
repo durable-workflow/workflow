@@ -29,6 +29,7 @@ use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\EmbeddedV2HistoryImport;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\RunActivityView;
+use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\WorkflowStub;
 
@@ -376,6 +377,47 @@ final class V2FailedRunRedriveTest extends TestCase
         $this->assertSame(1, WorkflowRun::query()->where('workflow_instance_id', 'redrive-ambiguous-1')->count());
     }
 
+    public function testRunDetailAndDescribeReportTheRedriveDecision(): void
+    {
+        WorkflowStub::fake();
+        $controlPlane = app(WorkflowControlPlane::class);
+
+        $workflow = WorkflowStub::make(TestRedriveWorkflow::class, 'redrive-report-1');
+        $workflow->start('Taylor');
+        $this->assertTrue($workflow->refresh()->failed());
+        $failedRunId = $workflow->runId();
+
+        $this->assertRedriveAction($controlPlane, 'redrive-report-1', $failedRunId, true, null);
+
+        $result = $controlPlane->redrive('redrive-report-1', $failedRunId);
+        $this->assertTrue($result['accepted'], (string) $result['reason']);
+
+        $this->assertRedriveAction($controlPlane, 'redrive-report-1', $failedRunId, false, 'already_redriven');
+        $this->assertRedriveAction(
+            $controlPlane,
+            'redrive-report-1',
+            $result['workflow_run_id'],
+            false,
+            'run_not_failed',
+        );
+
+        $ambiguous = WorkflowStub::make(TestThrowAfterGreetingWorkflow::class, 'redrive-report-2');
+        $ambiguous->start('Taylor');
+        $this->assertTrue($ambiguous->refresh()->failed());
+
+        $this->assertRedriveAction(
+            $controlPlane,
+            'redrive-report-2',
+            $ambiguous->runId(),
+            false,
+            'unrecorded_failure_boundary',
+        );
+        $this->assertSame(
+            'unrecorded_failure_boundary',
+            $controlPlane->redrive('redrive-report-2', $ambiguous->runId())['reason'],
+        );
+    }
+
     public function testFailedSuccessorCanBeRedrivenAgainWithoutRepeatingCompletedActivity(): void
     {
         config()->set('workflows.v2.testing.redrive_failures_before_success', 2);
@@ -539,5 +581,27 @@ final class V2FailedRunRedriveTest extends TestCase
             'completed' => true,
             'result' => $expectedOutput,
         ], json_decode($coldReplay->getOutput(), true, flags: JSON_THROW_ON_ERROR));
+    }
+
+    private function assertRedriveAction(
+        WorkflowControlPlane $controlPlane,
+        string $instanceId,
+        string $runId,
+        bool $allowed,
+        ?string $reason,
+    ): void {
+        $detail = RunDetailView::forRun(WorkflowRun::query()->findOrFail($runId));
+        $this->assertSame($allowed, $detail['can_redrive'] ?? null, "run detail can_redrive for {$runId}");
+        $this->assertSame($reason, $detail['redrive_blocked_reason'] ?? 'absent', "run detail reason for {$runId}");
+
+        $describe = $controlPlane->describe($instanceId, [
+            'run_id' => $runId,
+        ]);
+        $this->assertSame($allowed, $describe['actions']['can_redrive'] ?? null, "describe can_redrive for {$runId}");
+        $this->assertSame(
+            $reason,
+            $describe['actions']['redrive_blocked_reason'] ?? 'absent',
+            "describe reason for {$runId}",
+        );
     }
 }
