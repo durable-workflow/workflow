@@ -60,20 +60,7 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
         string $reason,
         int $status
     ): void {
-        $startOptions = match ($case) {
-            'memo rows' => [
-                'memo' => [
-                    'order' => [0, false, ''],
-                ],
-            ],
-            'search attribute rows' => [
-                'search_attributes' => [
-                    'attempt' => 0,
-                ],
-            ],
-            default => [],
-        };
-        $source = $this->failedSource($startOptions);
+        $source = $this->failedSource();
         $instanceId = $source->workflow_instance_id;
         $runId = $source->id;
         $options = $this->redriveOptions();
@@ -126,20 +113,11 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
                     'is_primary_parent' => true,
                 ]);
                 break;
-            case 'recorded memo':
-            case 'recorded search attributes':
             case 'recorded parent':
                 $event = $this->event($source, HistoryEventType::WorkflowStarted);
-                $field = match ($case) {
-                    'recorded memo' => 'memo',
-                    'recorded search attributes' => 'search_attributes',
-                    default => 'parent_workflow_run_id',
-                };
                 $event->forceFill([
                     'payload' => array_merge($event->payload, [
-                        $field => $field === 'parent_workflow_run_id' ? 'parent-run' : [
-                            'order' => '42',
-                        ],
+                        'parent_workflow_run_id' => 'parent-run',
                     ]),
                 ])->save();
                 break;
@@ -171,20 +149,40 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
             yield $case => [$case, 'run_not_found', 404];
         }
         yield 'historical run' => ['historical run', 'source_run_not_current', 409];
-        foreach (['memo rows', 'search attribute rows'] as $case) {
-            yield $case => [$case, 'unsupported_visibility_metadata', 409];
-        }
         foreach (['stored arguments', 'child workflow link'] as $case) {
             yield $case => [$case, 'unsupported_source_link_or_payload', 409];
         }
-        foreach (['recorded memo', 'recorded search attributes', 'recorded parent'] as $case) {
-            yield $case => [$case, 'unsupported_source_metadata', 409];
-        }
+        yield 'recorded parent' => ['recorded parent', 'unsupported_source_metadata', 409];
         yield 'reused request on failed successor' => [
             'reused request on failed successor',
             'request_id_already_used',
             409,
         ];
+    }
+
+    public function testServiceRunMemoAndSearchAttributeRowsCarryToTheRedriveSuccessor(): void
+    {
+        $source = $this->failedSource([
+            'memo' => [
+                'order' => [0, false, ''],
+            ],
+            'search_attributes' => [
+                'attempt' => 0,
+            ],
+        ]);
+        $sourceMemos = $source->typedMemos();
+        $sourceAttributes = $source->typedSearchAttributes();
+        $this->assertNotSame([], $sourceMemos);
+        $this->assertNotSame([], $sourceAttributes);
+
+        $result = $this->controlPlane->redrive($source->workflow_instance_id, $source->id, $this->redriveOptions());
+
+        $this->assertTrue($result['accepted'], (string) $result['reason']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame($sourceMemos, $successor->typedMemos());
+        $this->assertSame($sourceAttributes, $successor->typedSearchAttributes());
+        $this->assertSame($sourceMemos, $source->fresh()->typedMemos());
+        $this->assertSame($sourceAttributes, $source->fresh()->typedSearchAttributes());
     }
 
     #[DataProvider('unsafeHistories')]
