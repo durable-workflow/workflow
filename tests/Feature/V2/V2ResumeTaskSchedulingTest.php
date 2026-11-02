@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Str;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\TestCase;
@@ -122,6 +123,65 @@ final class V2ResumeTaskSchedulingTest extends TestCase
         ]);
 
         $this->assertSame([2, 'override', 3], $this->fields($retry->fresh()));
+    }
+
+    public function testAnotherRunsActivityOptionsNeverApply(): void
+    {
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'scheduling-fenced');
+        $workflow->start(60, $this->urgentStart());
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+
+        $other = WorkflowStub::make(TestTimerWorkflow::class, 'scheduling-other');
+        $other->start(60);
+        $foreignExecution = ActivityExecution::query()->create([
+            'workflow_run_id' => $other->runId(),
+            'sequence' => 99,
+            'activity_class' => 'example.activity',
+            'activity_type' => 'example.activity',
+            'status' => 'pending',
+            'activity_options' => [
+                'priority' => 2,
+                'fairness_key' => 'foreign',
+                'fairness_weight' => 9,
+            ],
+        ]);
+
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'namespace' => $run->namespace,
+            'task_type' => TaskType::Activity->value,
+            'status' => TaskStatus::Cancelled->value,
+            'payload' => [
+                'activity_execution_id' => $foreignExecution->id,
+            ],
+        ]);
+
+        $this->assertSame(self::RUN_SCHEDULING, $this->fields($task->fresh()));
+    }
+
+    public function testRunWithoutSchedulingOptionsKeepsTheDefaults(): void
+    {
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'scheduling-default');
+        $workflow->start(60);
+        $runId = (string) $workflow->runId();
+
+        $this->runReady($runId, TaskType::Workflow);
+
+        $this->assertSame([[5, null, 1]], $this->scheduling($runId, TaskType::Workflow));
+        $this->assertSame([[5, null, 1]], $this->scheduling($runId, TaskType::Timer));
+    }
+
+    public function testTaskForAMissingRunKeepsTheColumnDefaults(): void
+    {
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => (string) Str::ulid(),
+            'namespace' => 'default',
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Cancelled->value,
+            'payload' => [],
+        ]);
+
+        $this->assertSame([5, null, 1], $this->fields($task->fresh()));
     }
 
     private function urgentStart(): StartOptions

@@ -80,14 +80,16 @@ class WorkflowTask extends Model
             return;
         }
 
-        $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)->find($runId);
+        // The relation resolves on this task's storage connection.
+        $run = $this->run()
+            ->first();
 
         if (! $run instanceof WorkflowRun) {
             return;
         }
 
         $fields = $this->task_type === TaskType::Activity
-            ? TaskSchedulingFields::forActivity($run, $this->activityExecution())
+            ? TaskSchedulingFields::forActivity($run, $this->activityExecution($run))
             : TaskSchedulingFields::forRun($run);
 
         foreach ($missing as $field) {
@@ -95,7 +97,11 @@ class WorkflowTask extends Model
         }
     }
 
-    private function activityExecution(): ?ActivityExecution
+    /**
+     * The activity execution named by the payload, only when it belongs to
+     * the same run; another run's per-call options never apply.
+     */
+    private function activityExecution(WorkflowRun $run): ?ActivityExecution
     {
         $payload = is_array($this->payload) ? $this->payload : [];
         $executionId = $payload['activity_execution_id'] ?? null;
@@ -104,8 +110,13 @@ class WorkflowTask extends Model
             return null;
         }
 
-        $execution = ConfiguredV2Models::query('activity_execution_model', ActivityExecution::class)
-            ->find($executionId);
+        $execution = $this->newRelatedInstance(
+            ConfiguredV2Models::resolve('activity_execution_model', ActivityExecution::class)
+        )
+            ->newQuery()
+            ->whereKey($executionId)
+            ->where('workflow_run_id', $run->getKey())
+            ->first();
 
         return $execution instanceof ActivityExecution ? $execution : null;
     }
