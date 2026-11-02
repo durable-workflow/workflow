@@ -119,36 +119,7 @@ final class ReplayDiff
                 ],
             );
         } catch (Throwable $exception) {
-            $recorded = self::recordedFailure($run);
-
-            // A run that failed because workflow code threw replays to that
-            // same exception. Reproducing the recorded failure is a faithful
-            // replay; any other exception is still an unexpected error.
-            if ($recorded !== null && self::reproducesFailure($recorded, $exception, $compareFailureMessage)) {
-                return $this->report(
-                    status: self::STATUS_REPLAYED,
-                    reason: self::REASON_NONE,
-                    context: $context,
-                    replay: [
-                        'sequence' => null,
-                        'current_call' => null,
-                        'recorded_failure' => $recorded,
-                    ],
-                );
-            }
-
-            $error = self::describeException($exception);
-
-            if ($recorded !== null) {
-                $error['recorded_failure'] = $recorded;
-            }
-
-            return $this->report(
-                status: self::STATUS_FAILED,
-                reason: self::REASON_REPLAY_ERROR,
-                context: $context,
-                error: $error,
-            );
+            return $this->thrownReport($run, $context, $exception, $compareFailureMessage);
         }
 
         return $this->report(
@@ -236,6 +207,50 @@ final class ReplayDiff
             'class' => $exception::class,
             'message' => $exception->getMessage(),
         ];
+    }
+
+    /**
+     * A run that failed because workflow code threw replays to that same
+     * exception. Reproducing the recorded failure is a faithful replay; any
+     * other exception is still an unexpected error.
+     *
+     * @param array<string, mixed> $context
+     *
+     * @return array<string, mixed>
+     */
+    private function thrownReport(
+        WorkflowRun $run,
+        array $context,
+        Throwable $exception,
+        bool $compareFailureMessage,
+    ): array {
+        $recorded = self::recordedFailure($run);
+
+        if ($recorded !== null && self::reproducesFailure($recorded, $exception, $compareFailureMessage)) {
+            return $this->report(
+                status: self::STATUS_REPLAYED,
+                reason: self::REASON_NONE,
+                context: $context,
+                replay: [
+                    'sequence' => null,
+                    'current_call' => null,
+                    'recorded_failure' => $recorded,
+                ],
+            );
+        }
+
+        $error = self::describeException($exception);
+
+        if ($recorded !== null) {
+            $error['recorded_failure'] = $recorded;
+        }
+
+        return $this->report(
+            status: self::STATUS_FAILED,
+            reason: self::REASON_REPLAY_ERROR,
+            context: $context,
+            error: $error,
+        );
     }
 
     /**
