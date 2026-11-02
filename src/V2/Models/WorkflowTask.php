@@ -76,10 +76,7 @@ class WorkflowTask extends Model
      */
     private function inheritRunScheduling(): void
     {
-        $missing = array_diff(
-            TaskSchedulingFields::FIELDS,
-            array_keys($this->getAttributes()),
-        );
+        $missing = array_diff(TaskSchedulingFields::FIELDS, array_keys($this->getAttributes()));
         $runId = $this->getAttribute('workflow_run_id');
 
         if ($missing === [] || ! is_string($runId) || $runId === '') {
