@@ -153,6 +153,42 @@ final class V2ResumeTaskSchedulingTest extends TestCase
         ]);
 
         $this->assertSame([2, 'override', 3], $this->fields($retry->fresh()));
+
+        // Default-valued overrides still win against the urgent run.
+        $explicitDefault = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'namespace' => $run->namespace,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Cancelled->value,
+            'payload' => [],
+            'priority' => 5,
+            'fairness_weight' => 1,
+        ]);
+
+        $this->assertSame([5, 'x', 1], $this->fields($explicitDefault->fresh()));
+
+        $defaultOverride = ActivityExecution::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => 100,
+            'activity_class' => 'example.activity',
+            'activity_type' => 'example.activity',
+            'status' => 'pending',
+            'activity_options' => [
+                'priority' => 5,
+                'fairness_weight' => 1,
+            ],
+        ]);
+        $defaultOverrideTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'namespace' => $run->namespace,
+            'task_type' => TaskType::Activity->value,
+            'status' => TaskStatus::Cancelled->value,
+            'payload' => [
+                'activity_execution_id' => $defaultOverride->id,
+            ],
+        ]);
+
+        $this->assertSame([5, 'x', 1], $this->fields($defaultOverrideTask->fresh()));
     }
 
     public function testAnotherRunsActivityOptionsNeverApply(): void
