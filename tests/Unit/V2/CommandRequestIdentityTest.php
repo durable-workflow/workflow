@@ -15,6 +15,7 @@ use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\SignalStatus;
+use Workflow\V2\Exceptions\InvalidCommandRequestIdException;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
@@ -79,6 +80,129 @@ final class CommandRequestIdentityTest extends TestCase
         $this->assertFalse($second->retained());
         $this->assertNotSame($first->commandId(), $second->commandId());
         $this->assertSame(2, $this->signalReceivedCount($workflow));
+    }
+
+    #[DataProvider('invalidCallerKeys')]
+    public function testInvalidCallerKeysAreRefusedWithoutDurableWrites(string $route, string $key): void
+    {
+        $workflow = $this->waitingWorkflow();
+        $before = $this->rows();
+
+        if (str_starts_with($route, 'plane-')) {
+            $result = $this->keyedAdmission($workflow, $route, $key);
+            $this->assertSame(422, $result['status']);
+            $this->assertSame('invalid_request_id', $result['reason']);
+            $this->assertFalse($result['accepted']);
+            $this->assertArrayHasKey('request_id', $result['validation_errors']);
+            $this->assertSame($before, $this->rows());
+            json_encode($result, JSON_THROW_ON_ERROR);
+
+            return;
+        }
+
+        try {
+            $this->keyedAdmission($workflow, $route, $key);
+            $this->fail('An invalid caller key must fail before admission.');
+        } catch (InvalidCommandRequestIdException $exception) {
+            $this->assertArrayHasKey('request_id', $exception->validationErrors());
+            $this->assertSame($before, $this->rows());
+        }
+    }
+
+    public static function invalidCallerKeys(): iterable
+    {
+        foreach (self::keyRoutes() as $route) {
+            foreach ([
+                'malformed-utf8' => "\xFF",
+                'ascii-256' => str_repeat('a', 256),
+                'unicode-256' => str_repeat('雪', 256),
+                'four-byte-256' => str_repeat('🧭', 256),
+            ] as $case => $key) {
+                yield $route.'-'.$case => [$route, $key];
+            }
+        }
+    }
+
+    #[DataProvider('maximumCallerKeys')]
+    public function testMaximumUnicodeCallerKeysRetainTheirExactAdmission(string $route, string $key): void
+    {
+        $workflow = $this->waitingWorkflow();
+        $first = $this->keyedAdmission($workflow, $route, $key);
+        $before = $this->rows();
+        $retry = $this->keyedAdmission($workflow, $route, $key);
+
+        $this->assertSame($key, $first['request_id']);
+        $this->assertFalse($first['retained']);
+        $this->assertTrue($retry['retained']);
+        $this->assertSame($first['command_id'], $retry['command_id']);
+        $this->assertSame($key, $retry['request_id']);
+        $this->assertSame($before, $this->rows());
+    }
+
+    public static function maximumCallerKeys(): iterable
+    {
+        foreach (self::keyRoutes() as $route) {
+            foreach (['a', '雪', '🧭'] as $character) {
+                yield $route.'-'.strlen($character).'-byte' => [$route, str_repeat($character, 255)];
+            }
+        }
+    }
+
+    #[DataProvider('callerKeyRoutes')]
+    public function testCallerKeysRemainCaseAndNormalizationDistinct(string $route): void
+    {
+        $workflow = $this->waitingWorkflow();
+        $commandIds = [];
+        foreach (['CASE', 'case', "\u{00E9}", "e\u{0301}", '0'] as $key) {
+            $first = $this->keyedAdmission($workflow, $route, $key);
+            $retry = $this->keyedAdmission($workflow, $route, $key);
+            $this->assertSame($key, $retry['request_id']);
+            $this->assertTrue($retry['retained']);
+            $this->assertSame($first['command_id'], $retry['command_id']);
+            $commandIds[] = $first['command_id'];
+        }
+
+        $this->assertCount(5, array_unique($commandIds));
+    }
+
+    public static function callerKeyRoutes(): iterable
+    {
+        foreach (self::keyRoutes() as $route) {
+            yield $route => [$route];
+        }
+    }
+
+    /** @return list<string> */
+    private static function keyRoutes(): array
+    {
+        return ['stub-signal', 'stub-update', 'plane-signal', 'plane-update', 'context-signal', 'context-update'];
+    }
+
+    /** @return array<string, mixed> */
+    private function keyedAdmission(WorkflowStub $workflow, string $route, string $key): array
+    {
+        if (str_starts_with($route, 'plane-')) {
+            $method = $route === 'plane-signal' ? 'signal' : 'update';
+
+            return app(WorkflowControlPlane::class)->{$method}(
+                $workflow->workflowId(),
+                $method === 'signal' ? 'changed' : 'rename',
+                ['arguments' => $method === 'signal' ? [1] : ['x'], 'request_id' => $key],
+            );
+        }
+
+        $stub = str_starts_with($route, 'context-')
+            ? $workflow->withCommandContext(CommandContext::controlPlane()->with(['request' => ['request_id' => $key]]))
+            : $workflow->withRequestId($key);
+        $result = str_ends_with($route, '-signal')
+            ? $stub->signal('changed', 1)
+            : $stub->submitUpdateWithArguments('rename', ['x']);
+
+        return [
+            'request_id' => $result->requestId(),
+            'command_id' => $result->commandId(),
+            'retained' => $result->retained(),
+        ];
     }
 
     public function testKeyReuseWithDifferentIntentIsRefusedWithoutConsumingTheKey(): void
