@@ -303,7 +303,8 @@ class WorkflowSchedule extends Model
      */
     public static function repeatedWallClockWindowEnd(int $timestamp, DateTimeZone $timezone): ?int
     {
-        $transitions = $timezone->getTransitions($timestamp - 86400, $timestamp);
+        // The end bound is exclusive; include a transition at $timestamp itself.
+        $transitions = $timezone->getTransitions($timestamp - 86400, $timestamp + 1);
 
         if (! is_array($transitions)) {
             return null;

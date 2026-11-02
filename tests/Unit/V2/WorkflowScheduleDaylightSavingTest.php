@@ -67,6 +67,12 @@ final class WorkflowScheduleDaylightSavingTest extends TestCase
                 '2026-11-01T05:10:00Z',
                 ['2026-11-01T05:15:00Z', '2026-11-01T05:30:00Z', '2026-11-01T05:45:00Z', '2026-11-02T06:00:00Z'],
             ],
+            'daily time at the first instant of the repeated hour' => [
+                '0 1 * * *',
+                'America/New_York',
+                '2026-10-31T12:00:00Z',
+                ['2026-11-01T05:00:00Z', '2026-11-02T06:00:00Z'],
+            ],
             'sub-hourly wildcard hour keeps elapsed time through the repeated hour' => [
                 '*/15 * * * *',
                 'America/New_York',

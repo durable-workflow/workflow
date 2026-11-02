@@ -303,6 +303,13 @@ final class V2ScheduleTimezoneTest extends TestCase
                 '2026-11-02T12:00:00Z',
                 ['2026-11-01T05:30:00Z', '2026-11-02T06:30:00Z'],
             ],
+            'new york daily time at the transition instant fires once' => [
+                '0 1 * * *',
+                'America/New_York',
+                '2026-10-31T12:00:00Z',
+                '2026-11-02T12:00:00Z',
+                ['2026-11-01T05:00:00Z', '2026-11-02T06:00:00Z'],
+            ],
             'new york daily time after the repeated hour fires once' => [
                 '30 2 * * *',
                 'America/New_York',
