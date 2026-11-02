@@ -98,20 +98,26 @@ final class V2ScheduleTickBurstTest extends TestCase
         $this->assertEveryScheduleFiredOnce(101);
     }
 
-    public function testTheConfiguredTickLimitLetsOnePassFireTheWholeBurst(): void
+    public function testTheConfiguredTickLimitSetsThePassSize(): void
     {
+        // An environment value arrives as a string.
         config()
-            ->set('workflows.v2.schedules.tick_limit', '6');
+            ->set('workflows.v2.schedules.tick_limit', '2');
 
-        foreach (['alpha', 'beta'] as $namespace) {
-            for ($index = 1; $index <= 3; $index++) {
-                $this->dueSchedule("{$namespace}-{$index}", $namespace, $index);
+        foreach ([
+            'alpha' => 3,
+            'beta' => 2,
+        ] as $namespace => $count) {
+            for ($index = 1; $index <= $count; $index++) {
+                $this->dueSchedule("{$namespace}-{$index}", $namespace, 10 - $index);
             }
         }
 
-        $this->assertCount(6, $this->tick());
+        $this->assertSame(['alpha-1', 'beta-1'], array_column($this->tick(), 'schedule_id'));
+        $this->assertSame(['alpha-2', 'beta-2'], array_column($this->tick(), 'schedule_id'));
+        $this->assertSame(['alpha-3'], array_column($this->tick(), 'schedule_id'));
         $this->assertSame([], $this->tick());
-        $this->assertEveryScheduleFiredOnce(6);
+        $this->assertEveryScheduleFiredOnce(5);
     }
 
     public function testBufferedActionsDrainAtTheLimitPerPassAlongsideDueSchedules(): void
