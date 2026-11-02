@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Retain keyed signal admissions and compare canonical typed intent for keyed
+  signals and updates. Conflicting key reuse refuses without durable writes;
+  undecodable legacy receipts remain explicitly unverified. This strengthens
+  the earlier same-key update receipt contract (#877, shared #216).
+- Require valid UTF-8 caller keys of 1..255 code points before admission.
+  Explicit empty or non-string keys refuse; null clears an inherited key.
+  Apply the nullable `intent_digest` migration, drain and upgrade all embedded
+  database writers together, and allocate new keys for different operations.
+  Native Server and published SDK/CLI qualification remain separate.
+
 ## 2.15.11 - 2026-11-01
 
 - Keep embedded history imports and their lineage within the target namespace.

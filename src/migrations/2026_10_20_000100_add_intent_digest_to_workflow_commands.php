@@ -6,8 +6,8 @@ use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 use Workflow\Support\WorkflowMigration;
 
-// Additive column only. No rows are rewritten, so a rolling upgrade keeps
-// serving while this runs; receipts recorded before it carry no digest.
+// Additive schema preparation only; existing receipts keep a null digest.
+// Drain and upgrade all command writers before admitting the new key format.
 return new class() extends WorkflowMigration {
     public function up(): void
     {
