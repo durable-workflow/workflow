@@ -6,11 +6,13 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
+use Tests\Fixtures\V2\TestContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestSignalWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityExecution;
@@ -86,6 +88,29 @@ final class V2ResumeTaskSchedulingTest extends TestCase
 
         $this->runReady($runId, TaskType::Workflow);
         $this->assertSame([self::RUN_SCHEDULING], $this->scheduling($runId, TaskType::Activity));
+    }
+
+    public function testContinueAsNewRunKeepsRunScheduling(): void
+    {
+        $workflow = WorkflowStub::make(TestContinueAsNewWorkflow::class, 'scheduling-continue');
+        $workflow->start(0, 1, $this->urgentStart());
+        $firstRun = WorkflowRun::query()->findOrFail($workflow->runId());
+
+        $this->assertSame(self::RUN_SCHEDULING, $this->runFields($firstRun->id));
+
+        $this->runReady($firstRun->id, TaskType::Workflow);
+        $this->assertSame([self::RUN_SCHEDULING], $this->scheduling($firstRun->id, TaskType::Activity));
+        $this->runReady($firstRun->id, TaskType::Activity);
+        $this->runReady($firstRun->id, TaskType::Workflow);
+
+        /** @var WorkflowRun $continuedRun */
+        $continuedRun = WorkflowRun::query()
+            ->where('workflow_instance_id', $firstRun->workflow_instance_id)
+            ->where('run_number', $firstRun->run_number + 1)
+            ->firstOrFail();
+
+        $this->assertSame(self::RUN_SCHEDULING, $this->runFields($continuedRun->id));
+        $this->assertSame([self::RUN_SCHEDULING], $this->scheduling($continuedRun->id, TaskType::Workflow));
     }
 
     public function testTaskCreatorValuesAndActivityOverridesStillWin(): void
@@ -207,7 +232,11 @@ final class V2ResumeTaskSchedulingTest extends TestCase
             ->orderBy('created_at')
             ->firstOrFail();
 
-        $job = $type === TaskType::Timer ? new RunTimerTask($task->id) : new RunWorkflowTask($task->id);
+        $job = match ($type) {
+            TaskType::Workflow => new RunWorkflowTask($task->id),
+            TaskType::Activity => new RunActivityTask($task->id),
+            TaskType::Timer => new RunTimerTask($task->id),
+        };
 
         $this->app->call([$job, 'handle']);
     }

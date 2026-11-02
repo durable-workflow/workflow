@@ -10,7 +10,9 @@
   child or activity outcome, timer tasks, and repair tasks no longer fall
   back to the default priority and the shared fairness class. Activity
   retries keep per-call overrides. Values a task creator sets explicitly
-  still win (#971).
+  still win. Embedded continue-as-new and child retry runs keep the
+  predecessor run's priority and fairness, as control-plane continue-as-new
+  already did (#971).
 
 ## 2.15.13 - 2026-11-02
 

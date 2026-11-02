@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Illuminate\Support\Str;
+use Tests\Fixtures\V2\BootedCallbackWorkflowTask;
 use Tests\SchemaTestCase;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -12,6 +13,7 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ConfiguredV2Models;
 
 /**
  * A new task reads its run and activity execution on its own storage
@@ -74,6 +76,22 @@ final class TaskSchedulingStorageConnectionTest extends SchemaTestCase
 
         $this->assertSame([1, 'x', 3], $this->fields($timer->fresh()));
         $this->assertSame([2, 'x', 3], $this->fields($activity->fresh()));
+    }
+
+    public function testConfiguredTaskModelWithItsOwnBootedCallbackStillInherits(): void
+    {
+        config()
+            ->set('workflows.v2.task_model', BootedCallbackWorkflowTask::class);
+        BootedCallbackWorkflowTask::$creatingCallbacks = 0;
+
+        $run = $this->createRun();
+        $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+            ->create($this->taskAttributes($run, TaskType::Workflow));
+
+        $this->assertInstanceOf(BootedCallbackWorkflowTask::class, $task);
+        $this->assertSame('secondary', $task->getConnectionName());
+        $this->assertSame(1, BootedCallbackWorkflowTask::$creatingCallbacks);
+        $this->assertSame([1, 'x', 3], $this->fields($task->fresh()));
     }
 
     protected function defineEnvironment($app): void

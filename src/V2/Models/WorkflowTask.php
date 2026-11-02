@@ -56,8 +56,14 @@ class WorkflowTask extends Model
         return $this->belongsTo(ConfiguredV2Models::resolve('run_model', WorkflowRun::class), 'workflow_run_id');
     }
 
-    protected static function booted(): void
+    /**
+     * Registered in boot() rather than booted() so a configured task model
+     * that defines its own booted() callbacks keeps run-scheduling inheritance.
+     */
+    protected static function boot(): void
     {
+        parent::boot();
+
         static::creating(static function (self $task): void {
             $task->inheritRunScheduling();
         });
