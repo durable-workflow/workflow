@@ -150,6 +150,7 @@ final class ProjectionSqliteContentionTest extends TestCase
         $this->workOnce();
         $this->workOnce();
         self::assertSame('completed', $stub->refresh()->status());
+        self::assertSame(strtolower($journal), $connection->getPdo()->query('PRAGMA journal_mode')->fetchColumn());
         self::assertSame([
             'integer' => 9007199254740993,
             'optional' => null,

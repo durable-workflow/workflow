@@ -1,5 +1,248 @@
 # Changelog
 
+## Unreleased
+
+## 2.15.11 - 2026-11-01
+
+- Keep embedded history imports and their lineage within the target namespace.
+  Reject copied references to another workflow's rows and restore missing
+  lineage edges only from matching stored relationship evidence. Preserve
+  valid imports in either endpoint order and idempotent repeat imports (#928).
+- Check ownership when reading or operating on previously imported commands,
+  failures, activity attempts and timers, including message completion,
+  recovery and retention cleanup (durable-workflow/server#765).
+- Keep current-run resolution, pointer updates and detail views scoped when an
+  older import attached runs from different namespaces to the same instance.
+  Preserve valid same-namespace message handoffs and navigation (#928).
+- Require exact run or unbound-instance namespace ownership before pruning
+  messages with copied requested or resolved run references (#928).
+- Keep foreign instance metadata out of legacy run exports, lists and summary
+  projections. Advance the local summary cache schema and keep namespace-scoped
+  projection rebuilds idempotent without rewriting foreign durable rows (#928).
+- Run history imports and lineage repairs on the configured storage connection.
+  PostgreSQL write imports require their own serializable transaction and
+  retry serialization conflicts up to three complete attempts. Preview imports
+  remain available within a caller transaction (#928).
+- Preserve bounded SQLite history sizes for NUL-bearing JSON strings and keys
+  on older JSON1 versions, without hydrating history or rewriting payloads (#968).
+
+## 2.15.10 - 2026-10-31
+
+- Create a follow-up workflow task when a child resolves after the parent
+  worker has claimed its history and that worker completes into another wait.
+  Preserve task coalescing, terminal parents and parallel child barriers so
+  the result cannot remain parked behind an unrelated timer or signal (#962).
+- Limit Laravel 9 support to existing lockfiles that need to upgrade or drain.
+  Keep the documented TokenGuard exposure restriction and the next migration
+  review date in the shipped dependency security policy (#922).
+
+## 2.15.9 - 2026-10-31
+
+- Keep engine transactions, task claims and deferred callbacks on the workflow
+  storage connection selected by `DW_STORAGE_CONNECTION` or custom V2 models.
+  Hold claim locks until commit and roll back failed starts without partial
+  durable state. Lifecycle events wait for the outer transaction to commit and
+  retain their execution trace context (#893).
+
+- Require Laravel 10.50.4 or later on the Laravel 10 line so TokenGuard rejects
+  non-string tokens in both user lookup and credential validation. Laravel 9
+  retains the documented upgrade or drain requirement (#922).
+- Back off between SQLite host-query preparation and dispatch-claim retries
+  after a proven root rollback, so a brief competing writer does not exhaust
+  all attempts immediately. Preserve caller-owned transactions and durable
+  query claim fencing (#947).
+
+## 2.14.1 - 2026-10-26
+
+- Enforce pending activity, timer and child-workflow limits on external-worker
+  task completions before any command writes. An over-limit batch now rolls
+  back completely and retains the workflow task lease without durable changes
+  (#933).
+
+## 2.14.0 - 2026-10-26
+
+- Require a trusted host authorizer for workflow service operations. Refuse
+  worker-supplied principal overrides, foreign caller namespaces and service
+  call IDs or idempotency keys owned by another run, instance or operation.
+  Preserve explicit embedded null namespaces instead of using ambient config.
+- Service-operation hosts must bind `WorkflowServiceOperationAuthorizer` before
+  upgrading. The default refuses service operations; explicitly trusted embedded
+  hosts can opt into `RunServiceOperationAuthorizer` for same-namespace calls
+  with an unprivileged workflow principal. Authenticated servers supply their
+  own current principal and authorize requested target scope.
+- Recheck current service-call replay policy without reserving fresh admission
+  capacity, including cached checkpoint receipts. Custom policies must provide
+  the pure `authorizeReplay` hook.
+- Serialize keyed service-call creation with a unique canonical scope digest.
+  Reauthorize the actual locked row after a concurrent insert or uniqueness
+  conflict. Apply the nullable schema expansion and drain older writers before
+  relying on concurrent deduplication.
+- Move service-operation execution, synchronous waits and retry backoff outside
+  the workflow completion transaction. Persist a durable dispatch before commit,
+  enqueue it only after commit, cap synchronous waits at 60 seconds and repair
+  lost or expired claims while preserving one opaque effect identity across
+  crash redelivery.
+- Bound `record_local_activity` timing fields (`duration_ms`, heartbeat
+  `elapsed_ms`, `backoff_seconds`) and refuse a report whose walk back from
+  completion leaves the storable timestamp range (#930).
+- Meter each workflow task completion with hard structural limits on history
+  events, history bytes, metered rows and externalized payload bytes
+  (`history_transaction_size`, `history_transaction_bytes`,
+  `history_transaction_rows`, `external_payload_transaction_bytes`). Metered
+  rows are history events and local activity records for now; other command
+  writes are not counted yet. A refusal rolls the whole completion back and
+  keeps the task's lease. A run's deadline close is never metered. The limits
+  appear in the structural limit snapshot.
+- Dispatch lifecycle events from completions only after the completion
+  commits, so a refused or retried completion dispatches none.
+- Add the optional `PredictableExternalPayloadStorageDriver` interface. A
+  driver that implements it has payloads staged and stored only after the
+  completion passes every limit. The built-in local driver implements it, and
+  now stores objects atomically after checking their length and hash. Other
+  drivers, including the filesystem driver, keep storing payloads as before.
+
+## 2.13.1 - 2026-10-24
+
+- Cancel the live task when a retried activity receives cooperative cancellation.
+  Preserve completed tasks and snapshot the cancelled attempt's matching task so
+  its worker can acknowledge the stop and repeat that acknowledgement safely.
+- Apply the same task selection when waiting for cancellation completion.
+- Retry rolled-back SQLite application heartbeats after metadata contention,
+  preserving the current attempt, deadlines and one progress event per call.
+
+## 2.13.0 - 2026-10-24
+
+- Recognize bounded `ActivityOutcomeRejected` diagnostics in history pages,
+  timeline inspection, exports and cold replay. The reader preserves business
+  replay positions and does not produce the event or accept a refused outcome.
+- Bound diagnostic timeline summaries for storage and tolerate malformed fields
+  without changing the original history payload.
+- Require reader-equipped applications, Server roles, inspection tools and
+  rollback artifacts before enabling the separate rejected-outcome producer.
+
+## 2.12.2 - 2026-10-24
+
+- Read recent failure links and rebuild history-budget counters on PostgreSQL
+  when retained messages contain NUL bytes. Preserve canonical history and
+  exact byte counts without loading full payloads into diagnostic readers.
+- Refuse expired or settled activity callbacks under the original run lock
+  before acquiring task or execution locks. Preserve committed renewals and
+  the normal live-outcome path. Concurrent retention can finish without a
+  reverse lock dependency or restored details.
+- Acquire SQLite writer admission before reading a retained run for pruning,
+  within the existing transaction policy and original publication budget.
+  This correction emits no new history event and needs no new event reader.
+
+- Require the upstream TokenGuard string-validation fix on Laravel 11, raising
+  its minimum to 11.56.1. Keep the maintained Laravel 12/13 minimums unchanged.
+- Record the newly published Composer TokenGuard advisory against the retained
+  Laravel 9–11 upgrade/drain compatibility paths, with an explicit review date.
+  Maintained Laravel 12/13 minimums already include the upstream fixes.
+- Preserve canonical failure messages beyond MySQL TEXT capacity and across
+  NUL-bearing PostgreSQL text parameters. Add nullable encoded overflow storage
+  without backfilling existing rows, retain the exact public message and keep
+  compatibility previews bounded. Metadata-lock waits are bounded and a package
+  rollback retains the added storage and failure evidence.
+
+## 2.12.0 - 2026-10-23
+
+- Preserve UTC instants and microseconds in datetime search attributes and
+  embedded visibility predicates, including values with non-UTC offsets.
+- Add `workflow:v2:repair-search-datetimes` to preview or explicitly repair
+  selected datetime projections from matching retained, typed history.
+- Bound derived timeline summaries by UTF-8 bytes so a large accepted activity
+  failure can be recorded without overflowing MySQL TEXT storage. Preserve the
+  full failure evidence and callback-authority recovery notice.
+
+## 2.11.4 - 2026-10-23
+
+- Preserve whole-valued floats and signed zero in CLI history-export JSON,
+  including nested memo projections. Untouched compact and pretty exports
+  retain their original canonical checksum and pass integrity verification.
+
+## 2.11.3 - 2026-10-23
+
+- Refuse dependency injection that would silently discard recorded activity
+  input before queued or local activity code runs. Record a typed attempt
+  failure and preserve the authored retry policy, original input and identity.
+- Record activity entry dependency-resolution failures through the normal
+  outcome path instead of leaving the attempt leased without an outcome.
+
+## 2.11.2 - 2026-10-23
+
+- Deliver unpinned activity tasks to eligible versioned workers during rolling
+  deployments. Preserve build pins, namespace and queue isolation, activity-type
+  routing, readiness and availability filters.
+
+## 2.11.1 - 2026-10-22
+
+- Preserve microsecond precision when selecting expired task leases, available
+  tasks and elapsed repair backoffs. A repair pass can select a task at its
+  recorded deadline without waiting for the next whole second.
+
+## 2.11.0 - 2026-10-22
+
+- Add the opt-in `WorkflowOptions::overlapReleaseAfter` delay for legacy
+  workflow, activity, signal and child-completion jobs contending on overlap
+  locks. Preserve the zero default, stored options, lock ownership and expiry.
+- Preserve the delay through child inheritance and continue-as-new. Queue
+  releases still count toward Laravel attempt limits.
+
+## 2.10.2 - 2026-10-22
+
+- Preserve recorded activity lease expiry and worker deregistration in canonical
+  attempt views, including exhausted retries and cold history reads. Keep
+  ordinary failures and unavailable lease-loss reasons distinct.
+
+## 2.10.1 - 2026-10-21
+
+- Maintain eligible embedded activity leases from a fresh metadata-only PHP
+  process while the original callback keeps its process, injected services,
+  captured state and application connections.
+- Preserve original task, worker, session and business-deadline authority.
+  Lease maintenance does not fabricate application heartbeat progress, and
+  stops when its original parent exits. Join the helper before recording an
+  outcome, and fence publication after authority is lost.
+- Reopen the actual current SQLite journal mode instead of reapplying a stale
+  startup setting. Environments without the required process capabilities keep
+  the original activity grant.
+
+## 2.10.0 - 2026-10-21
+
+- Add the optional `ActivityLeaseRenewal` bridge role and configurable activity
+  task leases, with the existing 300-second default. Runtime renewal records no
+  application progress and cannot extend authored activity or workflow timeouts.
+- Preserve original run/execution deadlines during heartbeats, runtime renewal
+  and outcome publication, including external payload preparation.
+- Settle expired or explicitly revoked activity attempts through their recorded
+  retry limits and backoff. Retain lease-loss diagnostics and terminal failures;
+  repair no longer silently redispatches the same running attempt.
+- Fence worker-departure recovery by the original namespace, holder and task
+  generation. Refuse contested repair locks without changing normal worker lock
+  order or claiming that the old callback physically stopped.
+- Automatic worker maintenance and published long-activity recovery require
+  their separately qualified Server/SDK or embedded integrations. This package's
+  renewal role alone does not keep an inline callback's lease alive.
+
+## 2.9.0 - 2026-10-21
+
+- Prepare optional embedded OpenTelemetry spans and log correlation across
+  durable admission, tasks, activities, retries and recovery. Applications own
+  providers, sampling, exporters and shutdown. Tracing is disabled by default.
+- Keep bounded observability context separate from business payloads, command
+  equality and lease authority. Native catalogs and service wire adoption are
+  separately qualified.
+- Require OpenTelemetry API 1.10.1 or later in the 1.x line when that optional
+  API is installed, excluding the older incompatible baggage parser.
+
+## 2.8.0 - 2026-10-20
+
+- Add opt-in bounded live execution for persistent embedded database-queue
+  workers, retaining at most four eligible frames for a nonrenewing 30 seconds.
+- Preserve committed-history, task-generation, connection/session and build
+  fences. Unsupported work, worker loss and uncertain acknowledgements use cold
+  replay; no database migration or portable protocol change is required.
+
 ## 2.7.1 - 2026-10-20
 
 - Chunk long activity retry and workflow-task delays to the queue driver's

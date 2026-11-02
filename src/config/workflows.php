@@ -20,6 +20,11 @@ use Workflow\Support\Env;
 return [
     'workflows_folder' => 'Workflows',
 
+    'tracing' => [
+        'enabled' => false,
+        'baggage_allowlist' => [],
+    ],
+
     'stored_workflow_model' => Workflow\Models\StoredWorkflow::class,
 
     'stored_workflow_exception_model' => Workflow\Models\StoredWorkflowException::class,
@@ -80,6 +85,7 @@ return [
         'service_model' => Workflow\V2\Models\WorkflowService::class,
         'service_operation_model' => Workflow\V2\Models\WorkflowServiceOperation::class,
         'service_call_model' => Workflow\V2\Models\WorkflowServiceCall::class,
+        'service_call_dispatch_model' => Workflow\V2\Models\WorkflowServiceCallDispatch::class,
         'types' => [
             'workflows' => [
                 // 'billing.invoice-sync' => App\Workflows\InvoiceSyncWorkflow::class,
@@ -216,6 +222,23 @@ return [
                 50
             ),
         ],
+        'service_call_dispatch' => [
+            'claim_lease_seconds' => (int) Env::dw(
+                'DW_V2_SERVICE_CALL_CLAIM_LEASE_SECONDS',
+                'WORKFLOW_V2_SERVICE_CALL_CLAIM_LEASE_SECONDS',
+                60
+            ),
+            'repair_after_seconds' => (int) Env::dw(
+                'DW_V2_SERVICE_CALL_REPAIR_AFTER_SECONDS',
+                'WORKFLOW_V2_SERVICE_CALL_REPAIR_AFTER_SECONDS',
+                5
+            ),
+            'orphan_grace_seconds' => (int) Env::dw(
+                'DW_V2_SERVICE_CALL_ORPHAN_GRACE_SECONDS',
+                'WORKFLOW_V2_SERVICE_CALL_ORPHAN_GRACE_SECONDS',
+                3600
+            ),
+        ],
         'guardrails' => [
             'boot' => env('DW_V2_GUARDRAILS_BOOT', 'warn'),
         ],
@@ -270,6 +293,25 @@ return [
                 'WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_SIZE',
                 5000
             ),
+            // Hard ceilings for one workflow task completion; 0 disables a
+            // dimension. history_transaction_rows counts the rows history
+            // events and local activity records write; other command writes
+            // are not counted yet.
+            'history_transaction_bytes' => (int) Env::dw(
+                'DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES',
+                'WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_BYTES',
+                16777216
+            ),
+            'history_transaction_rows' => (int) Env::dw(
+                'DW_V2_LIMIT_HISTORY_TRANSACTION_ROWS',
+                'WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_ROWS',
+                20000
+            ),
+            'external_payload_transaction_bytes' => (int) Env::dw(
+                'DW_V2_LIMIT_EXTERNAL_PAYLOAD_TRANSACTION_BYTES',
+                'WORKFLOW_V2_LIMIT_EXTERNAL_PAYLOAD_TRANSACTION_BYTES',
+                16777216
+            ),
             'warning_threshold_percent' => (int) Env::dw(
                 'DW_V2_LIMIT_WARNING_THRESHOLD_PERCENT',
                 'WORKFLOW_V2_LIMIT_WARNING_THRESHOLD_PERCENT',
@@ -285,6 +327,16 @@ return [
         'workflow_task_lease_seconds' => (int) env(
             'DW_V2_WORKFLOW_TASK_LEASE_SECONDS',
             Workflow\V2\Support\WorkflowTaskLease::DEFAULT_SECONDS,
+        ),
+
+        // Runtime ownership, not an activity execution timeout. Valid values
+        // are 1..86400 seconds; invalid values resolve to the 300-second default.
+        // A live runtime renews the same attempt without inventing user progress.
+        // Embedded callbacks stay inline while a separate PHP metadata process
+        // maintains committed persistent-storage claims under their original bounds.
+        'activity_task_lease_seconds' => env(
+            'DW_V2_ACTIVITY_TASK_LEASE_SECONDS',
+            Workflow\V2\Support\ActivityLease::DURATION_SECONDS,
         ),
 
         // Matching role configuration. The matching role is defined by
@@ -303,6 +355,13 @@ return [
                 'WORKFLOW_V2_MATCHING_ROLE_QUEUE_WAKE',
                 true
             ),
+        ],
+
+        // Optional process-local continuation for persistent embedded workers.
+        // An empty allowlist or missing immutable build identity keeps cold replay.
+        'live_execution' => [
+            'workflows' => [],
+            'build' => null,
         ],
 
         // Sticky execution is a replay performance feature. A worker may keep

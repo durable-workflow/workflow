@@ -331,7 +331,7 @@ final class DefaultServiceControlPlaneTest extends TestCase
         ]);
 
         $this->assertTrue($result['accepted']);
-        $this->assertSame(ServiceCallStatus::Started->value, $result['status']);
+        $this->assertSame(ServiceCallStatus::Completed->value, $result['status']);
         $this->assertSame(ServiceCallBindingKind::WorkflowSignal->value, $result['resolved_binding_kind']);
         $this->assertSame('command-signal-1', $result['resolved_target_reference']);
         $this->assertSame('invoice-42', $result['linked_workflow_instance_id']);

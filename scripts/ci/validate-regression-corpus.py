@@ -159,6 +159,8 @@ OFFICIAL_BINDING_CONSUMER_SUPPORT = {
         "tests/Feature/V2/V2EmbeddedReplayRegressionCorpusTest.php",
         "tests/Fixtures/V2/TestConstructorInjectionActivity.php",
         "tests/Fixtures/V2/TestConstructorInjectionWorkflow.php",
+        "tests/Fixtures/V2/TestTracingReplayActivity.php",
+        "tests/Fixtures/V2/TestTracingReplayWorkflow.php",
         "tests/Fixtures/V2/TestEntryArgumentsMismatchWorkflow.php",
         "tests/Fixtures/V2/TestPortableLocalActivityIdentityWorkflow.php",
         "tests/Fixtures/V2/TestParallelChildReplayWorkflow.php",
@@ -170,6 +172,7 @@ OFFICIAL_BINDING_CONSUMER_SUPPORT = {
         "tests/Fixtures/V2/TestSignalResumedParallelWorkflow.php",
         "tests/Fixtures/V2/TestCancellationContextWorkflow.php",
         "tests/Fixtures/V2/TestVersionPendingRangeRepairWorkflow.php",
+        "tests/Fixtures/V2/TestUpdateTailCheckpointWorkflow.php",
         "tests/Fixtures/V2/TestNexusWaitingCallerWorkflow.php",
         "tests/Fixtures/V2/TestNexusCancellationCleanupCallerWorkflow.php",
         "tests/Fixtures/V2/TestNexusDeadlineCallerWorkflow.php",
@@ -2016,8 +2019,9 @@ def _guard_matches(
         return False
     bridge_path = "src/V2/Support/DefaultWorkflowTaskBridge.php"
     if guard["glob"] == bridge_path and matching == [bridge_path]:
-        # This private helper is used only by typed task discovery. Keep every
-        # other bridge edit guarded, including its signature and replay methods.
+        # These private bodies discover tasks or schedule post-completion work.
+        # Keep signatures and every other bridge edit guarded. The support-file
+        # content guard still covers history writes inside these methods.
         classifier = Path(__file__).with_name("classify-discovery-helper-change.php")
         base = _run(["git", "show", f"{base_ref}:{bridge_path}"], root)
         current = (root / bridge_path).read_text(encoding="utf-8")

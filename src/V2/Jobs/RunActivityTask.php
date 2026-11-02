@@ -12,13 +12,18 @@ use Illuminate\Queue\SerializesModels;
 use Throwable;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ActivityEntryArguments;
 use Workflow\V2\Support\ActivityOutcomeRecorder;
 use Workflow\V2\Support\ActivityRetryPolicy;
 use Workflow\V2\Support\ActivityTaskClaim;
 use Workflow\V2\Support\ActivityTaskClaimer;
+use Workflow\V2\Support\EmbeddedActivityLease;
 use Workflow\V2\Support\EntryMethod;
+use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\RuntimeObjectFactory;
 use Workflow\V2\Support\TaskDispatcher;
+use Workflow\V2\Support\TaskTraceTimings;
+use Workflow\V2\Support\TraceCarrier;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Testing\ActivityFakeContext;
@@ -32,6 +37,9 @@ final class RunActivityTask implements ShouldQueue
     use SerializesModels;
 
     public int $tries = 1;
+
+    // Mixed so malformed telemetry cannot prevent an older job from loading.
+    public mixed $dispatchObservabilityContext = null;
 
     public function __construct(
         public readonly string $taskId,
@@ -63,6 +71,48 @@ final class RunActivityTask implements ShouldQueue
             return;
         }
 
+        if (! ExecutionTracing::enabled()) {
+            $this->executeClaim($claim);
+
+            return;
+        }
+
+        $allowlist = ExecutionTracing::baggageAllowlist();
+        $storedContext = TraceCarrier::fromRun($claim->run, $diagnostic);
+        ExecutionTracing::activity(
+            [
+                'workflow_instance_id' => $claim->run->workflow_instance_id,
+                'workflow_run_id' => $claim->run->id,
+                'workflow_type' => $claim->run->workflow_type,
+                'namespace' => $claim->run->namespace,
+                'task_id' => $claim->task->id,
+                'activity_id' => $claim->execution->id,
+                'activity_type' => $claim->execution->activity_type,
+                'activity_attempt_id' => $claim->attemptId(),
+                'activity_attempt_number' => $claim->attemptNumber(),
+                'durable.trace_context.disposition' => $diagnostic,
+                ...TaskTraceTimings::forTask($claim->task),
+            ],
+            $storedContext,
+            fn () => $this->executeClaim($claim),
+            $allowlist,
+            true,
+            $this->dispatchObservabilityContext,
+        );
+    }
+
+    private function executeClaim(ActivityTaskClaim $claim): void
+    {
+        $maintenance = EmbeddedActivityLease::start($claim);
+        try {
+            $this->executeMaintainedClaim($claim, $maintenance);
+        } finally {
+            $maintenance?->stop();
+        }
+    }
+
+    private function executeMaintainedClaim(ActivityTaskClaim $claim, ?EmbeddedActivityLease $maintenance): void
+    {
         $attemptId = $claim->attemptId();
         $attemptCount = $claim->attemptNumber();
 
@@ -73,17 +123,22 @@ final class RunActivityTask implements ShouldQueue
         $activityClass = TypeRegistry::resolveActivityClass($execution->activity_class, $execution->activity_type);
         $activity = RuntimeObjectFactory::activity($activityClass, $execution, $execution->run, $this->taskId);
         $entryMethod = EntryMethod::forActivity($activity);
-        $arguments = $activity->resolveMethodDependencies($execution->activityArguments(), $entryMethod);
         $activityArguments = $execution->activityArguments();
 
         $result = null;
         $throwable = null;
+        try {
+            $arguments = ActivityEntryArguments::resolve($activity, $activityArguments, $entryMethod);
+        } catch (Throwable $error) {
+            $arguments = [];
+            $throwable = $error;
+        }
 
         if (WorkflowStub::faked()) {
             WorkflowStub::recordDispatched($execution->activity_class, $activityArguments);
         }
 
-        if (WorkflowStub::hasMock($execution->activity_class)) {
+        if ($throwable === null && WorkflowStub::hasMock($execution->activity_class)) {
             $mocked = WorkflowStub::mockedResult(
                 $execution->activity_class,
                 new ActivityFakeContext(
@@ -98,7 +153,7 @@ final class RunActivityTask implements ShouldQueue
 
             $result = $mocked['result'];
             $throwable = $mocked['throwable'];
-        } else {
+        } elseif ($throwable === null) {
             try {
                 $result = $activity->{$entryMethod->getName()}(...$arguments);
             } catch (Throwable $error) {
@@ -107,7 +162,12 @@ final class RunActivityTask implements ShouldQueue
         }
 
         $maxAttempts = ActivityRetryPolicy::maxAttempts($execution, $activity);
+        if ($throwable !== null && ExecutionTracing::enabled()) {
+            ExecutionTracing::recordFailure($throwable);
+        }
         $backoffSeconds = ActivityRetryPolicy::backoffSeconds($execution, $activity, $attemptCount);
+
+        $maintenance?->confirm();
 
         $outcome = ActivityOutcomeRecorder::record(
             $this->taskId,

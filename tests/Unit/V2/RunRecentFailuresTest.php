@@ -16,6 +16,35 @@ use Workflow\V2\Support\RunRecentFailures;
 
 final class RunRecentFailuresTest extends TestCase
 {
+    public function testSupportingEventLinksSurviveNullBytesWithoutChangingHistory(): void
+    {
+        $run = $this->createRun('null-history');
+        $identities = ['plain', 'literal\\u0000', 'slashes\\\\u0000', 'unicode-界'];
+        $message = "\0\0literal\\u0000\\\0\"{\"failure_id\":\"decoy\"}";
+        foreach ($identities as $index => $id) {
+            $this->failure($run, $id);
+            $this->event($run, $index + 1, 'ActivityFailed', [
+                'failure_id' => $id,
+                'message' => $message,
+                'details' => [
+                    'message' => $message,
+                ],
+            ]);
+        }
+        $before = DB::table('workflow_history_events')->orderBy('sequence')->pluck('payload')->all();
+        $result = RunRecentFailures::forRun($run);
+        $byIdentity = array_column($result['failures'], null, 'id');
+        foreach ($identities as $index => $id) {
+            $this->assertSame($index + 1, $byIdentity[$id]['event_sequence']);
+            $this->assertSame('ActivityFailed', $byIdentity[$id]['supporting_event']['event_type']);
+        }
+        $this->assertSame($before, DB::table('workflow_history_events')->orderBy('sequence')->pluck('payload')->all());
+        foreach (WorkflowHistoryEvent::query()->get() as $event) {
+            $this->assertSame($message, $event->payload['message']);
+            $this->assertSame($message, $event->payload['details']['message']);
+        }
+    }
+
     public function testRecentFailuresReadOnlySelectedRowsAndPrimaryEventHeaders(): void
     {
         $run = $this->createRun('selected');
@@ -108,6 +137,56 @@ final class RunRecentFailuresTest extends TestCase
         $this->assertSame('pruned', $empty['state']);
         $this->assertNull($empty['total_count']);
         $this->assertSame('not_evaluated', $empty['history_audit']);
+    }
+
+    public function testDiagnosticReadsDoNotLoadLargeCanonicalMessagesIntoPhp(): void
+    {
+        $run = $this->createRun('bounded-message');
+        $largeMessage = str_repeat("\0界🦀", 10_000);
+        $smallMessage = "invalid\0input";
+        $messages = [
+            'large' => $largeMessage,
+            'small' => $smallMessage,
+            'ordinary' => 'Observed failure',
+        ];
+        foreach ($messages as $id => $message) {
+            $this->failure($run, $id);
+            WorkflowFailure::query()->findOrFail($id)->update([
+                'message' => $message,
+            ]);
+        }
+
+        $captured = [];
+        $capture = true;
+        WorkflowFailure::retrieved(static function (WorkflowFailure $failure) use (&$captured, &$capture): void {
+            if ($capture) {
+                $captured[$failure->id] = $failure->getRawOriginal('message_full');
+            }
+        });
+        DB::enableQueryLog();
+        DB::flushQueryLog();
+        try {
+            $result = RunRecentFailures::forRun($run);
+            $queries = DB::getQueryLog();
+        } finally {
+            $capture = false;
+            DB::disableQueryLog();
+        }
+
+        $messages = array_column($result['failures'], 'message', 'id');
+        $this->assertCount(3, $queries);
+        foreach ($queries as $query) {
+            $this->assertStringStartsWith('select ', strtolower($query['query']));
+        }
+        $this->assertArrayHasKey('large', $captured);
+        $this->assertNull($captured['large']);
+        $this->assertSame('base64:' . base64_encode($smallMessage), $captured['small']);
+        $this->assertNull($captured['ordinary']);
+        $this->assertLessThanOrEqual(65_535, strlen($messages['large']));
+        $this->assertStringContainsString('[full message stored separately]', $messages['large']);
+        $this->assertSame($smallMessage, $messages['small']);
+        $this->assertSame('Observed failure', $messages['ordinary']);
+        $this->assertSame($largeMessage, WorkflowFailure::query()->findOrFail('large')->message);
     }
 
     public function testConfiguredFailureScopeAndEagerLoadsArePreservedAndBounded(): void

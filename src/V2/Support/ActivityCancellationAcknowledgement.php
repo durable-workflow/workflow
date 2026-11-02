@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
-use Illuminate\Support\Facades\DB;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
@@ -58,7 +57,7 @@ final class ActivityCancellationAcknowledgement
         string $requestId,
         ?int $workflowTaskAttempt,
     ): array {
-        return DB::transaction(static function () use (
+        return ConfiguredV2Models::connection()->transaction(static function () use (
             $attemptId,
             $leaseOwner,
             $requestId,

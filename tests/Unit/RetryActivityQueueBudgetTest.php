@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
+use Exception;
 use Illuminate\Queue\Worker;
 use Illuminate\Queue\WorkerOptions;
 use Illuminate\Support\Facades\Cache;
@@ -13,8 +14,10 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Tests\Fixtures\TestProbeRetryActivity;
 use Tests\Fixtures\TestProbeRetryWorkflow;
+use Tests\Fixtures\TestSingleTryExceptionActivity;
 use Tests\TestCase;
 use Throwable;
+use Workflow\Activity;
 use Workflow\Middleware\WithoutOverlappingMiddleware;
 use Workflow\Models\StoredWorkflow;
 use Workflow\Serializers\Serializer;
@@ -25,22 +28,36 @@ final class RetryActivityQueueBudgetTest extends TestCase
     public static function activityAttempts(): array
     {
         return [
-            'first exception' => [1, RuntimeException::class],
-            'second exception' => [2, InvalidArgumentException::class],
-            'success' => [3, null],
+            'first exception' => [TestProbeRetryActivity::class, 1, RuntimeException::class, 'success'],
+            'second exception' => [TestProbeRetryActivity::class, 2, InvalidArgumentException::class, 'success'],
+            'success' => [TestProbeRetryActivity::class, 3, null, 'success'],
+            'single exception after overlap' => [
+                TestSingleTryExceptionActivity::class,
+                true,
+                Exception::class,
+                'activity',
+            ],
+            'single success after overlap' => [TestSingleTryExceptionActivity::class, false, null, 'activity'],
         ];
     }
 
     #[DataProvider('activityAttempts')]
-    public function testOverlapReleaseDoesNotSpendTheExceptionBudget(int $attempt, ?string $exceptionClass): void
-    {
+    /**
+     * @param class-string<Activity> $activityClass
+     */
+    public function testOverlapReleaseDoesNotSpendTheExceptionBudget(
+        string $activityClass,
+        int|bool $argument,
+        ?string $exceptionClass,
+        string $expectedResult,
+    ): void {
         config([
             'queue.default' => 'database',
         ]);
 
         $workflow = WorkflowStub::make(TestProbeRetryWorkflow::class);
         $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
-        $activity = new TestProbeRetryActivity(0, now()->toDateTimeString(), $storedWorkflow, $attempt);
+        $activity = new $activityClass(0, now()->toDateTimeString(), $storedWorkflow, $argument);
         $activity->onConnection('database')
             ->onQueue('retry-activity-budget');
 
@@ -81,6 +98,7 @@ final class RetryActivityQueueBudgetTest extends TestCase
 
         if ($exceptionClass !== null) {
             $this->assertInstanceOf($exceptionClass, $thrown);
+            $this->assertSame($exceptionClass, $thrown::class);
             $this->assertTrue($ready->hasFailed());
             $this->assertSame(1, $workflow->exceptions()->count());
             $exception = Serializer::unserialize($workflow->exceptions()->firstOrFail()->exception);
@@ -91,8 +109,8 @@ final class RetryActivityQueueBudgetTest extends TestCase
             $this->assertSame(0, $workflow->exceptions()->count());
             $log = $workflow->logs()
                 ->sole();
-            $this->assertSame(TestProbeRetryActivity::class, $log->class);
-            $this->assertSame('success', Serializer::unserialize($log->result));
+            $this->assertSame($activityClass, $log->class);
+            $this->assertSame($expectedResult, Serializer::unserialize($log->result));
         }
     }
 }

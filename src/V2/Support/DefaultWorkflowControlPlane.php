@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Database\Eloquent\ModelNotFoundException;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use LogicException;
 use Throwable;
@@ -64,7 +63,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             return $result;
         }
 
-        DB::transaction(function () use (
+        ConfiguredV2Models::connection()->transaction(function () use (
             $instanceId,
             $failedRunId,
             $namespace,
@@ -393,6 +392,10 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
         $priority = TaskPriority::normalize($options['priority'] ?? null);
         $fairnessKey = TaskFairnessKey::normalize($options['fairness_key'] ?? null);
         $fairnessWeight = TaskFairnessKey::normalizeWeight($options['fairness_weight'] ?? null);
+        $serviceCallIdentity = ServiceCallEffectIdentity::fromOptions($options);
+        $serviceCallToken = ! $serviceCallIdentity instanceof ServiceCallEffectIdentity
+            ? null
+            : $serviceCallIdentity->storageToken();
 
         $workflowClass = $resolvedClass ?? $workflowType;
         $externalFingerprint = is_string($options['external_workflow_definition_fingerprint'] ?? null)
@@ -404,7 +407,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
         $task = null;
         $instance = null;
 
-        DB::transaction(function () use (
+        ConfiguredV2Models::connection()->transaction(function () use (
             $workflowType,
             $workflowClass,
             $resolvedClass,
@@ -428,6 +431,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             $priority,
             $fairnessKey,
             $fairnessWeight,
+            $serviceCallToken,
             &$command,
             &$task,
             &$instance,
@@ -437,6 +441,21 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             $instance = null;
 
             $instance = $this->resolveOrCreateInstance($workflowType, $workflowClass, $instanceId, $namespace);
+
+            if ($serviceCallToken !== null) {
+                /** @var WorkflowCommand|null $existing */
+                $existing = ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+                    ->where('workflow_instance_id', $instance->id)
+                    ->where('command_type', CommandType::Start->value)
+                    ->where('request_id', $serviceCallToken)
+                    ->lockForUpdate()
+                    ->first();
+                if ($existing instanceof WorkflowCommand) {
+                    $command = $existing;
+
+                    return;
+                }
+            }
 
             $currentRun = CurrentRunResolver::forInstance($instance, lockForUpdate: true);
             CurrentRunResolver::syncPointer($instance, $currentRun);
@@ -1218,19 +1237,19 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             ->lockForUpdate()
             ->findOrFail($instanceId);
 
+        if ($instance->namespace !== $namespace) {
+            throw new LogicException(sprintf(
+                'Workflow instance [%s] cannot be reused with a different namespace.',
+                $instanceId,
+            ));
+        }
+
         if ($instance->workflow_type !== $workflowType) {
             throw new LogicException(sprintf(
                 'Workflow instance [%s] is reserved for durable type [%s] and cannot be reused for [%s].',
                 $instanceId,
                 $instance->workflow_type,
                 $workflowType,
-            ));
-        }
-
-        if ($instance->namespace !== $namespace) {
-            throw new LogicException(sprintf(
-                'Workflow instance [%s] cannot be reused with a different namespace.',
-                $instanceId,
             ));
         }
 
@@ -1374,11 +1393,16 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
      */
     private function commandContext(array $options): CommandContext
     {
-        $commandContext = $options['command_context'] ?? null;
-
-        return $commandContext instanceof CommandContext
-            ? $commandContext
+        $commandContext = ($options['command_context'] ?? null) instanceof CommandContext
+            ? $options['command_context']
             : CommandContext::controlPlane();
+        $serviceCallIdentity = ServiceCallEffectIdentity::fromOptions($options);
+
+        return ! $serviceCallIdentity instanceof ServiceCallEffectIdentity
+            ? $commandContext
+            : $commandContext->with([
+                'service_call' => $serviceCallIdentity->commandContext(),
+            ]);
     }
 
     private function configuredWorkflowValidationMessage(string $workflowType): ?string

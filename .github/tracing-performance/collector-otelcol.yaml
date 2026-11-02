@@ -1,0 +1,32 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        max_request_body_size: 1048576
+exporters:
+  debug:
+    verbosity: basic
+    sampling_initial: 1
+    sampling_thereafter: 100000
+service:
+  telemetry:
+    resource:
+      # A hexadecimal container ID may look numeric to the environment provider.
+      qualification.container_id_prefix: container-${env:HOSTNAME}
+    logs:
+      level: error
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
+                without_type_suffix: true
+                with_resource_constant_labels:
+                  included: [service.instance.id, service.version, qualification.container_id_prefix]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [debug]

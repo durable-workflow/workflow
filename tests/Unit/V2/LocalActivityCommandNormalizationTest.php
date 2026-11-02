@@ -339,6 +339,143 @@ final class LocalActivityCommandNormalizationTest extends NonDatabaseTestCase
     }
 
     /**
+     * Workflow #930: the timing fields recording walks back from completion
+     * are bounded, so no report can drive timestamp arithmetic out of range.
+     */
+    #[DataProvider('timingFields')]
+    public function testTimingFieldsAreBoundedForTimestampArithmetic(string $field, int $maximum, string $message): void
+    {
+        $first = $this->retriedCommand($field, $maximum)['attempts'][0];
+        $this->assertSame($maximum, $field === 'elapsed_ms' ? $first['heartbeats'][0]['elapsed_ms'] : $first[$field]);
+        foreach ([$maximum + 1, PHP_INT_MAX] as $value) {
+            try {
+                $this->retriedCommand($field, $value);
+            } catch (ValidationException $error) {
+                $path = $field === 'elapsed_ms' ? 'commands.0.attempts.0.heartbeats.0.elapsed_ms' : 'commands.0.attempts.0.' . $field;
+                $this->assertSame([
+                    $path => [$message],
+                ], $error->errors());
+
+                continue;
+            }
+
+            $this->fail(sprintf('%s %d was accepted.', $field, $value));
+        }
+    }
+
+    /**
+     * @return iterable<string, array{string, int, string}>
+     */
+    public static function timingFields(): iterable
+    {
+        yield 'attempt duration' => ['duration_ms', WorkflowCommandNormalizer::MAX_LOCAL_ACTIVITY_DURATION_MS,
+            'Local activity attempt duration_ms must not exceed 604800000.'];
+        yield 'heartbeat offset' => ['elapsed_ms', WorkflowCommandNormalizer::MAX_LOCAL_ACTIVITY_DURATION_MS,
+            'Local activity heartbeat elapsed_ms must not exceed 604800000.'];
+        yield 'retry backoff' => ['backoff_seconds', WorkflowCommandNormalizer::MAX_LOCAL_ACTIVITY_BACKOFF_SECONDS,
+            'Local activity attempt backoff_seconds must not exceed 86400.'];
+    }
+
+    public function testACompletionRecordsAtMostOneHistoryTransactionOfEvents(): void
+    {
+        $this->assertSame(5000, \Workflow\V2\Support\StructuralLimits::historyTransactionSizeLimit());
+        $normalize = static fn (array $commands): array => WorkflowCommandNormalizer::normalize($commands, '1.19');
+        // Four commands of one attempt and 1,000 heartbeats record 1,003
+        // events each; a fifth of one attempt records 3 plus its heartbeats.
+        $commands = array_fill(0, 4, $this->heartbeatCommand(1000));
+        $this->assertSame(1003, WorkflowCommandNormalizer::localActivityHistoryEvents($this->heartbeatCommand(1000)));
+        $this->assertSame([], WorkflowCommandNormalizer::completionBudgetErrors(
+            $normalize([...$commands, $this->heartbeatCommand(985)]),
+        ));
+        $this->assertSame([
+            'This completion would record more than 5000 history events; one workflow task completion may record at most 5000.',
+        ], WorkflowCommandNormalizer::completionBudgetErrors($normalize([...$commands, $this->heartbeatCommand(986)])));
+        // Every other command counts as one event, a lower bound.
+        $this->assertSame(7, WorkflowCommandNormalizer::localActivityHistoryEvents([
+            'attempts' => [[
+                'heartbeats' => [[], []],
+            ], [
+                'heartbeats' => [],
+            ]],
+        ]));
+        config([
+            'workflows.v2.structural_limits.history_transaction_size' => 4,
+        ]);
+        $this->assertSame([], WorkflowCommandNormalizer::completionBudgetErrors(
+            $normalize([[
+                'type' => 'complete_workflow',
+            ], $this->heartbeatCommand(0)]),
+        ));
+        $this->assertCount(1, WorkflowCommandNormalizer::completionBudgetErrors(
+            $normalize([[
+                'type' => 'complete_workflow',
+            ], $this->heartbeatCommand(1)]),
+        ));
+        // A disabled limit (0) refuses nothing.
+        config([
+            'workflows.v2.structural_limits.history_transaction_size' => 0,
+        ]);
+        $this->assertSame(
+            [],
+            WorkflowCommandNormalizer::completionBudgetErrors($normalize([...$commands, $commands[0]]))
+        );
+    }
+
+    /**
+     * A failed first attempt retried into a completed second, with the timing
+     * field under test set on the first.
+     *
+     * @return array<string, mixed>
+     */
+    private function retriedCommand(string $field, int $value): array
+    {
+        $first = [
+            'attempt_number' => 1,
+            'outcome' => 'failed',
+            'message' => 'declined',
+            'retry_reason' => 'failure',
+            'backoff_seconds' => 0,
+            'heartbeats' => [],
+        ];
+        if ($field === 'elapsed_ms') {
+            $first['heartbeats'] = [[
+                'elapsed_ms' => $value,
+            ]];
+        } else {
+            $first[$field] = $value;
+        }
+
+        return WorkflowCommandNormalizer::normalize([[
+            ...$this->completedCommand(),
+            'retry_policy' => [
+                'max_attempts' => 2,
+            ],
+            'attempts' => [
+                $first, [
+                    'attempt_number' => 2,
+                    'outcome' => 'completed',
+                    'heartbeats' => [],
+                ]],
+        ]], '1.19')[0];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function heartbeatCommand(int $heartbeats): array
+    {
+        $command = $this->completedCommand();
+        $command['attempts'][0]['heartbeats'] = array_map(
+            static fn (int $elapsed): array => [
+                'elapsed_ms' => $elapsed,
+            ],
+            $heartbeats === 0 ? [] : range(0, $heartbeats - 1),
+        );
+
+        return $command;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function completedCommand(): array

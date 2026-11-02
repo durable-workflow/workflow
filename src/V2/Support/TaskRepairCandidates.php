@@ -23,6 +23,8 @@ use Workflow\V2\Models\WorkflowTask;
  */
 final class TaskRepairCandidates
 {
+    private const TIMESTAMP_FORMAT = 'Y-m-d H:i:s.u';
+
     /**
      * @return list<string>
      */
@@ -685,15 +687,16 @@ final class TaskRepairCandidates
         $now ??= now();
         $staleDispatchCutoff = $now->copy()
             ->subSeconds(TaskRepairPolicy::redispatchAfterSeconds())
-            ->format('Y-m-d H:i:s.u');
+            ->format(self::TIMESTAMP_FORMAT);
 
+        // DateTime query bindings lose the fractional precision stored by the task model.
         $query = WorkflowTask::query()
             ->where(static function ($query) use ($now, $staleDispatchCutoff): void {
                 $query->where(static function ($ready) use ($now, $staleDispatchCutoff): void {
                     $ready->where('status', TaskStatus::Ready->value)
                         ->where(static function ($available) use ($now): void {
                             $available->whereNull('available_at')
-                                ->orWhere('available_at', '<=', $now);
+                                ->orWhere('available_at', '<=', $now->format(self::TIMESTAMP_FORMAT));
                         })
                         ->where(static function ($repairable) use ($now, $staleDispatchCutoff): void {
                             $repairable
@@ -710,7 +713,11 @@ final class TaskRepairCandidates
                                         $claimRepairable
                                             ->where(static function ($backoffReady) use ($now): void {
                                                 $backoffReady->whereNotNull('repair_available_at')
-                                                    ->where('repair_available_at', '<=', $now);
+                                                    ->where(
+                                                        'repair_available_at',
+                                                        '<=',
+                                                        $now->format(self::TIMESTAMP_FORMAT)
+                                                    );
                                             })
                                             ->orWhere(static function ($legacyClaimFailure) use (
                                                 $staleDispatchCutoff
@@ -746,7 +753,7 @@ final class TaskRepairCandidates
                 })->orWhere(static function ($leased) use ($now): void {
                     $leased->where('status', TaskStatus::Leased->value)
                         ->whereNotNull('lease_expires_at')
-                        ->where('lease_expires_at', '<=', $now);
+                        ->where('lease_expires_at', '<=', $now->format(self::TIMESTAMP_FORMAT));
                 });
             });
 
@@ -885,7 +892,7 @@ final class TaskRepairCandidates
     {
         $query->where(static function ($repairBackoff) use ($now): void {
             $repairBackoff->whereNull('repair_available_at')
-                ->orWhere('repair_available_at', '<=', $now);
+                ->orWhere('repair_available_at', '<=', $now->format(self::TIMESTAMP_FORMAT));
         });
     }
 

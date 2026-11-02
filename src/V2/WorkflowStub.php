@@ -6,9 +6,9 @@ namespace Workflow\V2;
 
 use BadMethodCallException;
 use Carbon\CarbonImmutable;
+use Carbon\CarbonInterface;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\App;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Illuminate\Support\Testing\Fakes\QueueFake;
@@ -51,6 +51,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\ActivityCancellation;
+use Workflow\V2\Support\BridgeCommandIdentity;
 use Workflow\V2\Support\CancellationScopeDescendants;
 use Workflow\V2\Support\CancellationScopeHistory;
 use Workflow\V2\Support\CancellationScopeRequests;
@@ -59,6 +60,7 @@ use Workflow\V2\Support\CommandIntent;
 use Workflow\V2\Support\CommandRequestIdentity;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\CurrentRunResolver;
+use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\LifecycleEventDispatcher;
 use Workflow\V2\Support\MemoUpsertService;
@@ -73,13 +75,17 @@ use Workflow\V2\Support\RunCommandContract;
 use Workflow\V2\Support\SearchAttributeUpsertService;
 use Workflow\V2\Support\SelectedRunLocator;
 use Workflow\V2\Support\ServiceCallCancellationOrigin;
+use Workflow\V2\Support\ServiceCallEffectIdentity;
 use Workflow\V2\Support\ServiceOperationCancellation;
 use Workflow\V2\Support\SignalWaits;
+use Workflow\V2\Support\SqliteSavepointRelease;
 use Workflow\V2\Support\SqliteTransaction;
 use Workflow\V2\Support\StructuralLimits;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
+use Workflow\V2\Support\TerminalCancellationHistory;
 use Workflow\V2\Support\TimerCancellation;
+use Workflow\V2\Support\TraceCarrier;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\UpdateCommandGate;
 use Workflow\V2\Support\UpdateWaitPolicy;
@@ -975,274 +981,25 @@ final class WorkflowStub
 
     public function attemptStart(...$arguments): StartResult
     {
-        /** @var WorkflowCommand|null $command */
-        $command = null;
-
         [$arguments, $startOptions] = $this->extractStartArguments($arguments);
         $metadata = WorkflowMetadata::fromStartArguments($arguments);
-        $task = null;
-        $startedRun = null;
-
-        SqliteTransaction::run(function () use ($metadata, $startOptions, &$task, &$command, &$startedRun): void {
-            $task = null;
-            $command = null;
-            $startedRun = null;
-
-            /** @var WorkflowInstance $instance */
-            $instance = self::instanceQuery()
-                ->lockForUpdate()
-                ->findOrFail($this->instance->id);
-
-            $run = $this->currentRunForInstance($instance, true);
-
-            if ($run instanceof WorkflowRun) {
-                $canReturnExisting = $startOptions->duplicateStartPolicy === DuplicateStartPolicy::ReturnExistingActive
-                    && in_array($run->status, [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting], true);
-
-                /** @var WorkflowCommand $command */
-                $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
-                    'command_type' => CommandType::Start->value,
-                    'target_scope' => 'instance',
-                    'status' => $canReturnExisting
-                        ? CommandStatus::Accepted->value
-                        : CommandStatus::Rejected->value,
-                    'outcome' => $canReturnExisting
-                        ? CommandOutcome::ReturnedExistingActive->value
-                        : CommandOutcome::RejectedDuplicate->value,
-                    'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
-                    'payload' => Serializer::serializeWithCodec(
-                        $run->payload_codec ?? CodecRegistry::defaultCodec(),
-                        $metadata->arguments
-                    ),
-                    'rejection_reason' => $canReturnExisting
-                        ? null
-                        : 'instance_already_started',
-                    'accepted_at' => $canReturnExisting
-                        ? now()
-                        : null,
-                    'applied_at' => $canReturnExisting
-                        ? now()
-                        : null,
-                    'rejected_at' => $canReturnExisting
-                        ? null
-                        : now(),
-                ]));
-
-                WorkflowHistoryEvent::record($run, $canReturnExisting
-                    ? HistoryEventType::StartAccepted
-                    : HistoryEventType::StartRejected, [
-                        'workflow_command_id' => $command->id,
-                        'workflow_instance_id' => $instance->id,
-                        'workflow_run_id' => $run->id,
-                        'workflow_class' => $run->workflow_class,
-                        'workflow_type' => $run->workflow_type,
-                        'business_key' => $run->business_key,
-                        'visibility_labels' => $run->visibility_labels,
-                        'memo' => AvroValueJsonProjection::project($run->typedMemos()),
-                        'search_attributes' => $run->typedSearchAttributes(),
-                        'outcome' => $command->outcome?->value,
-                        'rejection_reason' => $command->rejection_reason,
-                    ], null, $command);
-
-                self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
-
-                return;
-            }
-
-            $workflowClass = TypeRegistry::resolveWorkflowClass($instance->workflow_class, $instance->workflow_type);
-            $commandContract = RunCommandContract::snapshot($workflowClass);
-            $businessKey = $startOptions->businessKey ?? $instance->business_key;
-            $visibilityLabels = $startOptions->labels !== []
-                ? $startOptions->labels
-                : (is_array($instance->visibility_labels) ? $instance->visibility_labels : null);
-            $memo = $startOptions->memo !== []
-                ? $startOptions->memo
-                : (is_array($instance->memo) ? $instance->memo : null);
-            $searchAttributes = $startOptions->searchAttributes !== []
-                ? $startOptions->searchAttributes
-                : null;
-            $executionTimeoutSeconds = $startOptions->executionTimeoutSeconds;
-            $runTimeoutSeconds = $startOptions->runTimeoutSeconds;
-            $connection = RoutingResolver::workflowConnection($workflowClass, $metadata);
-            $queue = RoutingResolver::workflowQueue($workflowClass, $metadata);
-            $startBlockedReason = WorkflowStartGate::blockedReason(
-                WorkerCompatibility::current(),
-                $connection,
-                $queue,
-            );
-
-            if ($startBlockedReason !== null) {
-                $command = $this->rejectStartCommand(
-                    $instance,
-                    $metadata->arguments,
-                    $startBlockedReason,
-                    WorkflowStartGate::blockedMessage(
-                        sprintf('Workflow instance [%s] cannot start.', $instance->id),
-                        WorkerCompatibility::current(),
-                        $connection,
-                        $queue,
-                    ) ?? sprintf('Workflow instance [%s] cannot start.', $instance->id),
-                );
-
-                return;
-            }
-
-            if ($instance->workflow_class !== $workflowClass) {
-                $instance->forceFill([
-                    'workflow_class' => $workflowClass,
-                ])->save();
-            }
-
-            $startedAt = now();
-            $executionDeadlineAt = $executionTimeoutSeconds !== null
-                ? $startedAt->copy()
-                    ->addSeconds($executionTimeoutSeconds)
-                : null;
-            $runDeadlineAt = $runTimeoutSeconds !== null
-                ? $startedAt->copy()
-                    ->addSeconds($runTimeoutSeconds)
-                : null;
-            $payloadCodec = CodecRegistry::defaultCodec();
-            $serializedArguments = ExternalPayloads::externalizeForNamespace(
-                Serializer::serializeWithCodec($payloadCodec, $metadata->arguments),
-                $payloadCodec,
-                is_string($instance->namespace) ? $instance->namespace : null,
-            );
-
-            /** @var WorkflowRun $run */
-            $run = self::runQuery()->create([
-                'workflow_instance_id' => $instance->id,
-                'run_number' => $instance->run_count + 1,
-                'workflow_class' => $workflowClass,
-                'workflow_type' => $instance->workflow_type,
-                'namespace' => $instance->namespace,
-                'business_key' => $businessKey,
-                'visibility_labels' => $visibilityLabels,
-                'run_timeout_seconds' => $runTimeoutSeconds,
-                'execution_deadline_at' => $executionDeadlineAt,
-                'run_deadline_at' => $runDeadlineAt,
-                'status' => RunStatus::Pending->value,
-                'compatibility' => WorkerCompatibility::current(),
-                'payload_codec' => $payloadCodec,
-                'arguments' => $serializedArguments,
-                'connection' => $connection,
-                'queue' => $queue,
-                'started_at' => $startedAt,
-                'last_progress_at' => $startedAt,
-                'last_history_sequence' => 0,
-            ]);
-
-            $this->seedTypedVisibilityMetadata($run, $memo, $searchAttributes);
-
-            /** @var WorkflowCommand $command */
-            $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
-                'command_type' => CommandType::Start->value,
-                'target_scope' => 'instance',
-                'status' => CommandStatus::Accepted->value,
-                'outcome' => CommandOutcome::StartedNew->value,
-                'payload_codec' => $payloadCodec,
-                'payload' => $serializedArguments,
-                'accepted_at' => now(),
-                'applied_at' => now(),
-            ]));
-
-            $instance->forceFill([
-                'current_run_id' => $run->id,
-                'business_key' => $businessKey,
-                'visibility_labels' => $visibilityLabels,
-                'memo' => $memo,
-                'execution_timeout_seconds' => $executionTimeoutSeconds,
-                'started_at' => $startedAt,
-                'run_count' => $run->run_number,
-            ])->save();
-
-            $memoPayload = self::visibilityMetadataPayload($memo);
-            $searchAttributesPayload = self::visibilityMetadataPayload($searchAttributes);
-
-            WorkflowHistoryEvent::record($run, HistoryEventType::StartAccepted, [
-                'workflow_command_id' => $command->id,
-                'workflow_instance_id' => $instance->id,
-                'workflow_run_id' => $run->id,
-                'workflow_class' => $run->workflow_class,
-                'workflow_type' => $run->workflow_type,
-                'business_key' => $run->business_key,
-                'visibility_labels' => $run->visibility_labels,
-                'memo' => $memoPayload,
-                'search_attributes' => $searchAttributesPayload,
-                'outcome' => $command->outcome?->value,
-            ], null, $command);
-
-            WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted, [
-                'workflow_class' => $run->workflow_class,
-                'workflow_type' => $run->workflow_type,
-                'workflow_instance_id' => $instance->id,
-                'workflow_run_id' => $run->id,
-                'workflow_command_id' => $command->id,
-                'business_key' => $run->business_key,
-                'visibility_labels' => $run->visibility_labels,
-                'memo' => $memoPayload,
-                'search_attributes' => $searchAttributesPayload,
-                'execution_timeout_seconds' => $executionTimeoutSeconds,
-                'run_timeout_seconds' => $runTimeoutSeconds,
-                'execution_deadline_at' => $executionDeadlineAt?->toIso8601String(),
-                'run_deadline_at' => $runDeadlineAt?->toIso8601String(),
-                'workflow_definition_fingerprint' => WorkflowDefinition::fingerprint($workflowClass),
-                'declared_queries' => $commandContract['queries'],
-                'declared_query_contracts' => $commandContract['query_contracts'],
-                'declared_signals' => $commandContract['signals'],
-                'declared_signal_contracts' => $commandContract['signal_contracts'],
-                'declared_updates' => $commandContract['updates'],
-                'declared_update_contracts' => $commandContract['update_contracts'],
-                'declared_entry_method' => $commandContract['entry_method'],
-                'declared_entry_mode' => $commandContract['entry_mode'],
-                'declared_entry_declaring_class' => $commandContract['entry_declaring_class'],
-            ], null, $command);
-
-            /** @var WorkflowTask $task */
-            $task = self::taskQuery()->create([
-                'workflow_run_id' => $run->id,
-                'namespace' => $run->namespace,
-                'task_type' => TaskType::Workflow->value,
-                'status' => TaskStatus::Ready->value,
-                'available_at' => now(),
-                'payload' => [],
-                'connection' => $run->connection,
-                'queue' => $run->queue,
-                'compatibility' => $run->compatibility,
-            ]);
-
-            self::projectRun($run, ['instance', 'tasks', 'activityExecutions', 'failures', 'historyEvents']);
-
-            $startedRun = $run;
-        }, self::storageTransactionAttempts(), admission: function (): void {
-            $instance = self::instanceQuery();
-            $key = $instance->getModel()
-                ->getKeyName();
-            $instance->whereKey($this->instance->id)
-                ->toBase()
-                ->update([
-                    $key => $this->instance->id,
-                ]);
-        });
-
-        if ($startedRun instanceof WorkflowRun) {
-            LifecycleEventDispatcher::workflowStarted($startedRun);
+        // Capture outside the storage transaction and preserve it across its retries.
+        $observabilityContext = null;
+        $diagnostic = null;
+        $tracing = ExecutionTracing::enabled();
+        if ($tracing) {
+            $observabilityContext = TraceCarrier::admissionParent($diagnostic);
+        }
+        if (! $tracing) {
+            return $this->admitStart($metadata, $startOptions, $observabilityContext);
         }
 
-        $this->refresh();
-
-        if ($task instanceof WorkflowTask) {
-            TaskDispatcher::dispatch($task);
-        }
-
-        if (! $command instanceof WorkflowCommand) {
-            throw new LogicException(sprintf(
-                'Workflow instance [%s] failed to record a start command.',
-                $this->instance->id
-            ));
-        }
-
-        return StartResult::fromCommand($command);
+        return ExecutionTracing::admission(
+            $this->instance,
+            fn () => $this->admitStart($metadata, $startOptions, $observabilityContext),
+            enabled: true,
+            diagnostic: $diagnostic
+        );
     }
 
     public function signalWithStart(
@@ -1583,7 +1340,7 @@ final class WorkflowStub
         $command = null;
         $task = null;
 
-        DB::transaction(function () use (&$command, &$task): void {
+        ConfiguredV2Models::connection()->transaction(function () use (&$command, &$task): void {
             /** @var WorkflowInstance $instance */
             $instance = self::instanceQuery()
                 ->lockForUpdate()
@@ -1856,7 +1613,7 @@ final class WorkflowStub
         /** @var WorkflowCommand|null $command */
         $command = null;
 
-        DB::transaction(function () use (&$command, $reason): void {
+        ConfiguredV2Models::connection()->transaction(function () use (&$command, $reason): void {
             /** @var WorkflowInstance $instance */
             $instance = self::instanceQuery()
                 ->lockForUpdate()
@@ -1957,6 +1714,376 @@ final class WorkflowStub
         return new CommandResult($command);
     }
 
+    private function admitStart(
+        WorkflowMetadata $metadata,
+        StartOptions $startOptions,
+        ?array $observabilityContext,
+    ): StartResult {
+        /** @var WorkflowCommand|null $command */
+        $command = null;
+        $task = null;
+        $startedRun = null;
+
+        SqliteTransaction::run(function () use (
+            $metadata,
+            $startOptions,
+            $observabilityContext,
+            &$task,
+            &$command,
+            &$startedRun,
+        ): void {
+            $task = null;
+            $command = null;
+            $startedRun = null;
+
+            /** @var WorkflowInstance $instance */
+            $instance = self::instanceQuery()
+                ->lockForUpdate()
+                ->findOrFail($this->instance->id);
+
+            $run = $this->currentRunForInstance($instance, true);
+
+            if ($run instanceof WorkflowRun) {
+                $command = $this->recordExistingStart($instance, $run, $metadata, $startOptions);
+
+                return;
+            }
+
+            $workflowClass = TypeRegistry::resolveWorkflowClass($instance->workflow_class, $instance->workflow_type);
+            $commandContract = RunCommandContract::snapshot($workflowClass);
+            [$businessKey, $visibilityLabels, $memo, $searchAttributes] = $this->initialVisibilityMetadata(
+                $instance,
+                $startOptions,
+            );
+            $executionTimeoutSeconds = $startOptions->executionTimeoutSeconds;
+            $runTimeoutSeconds = $startOptions->runTimeoutSeconds;
+            $connection = RoutingResolver::workflowConnection($workflowClass, $metadata);
+            $queue = RoutingResolver::workflowQueue($workflowClass, $metadata);
+            $command = $this->rejectIncompatibleStart($instance, $metadata->arguments, $connection, $queue);
+            if ($command instanceof WorkflowCommand) {
+                return;
+            }
+
+            if ($instance->workflow_class !== $workflowClass) {
+                $instance->forceFill([
+                    'workflow_class' => $workflowClass,
+                ])->save();
+            }
+
+            $startedAt = now();
+            $executionDeadlineAt = $executionTimeoutSeconds !== null
+                ? $startedAt->copy()
+                    ->addSeconds($executionTimeoutSeconds)
+                : null;
+            $runDeadlineAt = $runTimeoutSeconds !== null
+                ? $startedAt->copy()
+                    ->addSeconds($runTimeoutSeconds)
+                : null;
+            $payloadCodec = CodecRegistry::defaultCodec();
+            $serializedArguments = ExternalPayloads::externalizeForNamespace(
+                Serializer::serializeWithCodec($payloadCodec, $metadata->arguments),
+                $payloadCodec,
+                is_string($instance->namespace) ? $instance->namespace : null,
+            );
+
+            /** @var WorkflowRun $run */
+            $run = self::runQuery()->create([
+                'workflow_instance_id' => $instance->id,
+                'run_number' => $instance->run_count + 1,
+                'observability_context' => $observabilityContext,
+                'workflow_class' => $workflowClass,
+                'workflow_type' => $instance->workflow_type,
+                'namespace' => $instance->namespace,
+                'business_key' => $businessKey,
+                'visibility_labels' => $visibilityLabels,
+                'run_timeout_seconds' => $runTimeoutSeconds,
+                'execution_deadline_at' => $executionDeadlineAt,
+                'run_deadline_at' => $runDeadlineAt,
+                'status' => RunStatus::Pending->value,
+                'compatibility' => WorkerCompatibility::current(),
+                'payload_codec' => $payloadCodec,
+                'arguments' => $serializedArguments,
+                'connection' => $connection,
+                'queue' => $queue,
+                'started_at' => $startedAt,
+                'last_progress_at' => $startedAt,
+                'last_history_sequence' => 0,
+            ]);
+
+            $this->seedTypedVisibilityMetadata($run, $memo, $searchAttributes);
+
+            $command = $this->recordNewStartCommand($instance, $run, $payloadCodec, $serializedArguments);
+
+            $instance->forceFill([
+                'current_run_id' => $run->id,
+                'business_key' => $businessKey,
+                'visibility_labels' => $visibilityLabels,
+                'memo' => $memo,
+                'execution_timeout_seconds' => $executionTimeoutSeconds,
+                'started_at' => $startedAt,
+                'run_count' => $run->run_number,
+            ])->save();
+
+            $memoPayload = self::visibilityMetadataPayload($memo);
+            $searchAttributesPayload = self::visibilityMetadataPayload($searchAttributes);
+
+            $this->recordInitialStartAccepted($instance, $run, $command, $memoPayload, $searchAttributesPayload);
+            $this->recordWorkflowStartedHistory($instance, $run, $command, $workflowClass, $commandContract, [
+                'memo' => $memoPayload,
+                'search_attributes' => $searchAttributesPayload,
+                'execution_timeout_seconds' => $executionTimeoutSeconds,
+                'run_timeout_seconds' => $runTimeoutSeconds,
+                'execution_deadline_at' => $executionDeadlineAt,
+                'run_deadline_at' => $runDeadlineAt,
+            ]);
+
+            $task = $this->createInitialWorkflowTask($run);
+
+            self::projectRun($run, ['instance', 'tasks', 'activityExecutions', 'failures', 'historyEvents']);
+
+            $startedRun = $run;
+        }, self::storageTransactionAttempts(), admission: function (): void {
+            $this->acquireInstanceWriter();
+        });
+
+        if ($startedRun instanceof WorkflowRun) {
+            LifecycleEventDispatcher::workflowStarted($startedRun);
+        }
+
+        $this->refresh();
+
+        if ($task instanceof WorkflowTask) {
+            TaskDispatcher::dispatch($task);
+        }
+
+        if (! $command instanceof WorkflowCommand) {
+            throw new LogicException(sprintf(
+                'Workflow instance [%s] failed to record a start command.',
+                $this->instance->id
+            ));
+        }
+
+        return StartResult::fromCommand($command);
+    }
+
+    private function recordExistingStart(
+        WorkflowInstance $instance,
+        WorkflowRun $run,
+        WorkflowMetadata $metadata,
+        StartOptions $startOptions,
+    ): WorkflowCommand {
+        $canReturnExisting = $startOptions->duplicateStartPolicy === DuplicateStartPolicy::ReturnExistingActive
+            && in_array($run->status, [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting], true);
+
+        $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
+            'command_type' => CommandType::Start->value,
+            'target_scope' => 'instance',
+            'status' => $canReturnExisting
+                ? CommandStatus::Accepted->value
+                : CommandStatus::Rejected->value,
+            'outcome' => $canReturnExisting
+                ? CommandOutcome::ReturnedExistingActive->value
+                : CommandOutcome::RejectedDuplicate->value,
+            'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
+            'payload' => Serializer::serializeWithCodec(
+                $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                $metadata->arguments
+            ),
+            'rejection_reason' => $canReturnExisting
+                ? null
+                : 'instance_already_started',
+            'accepted_at' => $canReturnExisting
+                ? now()
+                : null,
+            'applied_at' => $canReturnExisting
+                ? now()
+                : null,
+            'rejected_at' => $canReturnExisting
+                ? null
+                : now(),
+        ]));
+
+        WorkflowHistoryEvent::record($run, $canReturnExisting
+            ? HistoryEventType::StartAccepted
+            : HistoryEventType::StartRejected, [
+                'workflow_command_id' => $command->id,
+                'workflow_instance_id' => $instance->id,
+                'workflow_run_id' => $run->id,
+                'workflow_class' => $run->workflow_class,
+                'workflow_type' => $run->workflow_type,
+                'business_key' => $run->business_key,
+                'visibility_labels' => $run->visibility_labels,
+                'memo' => AvroValueJsonProjection::project($run->typedMemos()),
+                'search_attributes' => $run->typedSearchAttributes(),
+                'outcome' => $command->outcome?->value,
+                'rejection_reason' => $command->rejection_reason,
+            ], null, $command);
+
+        self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
+
+        return $command;
+    }
+
+    /**
+     * @return array{mixed, array|null, array|null, array|null}
+     */
+    private function initialVisibilityMetadata(WorkflowInstance $instance, StartOptions $startOptions): array
+    {
+        $businessKey = $startOptions->businessKey ?? $instance->business_key;
+        $visibilityLabels = $startOptions->labels !== []
+            ? $startOptions->labels
+            : (is_array($instance->visibility_labels) ? $instance->visibility_labels : null);
+        $memo = $startOptions->memo !== []
+            ? $startOptions->memo
+            : (is_array($instance->memo) ? $instance->memo : null);
+        $searchAttributes = $startOptions->searchAttributes !== []
+            ? $startOptions->searchAttributes
+            : null;
+
+        return [$businessKey, $visibilityLabels, $memo, $searchAttributes];
+    }
+
+    private function createInitialWorkflowTask(WorkflowRun $run): WorkflowTask
+    {
+        return self::taskQuery()->create([
+            'workflow_run_id' => $run->id,
+            'namespace' => $run->namespace,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => now(),
+            'payload' => [],
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'compatibility' => $run->compatibility,
+        ]);
+    }
+
+    private function acquireInstanceWriter(): void
+    {
+        $instance = self::instanceQuery();
+        $key = $instance->getModel()
+            ->getKeyName();
+        $instance->whereKey($this->instance->id)
+            ->toBase()
+            ->update([
+                $key => $this->instance->id,
+            ]);
+    }
+
+    private function rejectIncompatibleStart(
+        WorkflowInstance $instance,
+        array $arguments,
+        ?string $connection,
+        ?string $queue,
+    ): ?WorkflowCommand {
+        $reason = WorkflowStartGate::blockedReason(WorkerCompatibility::current(), $connection, $queue);
+        if ($reason === null) {
+            return null;
+        }
+
+        return $this->rejectStartCommand(
+            $instance,
+            $arguments,
+            $reason,
+            WorkflowStartGate::blockedMessage(
+                sprintf('Workflow instance [%s] cannot start.', $instance->id),
+                WorkerCompatibility::current(),
+                $connection,
+                $queue,
+            ) ?? sprintf('Workflow instance [%s] cannot start.', $instance->id),
+        );
+    }
+
+    private function recordInitialStartAccepted(
+        WorkflowInstance $instance,
+        WorkflowRun $run,
+        WorkflowCommand $command,
+        ?array $memo,
+        ?array $searchAttributes,
+    ): void {
+        WorkflowHistoryEvent::record($run, HistoryEventType::StartAccepted, [
+            'workflow_command_id' => $command->id,
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+            'workflow_class' => $run->workflow_class,
+            'workflow_type' => $run->workflow_type,
+            'business_key' => $run->business_key,
+            'visibility_labels' => $run->visibility_labels,
+            'memo' => $memo,
+            'search_attributes' => $searchAttributes,
+            'outcome' => $command->outcome?->value,
+        ], null, $command);
+    }
+
+    private function recordNewStartCommand(
+        WorkflowInstance $instance,
+        WorkflowRun $run,
+        string $payloadCodec,
+        string $arguments,
+        ?CommandContext $commandContext = null,
+    ): WorkflowCommand {
+        $attributes = [
+            'command_type' => CommandType::Start->value,
+            'target_scope' => 'instance',
+            'status' => CommandStatus::Accepted->value,
+            'outcome' => CommandOutcome::StartedNew->value,
+            'payload_codec' => $payloadCodec,
+            'payload' => $arguments,
+            'accepted_at' => now(),
+            'applied_at' => now(),
+        ];
+
+        return WorkflowCommand::record($instance, $run, $commandContext === null
+            ? $this->commandAttributes($attributes)
+            : $this->commandAttributesForContext($commandContext, $attributes));
+    }
+
+    /**
+     * @param array<string, mixed> $commandContract
+     * @param array{
+     *     memo: array|null,
+     *     search_attributes: array|null,
+     *     execution_timeout_seconds: int|null,
+     *     run_timeout_seconds: int|null,
+     *     execution_deadline_at: CarbonInterface|null,
+     *     run_deadline_at: CarbonInterface|null
+     * } $startMetadata
+     */
+    private function recordWorkflowStartedHistory(
+        WorkflowInstance $instance,
+        WorkflowRun $run,
+        WorkflowCommand $command,
+        string $workflowClass,
+        array $commandContract,
+        array $startMetadata,
+    ): void {
+        WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted, [
+            'workflow_class' => $run->workflow_class,
+            'workflow_type' => $run->workflow_type,
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+            'workflow_command_id' => $command->id,
+            'business_key' => $run->business_key,
+            'visibility_labels' => $run->visibility_labels,
+            'memo' => $startMetadata['memo'],
+            'search_attributes' => $startMetadata['search_attributes'],
+            'execution_timeout_seconds' => $startMetadata['execution_timeout_seconds'],
+            'run_timeout_seconds' => $startMetadata['run_timeout_seconds'],
+            'execution_deadline_at' => $startMetadata['execution_deadline_at']?->toIso8601String(),
+            'run_deadline_at' => $startMetadata['run_deadline_at']?->toIso8601String(),
+            'workflow_definition_fingerprint' => WorkflowDefinition::fingerprint($workflowClass),
+            'declared_queries' => $commandContract['queries'],
+            'declared_query_contracts' => $commandContract['query_contracts'],
+            'declared_signals' => $commandContract['signals'],
+            'declared_signal_contracts' => $commandContract['signal_contracts'],
+            'declared_updates' => $commandContract['updates'],
+            'declared_update_contracts' => $commandContract['update_contracts'],
+            'declared_entry_method' => $commandContract['entry_method'],
+            'declared_entry_mode' => $commandContract['entry_mode'],
+            'declared_entry_declaring_class' => $commandContract['entry_declaring_class'],
+        ], null, $command);
+    }
+
     /**
      * @param array{scope_id: string, preparation_history_event_id: string, child_call_id: string}|null $scopeTarget
      */
@@ -1971,18 +2098,21 @@ final class WorkflowStub
             throw new LogicException('Cancellation cleanup timeout must be between 1 and 3600 seconds.');
         }
 
+        $incomingContext = $parentWorkflowRunId === null && $scopeTarget === null && $serviceCallId === null
+            ? TraceCarrier::captureConfigured() : null;
         /** @var WorkflowCommand|null $command */
         $command = null;
         $task = null;
 
-        DB::transaction(function () use (
+        ConfiguredV2Models::connection()->transaction(function () use (
             &$command,
             &$task,
             $reason,
             $cleanupTimeoutSeconds,
             $parentWorkflowRunId,
             $scopeTarget,
-            $serviceCallId
+            $serviceCallId,
+            $incomingContext
         ): void {
             $command = null;
             $task = null;
@@ -2049,6 +2179,17 @@ final class WorkflowStub
                 }
                 $member = $scopePreparation === null ? null : collect($scopePreparation->childMembers)
                     ->firstWhere('child_call_id', $scopeTarget['child_call_id']);
+                if ((\Workflow\V2\Support\ImportedLineageReferences::imported($scopeParent)
+                    || \Workflow\V2\Support\ImportedLineageReferences::imported($run))
+                    && ($member === null || ! \Workflow\V2\Support\ImportedLineageReferences::allowsChild(
+                        $scopeParent,
+                        $run,
+                        $member['sequence'],
+                        $scopeTarget['child_call_id'],
+                        true
+                    ))) {
+                    throw new LogicException('cancellation_scope_child_target_mismatch');
+                }
                 if ($scopePreparation === null || $scopePreparation->historyEventId !== $scopeTarget['preparation_history_event_id']
                     || $member === null || $member['child_workflow_instance_id'] !== $instance->id
                     || $member['child_workflow_run_id'] !== $run->id || $member['cancellation_policy'] === 'abandon'
@@ -2254,6 +2395,7 @@ final class WorkflowStub
                 'target_scope' => $this->commandTargetScope(),
                 'status' => CommandStatus::Accepted->value,
                 'outcome' => CommandOutcome::CancellationRequested->value,
+                'observability_context' => $incomingContext,
                 'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
                 'payload' => Serializer::serializeWithCodec(
                     $run->payload_codec ?? CodecRegistry::defaultCodec(),
@@ -2328,12 +2470,13 @@ final class WorkflowStub
 
     /**
      * @param array<int|string, mixed> $arguments
-     * @return array{0: WorkflowCommand|null, 1: WorkflowUpdate|null, 2: WorkflowTask|null}
+     * @return array{0: WorkflowCommand|null, 1: WorkflowUpdate|null, 2: WorkflowTask|null, 3: array{verified: bool}|null}
      */
     private function recordAcceptedUpdateWithArguments(string $method, array $arguments): array
     {
         $this->validateCommandRequestId(CommandType::Update);
         $this->refresh();
+        $incomingContext = TraceCarrier::captureConfigured();
 
         /** @var WorkflowCommand|null $command */
         $command = null;
@@ -2344,13 +2487,28 @@ final class WorkflowStub
         /** @var array{verified: bool}|null $retained */
         $retained = null;
 
-        DB::transaction(function () use ($method, $arguments, &$command, &$update, &$resumeTask, &$retained): void {
+        ConfiguredV2Models::connection()->transaction(function () use (
+            $method,
+            $arguments,
+            &$command,
+            &$update,
+            &$resumeTask,
+            &$retained,
+            $incomingContext
+        ): void {
             $retained = null;
 
             /** @var WorkflowInstance $instance */
             $instance = self::instanceQuery()
                 ->lockForUpdate()
                 ->findOrFail($this->instance->id);
+
+            $internalCommand = $this->existingInternalCommandForRequest($instance, CommandType::Update);
+            if ($internalCommand instanceof WorkflowCommand) {
+                $command = $internalCommand;
+                $update = $this->updateForCommand($command);
+                return;
+            }
 
             // A keyed retry is answered from its retained receipt before any run
             // resolution, so closure or continuation never admits it again.
@@ -2573,6 +2731,7 @@ final class WorkflowStub
                 'target_scope' => $this->commandTargetScope(),
                 'status' => CommandStatus::Accepted->value,
                 'accepted_at' => now(),
+                'observability_context' => $incomingContext,
             ], $updateCommandAttributes)));
 
             /** @var WorkflowUpdate $update */
@@ -2795,6 +2954,7 @@ final class WorkflowStub
         $task = null;
         /** @var array{verified: bool}|null $retained */
         $retained = null;
+        $observabilityContext = $runtimeReserved ? null : TraceCarrier::captureConfigured();
 
         SqliteTransaction::run(function () use (
             $name,
@@ -2802,6 +2962,7 @@ final class WorkflowStub
             $payloadCodec,
             $payloadBlob,
             $runtimeReserved,
+            $observabilityContext,
             &$command,
             &$task,
             &$retained
@@ -2814,6 +2975,25 @@ final class WorkflowStub
             $instance = self::instanceQuery()
                 ->lockForUpdate()
                 ->findOrFail($this->instance->id);
+
+            $context = $this->resolvedCommandContext()
+                ->attributes()['context'];
+            $identity = ServiceCallEffectIdentity::fromContext($context);
+            $bridgeIdentity = BridgeCommandIdentity::fromContext($context);
+            if ($identity !== null || $bridgeIdentity !== null) {
+                /** @var WorkflowCommand|null $existing */
+                $existing = $identity !== null ? ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+                    ->where('workflow_instance_id', $instance->id)
+                    ->where('command_type', CommandType::Signal->value)
+                    ->where('request_id', $identity->storageToken())
+                    ->lockForUpdate()
+                    ->first() : $bridgeIdentity->find($instance, CommandType::Signal);
+                if ($existing instanceof WorkflowCommand) {
+                    $command = $existing;
+
+                    return;
+                }
+            }
 
             // A keyed retry is answered from its retained receipt before any run
             // resolution, so closure or continuation never admits it again.
@@ -2843,70 +3023,12 @@ final class WorkflowStub
                 return;
             }
 
-            $currentRun = $this->currentRunForInstance($instance, true);
-
-            if (! $currentRun instanceof WorkflowRun) {
-                $command = $this->rejectCommand(
-                    $instance,
-                    null,
-                    CommandType::Signal,
-                    'instance_not_started',
-                    $this->commandTargetScope(),
-                    array_merge($this->signalCommandPayloadAttributes($name, $arguments, [], $payloadCodec), [
-                        'intent_digest' => $this->signalIntentDigest(null, $name, $arguments, $runtimeReserved),
-                    ]),
-                );
-                $this->recordRejectedSignal($command, $name, $arguments);
-
+            $target = $this->signalRunOrRejection($instance, $name, $arguments, $payloadCodec);
+            if ($target instanceof WorkflowCommand) {
+                $command = $target;
                 return;
             }
-
-            if ($this->runTargeted) {
-                /** @var WorkflowRun $run */
-                $run = self::runQuery()
-                    ->lockForUpdate()
-                    ->findOrFail($this->selectedRunId);
-
-                if ($run->id !== $currentRun->id) {
-                    $command = $this->rejectCommand(
-                        $instance,
-                        $run,
-                        CommandType::Signal,
-                        'selected_run_not_current',
-                        $this->commandTargetScope(),
-                        array_merge($this->signalCommandPayloadAttributes($name, $arguments, [], $payloadCodec), [
-                            'resolved_workflow_run_id' => $currentRun->id,
-                            'intent_digest' => $this->signalIntentDigest($run, $name, $arguments, $runtimeReserved),
-                        ]),
-                    );
-                    $this->recordRejectedSignal($command, $name, $arguments);
-
-                    return;
-                }
-            } else {
-                $run = $currentRun;
-            }
-
-            if (in_array($run->status, [
-                RunStatus::Completed,
-                RunStatus::Failed,
-                RunStatus::Cancelled,
-                RunStatus::Terminated,
-            ], true)) {
-                $command = $this->rejectCommand(
-                    $instance,
-                    $run,
-                    CommandType::Signal,
-                    'run_not_active',
-                    $this->commandTargetScope(),
-                    array_merge($this->signalCommandPayloadAttributes($name, $arguments, [], $payloadCodec), [
-                        'intent_digest' => $this->signalIntentDigest($run, $name, $arguments, $runtimeReserved),
-                    ]),
-                );
-                $this->recordRejectedSignal($command, $name, $arguments);
-
-                return;
-            }
+            $run = $target;
 
             $projectionRole = self::historyProjectionRole();
             $bufferedSignalSummary = null;
@@ -2938,17 +3060,12 @@ final class WorkflowStub
                         CommandType::Signal,
                         'unknown_signal',
                         $this->commandTargetScope(),
-                        array_merge(
-                            $this->signalCommandPayloadAttributes(
-                                $name,
-                                $arguments,
-                                [],
-                                $payloadCodec,
-                                $signalAdmission['payload'] ?? [],
-                            ),
-                            [
-                                'intent_digest' => $this->signalIntentDigestFromArguments($name, $arguments),
-                            ],
+                        $this->signalCommandPayloadAttributes(
+                            $name,
+                            $arguments,
+                            [],
+                            $payloadCodec,
+                            $signalAdmission['payload'] ?? [],
                         ),
                     );
                     $this->recordRejectedSignal($command, $name, $arguments);
@@ -2965,16 +3082,11 @@ final class WorkflowStub
                         CommandType::Signal,
                         'invalid_signal_arguments',
                         $this->commandTargetScope(),
-                        array_merge(
-                            $this->signalCommandPayloadAttributes(
-                                $name,
-                                $arguments,
-                                $validatedArguments['validation_errors'],
-                                $payloadCodec,
-                            ),
-                            [
-                                'intent_digest' => $this->signalIntentDigestFromArguments($name, $arguments),
-                            ],
+                        $this->signalCommandPayloadAttributes(
+                            $name,
+                            $arguments,
+                            $validatedArguments['validation_errors'],
+                            $payloadCodec,
                         ),
                     );
                     $this->recordRejectedSignal($command, $name, $arguments, $validatedArguments['validation_errors']);
@@ -2994,9 +3106,7 @@ final class WorkflowStub
                     CommandType::Signal,
                     'structural_limit_exceeded',
                     $this->commandTargetScope(),
-                    array_merge($this->signalCommandPayloadAttributes($name, $arguments, [], $payloadCodec), [
-                        'intent_digest' => $this->signalIntentDigestFromArguments($name, $arguments),
-                    ]),
+                    $this->signalCommandPayloadAttributes($name, $arguments, [], $payloadCodec),
                 );
                 $this->recordRejectedSignal($command, $name, $arguments);
 
@@ -3008,59 +3118,27 @@ final class WorkflowStub
             );
             $serializedSignalArguments = $payloadBlob ?? Serializer::serializeWithCodec($signalCodec, $arguments);
 
-            StructuralLimits::logWarning(
-                StructuralLimits::warnApproachingPayloadSize($serializedSignalArguments),
-                [
-                    'workflow_run_id' => $run->id,
-                    'workflow_type' => $run->workflow_type,
-                    'payload_site' => 'signal_input',
-                    'signal_name' => $name,
-                ],
+            $command = $this->rejectOversizedSignal(
+                $instance,
+                $run,
+                $name,
+                $signalCodec,
+                $serializedSignalArguments,
+                $arguments
             );
-
-            try {
-                StructuralLimits::guardPayloadSize($serializedSignalArguments);
-            } catch (StructuralLimitExceededException $e) {
-                $command = $this->rejectCommand(
-                    $instance,
-                    $run,
-                    CommandType::Signal,
-                    'structural_limit_exceeded',
-                    $this->commandTargetScope(),
-                    array_merge($this->structuralLimitExceededCommandPayloadAttributes($name, $signalCodec, $e), [
-                        'intent_digest' => $this->signalIntentDigestFromArguments($name, $arguments),
-                    ]),
-                );
-                $this->recordRejectedSignal($command, $name, [], [
-                    'arguments' => [$e->getMessage()],
-                ]);
-
+            if ($command instanceof WorkflowCommand) {
                 return;
             }
 
-            $storedExternally = $payloadBlob !== null && ExternalPayloads::isStoredReference($payloadBlob);
-            $commandAttributes = $this->commandAttributes([
-                'command_type' => CommandType::Signal->value,
-                'target_scope' => $this->commandTargetScope(),
-                'status' => CommandStatus::Accepted->value,
-                'outcome' => CommandOutcome::SignalReceived->value,
-                'intent_digest' => $this->signalIntentDigestFromArguments($name, $arguments),
-                ...($storedExternally
-                    ? [
-                        'payload_codec' => $signalCodec,
-                        'payload' => $payloadBlob,
-                    ]
-                    : $this->signalCommandPayloadAttributes($name, $arguments, [], $signalCodec)),
-                'accepted_at' => now(),
-            ]);
-            if ($storedExternally) {
-                $commandAttributes['context'] = array_merge($commandAttributes['context'], [
-                    'signal_name' => $name,
-                ]);
-            }
-
-            /** @var WorkflowCommand $command */
-            $command = WorkflowCommand::record($instance, $run, $commandAttributes);
+            $command = $this->recordAcceptedSignalCommand(
+                $instance,
+                $run,
+                $name,
+                $arguments,
+                $signalCodec,
+                $payloadBlob,
+                $observabilityContext,
+            );
 
             $signalWaitId = $bufferedSignalSummary instanceof WorkflowRunSummary
                 ? SignalWaits::bufferedWaitIdForCommandId($command->id)
@@ -3076,20 +3154,7 @@ final class WorkflowStub
                 $serializedSignalArguments,
             );
 
-            $event = WorkflowHistoryEvent::record($run, HistoryEventType::SignalReceived, array_filter([
-                'workflow_command_id' => $command->id,
-                'signal_id' => $signal->id,
-                'workflow_instance_id' => $instance->id,
-                'workflow_run_id' => $run->id,
-                'signal_name' => $name,
-                'signal_wait_id' => $signalWaitId,
-                'arguments' => ExternalPayloads::historyValue(
-                    is_string($signal->arguments) ? $signal->arguments : null,
-                    is_string($signal->payload_codec) ? $signal->payload_codec : null,
-                    is_string($run->namespace) ? $run->namespace : null,
-                ),
-                'payload_codec' => $signal->payload_codec,
-            ], static fn (mixed $value): bool => $value !== null), null, $command);
+            $event = $this->recordSignalReceivedHistory($instance, $run, $command, $signal, $name, $signalWaitId);
 
             if (! $bufferedSignalSummary instanceof WorkflowRunSummary && ! $this->hasOpenWorkflowTask($run->id)) {
                 $task = PendingMessageTask::createForRun($run);
@@ -3104,14 +3169,7 @@ final class WorkflowStub
                 self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
             }
         }, self::mysqlCommandTransactionAttempts(), admission: function (): void {
-            $instance = self::instanceQuery();
-            $key = $instance->getModel()
-                ->getKeyName();
-            $instance->whereKey($this->instance->id)
-                ->toBase()
-                ->update([
-                    $key => $this->instance->id,
-                ]);
+            $this->acquireInstanceWriter();
         });
 
         $this->refresh();
@@ -3140,6 +3198,173 @@ final class WorkflowStub
         return $result;
     }
 
+    private function signalRunOrRejection(
+        WorkflowInstance $instance,
+        string $name,
+        array $arguments,
+        ?string $payloadCodec,
+    ): WorkflowRun|WorkflowCommand {
+        $currentRun = $this->currentRunForInstance($instance, true);
+        if (! $currentRun instanceof WorkflowRun) {
+            $command = $this->rejectCommand(
+                $instance,
+                null,
+                CommandType::Signal,
+                'instance_not_started',
+                $this->commandTargetScope(),
+                $this->signalCommandPayloadAttributes($name, $arguments, [], $payloadCodec),
+            );
+            $this->recordRejectedSignal($command, $name, $arguments);
+
+            return $command;
+        }
+
+        if ($this->runTargeted) {
+            /** @var WorkflowRun $run */
+            $run = self::runQuery()
+                ->lockForUpdate()
+                ->findOrFail($this->selectedRunId);
+
+            if ($run->id !== $currentRun->id) {
+                $command = $this->rejectCommand(
+                    $instance,
+                    $run,
+                    CommandType::Signal,
+                    'selected_run_not_current',
+                    $this->commandTargetScope(),
+                    array_merge($this->signalCommandPayloadAttributes($name, $arguments, [], $payloadCodec), [
+                        'resolved_workflow_run_id' => $currentRun->id,
+                    ]),
+                );
+                $this->recordRejectedSignal($command, $name, $arguments);
+
+                return $command;
+            }
+        } else {
+            $run = $currentRun;
+        }
+
+        if (in_array($run->status, [
+            RunStatus::Completed,
+            RunStatus::Failed,
+            RunStatus::Cancelled,
+            RunStatus::Terminated,
+        ], true)) {
+            $command = $this->rejectCommand(
+                $instance,
+                $run,
+                CommandType::Signal,
+                'run_not_active',
+                $this->commandTargetScope(),
+                $this->signalCommandPayloadAttributes($name, $arguments, [], $payloadCodec),
+            );
+            $this->recordRejectedSignal($command, $name, $arguments);
+
+            return $command;
+        }
+
+        return $run;
+    }
+
+    private function recordSignalReceivedHistory(
+        WorkflowInstance $instance,
+        WorkflowRun $run,
+        WorkflowCommand $command,
+        WorkflowSignal $signal,
+        string $name,
+        ?string $signalWaitId,
+    ): WorkflowHistoryEvent {
+        return WorkflowHistoryEvent::record($run, HistoryEventType::SignalReceived, array_filter([
+            'workflow_command_id' => $command->id,
+            'signal_id' => $signal->id,
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+            'signal_name' => $name,
+            'signal_wait_id' => $signalWaitId,
+            'arguments' => ExternalPayloads::historyValue(
+                is_string($signal->arguments) ? $signal->arguments : null,
+                is_string($signal->payload_codec) ? $signal->payload_codec : null,
+                is_string($run->namespace) ? $run->namespace : null,
+            ),
+            'payload_codec' => $signal->payload_codec,
+        ], static fn (mixed $value): bool => $value !== null), null, $command);
+    }
+
+    private function recordAcceptedSignalCommand(
+        WorkflowInstance $instance,
+        WorkflowRun $run,
+        string $name,
+        array $arguments,
+        string $signalCodec,
+        ?string $payloadBlob,
+        ?array $observabilityContext,
+    ): WorkflowCommand {
+        $storedExternally = $payloadBlob !== null && ExternalPayloads::isStoredReference($payloadBlob);
+        $attributes = $this->commandAttributes([
+            'command_type' => CommandType::Signal->value,
+            'intent_digest' => $this->signalIntentDigestFromArguments($name, $arguments),
+            'observability_context' => $observabilityContext,
+            'target_scope' => $this->commandTargetScope(),
+            'status' => CommandStatus::Accepted->value,
+            'outcome' => CommandOutcome::SignalReceived->value,
+            ...($storedExternally
+                ? [
+                    'payload_codec' => $signalCodec,
+                    'payload' => $payloadBlob,
+                ]
+                : $this->signalCommandPayloadAttributes($name, $arguments, [], $signalCodec)),
+            'accepted_at' => now(),
+        ]);
+        if ($storedExternally) {
+            $attributes['context'] = array_merge($attributes['context'], [
+                'signal_name' => $name,
+            ]);
+        }
+
+        return WorkflowCommand::record($instance, $run, $attributes);
+    }
+
+    /**
+     * @param array<int|string, mixed> $signalArguments
+     */
+    private function rejectOversizedSignal(
+        WorkflowInstance $instance,
+        WorkflowRun $run,
+        string $name,
+        string $signalCodec,
+        string $arguments,
+        array $signalArguments,
+    ): ?WorkflowCommand {
+        StructuralLimits::logWarning(StructuralLimits::warnApproachingPayloadSize($arguments), [
+            'workflow_run_id' => $run->id,
+            'workflow_type' => $run->workflow_type,
+            'payload_site' => 'signal_input',
+            'signal_name' => $name,
+        ]);
+
+        try {
+            StructuralLimits::guardPayloadSize($arguments);
+        } catch (StructuralLimitExceededException $e) {
+            $command = $this->rejectCommand(
+                $instance,
+                $run,
+                CommandType::Signal,
+                'structural_limit_exceeded',
+                $this->commandTargetScope(),
+                array_merge($this->structuralLimitExceededCommandPayloadAttributes($name, $signalCodec, $e), [
+                    'intent_digest' => $this->signalIntentDigestFromArguments($name, $signalArguments),
+                ]),
+            );
+            $this->recordRejectedSignal($command, $name, [], [
+                'arguments' => [$e->getMessage()],
+            ]);
+
+            return $command;
+        }
+
+        return null;
+    }
+
     /**
      * @param array<int|string, mixed> $signalArguments
      * @param list<mixed> $startArguments
@@ -3158,22 +3383,53 @@ final class WorkflowStub
 
         $this->refresh();
 
+        $intakeGroupId = (string) Str::ulid();
+        // Capture before locking. An existing run retains its original admission carrier.
+        $observabilityContext = null;
+        $diagnostic = null;
+        $tracing = ExecutionTracing::enabled();
+        if ($tracing) {
+            $observabilityContext = TraceCarrier::admissionParent($diagnostic);
+        }
+        $operation = fn (): SignalWithStartResult => $this->admitSignalWithStart(
+            $name,
+            $signalArguments,
+            $startArguments,
+            $startOptions,
+            $intakeGroupId,
+            $observabilityContext,
+        );
+        if (! $tracing) {
+            return $operation();
+        }
+
+        return ExecutionTracing::admission($this->instance, $operation, enabled: true, diagnostic: $diagnostic);
+    }
+
+    private function admitSignalWithStart(
+        string $name,
+        array $signalArguments,
+        array $startArguments,
+        StartOptions $startOptions,
+        string $intakeGroupId,
+        ?array $observabilityContext,
+    ): SignalWithStartResult {
         /** @var WorkflowCommand|null $startCommand */
         $startCommand = null;
         /** @var WorkflowCommand|null $signalCommand */
         $signalCommand = null;
         $task = null;
         $startedRun = null;
-        $intakeGroupId = (string) Str::ulid();
         /** @var array{verified: bool}|null $retained */
         $retained = null;
 
-        DB::transaction(function () use (
+        ConfiguredV2Models::connection()->transaction(function () use (
             $name,
             $signalArguments,
             $startArguments,
             $startOptions,
             $intakeGroupId,
+            $observabilityContext,
             &$startCommand,
             &$signalCommand,
             &$task,
@@ -3192,7 +3448,6 @@ final class WorkflowStub
                 ->findOrFail($this->instance->id);
 
             $commandContext = $this->signalWithStartCommandContext($intakeGroupId);
-
             // A keyed retry returns the original intake instead of recording a
             // second start/signal pair under a new intake group.
             $retainedReceipt = $this->retainedCommandForRequest(
@@ -3224,396 +3479,28 @@ final class WorkflowStub
             $currentRun = $this->currentRunForInstance($instance, true);
 
             if ($currentRun instanceof WorkflowRun && $this->runIsActive($currentRun)) {
-                $run = $currentRun;
-
-                $this->loadLockedRunRelations($run, $instance);
-
-                $signalAdmission = $this->signalAdmissionForRun($run, $name);
-
-                if (($signalAdmission['allowed'] ?? false) !== true) {
-                    $signalCommand = $this->rejectSignalCommandForContext(
-                        $commandContext,
-                        $instance,
-                        $run,
-                        $name,
-                        $signalArguments,
-                        'unknown_signal',
-                        [],
-                        $signalAdmission['message'] ?? null,
-                        $signalAdmission['payload'] ?? [],
-                    );
-
-                    return;
-                }
-
-                $validatedSignalArguments = $this->validatedSignalArgumentsForRun($run, $name, $signalArguments);
-
-                if ($validatedSignalArguments['validation_errors'] !== []) {
-                    $signalCommand = $this->rejectSignalCommandForContext(
-                        $commandContext,
-                        $instance,
-                        $run,
-                        $name,
-                        $signalArguments,
-                        'invalid_signal_arguments',
-                        $validatedSignalArguments['validation_errors'],
-                    );
-
-                    return;
-                }
-
-                $signalArguments = $validatedSignalArguments['arguments'];
-
-                try {
-                    StructuralLimits::guardPendingSignals($run);
-                } catch (StructuralLimitExceededException $e) {
-                    $signalCommand = $this->rejectSignalCommandForContext(
-                        $commandContext,
-                        $instance,
-                        $run,
-                        $name,
-                        $signalArguments,
-                        'structural_limit_exceeded',
-                    );
-
-                    return;
-                }
-
-                $metadata = WorkflowMetadata::fromStartArguments($startArguments);
-
-                /** @var WorkflowCommand $startCommand */
-                $startCommand = WorkflowCommand::record($instance, $run, $this->commandAttributesForContext(
-                    $commandContext,
-                    [
-                        'command_type' => CommandType::Start->value,
-                        'target_scope' => 'instance',
-                        'status' => CommandStatus::Accepted->value,
-                        'outcome' => CommandOutcome::ReturnedExistingActive->value,
-                        'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
-                        'payload' => Serializer::serializeWithCodec(
-                            $run->payload_codec ?? CodecRegistry::defaultCodec(),
-                            $metadata->arguments
-                        ),
-                        'accepted_at' => now(),
-                        'applied_at' => now(),
-                    ],
-                ));
-
-                WorkflowHistoryEvent::record($run, HistoryEventType::StartAccepted, [
-                    'workflow_command_id' => $startCommand->id,
-                    'workflow_instance_id' => $instance->id,
-                    'workflow_run_id' => $run->id,
-                    'workflow_class' => $run->workflow_class,
-                    'workflow_type' => $run->workflow_type,
-                    'business_key' => $run->business_key,
-                    'visibility_labels' => $run->visibility_labels,
-                    'memo' => AvroValueJsonProjection::project($run->typedMemos()),
-                    'outcome' => $startCommand->outcome?->value,
-                ], null, $startCommand);
-
-                /** @var WorkflowCommand $signalCommand */
-                $signalCommand = WorkflowCommand::record($instance, $run, $this->commandAttributesForContext(
-                    $commandContext,
-                    [
-                        'command_type' => CommandType::Signal->value,
-                        'target_scope' => 'instance',
-                        'status' => CommandStatus::Accepted->value,
-                        'outcome' => CommandOutcome::SignalReceived->value,
-                        ...$this->signalCommandPayloadAttributes($name, $signalArguments),
-                        'intent_digest' => CommandIntent::digest(CommandType::Signal, $name, $signalArguments),
-                        'accepted_at' => now(),
-                    ],
-                ));
-
-                $signalWaitId = $this->signalWaitIdForAcceptedCommand($run, $name, $signalCommand->id);
-                $signal = $this->recordAcceptedSignal(
+                [$startCommand, $signalCommand, $task] = $this->admitSignalWithExistingStart(
                     $instance,
-                    $run,
-                    $signalCommand,
+                    $currentRun,
+                    $commandContext,
                     $name,
                     $signalArguments,
-                    $signalWaitId,
-                );
-
-                WorkflowHistoryEvent::record($run, HistoryEventType::SignalReceived, array_filter([
-                    'workflow_command_id' => $signalCommand->id,
-                    'signal_id' => $signal->id,
-                    'workflow_instance_id' => $instance->id,
-                    'workflow_run_id' => $run->id,
-                    'signal_name' => $name,
-                    'signal_wait_id' => $signalWaitId,
-                    'arguments' => ExternalPayloads::historyValue(
-                        is_string($signal->arguments) ? $signal->arguments : null,
-                        is_string($signal->payload_codec) ? $signal->payload_codec : null,
-                        is_string($run->namespace) ? $run->namespace : null,
-                    ),
-                    'payload_codec' => $signal->payload_codec,
-                ], static fn (mixed $value): bool => $value !== null), null, $signalCommand);
-
-                if (! $this->hasOpenWorkflowTask($run->id)) {
-                    $task = PendingMessageTask::createForRun($run);
-                }
-
-                self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
-
-                return;
-            }
-
-            $workflowClass = TypeRegistry::resolveWorkflowClass($instance->workflow_class, $instance->workflow_type);
-
-            if (! WorkflowDefinition::hasSignal($workflowClass, $name)) {
-                $signalCommand = $this->rejectSignalCommandForContext(
-                    $commandContext,
-                    $instance,
-                    null,
-                    $name,
-                    $signalArguments,
-                    'unknown_signal',
+                    $startArguments,
+                    $observabilityContext,
                 );
 
                 return;
             }
 
-            $validatedSignalArguments = $this->validatedSignalArgumentsForWorkflow(
-                $workflowClass,
-                $name,
-                $signalArguments
-            );
-
-            if ($validatedSignalArguments['validation_errors'] !== []) {
-                $signalCommand = $this->rejectSignalCommandForContext(
-                    $commandContext,
-                    $instance,
-                    null,
-                    $name,
-                    $signalArguments,
-                    'invalid_signal_arguments',
-                    $validatedSignalArguments['validation_errors'],
-                );
-
-                return;
-            }
-
-            $signalArguments = $validatedSignalArguments['arguments'];
-            $metadata = WorkflowMetadata::fromStartArguments($startArguments);
-            $commandContract = RunCommandContract::snapshot($workflowClass);
-            $businessKey = $startOptions->businessKey ?? $instance->business_key;
-            $visibilityLabels = $startOptions->labels !== []
-                ? $startOptions->labels
-                : (is_array($instance->visibility_labels) ? $instance->visibility_labels : null);
-            $memo = $startOptions->memo !== []
-                ? $startOptions->memo
-                : (is_array($instance->memo) ? $instance->memo : null);
-            $searchAttributes = $startOptions->searchAttributes !== []
-                ? $startOptions->searchAttributes
-                : null;
-            $executionTimeoutSeconds = $startOptions->executionTimeoutSeconds;
-            $runTimeoutSeconds = $startOptions->runTimeoutSeconds;
-            $connection = RoutingResolver::workflowConnection($workflowClass, $metadata);
-            $queue = RoutingResolver::workflowQueue($workflowClass, $metadata);
-            $startBlockedReason = WorkflowStartGate::blockedReason(
-                WorkerCompatibility::current(),
-                $connection,
-                $queue,
-            );
-
-            if ($startBlockedReason !== null) {
-                $signalCommand = $this->rejectSignalCommandForContext(
-                    $commandContext,
-                    $instance,
-                    null,
-                    $name,
-                    $signalArguments,
-                    $startBlockedReason,
-                    [],
-                    WorkflowStartGate::blockedMessage(
-                        sprintf(
-                            'Workflow instance [%s] cannot start via signal-with-start [%s].',
-                            $instance->id,
-                            $name,
-                        ),
-                        WorkerCompatibility::current(),
-                        $connection,
-                        $queue,
-                    ) ?? sprintf(
-                        'Workflow instance [%s] cannot start via signal-with-start [%s].',
-                        $instance->id,
-                        $name,
-                    ),
-                );
-
-                return;
-            }
-
-            if ($instance->workflow_class !== $workflowClass) {
-                $instance->forceFill([
-                    'workflow_class' => $workflowClass,
-                ])->save();
-            }
-
-            $startedAt = now();
-            $executionDeadlineAt = $executionTimeoutSeconds !== null
-                ? $startedAt->copy()
-                    ->addSeconds($executionTimeoutSeconds)
-                : null;
-            $runDeadlineAt = $runTimeoutSeconds !== null
-                ? $startedAt->copy()
-                    ->addSeconds($runTimeoutSeconds)
-                : null;
-            $payloadCodec = CodecRegistry::defaultCodec();
-            $serializedArguments = ExternalPayloads::externalizeForNamespace(
-                Serializer::serializeWithCodec($payloadCodec, $metadata->arguments),
-                $payloadCodec,
-                is_string($instance->namespace) ? $instance->namespace : null,
-            );
-
-            /** @var WorkflowRun $run */
-            $run = self::runQuery()->create([
-                'workflow_instance_id' => $instance->id,
-                'run_number' => $instance->run_count + 1,
-                'workflow_class' => $workflowClass,
-                'workflow_type' => $instance->workflow_type,
-                'namespace' => $instance->namespace,
-                'business_key' => $businessKey,
-                'visibility_labels' => $visibilityLabels,
-                'run_timeout_seconds' => $runTimeoutSeconds,
-                'execution_deadline_at' => $executionDeadlineAt,
-                'run_deadline_at' => $runDeadlineAt,
-                'status' => RunStatus::Pending->value,
-                'compatibility' => WorkerCompatibility::current(),
-                'payload_codec' => $payloadCodec,
-                'arguments' => $serializedArguments,
-                'connection' => $connection,
-                'queue' => $queue,
-                'started_at' => $startedAt,
-                'last_progress_at' => $startedAt,
-                'last_history_sequence' => 0,
-            ]);
-
-            $this->seedTypedVisibilityMetadata($run, $memo, $searchAttributes);
-
-            /** @var WorkflowCommand $startCommand */
-            $startCommand = WorkflowCommand::record($instance, $run, $this->commandAttributesForContext(
-                $commandContext,
-                [
-                    'command_type' => CommandType::Start->value,
-                    'target_scope' => 'instance',
-                    'status' => CommandStatus::Accepted->value,
-                    'outcome' => CommandOutcome::StartedNew->value,
-                    'payload_codec' => $payloadCodec,
-                    'payload' => $serializedArguments,
-                    'accepted_at' => now(),
-                    'applied_at' => now(),
-                ],
-            ));
-
-            $instance->forceFill([
-                'current_run_id' => $run->id,
-                'business_key' => $businessKey,
-                'visibility_labels' => $visibilityLabels,
-                'memo' => $memo,
-                'execution_timeout_seconds' => $executionTimeoutSeconds,
-                'started_at' => $startedAt,
-                'run_count' => $run->run_number,
-            ])->save();
-
-            $memoPayload = self::visibilityMetadataPayload($memo);
-            $searchAttributesPayload = self::visibilityMetadataPayload($searchAttributes);
-
-            WorkflowHistoryEvent::record($run, HistoryEventType::StartAccepted, [
-                'workflow_command_id' => $startCommand->id,
-                'workflow_instance_id' => $instance->id,
-                'workflow_run_id' => $run->id,
-                'workflow_class' => $run->workflow_class,
-                'workflow_type' => $run->workflow_type,
-                'business_key' => $run->business_key,
-                'visibility_labels' => $run->visibility_labels,
-                'memo' => $memoPayload,
-                'search_attributes' => $searchAttributesPayload,
-                'outcome' => $startCommand->outcome?->value,
-            ], null, $startCommand);
-
-            WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted, [
-                'workflow_class' => $run->workflow_class,
-                'workflow_type' => $run->workflow_type,
-                'workflow_instance_id' => $instance->id,
-                'workflow_run_id' => $run->id,
-                'workflow_command_id' => $startCommand->id,
-                'business_key' => $run->business_key,
-                'visibility_labels' => $run->visibility_labels,
-                'memo' => $memoPayload,
-                'search_attributes' => $searchAttributesPayload,
-                'execution_timeout_seconds' => $executionTimeoutSeconds,
-                'run_timeout_seconds' => $runTimeoutSeconds,
-                'execution_deadline_at' => $executionDeadlineAt?->toIso8601String(),
-                'run_deadline_at' => $runDeadlineAt?->toIso8601String(),
-                'workflow_definition_fingerprint' => WorkflowDefinition::fingerprint($workflowClass),
-                'declared_queries' => $commandContract['queries'],
-                'declared_query_contracts' => $commandContract['query_contracts'],
-                'declared_signals' => $commandContract['signals'],
-                'declared_signal_contracts' => $commandContract['signal_contracts'],
-                'declared_updates' => $commandContract['updates'],
-                'declared_update_contracts' => $commandContract['update_contracts'],
-                'declared_entry_method' => $commandContract['entry_method'],
-                'declared_entry_mode' => $commandContract['entry_mode'],
-                'declared_entry_declaring_class' => $commandContract['entry_declaring_class'],
-            ], null, $startCommand);
-
-            /** @var WorkflowTask $task */
-            $task = self::taskQuery()->create([
-                'workflow_run_id' => $run->id,
-                'namespace' => $run->namespace,
-                'task_type' => TaskType::Workflow->value,
-                'status' => TaskStatus::Ready->value,
-                'available_at' => now(),
-                'payload' => [],
-                'connection' => $run->connection,
-                'queue' => $run->queue,
-                'compatibility' => $run->compatibility,
-            ]);
-
-            /** @var WorkflowCommand $signalCommand */
-            $signalCommand = WorkflowCommand::record($instance, $run, $this->commandAttributesForContext(
-                $commandContext,
-                [
-                    'command_type' => CommandType::Signal->value,
-                    'target_scope' => 'instance',
-                    'status' => CommandStatus::Accepted->value,
-                    'outcome' => CommandOutcome::SignalReceived->value,
-                    ...$this->signalCommandPayloadAttributes($name, $signalArguments),
-                    'intent_digest' => CommandIntent::digest(CommandType::Signal, $name, $signalArguments),
-                    'accepted_at' => now(),
-                ],
-            ));
-
-            $signalWaitId = $this->signalWaitIdForAcceptedCommand($run, $name, $signalCommand->id);
-            $signal = $this->recordAcceptedSignal(
+            [$startCommand, $signalCommand, $task, $startedRun] = $this->admitSignalWithNewRun(
                 $instance,
-                $run,
-                $signalCommand,
+                $commandContext,
                 $name,
                 $signalArguments,
-                $signalWaitId,
+                $startArguments,
+                $startOptions,
+                $observabilityContext,
             );
-
-            WorkflowHistoryEvent::record($run, HistoryEventType::SignalReceived, array_filter([
-                'workflow_command_id' => $signalCommand->id,
-                'signal_id' => $signal->id,
-                'workflow_instance_id' => $instance->id,
-                'workflow_run_id' => $run->id,
-                'signal_name' => $name,
-                'signal_wait_id' => $signalWaitId,
-                'arguments' => ExternalPayloads::historyValue(
-                    is_string($signal->arguments) ? $signal->arguments : null,
-                    is_string($signal->payload_codec) ? $signal->payload_codec : null,
-                    is_string($run->namespace) ? $run->namespace : null,
-                ),
-                'payload_codec' => $signal->payload_codec,
-            ], static fn (mixed $value): bool => $value !== null), null, $signalCommand);
-
-            self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
-
-            $startedRun = $run;
         }, self::mysqlCommandTransactionAttempts() ?? 1);
 
         if ($startedRun instanceof WorkflowRun) {
@@ -3652,6 +3539,348 @@ final class WorkflowStub
     }
 
     /**
+     * @return array{WorkflowCommand|null, WorkflowCommand, WorkflowTask|null, WorkflowRun|null}
+     */
+    private function admitSignalWithNewRun(
+        WorkflowInstance $instance,
+        CommandContext $commandContext,
+        string $name,
+        array $signalArguments,
+        array $startArguments,
+        StartOptions $startOptions,
+        ?array $observabilityContext,
+    ): array {
+        $workflowClass = TypeRegistry::resolveWorkflowClass($instance->workflow_class, $instance->workflow_type);
+        $signalAdmission = $this->validateNewRunSignal(
+            $instance,
+            $workflowClass,
+            $commandContext,
+            $name,
+            $signalArguments,
+        );
+        if ($signalAdmission instanceof WorkflowCommand) {
+            return [null, $signalAdmission, null, null];
+        }
+
+        $signalArguments = $signalAdmission;
+        $metadata = WorkflowMetadata::fromStartArguments($startArguments);
+        $commandContract = RunCommandContract::snapshot($workflowClass);
+        [$businessKey, $visibilityLabels, $memo, $searchAttributes] = $this->initialVisibilityMetadata(
+            $instance,
+            $startOptions,
+        );
+        $executionTimeoutSeconds = $startOptions->executionTimeoutSeconds;
+        $runTimeoutSeconds = $startOptions->runTimeoutSeconds;
+        $connection = RoutingResolver::workflowConnection($workflowClass, $metadata);
+        $queue = RoutingResolver::workflowQueue($workflowClass, $metadata);
+        $signalCommand = $this->rejectIncompatibleSignalWithStart(
+            $instance,
+            $commandContext,
+            $name,
+            $signalArguments,
+            $connection,
+            $queue,
+        );
+        if ($signalCommand instanceof WorkflowCommand) {
+            return [null, $signalCommand, null, null];
+        }
+
+        if ($instance->workflow_class !== $workflowClass) {
+            $instance->forceFill([
+                'workflow_class' => $workflowClass,
+            ])->save();
+        }
+
+        $startedAt = now();
+        $executionDeadlineAt = $executionTimeoutSeconds !== null
+            ? $startedAt->copy()
+                ->addSeconds($executionTimeoutSeconds)
+            : null;
+        $runDeadlineAt = $runTimeoutSeconds !== null
+            ? $startedAt->copy()
+                ->addSeconds($runTimeoutSeconds)
+            : null;
+        $payloadCodec = CodecRegistry::defaultCodec();
+        $serializedArguments = ExternalPayloads::externalizeForNamespace(
+            Serializer::serializeWithCodec($payloadCodec, $metadata->arguments),
+            $payloadCodec,
+            is_string($instance->namespace) ? $instance->namespace : null,
+        );
+
+        /** @var WorkflowRun $run */
+        $run = self::runQuery()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => $instance->run_count + 1,
+            'observability_context' => $observabilityContext,
+            'workflow_class' => $workflowClass,
+            'workflow_type' => $instance->workflow_type,
+            'namespace' => $instance->namespace,
+            'business_key' => $businessKey,
+            'visibility_labels' => $visibilityLabels,
+            'run_timeout_seconds' => $runTimeoutSeconds,
+            'execution_deadline_at' => $executionDeadlineAt,
+            'run_deadline_at' => $runDeadlineAt,
+            'status' => RunStatus::Pending->value,
+            'compatibility' => WorkerCompatibility::current(),
+            'payload_codec' => $payloadCodec,
+            'arguments' => $serializedArguments,
+            'connection' => $connection,
+            'queue' => $queue,
+            'started_at' => $startedAt,
+            'last_progress_at' => $startedAt,
+            'last_history_sequence' => 0,
+        ]);
+
+        $this->seedTypedVisibilityMetadata($run, $memo, $searchAttributes);
+
+        $startCommand = $this->recordNewStartCommand(
+            $instance,
+            $run,
+            $payloadCodec,
+            $serializedArguments,
+            $commandContext,
+        );
+
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+            'business_key' => $businessKey,
+            'visibility_labels' => $visibilityLabels,
+            'memo' => $memo,
+            'execution_timeout_seconds' => $executionTimeoutSeconds,
+            'started_at' => $startedAt,
+            'run_count' => $run->run_number,
+        ])->save();
+
+        $memoPayload = self::visibilityMetadataPayload($memo);
+        $searchAttributesPayload = self::visibilityMetadataPayload($searchAttributes);
+
+        $this->recordInitialStartAccepted($instance, $run, $startCommand, $memoPayload, $searchAttributesPayload);
+        $this->recordWorkflowStartedHistory($instance, $run, $startCommand, $workflowClass, $commandContract, [
+            'memo' => $memoPayload,
+            'search_attributes' => $searchAttributesPayload,
+            'execution_timeout_seconds' => $executionTimeoutSeconds,
+            'run_timeout_seconds' => $runTimeoutSeconds,
+            'execution_deadline_at' => $executionDeadlineAt,
+            'run_deadline_at' => $runDeadlineAt,
+        ]);
+
+        $task = $this->createInitialWorkflowTask($run);
+
+        /** @var WorkflowCommand $signalCommand */
+        $signalCommand = WorkflowCommand::record($instance, $run, $this->commandAttributesForContext(
+            $commandContext,
+            [
+                'command_type' => CommandType::Signal->value,
+                'observability_context' => $observabilityContext,
+                'target_scope' => 'instance',
+                'status' => CommandStatus::Accepted->value,
+                'outcome' => CommandOutcome::SignalReceived->value,
+                ...$this->signalCommandPayloadAttributes($name, $signalArguments),
+                'accepted_at' => now(),
+            ],
+        ));
+
+        $signalWaitId = $this->signalWaitIdForAcceptedCommand($run, $name, $signalCommand->id);
+        $signal = $this->recordAcceptedSignal(
+            $instance,
+            $run,
+            $signalCommand,
+            $name,
+            $signalArguments,
+            $signalWaitId,
+        );
+
+        $this->recordSignalReceivedHistory($instance, $run, $signalCommand, $signal, $name, $signalWaitId);
+
+        self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
+
+        return [$startCommand, $signalCommand, $task, $run];
+    }
+
+    /**
+     * @return array{WorkflowCommand|null, WorkflowCommand, WorkflowTask|null}
+     */
+    private function admitSignalWithExistingStart(
+        WorkflowInstance $instance,
+        WorkflowRun $run,
+        CommandContext $commandContext,
+        string $name,
+        array $signalArguments,
+        array $startArguments,
+        ?array $observabilityContext,
+    ): array {
+        $this->loadLockedRunRelations($run, $instance);
+        $signalAdmission = $this->signalAdmissionForRun($run, $name);
+        if (($signalAdmission['allowed'] ?? false) !== true) {
+            return [null, $this->rejectSignalCommandForContext(
+                $commandContext,
+                $instance,
+                $run,
+                $name,
+                $signalArguments,
+                'unknown_signal',
+                [],
+                $signalAdmission['message'] ?? null,
+                $signalAdmission['payload'] ?? [],
+            ), null];
+        }
+
+        $validatedSignalArguments = $this->validatedSignalArgumentsForRun($run, $name, $signalArguments);
+        if ($validatedSignalArguments['validation_errors'] !== []) {
+            return [null, $this->rejectSignalCommandForContext(
+                $commandContext,
+                $instance,
+                $run,
+                $name,
+                $signalArguments,
+                'invalid_signal_arguments',
+                $validatedSignalArguments['validation_errors'],
+            ), null];
+        }
+        $signalArguments = $validatedSignalArguments['arguments'];
+
+        try {
+            StructuralLimits::guardPendingSignals($run);
+        } catch (StructuralLimitExceededException $e) {
+            return [null, $this->rejectSignalCommandForContext(
+                $commandContext,
+                $instance,
+                $run,
+                $name,
+                $signalArguments,
+                'structural_limit_exceeded',
+            ), null];
+        }
+
+        $metadata = WorkflowMetadata::fromStartArguments($startArguments);
+        $startCommand = WorkflowCommand::record($instance, $run, $this->commandAttributesForContext(
+            $commandContext,
+            [
+                'command_type' => CommandType::Start->value,
+                'target_scope' => 'instance',
+                'status' => CommandStatus::Accepted->value,
+                'outcome' => CommandOutcome::ReturnedExistingActive->value,
+                'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                'payload' => Serializer::serializeWithCodec(
+                    $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                    $metadata->arguments
+                ),
+                'accepted_at' => now(),
+                'applied_at' => now(),
+            ],
+        ));
+        WorkflowHistoryEvent::record($run, HistoryEventType::StartAccepted, [
+            'workflow_command_id' => $startCommand->id,
+            'workflow_instance_id' => $instance->id,
+            'workflow_run_id' => $run->id,
+            'workflow_class' => $run->workflow_class,
+            'workflow_type' => $run->workflow_type,
+            'business_key' => $run->business_key,
+            'visibility_labels' => $run->visibility_labels,
+            'memo' => AvroValueJsonProjection::project($run->typedMemos()),
+            'outcome' => $startCommand->outcome?->value,
+        ], null, $startCommand);
+
+        $signalCommand = WorkflowCommand::record($instance, $run, $this->commandAttributesForContext(
+            $commandContext,
+            [
+                'command_type' => CommandType::Signal->value,
+                'observability_context' => $observabilityContext,
+                'target_scope' => 'instance',
+                'status' => CommandStatus::Accepted->value,
+                'outcome' => CommandOutcome::SignalReceived->value,
+                ...$this->signalCommandPayloadAttributes($name, $signalArguments),
+                'accepted_at' => now(),
+            ],
+        ));
+        $signalWaitId = $this->signalWaitIdForAcceptedCommand($run, $name, $signalCommand->id);
+        $signal = $this->recordAcceptedSignal(
+            $instance,
+            $run,
+            $signalCommand,
+            $name,
+            $signalArguments,
+            $signalWaitId,
+        );
+        $this->recordSignalReceivedHistory($instance, $run, $signalCommand, $signal, $name, $signalWaitId);
+
+        $task = null;
+        if (! $this->hasOpenWorkflowTask($run->id)) {
+            $task = PendingMessageTask::createForRun($run);
+        }
+        self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
+
+        return [$startCommand, $signalCommand, $task];
+    }
+
+    /**
+     * @return array<int|string, mixed>|WorkflowCommand
+     */
+    private function validateNewRunSignal(
+        WorkflowInstance $instance,
+        string $workflowClass,
+        CommandContext $commandContext,
+        string $name,
+        array $signalArguments,
+    ): array|WorkflowCommand {
+        if (! WorkflowDefinition::hasSignal($workflowClass, $name)) {
+            return $this->rejectSignalCommandForContext(
+                $commandContext,
+                $instance,
+                null,
+                $name,
+                $signalArguments,
+                'unknown_signal',
+            );
+        }
+
+        $validated = $this->validatedSignalArgumentsForWorkflow($workflowClass, $name, $signalArguments);
+        if ($validated['validation_errors'] !== []) {
+            return $this->rejectSignalCommandForContext(
+                $commandContext,
+                $instance,
+                null,
+                $name,
+                $signalArguments,
+                'invalid_signal_arguments',
+                $validated['validation_errors'],
+            );
+        }
+
+        return $validated['arguments'];
+    }
+
+    private function rejectIncompatibleSignalWithStart(
+        WorkflowInstance $instance,
+        CommandContext $commandContext,
+        string $name,
+        array $signalArguments,
+        ?string $connection,
+        ?string $queue,
+    ): ?WorkflowCommand {
+        $reason = WorkflowStartGate::blockedReason(WorkerCompatibility::current(), $connection, $queue);
+        if ($reason === null) {
+            return null;
+        }
+
+        return $this->rejectSignalCommandForContext(
+            $commandContext,
+            $instance,
+            null,
+            $name,
+            $signalArguments,
+            $reason,
+            [],
+            WorkflowStartGate::blockedMessage(
+                sprintf('Workflow instance [%s] cannot start via signal-with-start [%s].', $instance->id, $name),
+                WorkerCompatibility::current(),
+                $connection,
+                $queue,
+            ) ?? sprintf('Workflow instance [%s] cannot start via signal-with-start [%s].', $instance->id, $name),
+        );
+    }
+
+    /**
      * @param array<int, mixed> $arguments
      * @return array{0: array<int, mixed>, 1: StartOptions}
      */
@@ -3684,10 +3913,12 @@ final class WorkflowStub
         /** @var WorkflowCommand|null $command */
         $command = null;
         $parentTasks = [];
+        $closedRun = null;
 
-        DB::transaction(function () use (
+        SqliteSavepointRelease::transaction($this->instance->getConnection(), function () use (
             &$command,
             &$parentTasks,
+            &$closedRun,
             $commandType,
             $terminalStatus,
             $requestedEventType,
@@ -3697,6 +3928,7 @@ final class WorkflowStub
         ): void {
             $command = null;
             $parentTasks = [];
+            $closedRun = null;
             /** @var WorkflowInstance $instance */
             $instance = self::instanceQuery()
                 ->lockForUpdate()
@@ -3810,7 +4042,13 @@ final class WorkflowStub
                 $requestedHistoryPayload['reason'] = $reason;
             }
 
-            WorkflowHistoryEvent::record($run, $requestedEventType, $requestedHistoryPayload, null, $command);
+            $requestedHistoryEvent = WorkflowHistoryEvent::record(
+                $run,
+                $requestedEventType,
+                $requestedHistoryPayload,
+                null,
+                $command
+            );
 
             foreach ($openTasks as $task) {
                 $task->forceFill([
@@ -3826,6 +4064,10 @@ final class WorkflowStub
                 )
                 ->keyBy(static fn (WorkflowTask $task): string => $task->payload['activity_execution_id']);
 
+            $terminalHistory = $openActivityExecutions->isNotEmpty() || $openTimers->isNotEmpty()
+                ? TerminalCancellationHistory::forRun($run, $command, $requestedHistoryEvent)
+                : null;
+
             foreach ($openActivityExecutions as $execution) {
                 $execution->forceFill([
                     'status' => ActivityStatus::Cancelled,
@@ -3835,7 +4077,13 @@ final class WorkflowStub
                 /** @var WorkflowTask|null $activityTask */
                 $activityTask = $tasksByActivityExecutionId->get($execution->id);
 
-                ActivityCancellation::record($run, $execution, $activityTask, $command);
+                ActivityCancellation::record(
+                    $run,
+                    $execution,
+                    $activityTask,
+                    $command,
+                    terminalHistory: $terminalHistory
+                );
             }
 
             foreach ($openTimers as $timer) {
@@ -3843,8 +4091,20 @@ final class WorkflowStub
                     'status' => TimerStatus::Cancelled,
                 ])->save();
 
-                TimerCancellation::record($run, $timer, null, $command);
+                TimerCancellation::record($run, $timer, null, $command, terminalHistory: $terminalHistory);
             }
+            // The final projection hydrates the current run graph again.
+            unset(
+                $terminalHistory,
+                $openTasks,
+                $openActivityExecutions,
+                $openTimers,
+                $tasksByActivityExecutionId,
+                $task,
+                $execution,
+                $timer,
+                $activityTask
+            );
 
             $run->forceFill([
                 'status' => $terminalStatus,
@@ -3918,7 +4178,25 @@ final class WorkflowStub
             $parentTasks = $this->createParentResumeTasks($run);
 
             self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
-        }, self::mysqlCommandTransactionAttempts() ?? 1);
+            $closedRun = $run;
+        }, self::mysqlCommandTransactionAttempts(), admission: function (): void {
+            $instances = self::instanceQuery();
+            $key = $instances->getModel()
+                ->getKeyName();
+            $instances->whereKey($this->instance->id)
+                ->toBase()
+                ->update([
+                    $key => $this->instance->id,
+                ]);
+        });
+
+        if ($closedRun instanceof WorkflowRun) {
+            if ($commandType === CommandType::Cancel) {
+                LifecycleEventDispatcher::workflowCancelled($closedRun, $reason === '' ? null : $reason);
+            } else {
+                LifecycleEventDispatcher::workflowTerminated($closedRun, $reason === '' ? null : $reason);
+            }
+        }
 
         $this->refresh();
 
@@ -4221,10 +4499,39 @@ final class WorkflowStub
         return $command;
     }
 
+    /**
+     * @param array<string, mixed> $context
+     */
+    private function usesInternalCommandIdentity(array $context): bool
+    {
+        return ServiceCallEffectIdentity::fromContext($context) !== null
+            || BridgeCommandIdentity::fromContext($context) !== null;
+    }
+
+    private function existingInternalCommandForRequest(WorkflowInstance $instance, CommandType $type): ?WorkflowCommand
+    {
+        $context = $this->resolvedCommandContext()
+            ->attributes()['context'];
+        $serviceCall = ServiceCallEffectIdentity::fromContext($context);
+        if ($serviceCall !== null) {
+            return ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+                ->where('workflow_instance_id', $instance->id)
+                ->where('command_type', $type->value)
+                ->where('request_id', $serviceCall->storageToken())
+                ->lockForUpdate()
+                ->first();
+        }
+
+        return BridgeCommandIdentity::fromContext($context)?->find($instance, $type);
+    }
+
     private function validateCommandRequestId(CommandType $type): void
     {
         $context = $this->resolvedCommandContext()
             ->attributes()['context'];
+        if ($this->usesInternalCommandIdentity($context)) {
+            return;
+        }
         CommandRequestIdentity::validate(CommandRequestIdentity::fromContext($context, $type));
     }
 
@@ -4242,6 +4549,9 @@ final class WorkflowStub
     ): ?array {
         $context = $this->resolvedCommandContext()
             ->attributes()['context'];
+        if ($this->usesInternalCommandIdentity($context)) {
+            return null;
+        }
         $retained = CommandRequestIdentity::find($instance, $type, $context);
 
         if (! $retained instanceof WorkflowCommand) {
@@ -4417,6 +4727,7 @@ final class WorkflowStub
         $codec = $payloadCodec ?? CodecRegistry::defaultCodec();
 
         return [
+            'intent_digest' => $this->signalIntentDigestFromArguments($name, $arguments),
             'payload_codec' => $codec,
             'payload' => Serializer::serializeWithCodec($codec, array_merge([
                 'name' => $name,
@@ -5149,14 +5460,8 @@ final class WorkflowStub
 
     private static function mysqlCommandTransactionAttempts(): ?int
     {
-        $connection = DB::connection();
+        $connection = ConfiguredV2Models::connection();
         if ($connection->getDriverName() !== 'mysql' || $connection->transactionLevel() !== 0) {
-            return null;
-        }
-
-        // Retry the owned command transaction, preserving other storage and caller transactions.
-        $storageName = config('workflows.storage.connection');
-        if (is_string($storageName) && $storageName !== '' && $storageName !== $connection->getName()) {
             return null;
         }
 
@@ -5346,7 +5651,7 @@ final class WorkflowStub
             ->lockForUpdate()
             ->get();
 
-        /** @var array<string, array{parent_workflow_run_id: string, parent_sequence: int|null}> $parentReferences */
+        /** @var array<string, array{parent_workflow_instance_id: string, parent_workflow_run_id: string, parent_sequence: int|null, child_call_id?: string|null}> $parentReferences */
         $parentReferences = [];
 
         foreach ($parentLinks as $parentLink) {
@@ -5355,6 +5660,7 @@ final class WorkflowStub
             }
 
             $parentReferences[$parentLink->parent_workflow_run_id] = [
+                'parent_workflow_instance_id' => $parentLink->parent_workflow_instance_id,
                 'parent_workflow_run_id' => $parentLink->parent_workflow_run_id,
                 'parent_sequence' => is_int($parentLink->sequence)
                     ? $parentLink->sequence
@@ -5362,7 +5668,7 @@ final class WorkflowStub
             ];
         }
 
-        if ($parentReferences === []) {
+        if ($parentReferences === [] && ! \Workflow\V2\Support\ImportedLineageReferences::imported($childRun)) {
             $parentReference = ChildRunHistory::parentReferenceForRun($childRun);
 
             if ($parentReference !== null) {
@@ -5373,15 +5679,24 @@ final class WorkflowStub
         foreach ($parentReferences as $parentReference) {
             /** @var WorkflowRun|null $parentRun */
             $parentRun = self::runQuery()
+                ->where('namespace', $childRun->namespace)
                 ->lockForUpdate()
                 ->find($parentReference['parent_workflow_run_id']);
 
-            if ($parentRun === null || in_array($parentRun->status, [
-                RunStatus::Completed,
-                RunStatus::Failed,
-                RunStatus::Cancelled,
-                RunStatus::Terminated,
-            ], true)) {
+            if ($parentRun === null || $parentRun->workflow_instance_id !== $parentReference['parent_workflow_instance_id']
+                || ! \Workflow\V2\Support\ImportedLineageReferences::allowsChild(
+                    $parentRun,
+                    $childRun,
+                    $parentReference['parent_sequence'],
+                    $parentReference['child_call_id'] ?? null,
+                    true
+                )
+                || in_array($parentRun->status, [
+                    RunStatus::Completed,
+                    RunStatus::Failed,
+                    RunStatus::Cancelled,
+                    RunStatus::Terminated,
+                ], true)) {
                 continue;
             }
 
@@ -5640,7 +5955,19 @@ final class WorkflowStub
      */
     private static function projectRun(WorkflowRun $run, array $with = []): WorkflowRunSummary
     {
-        if ($with !== []) {
+        if ($with !== [] && $run::class === WorkflowRun::class) {
+            // Fetch the root before discarding its old relation cache. A missing
+            // row keeps the complete fallback graph; an existing row loads its
+            // fresh relations only after the previous inventory is released.
+            $fresh = $run->fresh();
+            if ($fresh !== null) {
+                foreach ($with as $relation) {
+                    $run->unsetRelation(explode('.', $relation, 2)[0]);
+                }
+                $run = $fresh->load($with);
+            }
+        } elseif ($with !== []) {
+            // Configured models keep their fresh() override and hydration hooks.
             $run = $run->fresh($with) ?? $run;
         }
 

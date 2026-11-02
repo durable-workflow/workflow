@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Workflow\Providers;
 
+use Illuminate\Database\Events\TransactionCommitted;
+use Illuminate\Database\Events\TransactionRolledBack;
 use Illuminate\Queue\Events\Looping;
 use Illuminate\Queue\QueueManager;
 use Illuminate\Support\Facades\Event;
@@ -18,6 +20,7 @@ use Workflow\Commands\V2HistoryExportCommand;
 use Workflow\Commands\V2HistoryImportCommand;
 use Workflow\Commands\V2RebuildProjectionsCommand;
 use Workflow\Commands\V2RepairPassCommand;
+use Workflow\Commands\V2RepairSearchDatetimesCommand;
 use Workflow\Commands\V2ReplayConformanceCommand;
 use Workflow\Commands\V2ReplaySimulateCommand;
 use Workflow\Commands\V2ReplayVerifyCommand;
@@ -35,12 +38,14 @@ use Workflow\V2\Contracts\MatchingRole;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
 use Workflow\V2\Contracts\PreparedLocalActivityGroupTaskBridge;
 use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
+use Workflow\V2\Contracts\ProtocolAwareWorkflowTaskBridge;
 use Workflow\V2\Contracts\RuntimeSignalControlPlane;
 use Workflow\V2\Contracts\SchedulerRole;
 use Workflow\V2\Contracts\ScheduleWorkflowStarter;
 use Workflow\V2\Contracts\ServiceBoundaryPolicy;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
+use Workflow\V2\Contracts\WorkflowServiceOperationAuthorizer;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
@@ -61,10 +66,13 @@ use Workflow\V2\Support\DefaultServiceBoundaryPolicy;
 use Workflow\V2\Support\DefaultServiceControlPlane;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
+use Workflow\V2\Support\DenyWorkflowServiceOperationAuthorizer;
+use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\HistoryProjectionMaintenanceFallback;
 use Workflow\V2\Support\InMemoryTaskFairnessState;
 use Workflow\V2\Support\LongPollCacheValidator;
 use Workflow\V2\Support\PhpClassScheduleStarter;
+use Workflow\V2\Support\SqliteSavepointRelease;
 use Workflow\V2\Support\TaskFairnessState;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\WorkflowModeGuard;
@@ -109,9 +117,11 @@ final class WorkflowServiceProvider extends ServiceProvider
         }
 
         $this->app->singleton(WorkflowTaskBridge::class, DefaultWorkflowTaskBridge::class);
+        $this->registerContinuationCache();
         $this->app->alias(WorkflowTaskBridge::class, CooperativeWorkflowTaskBridge::class);
         $this->app->alias(WorkflowTaskBridge::class, PreparedLocalActivityTaskBridge::class);
         $this->app->alias(WorkflowTaskBridge::class, PreparedLocalActivityGroupTaskBridge::class);
+        $this->app->alias(WorkflowTaskBridge::class, ProtocolAwareWorkflowTaskBridge::class);
 
         $this->app->singleton(ActivityTaskBridge::class, DefaultActivityTaskBridge::class);
 
@@ -128,6 +138,10 @@ final class WorkflowServiceProvider extends ServiceProvider
         );
 
         $this->app->singletonIf(ServiceControlPlane::class, DefaultServiceControlPlane::class);
+        $this->app->singletonIf(
+            WorkflowServiceOperationAuthorizer::class,
+            DenyWorkflowServiceOperationAuthorizer::class
+        );
 
         $this->app->singletonIf(SchedulerRole::class, DefaultSchedulerRole::class);
 
@@ -186,6 +200,7 @@ final class WorkflowServiceProvider extends ServiceProvider
             V2HistoryExportCommand::class,
             V2HistoryImportCommand::class,
             V2RepairPassCommand::class,
+            V2RepairSearchDatetimesCommand::class,
             V2RebuildProjectionsCommand::class,
             V2ReplayConformanceCommand::class,
             V2ReplaySimulateCommand::class,
@@ -201,6 +216,13 @@ final class WorkflowServiceProvider extends ServiceProvider
 
         // Register long-poll wake signal observers
         $this->registerLongPollObservers();
+        Event::listen(TransactionRolledBack::class, static function (TransactionRolledBack $event): void {
+            ExecutionTracing::discardTaskOutcomes($event->connectionName);
+        });
+        Event::listen(
+            [TransactionCommitted::class, TransactionRolledBack::class],
+            SqliteSavepointRelease::release(...)
+        );
 
         // Validate cache backend for multi-node deployments
         $this->validateCacheBackend();
@@ -214,6 +236,26 @@ final class WorkflowServiceProvider extends ServiceProvider
                 app(MatchingRole::class)->wake($event->connectionName, $event->queue);
             }
         });
+    }
+
+    private function registerContinuationCache(): void
+    {
+        $this->app->singleton(\Workflow\V2\Support\WorkflowContinuationCache::class);
+        $this->app['events']->listen(\Illuminate\Queue\Events\Looping::class, function (): void {
+            if ($this->app->resolved(\Workflow\V2\Support\WorkflowContinuationCache::class)) {
+                $this->app->make(\Workflow\V2\Support\WorkflowContinuationCache::class)->snapshot();
+            }
+        });
+        foreach ([
+            \Illuminate\Queue\Events\WorkerStopping::class => 'evict_clear',
+            \Illuminate\Queue\Events\JobExceptionOccurred::class => 'evict_job_exception',
+        ] as $event => $reason) {
+            $this->app['events']->listen($event, function () use ($reason): void {
+                if ($this->app->resolved(\Workflow\V2\Support\WorkflowContinuationCache::class)) {
+                    $this->app->make(\Workflow\V2\Support\WorkflowContinuationCache::class)->clear($reason);
+                }
+            });
+        }
     }
 
     /**

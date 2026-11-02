@@ -491,7 +491,10 @@ final class QueryStateReplayer
                 }
 
                 if (
-                    $serviceEvent->event_type === HistoryEventType::ServiceCallStarted
+                    in_array($serviceEvent->event_type, [
+                        HistoryEventType::ServiceOperationScheduled,
+                        HistoryEventType::ServiceCallStarted,
+                    ], true)
                     && ! self::serviceOperationStartedEventIsVisible($serviceEvent, $current)
                 ) {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
@@ -1750,6 +1753,7 @@ final class QueryStateReplayer
             static fn (WorkflowHistoryEvent $event): bool => in_array(
                 $event->event_type,
                 [
+                    HistoryEventType::ServiceOperationScheduled,
                     HistoryEventType::ServiceCallStarted,
                     HistoryEventType::ServiceCallCompleted,
                     HistoryEventType::ServiceCallFailed,
@@ -1821,13 +1825,23 @@ final class QueryStateReplayer
         WorkflowHistoryEvent $event,
         ServiceOperationCall $call,
     ): bool {
-        if ($event->event_type !== HistoryEventType::ServiceCallStarted) {
+        if (! in_array($event->event_type, [
+            HistoryEventType::ServiceOperationScheduled,
+            HistoryEventType::ServiceCallStarted,
+        ], true)) {
             return true;
         }
 
         $surface = is_array($event->payload['service_call'] ?? null)
             ? $event->payload['service_call']
             : [];
+
+        if ($event->event_type === HistoryEventType::ServiceOperationScheduled) {
+            return ($event->payload['workflow_resume_on_admission'] ?? null) === true
+                || ($call->options?->shouldResumeOnAdmission() ?? false)
+                || self::nonEmptyString($event->payload['operation_mode'] ?? null) === 'async'
+                || self::nonEmptyString($surface['operation_mode'] ?? null) === 'async';
+        }
 
         return ($call->options?->shouldResumeOnAdmission() ?? false)
             || self::nonEmptyString($event->payload['wait_for'] ?? null) === 'accepted'

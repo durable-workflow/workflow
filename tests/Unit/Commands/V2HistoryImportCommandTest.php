@@ -88,8 +88,20 @@ final class V2HistoryImportCommandTest extends TestCase
         $this->assertSame('target-namespace', WorkflowRun::query()->findOrFail($runId)->namespace);
         $this->assertSame('audit-123', WorkflowRun::query()->findOrFail($runId)->import_id);
 
+        $stored = WorkflowRun::query()->findOrFail($runId)->getRawOriginal();
+        $this->assertSame(1, Artisan::call('workflow:v2:history-import', [
+            'bundle' => $path,
+            '--json' => true,
+        ]));
+        $otherNamespace = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertSame('rejected', $otherNamespace['status']);
+        $this->assertContains('target.run_id_conflict', array_column($otherNamespace['eligibility']['errors'], 'rule'));
+        $this->assertSame(0, array_sum($otherNamespace['rows']));
+        $this->assertSame($stored, WorkflowRun::query()->findOrFail($runId)->getRawOriginal());
+
         $this->assertSame(0, Artisan::call('workflow:v2:history-import', [
             'bundle' => $path,
+            '--namespace' => 'target-namespace',
             '--json' => true,
         ]));
         $again = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);

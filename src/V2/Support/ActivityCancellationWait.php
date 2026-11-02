@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
-use Illuminate\Support\Facades\DB;
 use LogicException;
+use Workflow\Support\AfterCommit;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\CancellationPolicy;
@@ -46,7 +46,8 @@ final class ActivityCancellationWait
         if (in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)) {
             $activityTask = $run->tasks->first(static fn (WorkflowTask $task): bool =>
                 $task->task_type === TaskType::Activity
-                && ($task->payload['activity_execution_id'] ?? null) === $execution->id);
+                && ($task->payload['activity_execution_id'] ?? null) === $execution->id
+                && in_array($task->status, [TaskStatus::Ready, TaskStatus::Leased], true));
             $event = ActivityCancellation::record($run, $execution, $activityTask, $context->requestId);
             if ($event !== null) {
                 $run->historyEvents->push($event);
@@ -187,7 +188,7 @@ final class ActivityCancellationWait
         app(HistoryProjectionRole::class)->projectRun(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
-        DB::afterCommit(static fn () => TaskDispatcher::dispatch($task));
+        AfterCommit::on(ConfiguredV2Models::connection(), static fn () => TaskDispatcher::dispatch($task));
         return $task;
     }
 }

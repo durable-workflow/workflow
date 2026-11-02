@@ -88,6 +88,10 @@ final class ActivityTaskClaimer
                 return self::claimFailure('activity_execution_not_found');
             }
 
+            if ($task->workflow_run_id !== $execution->workflow_run_id) {
+                return self::claimFailure('activity_execution_mismatch');
+            }
+
             /** @var WorkflowRun|null $run */
             $run = WorkflowRun::query()
                 ->lockForUpdate()

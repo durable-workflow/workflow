@@ -190,7 +190,12 @@ final class V2TaskDispatchTest extends TestCase
         $workflowClaim = new ReflectionMethod(RunWorkflowTask::class, 'claimTask');
         $workflowClaim->setAccessible(true);
 
-        $this->assertSame([true, null], $workflowClaim->invoke(new RunWorkflowTask($workflowTask->id)));
+        [$claimed, $deferred, $claimedAttempt] = $workflowClaim->invoke(new RunWorkflowTask($workflowTask->id));
+        $this->assertNull($deferred);
+        $this->assertSame(1, $claimedAttempt);
+        $this->assertInstanceOf(WorkflowTask::class, $claimed);
+        $this->assertSame($workflowTask->id, $claimed->id);
+        $this->assertSame(TaskStatus::Leased, $workflowTask->fresh()->status);
         $this->assertTrue($workflowTask->fresh()->lease_expires_at->equalTo($now->copy()->addSeconds(8)));
 
         $timerRun = $this->createWaitingRun('01J00000000000000000TIMER');
@@ -222,7 +227,12 @@ final class V2TaskDispatchTest extends TestCase
         $timerClaim->setAccessible(true);
         $timerResult = $timerClaim->invoke(new RunTimerTask($timerTask->id));
 
-        $this->assertSame([$timer->id, null], $timerResult);
+        [$claimedTimerTask, $deferSeconds] = $timerResult;
+        $this->assertInstanceOf(WorkflowTask::class, $claimedTimerTask);
+        $this->assertSame($timerTask->id, $claimedTimerTask->id);
+        $this->assertSame($timer->id, $claimedTimerTask->payload['timer_id']);
+        $this->assertNull($deferSeconds);
+        $this->assertSame(TaskStatus::Leased, $timerTask->fresh()->status);
         $this->assertTrue($timerTask->fresh()->lease_expires_at->equalTo($now->copy()->addSeconds(8)));
 
         $localRun = $this->createWaitingRun('01J00000000000000000LOCAL');

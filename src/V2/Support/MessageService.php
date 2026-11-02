@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
-use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use Workflow\V2\Enums\MessageChannel;
 use Workflow\V2\Enums\MessageConsumeState;
@@ -53,7 +52,7 @@ class MessageService
         $channel = is_string($channel) ? $channel : $channel->value;
         $streamKey = $streamKey ?? "instance:{$targetInstanceId}";
 
-        return DB::transaction(static function () use (
+        return ConfiguredV2Models::connection()->transaction(static function () use (
             $sourceRun,
             $channel,
             $targetInstanceId,
@@ -204,7 +203,11 @@ class MessageService
             ));
         }
 
-        DB::transaction(static function () use ($run, $message, $consumedBySequence): void {
+        ConfiguredV2Models::connection()->transaction(static function () use (
+            $run,
+            $message,
+            $consumedBySequence
+        ): void {
             // Mark message as consumed
             $message->markConsumed($consumedBySequence);
 
@@ -229,7 +232,7 @@ class MessageService
         $maxSequence = 0;
         $streamKey = null;
 
-        DB::transaction(static function () use (
+        ConfiguredV2Models::connection()->transaction(static function () use (
             $run,
             $messages,
             $consumedBySequence,
@@ -334,7 +337,7 @@ class MessageService
      */
     public function transferMessagesToContinuedRun(WorkflowRun $closingRun, WorkflowRun $continuedRun): void
     {
-        DB::transaction(static function () use ($closingRun, $continuedRun): void {
+        ConfiguredV2Models::connection()->transaction(static function () use ($closingRun, $continuedRun): void {
             // Transfer pending inbound messages to new run
             WorkflowMessage::where('workflow_run_id', $closingRun->id)
                 ->where('direction', MessageDirection::Inbound)

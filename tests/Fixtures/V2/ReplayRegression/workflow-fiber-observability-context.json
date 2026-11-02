@@ -1,0 +1,36 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "workflow-fiber-observability-context",
+  "protocol_version": "1.0",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestTracingReplayWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "command_sequence": [
+    {
+      "completed": false,
+      "result": null,
+      "commands": [
+        {
+          "type": "schedule_activity",
+          "activity_type": "Tests\\Fixtures\\V2\\TestTracingReplayActivity",
+          "payload_codec": "avro"
+        }
+      ],
+      "resume_with": [9007199254740993, null, "雪"]
+    },
+    {
+      "completed": true,
+      "result": [9007199254740993, null, "雪"],
+      "commands": [{"type": "complete_workflow"}]
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": [9007199254740993, null, "雪"],
+    "commands": [{"type": "complete_workflow"}]
+  }
+}

@@ -37,6 +37,7 @@ class WorkflowRun extends Model
 
     protected $casts = [
         'status' => RunStatus::class,
+        'observability_context' => 'array',
         'visibility_labels' => 'array',
         'priority' => 'integer',
         'fairness_weight' => 'integer',
@@ -216,8 +217,7 @@ class WorkflowRun extends Model
             ConfiguredV2Models::resolve('run_wait_model', WorkflowRunWait::class),
             'workflow_run_id',
         )
-            ->orderBy('position')
-            ->orderBy('wait_id');
+            ->inDisplayOrder();
     }
 
     public function timelineEntries(): HasMany

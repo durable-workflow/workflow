@@ -12,6 +12,7 @@ use Workflow\V2\Enums\ServiceCallOutcome;
 use Workflow\V2\Enums\ServiceCallStatus;
 use Workflow\V2\Models\WorkflowService;
 use Workflow\V2\Models\WorkflowServiceCall;
+use Workflow\V2\Models\WorkflowServiceCallDispatch;
 use Workflow\V2\Models\WorkflowServiceEndpoint;
 use Workflow\V2\Models\WorkflowServiceOperation;
 
@@ -234,6 +235,20 @@ final class ServiceExecutionContract
                     'target_cancellation_is_separate' => true,
                 ],
             ],
+            'dispatches' => [
+                'model' => WorkflowServiceCallDispatch::class,
+                'table' => 'workflow_service_call_dispatches',
+                'identity_fields' => ['service_call_id'],
+                'states' => [
+                    ServiceCallScheduler::STATE_SCHEDULED,
+                    ServiceCallScheduler::STATE_CLAIMED,
+                    ServiceCallScheduler::STATE_COMPLETED,
+                ],
+                'attempt_fields' => ['attempt', 'max_attempts', 'available_at'],
+                'claim_fence_fields' => ['claim_generation', 'claim_token', 'claimed_at', 'claim_expires_at'],
+                'authorization_revision_fields' => ['authorized_catalog_revision', 'authorized_policy_revision'],
+                'repair_fields' => ['dispatch_attempted_at', 'repair_available_at', 'last_error'],
+            ],
         ];
     }
 
@@ -357,6 +372,15 @@ final class ServiceExecutionContract
                 . 'handler binding before dispatching into the selected execution lane.',
             'routing_boundary' => 'Service execution selects the durable capability; workflow and activity routing '
                 . 'remains owned by the selected execution lane.',
+            'transaction_dispatch' => 'A workflow completion transaction persists the accepted call, immutable '
+                . 'handler binding snapshot, dispatch row and ServiceOperationScheduled history before commit. '
+                . 'It does not execute a handler or sleep for retry backoff.',
+            'claim_authority' => 'Each runnable attempt locks the call, caller run and current catalog, reconstructs '
+                . 'the accepted principal, reauthorizes current replay policy and records catalog and policy revisions.',
+            'attempt_fence' => 'Handler effects execute outside the claim transaction with a stable per-attempt '
+                . 'idempotency identity. Only the current generation and token may persist attempt progress.',
+            'repair_delivery' => 'Queue delivery is at least once. Due schedules, lost enqueue attempts and expired '
+                . 'claims remain durable repair candidates until a terminal compare-and-swap completes the dispatch.',
             'transport_logs' => 'Raw transport logs are diagnostic only and are not required for lifecycle, '
                 . 'outcome, or observability state.',
         ];

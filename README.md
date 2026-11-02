@@ -20,6 +20,24 @@ This package also provides the orchestration engine hosted by
 [Durable Workflow Cloud](https://cloud.durable-workflow.com/) when workers need
 to run outside the Laravel application or across PHP, Python, and Rust.
 
+Use a patched Laravel 12 or 13 release for production. Laravel 9–11 compatibility
+is retained for upgrading and draining existing applications, not as security
+support for those frameworks. The [dependency security policy](resources/laravel-dependency-security-policy.json)
+records the remaining advisories and review dates. The Laravel 10 and 11
+minimums include their upstream TokenGuard fixes; the advisory feed still
+includes those patched branches. Laravel 9 applications affected by the
+[TokenGuard advisory](https://github.com/laravel/framework/security/advisories/GHSA-f9x3-7vq9-cph6)
+must not expose token-guard authentication while upgrading. Keep Composer audits
+and application security updates enabled.
+
+The legacy exception requires an existing application lockfile. Keep that lock,
+use a targeted Workflow update, and drain or migrate to patched Laravel 12 or 13.
+It does not cover a fresh PHP 8.1 dependency resolution, which Composer may
+refuse because of the legacy advisories. If Composer refuses the migration,
+upgrade the framework first; do not globally disable security blocking. The
+next Laravel 9 removal/migration review is November 7, 2026; see
+[#922](https://github.com/durable-workflow/workflow/issues/922).
+
 ## Install
 
 ```bash
@@ -42,6 +60,14 @@ php artisan queue:work
 For the default database queue on SQLite, failed reservation writes preserve
 unclaimed work after a proven rollback. See [SQLite queue reservations](docs/sqlite-queue-reservations.md)
 for the supported framework versions and custom-connector boundary.
+
+## Optional tracing and log correlation
+
+Core 2.9.0 can recover bounded W3C context across embedded queue workers and
+add run, task, activity, attempt, trace and span identifiers to Laravel logs.
+Tracing is disabled by default and uses the application's OpenTelemetry
+provider. See [embedded tracing](docs/embedded-tracing.md) for migrations,
+configuration, the log tap, exporter limits and measured overhead.
 
 ## Your First Workflow
 
@@ -121,6 +147,8 @@ Server or Cloud does not reinterpret existing embedded history.
 
 - [Embedded installation](https://durable-workflow.com/docs/2.0/installation/)
 - [Embedded feature guides](https://durable-workflow.com/docs/2.0/category/embedded/)
+- [Embedded live execution](docs/workflow/embedded-live-execution.md)
+- [Embedded activity leases](docs/workflow/embedded-activity-leases.md)
 - [Configuration reference](https://durable-workflow.com/docs/2.0/configuration/options/)
 - [Deployment modes](https://durable-workflow.com/docs/2.0/polyglot/deployment-modes/)
 - [Monitoring with Waterline](https://durable-workflow.com/docs/2.0/monitoring/)

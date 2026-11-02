@@ -24,7 +24,7 @@ final class MatchingRoleSnapshot
      * engine enforces today.
      * `discovery_limits` reports the numeric matching-role contract values
      * (poll batch cap, availability ceiling, default wake signal TTL, and
-     * effective workflow lease duration and default activity lease duration)
+     * effective workflow and activity lease durations)
      * so operators and downstream tooling can reason about the contract
      * without grepping the source.
      *
@@ -64,7 +64,7 @@ final class MatchingRoleSnapshot
                 'availability_ceiling_seconds' => DefaultWorkflowTaskBridge::AVAILABILITY_CEILING_SECONDS,
                 'wake_signal_ttl_seconds' => CacheLongPollWakeStore::DEFAULT_SIGNAL_TTL_SECONDS,
                 'workflow_task_lease_seconds' => WorkflowTaskLease::seconds(),
-                'activity_task_lease_seconds' => ActivityLease::DURATION_SECONDS,
+                'activity_task_lease_seconds' => ActivityLease::seconds(),
             ],
         ];
     }

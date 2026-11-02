@@ -81,6 +81,9 @@ final class WebhookInputValidationTest extends TestCase
                 'name' => 'Ada',
             ], $payload);
         }
+        if (str_ends_with($path, '/complete')) {
+            $this->withHeader('X-Durable-Workflow-Protocol-Version', '1.20');
+        }
         $before = $this->records();
         $writes = [];
         DB::listen(static function (QueryExecuted $event) use (&$writes): void {

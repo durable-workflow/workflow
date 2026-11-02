@@ -22,6 +22,7 @@ final class RunListItemView
     public static function fromSummary(WorkflowRunSummary $summary): array
     {
         $isTerminal = RunStatus::from($summary->status)->isTerminal();
+        $metadata = RunInstanceMetadata::forSummary($summary);
 
         return [
             'id' => $summary->id,
@@ -30,14 +31,14 @@ final class RunListItemView
             'selected_run_id' => $summary->id,
             'run_id' => $summary->id,
             'run_number' => (int) $summary->run_number,
-            'is_current_run' => (bool) $summary->is_current_run,
+            'is_current_run' => $metadata['is_current_run'],
             'engine_source' => $summary->engine_source ?? 'v2',
 
             // Identity
             'class' => $summary->class,
             'workflow_type' => $summary->workflow_type,
-            'namespace' => $summary->namespace,
-            'business_key' => $summary->business_key,
+            'namespace' => $metadata['namespace'],
+            'business_key' => $metadata['business_key'],
             'compatibility' => $summary->compatibility,
 
             // Status
@@ -65,7 +66,7 @@ final class RunListItemView
             'liveness_state' => $summary->liveness_state,
 
             // Operator metadata
-            'visibility_labels' => is_array($summary->visibility_labels) ? $summary->visibility_labels : [],
+            'visibility_labels' => $metadata['visibility_labels'],
             'search_attributes' => $summary->getTypedSearchAttributes(),
 
             // Repair & diagnostics

@@ -117,6 +117,7 @@ is either promoted to a `Contracts\*` interface or removed:
 - `Workflow\V2\Support\EmbeddedV2HistoryImport`
 - `Workflow\V2\Support\EmbeddedV2ImportContract`
 - `Workflow\V2\Support\HistoryPayloadCompression`
+- `Workflow\V2\Support\NamespaceIdentity`
 - `Workflow\V2\Support\OperatorQueueVisibility`
 - `Workflow\V2\Support\PayloadEnvelopeResolver`
 - `Workflow\V2\Support\PlatformProtocolSpecs`
@@ -203,6 +204,52 @@ list, command-kind map, generated identity prefixes, path rules, or structural
 size checks; compatible grammar evolution belongs in the Workflow package and
 is consumed through those methods.
 
+### Durable service-operation scheduling
+
+Worker protocol `1.21` adds the `ServiceOperationScheduled` history event for a
+workflow-authored service call whose effect will run after the completion
+transaction commits. Its payload uses the same service-call identity, address,
+codec and result-surface fields as `ServiceCallStarted`, plus the required
+boolean `workflow_resume_on_admission`. A `false` value is durable evidence that
+the workflow remains blocked for a terminal service-call event even though the
+scheduler's internal handler wait is `accepted`.
+
+Hosts must not synthesize `ServiceCallStarted` before a handler attempt is
+claimed. They must version-gate the new scheduled-event behavior at
+`WorkerProtocolVersion::DURABLE_SERVICE_OPERATION_SCHEDULER_MINIMUM_PROTOCOL_VERSION`
+and keep workers below that floor away from histories that require the event.
+The original `start_service_operation` command remains available from its 1.13
+floor; the scheduled execution semantics require 1.21.
+
+The stable two-argument `WorkflowTaskBridge::complete()` method remains
+unchanged. External hosts that offer workflow-task completion must require an
+authenticated, supported worker protocol and use the optional
+`ProtocolAwareWorkflowTaskBridge::completeForProtocol()` role. They must check
+that the configured bridge implements that role before advertising completion
+support. Missing, malformed, noncanonical, different-major, and future-minor versions fail
+closed. Supported protocols below 1.21 retain the pre-1.21 inline
+service-operation path and therefore cannot create `ServiceOperationScheduled`.
+The built-in `WorkflowExecutor` runs at the package's current protocol and
+supplies scheduler authority explicitly.
+
+Terminal service-call result envelopes remain intact in workflow history so
+inline results replay through the same Avro payload contract as scheduled results.
+
+Caller workflow identity on a direct `ServiceControlPlane::execute()` request
+does not activate the workflow-task scheduler. In particular, an idempotency
+transaction plus `caller_workflow_run_id` must continue to honor the requested
+HTTP wait surface: `wait_for=completed` returns the terminal result or typed
+failure. Scheduling requires private evidence supplied by the version-gated
+workflow-task completion path.
+
+`WorkflowServiceCallDispatch` is a documented persisted model. Its table and
+state/attempt/claim/revision/repair fields are additive schema and observability
+surface. `ServiceCallScheduler`, `ServiceCallAttemptClaim`, and the
+`RunServiceCall` job are internal execution helpers: their PHP method and
+constructor signatures are not covered by the public semver guarantee. The
+machine-readable durable-record and scheduling rules are published by
+`ServiceExecutionContract`.
+
 ## Activity attempt authority
 
 An activity task's authority ends at its current lease expiry or an applicable
@@ -260,6 +307,46 @@ cancellation history. Supervisor renewal changes both leases without an
 application heartbeat. Application heartbeat records progress and updates
 only its heartbeat timeout. Neither can move the original total or cleanup
 deadline, revive expired authority or establish physical callback stop.
+
+## Activity lease renewal
+
+`Workflow\V2\Contracts\ActivityLeaseRenewal` is an optional runtime integration
+role. Check the actual bound activity bridge before using `renewLease()`;
+existing custom `ActivityTaskBridge` implementations gain no required method.
+The caller must supply the original attempt ID and lease owner. Successful
+receipts preserve those identities and include `lease_renewed`, `server_time`
+and the current `lease_expires_at`. A refusal does not renew ownership, restore
+an expired attempt, or acknowledge that its callback stopped.
+
+Runtime renewal changes only the original attempt and task lease expiry. It
+does not add history, update application heartbeat progress, or advance the
+authored heartbeat, start-to-close or schedule-to-close deadlines. Read-only
+status remains read-only. Adapters must preserve their original run, namespace,
+task, owner and attempt-generation authority checks before invoking the role.
+This Core role alone does not advertise a service-worker capability.
+
+`ActivityLease::seconds()` resolves `workflows.v2.activity_task_lease_seconds`,
+published as `DW_V2_ACTIVITY_TASK_LEASE_SECONDS` for embedded applications.
+Integer values from 1 through 86400 seconds are accepted; invalid, fractional,
+boolean and out-of-range values fall back to the existing 300-second default.
+The matching-role snapshot reports the effective value. Runtime renewal allows
+a longer activity to retain a short worker-loss recovery interval without
+requiring business progress heartbeats. Actual worker integration is required
+before an adapter can claim automatic renewal.
+
+An adapter holding the original worker-registration incarnation fence may call
+`ActivityTimeoutEnforcer::revokeWorkerLease(taskId, namespace, leaseOwner)` at
+deregistration. The runtime rechecks the original task, attempt generation,
+owner and namespace under canonical locks. It settles that attempt through its
+recorded retry/backoff policy instead of silently redispatching it. Contested
+locks fail without committing the registration receipt or activity settlement.
+
+An explicit revocation before the grant expires records
+`failure_reason=worker_deregistered`, the original `lease_expires_at` and optional
+`lease_revoked_at` in `ActivityRetryScheduled` or `ActivityFailed`. An already
+expired lease retains `lease_expired`; an elapsed business timeout keeps its
+own timeout outcome. These fields do not prove physical callback stop. SDK
+shutdown must retain its physical callback ownership and late-result fences.
 
 ## Workflow service operation caller API
 
@@ -591,9 +678,9 @@ class, source file path, or stack trace to replay or handle a failure.
 | `ActivityScheduled` | `activity_execution_id`, `activity_class`, `activity_type`, `sequence`, `execution_mode`, `local_activity`, `workflow_task_id`, `activity`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `WorkflowStepHistory`, `WorkflowExecutor`, `QueryStateReplayer`, `ActivityRecovery`, `ParallelChildGroup` |
 | `ActivityStarted` | `activity_execution_id`, `activity_attempt_id`, `activity_class`, `activity_type`, `sequence`, `attempt_number`, `execution_mode`, `local_activity`, `workflow_task_id`, `lease_expires_at`, `activity`, `activity_attempt`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `ActivitySnapshot`, `ActivityAttemptSnapshots`, `HistoryTimeline`, `RunActivityView`, `ParallelChildGroup` |
 | `ActivityHeartbeatRecorded` | `activity_execution_id`, `activity_attempt_id`, `activity_class`, `activity_type`, `sequence`, `attempt_number`, `heartbeat_at`, `lease_expires_at`, `execution_mode`, `local_activity`, `workflow_task_id`, `activity`, `activity_attempt`, `progress` | `ActivitySnapshot`, `ActivityAttemptSnapshots`, `HistoryTimeline`, `RunActivityView` |
-| `ActivityRetryScheduled` | `activity_execution_id`, `activity_attempt_id`, `activity_class`, `activity_type`, `sequence`, `retry_task_id`, `retry_of_task_id`, `retry_available_at`, `retry_backoff_seconds`, `retry_after_attempt_id`, `retry_after_attempt`, `retry_reason`, `max_attempts`, `retry_policy`, `timeout_kind`, `execution_mode`, `local_activity`, `workflow_task_id`, `exception_type`, `exception_class`, `message`, `code`, `exception`, `activity`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `ActivitySnapshot`, `ActivityAttemptSnapshots`, `HistoryTimeline`, `RunTaskView`, `ParallelChildGroup` |
+| `ActivityRetryScheduled` | `activity_execution_id`, `activity_attempt_id`, `activity_class`, `activity_type`, `sequence`, `retry_task_id`, `retry_of_task_id`, `retry_available_at`, `retry_backoff_seconds`, `retry_after_attempt_id`, `retry_after_attempt`, `retry_reason`, `max_attempts`, `retry_policy`, `timeout_kind`, `failure_reason`, `lease_expires_at`, `lease_revoked_at`, `lease_owner`, `execution_mode`, `local_activity`, `workflow_task_id`, `exception_type`, `exception_class`, `message`, `code`, `exception`, `activity`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `ActivitySnapshot`, `ActivityAttemptSnapshots`, `HistoryTimeline`, `RunTaskView`, `ParallelChildGroup` |
 | `ActivityCompleted` | `activity_execution_id`, `activity_attempt_id`, `activity_class`, `activity_type`, `sequence`, `attempt_number`, `result`, `payload_codec`, `execution_mode`, `local_activity`, `workflow_task_id`, `activity`, `activity_attempt`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `WorkflowExecutor`, `QueryStateReplayer`, `ParallelChildGroup`, `ActivityRecovery` |
-| `ActivityFailed` | `activity_execution_id`, `activity_attempt_id`, `activity_class`, `activity_type`, `sequence`, `attempt_number`, `failure_id`, `failure_category`, `non_retryable`, `exception_type`, `exception_class`, `message`, `code`, `exception`, `execution_mode`, `local_activity`, `workflow_task_id`, `activity`, `activity_attempt`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path`, `structural_limit_kind`, `structural_limit_value`, `structural_limit_configured` | `ActivitySnapshot`, `FailureSnapshots`, `HistoryTimeline`, `ParallelFailureSelector`, `ParallelChildGroup` |
+| `ActivityFailed` | `activity_execution_id`, `activity_attempt_id`, `activity_class`, `activity_type`, `sequence`, `attempt_number`, `failure_id`, `failure_category`, `non_retryable`, `exception_type`, `exception_class`, `message`, `code`, `exception`, `failure_reason`, `lease_expires_at`, `lease_revoked_at`, `lease_owner`, `execution_mode`, `local_activity`, `workflow_task_id`, `activity`, `activity_attempt`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path`, `structural_limit_kind`, `structural_limit_value`, `structural_limit_configured` | `ActivitySnapshot`, `FailureSnapshots`, `HistoryTimeline`, `ParallelFailureSelector`, `ParallelChildGroup` |
 | `ActivityCancelled` | `workflow_command_id`, `activity_execution_id`, `activity_attempt_id`, `worker_attempt_id`, `activity_class`, `activity_type`, `sequence`, `attempt_number`, `cancelled_at`, `execution_mode`, `local_activity`, `workflow_task_id`, `activity`, `activity_attempt`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `ActivitySnapshot`, `ActivityAttemptSnapshots`, `HistoryTimeline`, cancellation repair projections |
 | `ActivityTimedOut` | `activity_execution_id`, `activity_attempt_id`, `activity_class`, `activity_type`, `sequence`, `attempt_number`, `failure_id`, `failure_category`, `timeout_kind`, `message`, `exception_class`, `schedule_deadline_at`, `close_deadline_at`, `schedule_to_close_deadline_at`, `heartbeat_deadline_at`, `execution_mode`, `local_activity`, `workflow_task_id`, `activity`, `activity_attempt`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `ActivitySnapshot`, `FailureSnapshots`, `HistoryTimeline`, `ParallelChildGroup`, timeout repair projections |
 | `TimerScheduled` | `timer_id`, `sequence`, `delay_seconds`, `fire_at`, `timer_kind`, `condition_wait_id`, `condition_key`, `condition_definition_fingerprint`, `signal_wait_id`, `signal_name` | `WorkflowStepHistory`, `QueryStateReplayer`, `RunTimerView`, `ConditionWaits`, `SignalWaits` |

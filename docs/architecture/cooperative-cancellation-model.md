@@ -358,6 +358,14 @@ After delivery, the retained claim can checkpoint cleanup commands before the
 original deadline. A checkpoint receipt alone never admits a callback.
 The SDK must replay committed history before submitting later commands.
 
+Flat local and cancellation-scope prefix receipts return the next authored
+workflow-step position. Update outcomes at the end of a prefix do not advance
+that cursor, because update events do not represent yielded workflow steps.
+Commands earlier in a mixed batch keep their existing positions. Retrying an
+older update-tail receipt corrects its cursor from the original commands while
+preserving its fingerprint, commit time and claim, without applying the batch
+again or following history recorded after that checkpoint.
+
 The separate optional `PreparedLocalActivityGroupTaskBridge` adds an unfrozen
 Source `checkpointLocalActivityGroup()` operation for complete `all` groups.
 Its bounded batch uses `prepare_local_activity` descriptors without fabricated

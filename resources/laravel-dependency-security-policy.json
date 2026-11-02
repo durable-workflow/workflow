@@ -15,11 +15,11 @@
       "disposition": "accepted-risk"
     },
     "10": {
-      "minimum": "10.48.29",
+      "minimum": "10.50.4",
       "disposition": "accepted-risk"
     },
     "11": {
-      "minimum": "11.44.1",
+      "minimum": "11.56.1",
       "disposition": "accepted-risk"
     },
     "12": {
@@ -79,6 +79,16 @@
       ],
       "review_by": "2026-11-24",
       "reason": "Laravel 9 has no patched release; compatibility is retained only for embedded upgrade and drain paths."
+    },
+    "PKSA-b41t-wbzk-9q51": {
+      "github_advisory": "GHSA-f9x3-7vq9-cph6",
+      "affected_supported_majors": [
+        "9",
+        "10",
+        "11"
+      ],
+      "review_by": "2026-11-07",
+      "reason": "The October 31 review retains Laravel 9 only for existing-lock upgrade and drain paths until the November 7 removal/migration review. Its latest 9.52.23 TokenGuard is still unfixed and must not be exposed. Fresh legacy dependency resolutions are outside this exception; retain the application lock, use a targeted Workflow update and migrate to patched Laravel 12 or 13 without globally disabling Composer security blocking. Laravel 10 requires 10.50.4 or later and Laravel 11 requires 11.56.1 or later; both contain the strict string checks, while the advisory feed still classifies them as affected. Other declared legacy risks, dependency alerts and exact per-major audits remain."
     }
   }
 }

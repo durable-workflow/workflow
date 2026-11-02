@@ -96,14 +96,7 @@ final class V2CancellationCascadeViewTest extends TestCase
         [$parent] = $this->start();
         $parent->requestCancellation('public test reason', 30);
         [$foreign] = $this->start();
-        $foreign->run()
-            ->forceFill([
-                'namespace' => 'foreign',
-            ])->save();
-        $foreign->run()
-            ->instance->forceFill([
-                'namespace' => 'foreign',
-            ])->save();
+        $foreign = $this->moveFixtureToNamespace($foreign, 'foreign');
         $foreign->requestCancellation('DO_NOT_EXPOSE_PRIVATE_REQUEST', 30);
         WorkflowLink::query()->create([
             'parent_workflow_instance_id' => $parent->id(),
@@ -168,14 +161,7 @@ final class V2CancellationCascadeViewTest extends TestCase
             ->cancellationContext();
         $this->assertNotNull($root);
         [$foreign] = $this->start();
-        $foreign->run()
-            ->forceFill([
-                'namespace' => 'foreign',
-            ])->save();
-        $foreign->run()
-            ->instance->forceFill([
-                'namespace' => 'foreign',
-            ])->save();
+        $foreign = $this->moveFixtureToNamespace($foreign, 'foreign');
         $scope = ScopedCancellationContext::fromRunContext($root)->forDescendant(
             'DO_NOT_EXPOSE_PRIVATE_SCOPE_REQUEST',
             $foreign->id(),
@@ -282,14 +268,7 @@ final class V2CancellationCascadeViewTest extends TestCase
         [$parent, $child] = $this->start();
         $parent->requestCancellation('maintenance', 30);
         $this->runTask($parent, TaskType::Workflow);
-        $parent->run()
-            ->forceFill([
-                'namespace' => 'foreign',
-            ])->save();
-        $parent->run()
-            ->instance->forceFill([
-                'namespace' => 'foreign',
-            ])->save();
+        $parent = $this->moveFixtureToNamespace($parent, 'foreign');
 
         $view = CancellationCascadeView::forRun($child->run()->fresh());
         $this->assertNotNull($view);
@@ -432,6 +411,27 @@ final class V2CancellationCascadeViewTest extends TestCase
         $this->assertContains('history_limit', array_column($view['findings'], 'code'));
         $this->assertSame($context->deadline()->toISOString(), $view['root']['cleanup_deadline_at']);
         $this->assertSame(128, $view['limits']['history_events_per_run']);
+    }
+
+    private function moveFixtureToNamespace(WorkflowStub $workflow, string $namespace): WorkflowStub
+    {
+        // Capture both owners before changing the namespace. A handle refuses
+        // to resolve a run while its instance still belongs to another one.
+        $run = $workflow->run();
+        $this->assertNotNull($run);
+        $instance = $run->instance;
+        $this->assertNotNull($instance);
+        $run->getConnection()
+            ->transaction(static function () use ($instance, $run, $namespace): void {
+                $instance->forceFill([
+                    'namespace' => $namespace,
+                ])->save();
+                $run->forceFill([
+                    'namespace' => $namespace,
+                ])->save();
+            });
+
+        return WorkflowStub::loadRun($run->id, $namespace);
     }
 
     /**

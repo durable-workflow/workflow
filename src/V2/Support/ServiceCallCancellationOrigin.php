@@ -79,14 +79,17 @@ final class ServiceCallCancellationOrigin
             $caller->loadMissing('historyEvents');
         }
         $started = $caller->historyEvents->first(static fn (WorkflowHistoryEvent $event): bool =>
-            $event->event_type === HistoryEventType::ServiceCallStarted
+            in_array($event->event_type, [
+                HistoryEventType::ServiceOperationScheduled,
+                HistoryEventType::ServiceCallStarted,
+            ], true)
             && $event->workflow_run_id === $caller->id
             && ($event->payload['service_call_id'] ?? null) === $call->id);
         if (! $started instanceof WorkflowHistoryEvent
             || ! is_int($started->payload['sequence'] ?? null)
             || $started->payload['sequence'] < 1
             || ($started->payload['operation_mode'] ?? null) !== 'sync'
-            || ($started->payload['wait_for'] ?? null) !== 'completed') {
+            || ! self::waitsForCompletion($started)) {
             return 'nexus_cancellation_original_admission_missing';
         }
 
@@ -104,5 +107,14 @@ final class ServiceCallCancellationOrigin
         }
 
         return null;
+    }
+
+    private static function waitsForCompletion(WorkflowHistoryEvent $event): bool
+    {
+        if ($event->event_type === HistoryEventType::ServiceOperationScheduled) {
+            return ($event->payload['workflow_resume_on_admission'] ?? null) === false;
+        }
+
+        return ($event->payload['wait_for'] ?? null) === 'completed';
     }
 }

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "external-worker-pending-count-limit-rollback",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner", "workflow-executor"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestParallelChildReplayWorkflow",
+    "arguments": ["limit-first", "limit-second"],
+    "payload_codec": "avro"
+  },
+  "history": [{
+    "sequence": 1,
+    "event_type": "WorkflowStarted",
+    "payload": {},
+    "recorded_at": "2026-10-26T11:20:00.000000Z"
+  }],
+  "external_worker_pending_counts": [
+    {
+      "limit": "pending_activity_count",
+      "command": {
+        "type": "schedule_activity",
+        "activity_type": "corpus-activity"
+      }
+    },
+    {
+      "limit": "pending_timer_count",
+      "command": {
+        "type": "start_timer",
+        "delay_seconds": 60
+      }
+    },
+    {
+      "limit": "pending_child_count",
+      "command": {
+        "type": "start_child_workflow",
+        "workflow_type": "corpus-child"
+      }
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {"type": "start_child_workflow"},
+      {"type": "start_child_workflow"}
+    ]
+  }
+}

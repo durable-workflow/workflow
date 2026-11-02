@@ -14,11 +14,13 @@ use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
+use Workflow\V2\Support\BridgeCommandIdentity;
 use Workflow\V2\Support\CommandRequestIdentity;
 use Workflow\V2\Support\CommandSequence;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\MessageStreamCursor;
+use Workflow\V2\Support\ServiceCallEffectIdentity;
 
 class WorkflowCommand extends Model
 {
@@ -36,6 +38,8 @@ class WorkflowCommand extends Model
 
     protected $keyType = 'string';
 
+    protected $hidden = ['observability_context'];
+
     protected $dateFormat = 'Y-m-d H:i:s.u';
 
     protected $casts = [
@@ -45,6 +49,7 @@ class WorkflowCommand extends Model
         'command_sequence' => 'integer',
         'message_sequence' => 'integer',
         'context' => 'array',
+        'observability_context' => 'array',
         'accepted_at' => 'datetime',
         'applied_at' => 'datetime',
         'rejected_at' => 'datetime',
@@ -516,11 +521,34 @@ class WorkflowCommand extends Model
             : (is_string($commandType) ? CommandType::tryFrom($commandType) : null);
         $usesRequestId = $commandType === CommandType::Redrive
             || $commandType === CommandType::Redrive->value;
+        $context = is_array($attributes['context'] ?? null) ? $attributes['context'] : [];
+        $serviceCallIdentity = ServiceCallEffectIdentity::fromContext($context);
+        if ($serviceCallIdentity instanceof ServiceCallEffectIdentity) {
+            $context = $serviceCallIdentity->persistentContext($context);
+            $attributes['context'] = $context;
+        }
 
-        if ($keyedType instanceof CommandType && CommandRequestIdentity::supports($keyedType)) {
-            // Signals and updates carry the caller's command key. The literal
-            // key stays in context; the indexed column holds a bounded token.
-            $context = is_array($attributes['context'] ?? null) ? $attributes['context'] : [];
+        $bridgeIdentity = BridgeCommandIdentity::fromContext($context);
+        if ($bridgeIdentity instanceof BridgeCommandIdentity) {
+            $context = $bridgeIdentity->persistentContext($context);
+            $attributes['context'] = $context;
+            if ($serviceCallIdentity === null && in_array($commandType, [
+                CommandType::Signal, CommandType::Signal->value, CommandType::Update, CommandType::Update->value,
+            ], true)) {
+                $attributes['request_id'] = $bridgeIdentity->storageToken();
+
+                return $attributes;
+            }
+        }
+
+        if ($serviceCallIdentity instanceof ServiceCallEffectIdentity && in_array($commandType, [
+            CommandType::Start, CommandType::Start->value,
+            CommandType::Signal, CommandType::Signal->value,
+            CommandType::Update, CommandType::Update->value,
+        ], true)) {
+            $attributes['request_id'] = $serviceCallIdentity->storageToken();
+        } elseif ($keyedType instanceof CommandType && CommandRequestIdentity::supports($keyedType)) {
+            // Caller keys remain independent of bridge/service-call identities.
             $context['request'] = is_array($context['request'] ?? null) ? $context['request'] : [];
             $context['request']['request_id'] = CommandRequestIdentity::fromContext($context, $keyedType);
             $attributes['context'] = $context;
@@ -555,7 +583,12 @@ class WorkflowCommand extends Model
 
         $namespace = null;
 
-        if ($this->workflow_run_id !== null) {
+        // Inline bytes do not consult namespace storage policy. Timeline
+        // projection can read the same command for thousands of events.
+        // Configured models and payload casts retain their original read path.
+        if ($this->workflow_run_id !== null && (static::class !== self::class
+            || array_key_exists('payload', $this->getCasts())
+            || ExternalPayloads::isStoredReference($this->payload))) {
             $namespace = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                 ->whereKey($this->workflow_run_id)
                 ->value('namespace');

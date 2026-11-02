@@ -683,6 +683,8 @@ final class ConfiguredV2ObservabilityTest extends TestCase
             $table->unsignedInteger('run_number');
             $table->string('workflow_class');
             $table->string('workflow_type');
+            $table->string('namespace')
+                ->nullable();
             $table->string('status');
             $table->timestamp('started_at', 6)
                 ->nullable();

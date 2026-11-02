@@ -319,7 +319,10 @@ class WorkflowSchedule extends Model
 
     // ── Buffer queue ──────────────────────────────────────────────────
 
-    public function bufferAction(?DateTimeInterface $occurrenceTime = null): void
+    /**
+     * @param array{schema: string, version: int, carrier: array<string, string>}|null $observabilityContext
+     */
+    public function bufferAction(?DateTimeInterface $occurrenceTime = null, ?array $observabilityContext = null): void
     {
         $buffer = $this->buffered_actions ?? [];
 
@@ -330,6 +333,9 @@ class WorkflowSchedule extends Model
 
         if ($occurrenceTime !== null) {
             $action['occurrence_time'] = $occurrenceTime->format('Y-m-d\TH:i:s.uP');
+        }
+        if ($observabilityContext !== null) {
+            $action['observability_context'] = $observabilityContext;
         }
 
         $buffer[] = $action;
@@ -450,6 +456,17 @@ class WorkflowSchedule extends Model
      */
     public function toDetail(): array
     {
+        $bufferedActions = $this->buffered_actions ?? [];
+        if (is_array($bufferedActions)) {
+            $bufferedActions = array_map(
+                static fn (mixed $action): mixed => is_array($action)
+                    ? array_diff_key($action, [
+                        'observability_context' => true,
+                    ]) : $action,
+                $bufferedActions
+            );
+        }
+
         return [
             'schedule_id' => $this->schedule_id,
             'spec' => $this->spec,
@@ -466,7 +483,7 @@ class WorkflowSchedule extends Model
                 'fires_count' => (int) $this->fires_count,
                 'failures_count' => (int) $this->failures_count,
                 'recent_actions' => $this->recent_actions ?? [],
-                'buffered_actions' => $this->buffered_actions ?? [],
+                'buffered_actions' => $bufferedActions,
             ],
             'memo' => $this->memo,
             'search_attributes' => $this->search_attributes,

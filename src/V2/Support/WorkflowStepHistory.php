@@ -65,6 +65,7 @@ final class WorkflowStepHistory
         HistoryEventType::ChildRunFailed,
         HistoryEventType::ChildRunCancelled,
         HistoryEventType::ChildRunTerminated,
+        HistoryEventType::ServiceOperationScheduled,
         HistoryEventType::ServiceCallStarted,
         HistoryEventType::ServiceCallCompleted,
         HistoryEventType::ServiceCallFailed,
@@ -449,6 +450,7 @@ final class WorkflowStepHistory
                 HistoryEventType::ChildRunTerminated,
             ], true),
             self::SERVICE_OPERATION => in_array($event->event_type, [
+                HistoryEventType::ServiceOperationScheduled,
                 HistoryEventType::ServiceCallStarted,
                 HistoryEventType::ServiceCallCompleted,
                 HistoryEventType::ServiceCallFailed,

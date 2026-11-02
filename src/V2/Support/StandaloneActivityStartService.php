@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
-use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\CommandContext;
@@ -83,7 +82,7 @@ final class StandaloneActivityStartService
      */
     public function start(array $options): array
     {
-        return DB::transaction(function () use ($options): array {
+        return ConfiguredV2Models::connection()->transaction(function () use ($options): array {
             $namespace = $options['namespace'] ?? null;
             $providedActivityId = $options['activity_id'] ?? null;
             $activityType = $options['activity_type'];

@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use InvalidArgumentException;
 use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\UtcScheduleTimestamp;
 
 /**
  * Workflow Search Attribute - Typed indexed metadata.
@@ -97,7 +98,7 @@ class WorkflowSearchAttribute extends Model
         'value_int' => 'integer',
         'value_float' => 'float',
         'value_bool' => 'boolean',
-        'value_datetime' => 'datetime',
+        'value_datetime' => UtcScheduleTimestamp::class,
         'value_keyword_list' => 'array',
         'upserted_at_sequence' => 'integer',
         'inherited_from_parent' => 'boolean',

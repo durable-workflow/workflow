@@ -96,6 +96,7 @@ use Workflow\V2\StartOptions;
 use Workflow\V2\Support\ActivityCall;
 use Workflow\V2\Support\ActivityCancellation;
 use Workflow\V2\Support\ActivityLease;
+use Workflow\V2\Support\ActivityTaskClaimer;
 use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\Support\EmbeddedV2HistoryImport;
 use Workflow\V2\Support\ExternalPayloads;
@@ -6903,6 +6904,85 @@ final class V2WorkflowTest extends TestCase
     public function testTaskWatchdogReclaimsExpiredActivityTaskLease(): void
     {
         Queue::fake();
+        Carbon::setTestNow('2026-10-21 08:00:00.123456');
+
+        try {
+            $workflow = WorkflowStub::make(TestRetryWorkflow::class, 'repair-expired-original-activity');
+            $workflow->start('Taylor');
+            $runId = $workflow->runId();
+            $this->assertNotNull($runId);
+            $this->runReadyTaskForRun($runId, TaskType::Workflow);
+
+            $activityTasks = WorkflowTask::query()->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Activity->value)->get();
+            $this->assertCount(1, $activityTasks, WorkflowTask::query()->where('workflow_run_id', $runId)
+                ->get(['status', 'payload', 'last_error'])->toJson());
+            /** @var WorkflowTask $task */
+            $task = $activityTasks->sole();
+            [$claim] = ActivityTaskClaimer::claim($task->id, 'worker-1');
+            $this->assertNotNull($claim);
+            $originalExpiry = $claim->task->lease_expires_at;
+            $this->assertNotNull($originalExpiry);
+            Carbon::setTestNow($originalExpiry->copy()->addSecond());
+
+            // Exclude the initial dispatch so only the watchdog's retry is observed.
+            Queue::fake();
+            $this->wakeTaskWatchdog();
+
+            /** @var WorkflowTask $retryTask */
+            $retryTask = WorkflowTask::query()->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Activity->value)
+                ->where('status', TaskStatus::Ready->value)->sole();
+            $this->assertNotSame($task->id, $retryTask->id);
+            $this->assertSame(TaskStatus::Cancelled, $task->fresh()->status);
+            $this->assertSame(1, $task->fresh()->attempt_count);
+            $this->assertSame(0, $task->fresh()->repair_count);
+            $this->assertSame('expired', $claim->attempt->fresh()->status->value);
+            $this->assertNull($claim->attempt->fresh()->lease_expires_at);
+            $this->assertNull($task->fresh()->lease_expires_at);
+            $this->assertSame(now()->toJSON(), $claim->attempt->fresh()->closed_at->toJSON());
+            $this->assertSame('worker-1', $claim->attempt->fresh()->lease_owner);
+            $this->assertSame(ActivityStatus::Pending, $claim->execution->fresh()->status);
+            $this->assertSame(1, $claim->execution->fresh()->attempt_count);
+            $this->assertSame(
+                1,
+                ActivityAttempt::query()->where('activity_execution_id', $claim->execution->id)->count()
+            );
+            $this->assertSame(1, $retryTask->attempt_count);
+            $this->assertSame($task->id, $retryTask->payload['retry_of_task_id']);
+            $this->assertSame($claim->attemptId(), $retryTask->payload['retry_after_attempt_id']);
+            $this->assertSame('lease_expired', $retryTask->payload['retry_reason']);
+            $this->assertSame(now()->addSeconds(5)->toJSON(), $retryTask->available_at->toJSON());
+
+            $event = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::ActivityRetryScheduled->value)->sole();
+            $this->assertSame($claim->attemptId(), $event->payload['activity_attempt_id']);
+            $this->assertSame($retryTask->id, $event->payload['retry_task_id']);
+            $this->assertSame('lease_expired', $event->payload['failure_reason']);
+            $this->assertSame($originalExpiry->toJSON(), $event->payload['lease_expires_at']);
+            Queue::assertPushed(
+                RunActivityTask::class,
+                static fn (RunActivityTask $job): bool => $job->taskId === $retryTask->id
+            );
+            Queue::assertNotPushed(
+                RunActivityTask::class,
+                static fn (RunActivityTask $job): bool => $job->taskId === $task->id
+            );
+            $this->assertSame($retryTask->id, WorkflowRunSummary::query()->findOrFail($runId)->next_task_id);
+
+            $this->wakeTaskWatchdog();
+            $this->assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::ActivityRetryScheduled->value)->count());
+            $this->assertSame(2, WorkflowTask::query()->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Activity->value)->count());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function testTaskWatchdogDoesNotInventAMissingOriginalActivityAttempt(): void
+    {
+        Queue::fake();
 
         $instance = WorkflowInstance::query()->create([
             'id' => 'repair-expired-act-task',
@@ -6977,41 +7057,15 @@ final class V2WorkflowTest extends TestCase
             'queue' => 'activities',
         ]);
 
+        $before = [$task->fresh()->getAttributes(), $execution->fresh()->getAttributes()];
+        $historyCount = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count();
+
         $this->wakeTaskWatchdog();
 
-        $task->refresh();
-        $execution->refresh();
-
-        /** @var ActivityAttempt $attempt */
-        $attempt = ActivityAttempt::query()
-            ->where('activity_execution_id', $execution->id)
-            ->firstOrFail();
-
-        $this->assertSame(TaskStatus::Ready, $task->status);
-        $this->assertNull($task->leased_at);
-        $this->assertNull($task->lease_owner);
-        $this->assertNull($task->lease_expires_at);
-        $this->assertSame(1, $task->attempt_count);
-        $this->assertSame(1, $task->repair_count);
-        $this->assertNotNull($execution->current_attempt_id);
-        $this->assertSame(1, $execution->attempt_count);
-        $this->assertSame($execution->current_attempt_id, $attempt->id);
-        $this->assertSame(1, $attempt->attempt_number);
-        $this->assertSame('expired', $attempt->status->value);
-        $this->assertSame($task->id, $attempt->workflow_task_id);
-        $this->assertSame('worker-1', $attempt->lease_owner);
-        $this->assertNotNull($attempt->closed_at);
-
-        Queue::assertPushed(
-            RunActivityTask::class,
-            static fn (RunActivityTask $job): bool => $job->taskId === $task->id
-        );
-
-        $summary = WorkflowRunSummary::query()->findOrFail($run->id);
-
-        $this->assertSame('activity', $summary->wait_kind);
-        $this->assertSame('activity_task_ready', $summary->liveness_state);
-        $this->assertSame($task->id, $summary->next_task_id);
+        $this->assertSame($before, [$task->fresh()->getAttributes(), $execution->fresh()->getAttributes()]);
+        $this->assertSame(0, ActivityAttempt::query()->where('activity_execution_id', $execution->id)->count());
+        $this->assertSame($historyCount, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count());
+        Queue::assertNotPushed(RunActivityTask::class);
     }
 
     public function testLateActivityOutcomeIsIgnoredAfterNewerAttemptTakesOwnership(): void

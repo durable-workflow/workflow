@@ -29,6 +29,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Support\ActivityRecovery;
 use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
@@ -39,6 +40,7 @@ use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\ExternalPayloadStorage;
 use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
 use Workflow\V2\Support\RunActivityView;
+use Workflow\V2\Support\RunTimelineProjector;
 use Workflow\V2\Support\TaskRepair;
 
 final class V2ActivityTaskBridgeTest extends TestCase
@@ -76,6 +78,256 @@ final class V2ActivityTaskBridgeTest extends TestCase
         $bridge = $this->app->make(ActivityTaskBridge::class);
 
         $this->assertInstanceOf(DefaultActivityTaskBridge::class, $bridge);
+    }
+
+    public function testActivityClaimUsesTheConfiguredLeaseDuration(): void
+    {
+        config([
+            'workflows.v2.activity_task_lease_seconds' => 19,
+        ]);
+        Date::setTestNow('2026-10-20T19:00:00.123456Z');
+        try {
+            [, , $task] = $this->createActivityTask();
+            $claim = $this->bridge->claimStatus($task->id, 'lease-original');
+
+            $this->assertTrue($claim['claimed']);
+            $this->assertSame(now()->addSeconds(19)->toJSON(), $claim['lease_expires_at']);
+        } finally {
+            Date::setTestNow();
+        }
+    }
+
+    public function testRuntimeLeaseRenewalDoesNotInventApplicationHeartbeatProgress(): void
+    {
+        config([
+            'workflows.v2.activity_task_lease_seconds' => 19,
+        ]);
+        Date::setTestNow('2026-10-20T19:00:00.123456Z');
+        try {
+            [$run, $execution, $task] = $this->createActivityTask();
+            $execution->forceFill([
+                'retry_policy' => [
+                    'snapshot_version' => 1,
+                    'max_attempts' => 1,
+                    'heartbeat_timeout' => 90,
+                    'start_to_close_timeout' => 180,
+                ],
+            ])->save();
+            $claim = $this->bridge->claimStatus($task->id, 'lease-original');
+            $before = $execution->fresh()
+                ->getAttributes();
+            $historyCount = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count();
+            Date::setTestNow(now()->addSeconds(10));
+            $this->assertInstanceOf(DefaultActivityTaskBridge::class, $this->bridge);
+
+            $receipt = $this->bridge->renewLease($claim['activity_attempt_id'], 'lease-original');
+
+            $this->assertTrue($receipt['lease_renewed']);
+            $this->assertTrue($receipt['can_continue']);
+            $this->assertFalse($receipt['heartbeat_recorded']);
+            $this->assertSame($claim['activity_attempt_id'], $receipt['activity_attempt_id']);
+            $this->assertSame($task->id, $receipt['workflow_task_id']);
+            $this->assertSame(now()->toJSON(), $receipt['server_time']);
+            $this->assertSame(now()->addSeconds(19)->toJSON(), $receipt['lease_expires_at']);
+            $this->assertSame($execution->fresh()->heartbeat_deadline_at?->toJSON(), $receipt['heartbeat_deadline_at']);
+            $this->assertSame($before, $execution->fresh()->getAttributes());
+            $this->assertNull(ActivityAttempt::query()->findOrFail($claim['activity_attempt_id'])->last_heartbeat_at);
+            $this->assertSame(
+                $historyCount,
+                WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count()
+            );
+            $view = RunActivityView::activitiesForRun($run->fresh())[0];
+            $observedLease = $view['attempts'][0]['lease_expires_at'];
+            $this->assertInstanceOf(\Carbon\CarbonInterface::class, $observedLease);
+            $this->assertSame($receipt['lease_expires_at'], $observedLease->toJSON());
+        } finally {
+            Date::setTestNow();
+        }
+    }
+
+    public function testRuntimeRenewalReportsCommittedHeartbeatWithoutRecordingAnother(): void
+    {
+        config([
+            'workflows.v2.activity_task_lease_seconds' => 19,
+        ]);
+        Date::setTestNow('2026-10-21T00:00:00.123456Z');
+        try {
+            [$run, $execution, $task] = $this->createActivityTask();
+            $execution->forceFill([
+                'retry_policy' => [
+                    'snapshot_version' => 1,
+                    'max_attempts' => 1,
+                    'heartbeat_timeout' => 90,
+                    'start_to_close_timeout' => 180,
+                ],
+            ])->save();
+            $claim = $this->bridge->claimStatus($task->id, 'lease-original');
+            Date::setTestNow(now()->addSeconds(10));
+            $progress = $this->bridge->heartbeat($claim['activity_attempt_id'], [
+                'message' => 'working',
+            ]);
+            $this->assertTrue($progress['heartbeat_recorded']);
+            $this->assertSame(now()->addSeconds(90)->toJSON(), $progress['heartbeat_deadline_at']);
+            $before = $execution->fresh()
+                ->getAttributes();
+            $history = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count();
+
+            Date::setTestNow(now()->addSeconds(2));
+            $this->assertInstanceOf(DefaultActivityTaskBridge::class, $this->bridge);
+            $receipt = $this->bridge->renewLease($claim['activity_attempt_id'], 'lease-original');
+            $this->assertTrue($receipt['lease_renewed']);
+            $this->assertFalse($receipt['heartbeat_recorded']);
+            $this->assertSame($progress['last_heartbeat_at'], $receipt['last_heartbeat_at']);
+            $this->assertSame($progress['heartbeat_deadline_at'], $receipt['heartbeat_deadline_at']);
+            $this->assertSame($before, $execution->fresh()->getAttributes());
+            $this->assertSame($history, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count());
+        } finally {
+            Date::setTestNow();
+        }
+    }
+
+    public function testRuntimeLeaseRenewalRefusesAnotherOwnerWithoutMutation(): void
+    {
+        [, $execution, $task] = $this->createActivityTask();
+        $claim = $this->bridge->claimStatus($task->id, 'lease-original');
+        $before = [$task->fresh()->getAttributes(), $execution->fresh()->getAttributes()];
+        $this->assertInstanceOf(DefaultActivityTaskBridge::class, $this->bridge);
+
+        $receipt = $this->bridge->renewLease($claim['activity_attempt_id'], 'foreign-owner');
+
+        $this->assertFalse($receipt['lease_renewed']);
+        $this->assertFalse($receipt['can_continue']);
+        $this->assertSame('lease_owner_mismatch', $receipt['reason']);
+        $this->assertSame($before, [$task->fresh()->getAttributes(), $execution->fresh()->getAttributes()]);
+    }
+
+    public function testRuntimeLeaseRenewalCannotReviveAnExpiredOriginalLease(): void
+    {
+        [, $execution, $task] = $this->createActivityTask();
+        $claim = $this->bridge->claimStatus($task->id, 'lease-original');
+        $before = [$task->fresh()->getAttributes(), $execution->fresh()->getAttributes()];
+        Date::setTestNow($task->fresh()->lease_expires_at);
+        try {
+            $this->assertInstanceOf(DefaultActivityTaskBridge::class, $this->bridge);
+            $receipt = $this->bridge->renewLease($claim['activity_attempt_id'], 'lease-original');
+
+            $this->assertFalse($receipt['lease_renewed']);
+            $this->assertSame('lease_expired', $receipt['reason']);
+            $this->assertSame($before, [$task->fresh()->getAttributes(), $execution->fresh()->getAttributes()]);
+        } finally {
+            Date::setTestNow();
+        }
+    }
+
+    public function testRuntimeLeaseRenewalCannotHideAnAuthoredHeartbeatTimeout(): void
+    {
+        [, $execution, $task] = $this->createActivityTask();
+        $execution->forceFill([
+            'retry_policy' => [
+                'snapshot_version' => 1,
+                'max_attempts' => 1,
+                'heartbeat_timeout' => 10,
+            ],
+        ])->save();
+        $claim = $this->bridge->claimStatus($task->id, 'lease-original');
+        $before = $execution->fresh()
+            ->getAttributes();
+        Date::setTestNow($execution->fresh()->heartbeat_deadline_at);
+        try {
+            $this->assertInstanceOf(DefaultActivityTaskBridge::class, $this->bridge);
+            $receipt = $this->bridge->renewLease($claim['activity_attempt_id'], 'lease-original');
+
+            $this->assertFalse($receipt['lease_renewed']);
+            $this->assertSame('heartbeat_timeout', $receipt['reason']);
+            $this->assertSame($before, $execution->fresh()->getAttributes());
+        } finally {
+            Date::setTestNow();
+        }
+    }
+
+    public function testRuntimeLeaseRenewalKeepsTheOriginalLongAttemptWithoutHistoryGrowth(): void
+    {
+        Queue::fake();
+        config([
+            'workflows.v2.activity_task_lease_seconds' => 90,
+        ]);
+        Date::setTestNow('2026-10-20T19:00:00.123456Z');
+        try {
+            [$run, $execution, $task] = $this->createActivityTask();
+            $claim = $this->bridge->claimStatus($task->id, 'lease-original');
+            $historyCount = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count();
+            $this->assertInstanceOf(DefaultActivityTaskBridge::class, $this->bridge);
+
+            for ($minute = 0; $minute < 6; ++$minute) {
+                Date::setTestNow(now()->addMinute());
+                $receipt = $this->bridge->renewLease($claim['activity_attempt_id'], 'lease-original');
+                $this->assertTrue($receipt['lease_renewed']);
+            }
+
+            $outcome = $this->bridge->complete(
+                $claim['activity_attempt_id'],
+                Serializer::serialize('one original result')
+            );
+            $this->assertTrue($outcome['recorded']);
+            $this->assertSame(1, $execution->fresh()->attempt_count);
+            $this->assertSame(1, ActivityAttempt::query()->where('activity_execution_id', $execution->id)->count());
+            $this->assertSame(
+                $historyCount + 1,
+                WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count()
+            );
+            $this->assertSame(
+                0,
+                WorkflowHistoryEvent::query()->where(
+                    'event_type',
+                    HistoryEventType::ActivityHeartbeatRecorded->value
+                )->count()
+            );
+        } finally {
+            Date::setTestNow();
+        }
+    }
+
+    public function testRuntimeLeaseRenewalDoesNotAcknowledgeACancelledCallback(): void
+    {
+        [$run, $execution, $task] = $this->createActivityTask();
+        $claim = $this->bridge->claimStatus($task->id, 'lease-original');
+        $run->forceFill([
+            'status' => RunStatus::Cancelled,
+        ])->save();
+        $before = [$task->fresh()->getAttributes(), $execution->fresh()->getAttributes()];
+        $historyCount = WorkflowHistoryEvent::query()->count();
+        $this->assertInstanceOf(DefaultActivityTaskBridge::class, $this->bridge);
+
+        $receipt = $this->bridge->renewLease($claim['activity_attempt_id'], 'lease-original');
+
+        $this->assertFalse($receipt['lease_renewed']);
+        $this->assertTrue($receipt['cancel_requested']);
+        $this->assertSame('run_cancelled', $receipt['reason']);
+        $this->assertSame($before, [$task->fresh()->getAttributes(), $execution->fresh()->getAttributes()]);
+        $this->assertSame($historyCount, WorkflowHistoryEvent::query()->count());
+    }
+
+    #[DataProvider('invalidActivityLeaseSettings')]
+    public function testInvalidActivityLeaseConfigurationUsesThePublishedDefault(mixed $value): void
+    {
+        config([
+            'workflows.v2.activity_task_lease_seconds' => $value,
+        ]);
+        Date::setTestNow('2026-10-20T19:00:00.123456Z');
+        try {
+            [, , $task] = $this->createActivityTask();
+            $claim = $this->bridge->claimStatus($task->id, 'lease-original');
+            $this->assertSame(now()->addSeconds(300)->toJSON(), $claim['lease_expires_at']);
+            $snapshot = \Workflow\V2\Support\MatchingRoleSnapshot::current();
+            $this->assertSame(300, $snapshot['discovery_limits']['activity_task_lease_seconds']);
+        } finally {
+            Date::setTestNow();
+        }
+    }
+
+    public static function invalidActivityLeaseSettings(): array
+    {
+        return [[0], [-1], [true], [1.5], ['forever'], [null], [86_401], ['99999999999999999999999']];
     }
 
     public function testExpiredCurrentLeaseCannotCompleteBeforeRepair(): void
@@ -288,13 +540,23 @@ final class V2ActivityTaskBridgeTest extends TestCase
     {
         Queue::fake();
         [$run, $execution, $task] = $this->createActivityTask();
+        $execution->forceFill([
+            'retry_policy' => [
+                'snapshot_version' => 1,
+                'max_attempts' => 2,
+                'backoff_seconds' => [0],
+            ],
+        ])->save();
         $original = $this->bridge->claimStatus($task->id, 'lost-original');
 
         Date::setTestNow($task->fresh()->lease_expires_at->copy()->addSecond());
         try {
             $this->assertFalse($this->bridge->complete($original['activity_attempt_id'], 'late original')['recorded']);
-            $this->assertNotNull(TaskRepair::recoverExistingTask($task->fresh(), $run->fresh()));
-            $replacement = $this->bridge->claimStatus($task->id, 'replacement');
+            $retry = TaskRepair::recoverExistingTask($task->fresh(), $run->fresh());
+            $this->assertInstanceOf(WorkflowTask::class, $retry);
+            $this->assertSame(TaskType::Activity, $retry->task_type);
+            $this->assertNotSame($task->id, $retry->id);
+            $replacement = $this->bridge->claimStatus($retry->id, 'replacement');
             $this->assertTrue($replacement['claimed']);
             $this->assertSame($execution->id, $replacement['activity_execution_id']);
             $this->assertSame($run->id, $replacement['workflow_run_id']);
@@ -385,6 +647,173 @@ final class V2ActivityTaskBridgeTest extends TestCase
         $results = $this->bridge->poll(null, null, 1, 'build-b');
 
         $this->assertCount(0, $results);
+    }
+
+    /**
+     * @return array<string, array{0: string|null, 1: string}>
+     */
+    public static function unpinnedActivityBuilds(): array
+    {
+        return [
+            'null pin, first build' => [null, 'build-a'],
+            'null pin, second build' => [null, 'build-b'],
+            'empty pin, first build' => ['', 'build-a'],
+            'empty pin, second build' => ['', 'build-b'],
+        ];
+    }
+
+    #[DataProvider('unpinnedActivityBuilds')]
+    public function testVersionedWorkerCanPollAndClaimAnUnpinnedActivity(?string $compatibility, string $build): void
+    {
+        [$run, $execution, $task] = $this->createActivityTask([
+            'compatibility' => $compatibility,
+        ]);
+        $run->forceFill([
+            'compatibility' => null,
+        ])->save();
+        config()
+            ->set('workflows.v2.compatibility.current', $build);
+        config()
+            ->set('workflows.v2.compatibility.supported', [$build]);
+
+        $results = $this->bridge->poll('redis', 'default', 1, $build);
+
+        $this->assertCount(1, $results);
+        $this->assertSame($task->id, $results[0]['task_id']);
+        $this->assertSame($run->id, $results[0]['workflow_run_id']);
+        $this->assertSame($execution->id, $results[0]['activity_execution_id']);
+        $claim = $this->bridge->claimStatus($results[0]['task_id'], $build . '-worker');
+        $this->assertTrue($claim['claimed']);
+        $this->assertSame($task->id, $claim['task_id']);
+        $this->assertSame($execution->id, $claim['activity_execution_id']);
+        $this->assertSame(1, $claim['attempt_number']);
+        $this->assertSame($build . '-worker', $claim['lease_owner']);
+        $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+        $this->assertNull($run->fresh()->compatibility);
+        $this->assertSame($compatibility, $task->fresh()->compatibility);
+    }
+
+    public function testVersionedActivityPollPreservesItsScopeAndBuildFence(): void
+    {
+        $scope = [
+            'namespace' => 'tenant-main',
+            'queue' => 'work',
+        ];
+        [, , $unpinned] = $this->createActivityTask($scope);
+        [, , $pinned] = $this->createActivityTask(array_merge($scope, [
+            'compatibility' => 'build-a',
+        ]));
+        foreach ([
+            [
+                'compatibility' => 'build-b',
+            ],
+            [
+                'namespace' => 'tenant-other',
+            ],
+            [
+                'queue' => 'other',
+            ],
+            [
+                'connection' => 'other',
+            ],
+            [
+                'task_type' => TaskType::Workflow->value,
+            ],
+            [
+                'status' => TaskStatus::Leased->value,
+            ],
+            [
+                'available_at' => now()
+                    ->addMinutes(5),
+            ],
+        ] as $excluded) {
+            $this->createActivityTask(array_merge($scope, $excluded));
+        }
+        [, $otherType] = $this->createActivityTask($scope);
+        $otherType->forceFill([
+            'activity_type' => 'other-activity',
+        ])->save();
+
+        $results = $this->bridge->poll('redis', 'work', 20, 'build-a', 'tenant-main', ['test-greeting-activity']);
+
+        $this->assertEqualsCanonicalizing([$unpinned->id, $pinned->id], array_column($results, 'task_id'));
+        $this->assertSame(0, $unpinned->fresh()->attempt_count);
+        $this->assertSame(0, $pinned->fresh()->attempt_count);
+    }
+
+    /**
+     * @return iterable<string, array{string, string|null}>
+     */
+    public static function namespaceOwnershipRows(): iterable
+    {
+        foreach (['workflow_tasks', 'workflow_runs', 'workflow_instances'] as $table) {
+            foreach (['other', 'DEFAULT', null, 'default'] as $owner) {
+                yield $table . ' / ' . ($owner ?? 'embedded null') => [$table, $owner];
+            }
+        }
+    }
+
+    #[DataProvider('namespaceOwnershipRows')]
+    public function testNamespacedPollRequiresTheTaskRunAndInstanceOwner(string $table, ?string $owner): void
+    {
+        [$run, , $task] = $this->createActivityTask([
+            'namespace' => 'default',
+        ]);
+        $id = match ($table) {
+            'workflow_tasks' => $task->id,
+            'workflow_runs' => $run->id,
+            'workflow_instances' => $run->workflow_instance_id,
+        };
+        DB::table($table)->where('id', $id)->update([
+            'namespace' => $owner,
+        ]);
+        $before = [
+            $run->instance->fresh()
+                ->getAttributes(),
+            $run->fresh()
+                ->getAttributes(),
+            $task->fresh()
+                ->getAttributes(),
+        ];
+
+        $results = $this->bridge->poll('redis', 'default', 1, null, 'default');
+
+        $this->assertSame($owner === 'default' ? [$task->id] : [], array_column($results, 'task_id'));
+        $this->assertSame(
+            $before,
+            [$run->instance->fresh()->getAttributes(), $run->fresh()->getAttributes(), $task->fresh()->getAttributes()]
+        );
+    }
+
+    /**
+     * @return iterable<string, array{string|null}>
+     */
+    public static function foreignInstanceOwners(): iterable
+    {
+        foreach (['other', 'DEFAULT', null] as $owner) {
+            yield $owner ?? 'embedded null' => [$owner];
+        }
+    }
+
+    #[DataProvider('foreignInstanceOwners')]
+    public function testForeignLegacyTasksCannotFillANamespacedPollWindow(?string $owner): void
+    {
+        [$foreignRun] = $this->createActivityTask([
+            'namespace' => 'default',
+            'priority' => 0,
+        ]);
+        DB::table('workflow_instances')->where('id', $foreignRun->workflow_instance_id)->update([
+            'namespace' => $owner,
+        ]);
+        [, , $ownedTask] = $this->createActivityTask([
+            'namespace' => 'default',
+            'priority' => 1,
+        ]);
+
+        $results = $this->bridge->poll('redis', 'default', 1, 'build-a', 'default', ['test-greeting-activity']);
+
+        $this->assertSame([$ownedTask->id], array_column($results, 'task_id'));
+        $this->assertSame(0, $ownedTask->fresh()->attempt_count);
     }
 
     public function testPollWithNullFiltersReturnsAllReadyTasks(): void
@@ -863,6 +1292,60 @@ final class V2ActivityTaskBridgeTest extends TestCase
         $this->assertExternalFailurePayloadIsPublic($failed, 'External failure');
     }
 
+    #[DataProvider('largeFailureMessages')]
+    public function testLargeFailureDeliveryPreservesAuthoritativePayloadAndBoundsOnlyTimeline(string $message): void
+    {
+        Queue::fake();
+        [$run, $execution, $task] = $this->createActivityTask();
+        $claim = $this->bridge->claim($task->id, 'worker-large-failure');
+        $this->assertNotNull($claim);
+
+        $result = $this->bridge->fail($claim['activity_attempt_id'], [
+            'message' => $message,
+            'type' => 'OriginalFailureType',
+            'non_retryable' => true,
+        ]);
+
+        $this->assertTrue($result['recorded']);
+        $this->assertIsString($result['next_task_id']);
+        $failed = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityFailed->value)
+            ->firstOrFail();
+        $this->assertExternalFailurePayloadIsPublic($failed, $message);
+        $this->assertSame($message, $failed->payload['message']);
+        $this->assertSame('OriginalFailureType', $failed->payload['exception_type']);
+        $this->assertTrue($failed->payload['non_retryable']);
+        $this->assertSame(ActivityStatus::Failed, $execution->fresh()->status);
+        $this->assertSame(TaskStatus::Completed, $task->fresh()->status);
+        $this->assertDatabaseHas((new WorkflowTask())->getTable(), [
+            'id' => $result['next_task_id'],
+            'workflow_run_id' => $run->id,
+            'status' => TaskStatus::Ready->value,
+        ]);
+
+        $entry = WorkflowTimelineEntry::query()->where('history_event_id', $failed->id)->firstOrFail();
+        $this->assertLessThanOrEqual(65_535, strlen($entry->summary));
+        $this->assertTrue(mb_check_encoding($entry->summary, 'UTF-8'));
+        $this->assertStringContainsString('[truncated]', $entry->summary);
+        $this->assertSame($message, $entry->toTimelinePayload()['failure']['message']);
+
+        $originalPayload = $failed->getRawOriginal('payload');
+        $originalSummary = $entry->summary;
+        RunTimelineProjector::project($run->fresh());
+        $this->assertSame($originalPayload, $failed->fresh()->getRawOriginal('payload'));
+        $this->assertSame($originalSummary, $entry->fresh()->summary);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function largeFailureMessages(): iterable
+    {
+        yield 'ASCII at TEXT ceiling' => [str_repeat('x', 65_535)];
+        yield 'UTF-8 at TEXT ceiling' => [str_repeat('界', 21_845)];
+        yield 'mixed multibyte at TEXT ceiling' => [str_repeat('界🦀', 9_362) . 'x'];
+    }
+
     public function testCompleteAfterCancelledRunClosesAttemptAndReportsIgnoredOutcome(): void
     {
         [$run, $execution, $task] = $this->createActivityTask();
@@ -1203,6 +1686,15 @@ final class V2ActivityTaskBridgeTest extends TestCase
     private function createActivityTask(array $taskOverrides = []): array
     {
         [$run, $execution] = $this->createActivityExecution();
+
+        if (array_key_exists('namespace', $taskOverrides)) {
+            $run->instance->forceFill([
+                'namespace' => $taskOverrides['namespace'],
+            ])->save();
+            $run->forceFill([
+                'namespace' => $taskOverrides['namespace'],
+            ])->save();
+        }
 
         /** @var WorkflowTask $task */
         $task = WorkflowTask::query()->create(array_merge([

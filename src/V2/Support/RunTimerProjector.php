@@ -18,57 +18,72 @@ final class RunTimerProjector
      * @param list<array<string, mixed>>|null $timers
      * @return list<WorkflowRunTimerEntry>
      */
-    public static function project(WorkflowRun $run, ?array $timers = null): array
+    public static function project(WorkflowRun $run, ?array $timers = null, bool $collectRows = true): array
     {
         $timers ??= RunTimerView::timersForRun($run);
         $entryModel = self::entryModel();
         $seen = [];
         $projected = [];
-        $existing = $entryModel::query()->where('workflow_run_id', $run->id)->get()->keyBy('id');
-
-        foreach (array_values($timers) as $position => $timer) {
-            $timerId = self::stringValue($timer['id'] ?? null);
-
-            if ($timerId === null) {
-                continue;
+        foreach (array_chunk(array_values($timers), 100, true) as $page) {
+            $projectionIds = [];
+            foreach ($page as $timer) {
+                $timerId = self::stringValue($timer['id'] ?? null);
+                if ($timerId !== null) {
+                    $projectionIds[] = self::projectionId($run->id, $timerId);
+                }
             }
+            $existing = $entryModel::query()->where('workflow_run_id', $run->id)
+                ->whereIn('id', $projectionIds)
+                ->get()
+                ->keyBy('id');
 
-            $projectionId = self::projectionId($run->id, $timerId);
-            $seen[] = $projectionId;
+            foreach ($page as $position => $timer) {
+                $timerId = self::stringValue($timer['id'] ?? null);
 
-            /** @var WorkflowRunTimerEntry $row */
-            $row = IdempotentProjectionUpsert::upsert(
-                $entryModel,
-                [
-                    'id' => $projectionId,
-                ],
-                [
-                    'workflow_run_id' => $run->id,
-                    'workflow_instance_id' => $run->workflow_instance_id,
-                    'timer_id' => $timerId,
-                    'schema_version' => WorkflowRunTimerEntry::CURRENT_SCHEMA_VERSION,
-                    'position' => $position,
-                    'sequence' => self::intValue($timer['sequence'] ?? null),
-                    'status' => self::stringValue($timer['status'] ?? null) ?? 'unknown',
-                    'source_status' => self::stringValue($timer['source_status'] ?? null),
-                    'delay_seconds' => self::intValue($timer['delay_seconds'] ?? null),
-                    'fire_at' => self::timestamp($timer['fire_at'] ?? null),
-                    'fired_at' => self::timestamp($timer['fired_at'] ?? null),
-                    'cancelled_at' => self::timestamp($timer['cancelled_at'] ?? null),
-                    'timer_kind' => self::stringValue($timer['timer_kind'] ?? null),
-                    'condition_wait_id' => self::stringValue($timer['condition_wait_id'] ?? null),
-                    'condition_key' => self::stringValue($timer['condition_key'] ?? null),
-                    'condition_definition_fingerprint' => self::stringValue(
-                        $timer['condition_definition_fingerprint'] ?? null
-                    ),
-                    'history_authority' => self::stringValue($timer['history_authority'] ?? null),
-                    'history_unsupported_reason' => self::stringValue($timer['history_unsupported_reason'] ?? null),
-                    'payload' => self::normalizedPayload($timer),
-                ],
-                $existing->get($projectionId),
-            );
+                if ($timerId === null) {
+                    continue;
+                }
 
-            $projected[] = $row;
+                $projectionId = self::projectionId($run->id, $timerId);
+                $seen[] = $projectionId;
+
+                /** @var WorkflowRunTimerEntry $row */
+                $row = IdempotentProjectionUpsert::upsert(
+                    $entryModel,
+                    [
+                        'id' => $projectionId,
+                    ],
+                    [
+                        'workflow_run_id' => $run->id,
+                        'workflow_instance_id' => $run->workflow_instance_id,
+                        'timer_id' => $timerId,
+                        'schema_version' => WorkflowRunTimerEntry::CURRENT_SCHEMA_VERSION,
+                        'position' => $position,
+                        'sequence' => self::intValue($timer['sequence'] ?? null),
+                        'status' => self::stringValue($timer['status'] ?? null) ?? 'unknown',
+                        'source_status' => self::stringValue($timer['source_status'] ?? null),
+                        'delay_seconds' => self::intValue($timer['delay_seconds'] ?? null),
+                        'fire_at' => self::timestamp($timer['fire_at'] ?? null),
+                        'fired_at' => self::timestamp($timer['fired_at'] ?? null),
+                        'cancelled_at' => self::timestamp($timer['cancelled_at'] ?? null),
+                        'timer_kind' => self::stringValue($timer['timer_kind'] ?? null),
+                        'condition_wait_id' => self::stringValue($timer['condition_wait_id'] ?? null),
+                        'condition_key' => self::stringValue($timer['condition_key'] ?? null),
+                        'condition_definition_fingerprint' => self::stringValue(
+                            $timer['condition_definition_fingerprint'] ?? null
+                        ),
+                        'history_authority' => self::stringValue($timer['history_authority'] ?? null),
+                        'history_unsupported_reason' => self::stringValue($timer['history_unsupported_reason'] ?? null),
+                        'payload' => self::normalizedPayload($timer),
+                    ],
+                    $existing->get($projectionId),
+                );
+
+                if ($collectRows) {
+                    $projected[] = $row;
+                }
+            }
+            unset($existing, $page);
         }
 
         self::historyProjectionMaintenanceRole()

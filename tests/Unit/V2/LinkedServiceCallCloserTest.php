@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Tests\Unit\V2;
 
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Str;
 use Mockery;
 use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
@@ -15,6 +17,7 @@ use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
 use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
+use Workflow\V2\Contracts\WorkflowServiceOperationAuthorizer;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
@@ -22,6 +25,8 @@ use Workflow\V2\Enums\ServiceCallBindingKind;
 use Workflow\V2\Enums\ServiceCallOutcome;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\ServiceOperationAuthorizationException;
+use Workflow\V2\Jobs\RunServiceCall;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
@@ -31,11 +36,13 @@ use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Models\WorkflowServiceEndpoint;
 use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\DefaultServiceControlPlane;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\ExternalPayloadStorage;
 use Workflow\V2\Support\LinkedServiceCallCloser;
 use Workflow\V2\Support\ServiceCallDeadline;
+use Workflow\V2\Support\ServiceCallPrincipal;
 use Workflow\V2\Support\ServiceCallView;
 use Workflow\V2\Support\ServiceCallWorkflowDelivery;
 use Workflow\V2\Support\ServiceOperationOptions;
@@ -252,8 +259,14 @@ final class LinkedServiceCallCloserTest extends TestCase
         $this->assertSame(ServiceCallOutcome::TimedOut, $call->outcome);
     }
 
-    public function testTerminalServiceOutcomeResumesItsOriginalWaitingCallerOnce(): void
-    {
+    /**
+     * @param array<string, mixed> $admission
+     */
+    #[DataProvider('waitingAdmissionEvents')]
+    public function testTerminalServiceOutcomeResumesItsOriginalWaitingCallerOnce(
+        HistoryEventType $admissionType,
+        array $admission,
+    ): void {
         config([
             'workflows.v2.task_dispatch_mode' => 'poll',
         ]);
@@ -264,11 +277,10 @@ final class LinkedServiceCallCloserTest extends TestCase
             'caller_workflow_run_id' => $caller->id,
             'operation_mode' => 'sync',
         ]);
-        WorkflowHistoryEvent::record($caller, HistoryEventType::ServiceCallStarted, [
+        WorkflowHistoryEvent::record($caller, $admissionType, [
             'sequence' => 7,
             'service_call_id' => $call->id,
             'operation_mode' => 'sync',
-            'wait_for' => 'completed',
             'endpoint_name' => $call->endpoint_name,
             'service_name' => $call->service_name,
             'operation_name' => $call->operation_name,
@@ -277,7 +289,7 @@ final class LinkedServiceCallCloserTest extends TestCase
             'service_call' => (new DefaultServiceControlPlane())->describeCall($call->id, [
                 'namespace' => 'service',
             ]),
-        ]);
+        ] + $admission);
         $blob = Serializer::serializeWithCodec('avro', [
             'greeting' => 'hello world',
         ]);
@@ -333,6 +345,17 @@ final class LinkedServiceCallCloserTest extends TestCase
         $this->assertSame(2, $task->attempt_count);
         $this->assertSame($records[0], $event->refresh()->getAttributes());
         $this->assertSame(2, WorkflowHistoryEvent::query()->where('workflow_run_id', $caller->id)->count());
+    }
+
+    public static function waitingAdmissionEvents(): iterable
+    {
+        yield 'handler started' => [HistoryEventType::ServiceCallStarted, [
+            'wait_for' => 'completed',
+        ]];
+        yield 'durably scheduled' => [HistoryEventType::ServiceOperationScheduled, [
+            'wait_for' => 'accepted',
+            'workflow_resume_on_admission' => false,
+        ]];
     }
 
     public function testAlreadyCompletedServiceResumesWhenAdmissionHistoryArrivesLate(): void
@@ -443,6 +466,7 @@ final class LinkedServiceCallCloserTest extends TestCase
 
     public function testEmbeddedCallerWaitsAndThenReplaysTheActualServiceResult(): void
     {
+        Queue::fake();
         config([
             'workflows.v2.task_dispatch_mode' => 'poll',
         ]);
@@ -456,6 +480,7 @@ final class LinkedServiceCallCloserTest extends TestCase
                 'workflow_run_id' => $service->id,
             ]);
         $this->registerWorkflowService();
+        $this->registerTrustedServiceOperationHost();
         $this->app->instance(ServiceControlPlane::class, new DefaultServiceControlPlane($control));
         $workflow = WorkflowStub::make(NexusWaitingCallerWorkflow::class, 'waiting-caller', 'caller');
         $this->assertTrue($workflow->attemptStart()->accepted());
@@ -465,7 +490,16 @@ final class LinkedServiceCallCloserTest extends TestCase
         $this->assertSame(RunStatus::Waiting, $run->refresh()->status);
         $this->assertNull($workflow->refresh()->output());
         $call = WorkflowServiceCall::query()->where('caller_workflow_run_id', $run->id)->sole();
-        $this->assertSame('started', $call->status);
+        $this->assertSame('accepted', $call->status);
+        $scheduled = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ServiceOperationScheduled->value)
+            ->sole();
+        $this->assertFalse($scheduled->payload['workflow_resume_on_admission']);
+        $this->app->call([new RunServiceCall($call->id), 'handle']);
+        $this->assertSame('started', $call->refresh()->status);
+        $this->assertSame($service->workflow_instance_id, $call->linked_workflow_instance_id);
+        $this->assertSame($service->id, $call->linked_workflow_run_id);
 
         $expected = [
             'greeting' => 'hello world',
@@ -474,6 +508,7 @@ final class LinkedServiceCallCloserTest extends TestCase
             'output' => Serializer::serializeWithCodec('avro', $expected),
             'payload_codec' => 'avro',
         ]);
+        $this->assertSame('completed', $call->refresh()->status);
         $resume = WorkflowTask::query()
             ->where('workflow_run_id', $run->id)
             ->where('status', TaskStatus::Ready->value)
@@ -740,6 +775,7 @@ final class LinkedServiceCallCloserTest extends TestCase
             [HistoryEventType::WorkflowFailed, 'failed', ServiceCallOutcome::HandlerFailed, 'failed_at'],
             [HistoryEventType::WorkflowCancelled, 'cancelled', ServiceCallOutcome::Cancelled, 'cancelled_at'],
             [HistoryEventType::WorkflowTerminated, 'failed', ServiceCallOutcome::HandlerFailed, 'failed_at'],
+            [HistoryEventType::WorkflowTimedOut, 'failed', ServiceCallOutcome::HandlerFailed, 'failed_at'],
         ] as [$type, $status, $outcome, $timestamp]) {
             $run = $this->createRun();
             $call = $this->createCall($run);
@@ -758,6 +794,170 @@ final class LinkedServiceCallCloserTest extends TestCase
             $this->assertSame('ServiceFailure', $view['error_type']);
             $this->assertSame('service stopped', $view['failure_message']);
             $this->assertArrayNotHasKey('result_envelope', $view);
+        }
+    }
+
+    public function testLinkedWorkflowTimeoutBeforeAdmissionIsReconciledOnceWithItsTypedCause(): void
+    {
+        $run = $this->createRun();
+        $event = WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowTimedOut, [
+            'exception_class' => \Workflow\V2\Exceptions\WorkflowTimeoutException::class,
+            'message' => 'Workflow run timeout elapsed.',
+            'timeout_kind' => 'run',
+        ]);
+        $call = $this->createCall($run);
+        LinkedServiceCallCloser::reconcile($call);
+        $this->assertSame('failed', $call->status);
+        $this->assertSame(ServiceCallOutcome::HandlerFailed, $call->outcome);
+        $this->assertTrue($event->recorded_at->equalTo($call->failed_at));
+        $this->assertSame(
+            \Workflow\V2\Exceptions\WorkflowTimeoutException::class,
+            $call->outcome_metadata['service_error_type']
+        );
+        $this->assertSame('Workflow run timeout elapsed.', $call->failure_message);
+        $before = $call->getRawOriginal();
+        LinkedServiceCallCloser::reconcile($call);
+        $this->assertSame($before, $call->fresh()->getRawOriginal());
+    }
+
+    #[DataProvider('cancellationTerminalWinners')]
+    public function testLinkedCancellationKeepsItsReceiptAndTheTerminalWinner(HistoryEventType $terminal): void
+    {
+        $run = $this->createRun();
+        $call = $this->createCall($run, [
+            'cancellation_policy' => [
+                'propagate_to_linked_workflow' => true,
+            ],
+            'metadata' => [
+                'trace' => 'keep-me',
+            ],
+        ]);
+        $workflows = Mockery::mock(WorkflowControlPlane::class);
+        $workflows->shouldReceive('cancel')
+            ->once()
+            ->andReturnUsing(static function () use ($run, $terminal): array {
+                $payload = $terminal === HistoryEventType::WorkflowCompleted
+                    ? [
+                        'output' => Serializer::serializeWithCodec('avro', false),
+                        'payload_codec' => 'avro',
+                    ]
+                    : [
+                        'message' => 'target won',
+                    ];
+                WorkflowHistoryEvent::record($run, $terminal, $payload);
+                return [
+                    'accepted' => true,
+                    'command_id' => 'linked-cancel',
+                    'result' => 'private-result',
+                ];
+            });
+        $control = new DefaultServiceControlPlane($workflows);
+        $result = $control->cancelCall($call->id, [
+            'namespace' => 'service',
+        ]);
+        $call->refresh();
+        $this->assertSame($terminal === HistoryEventType::WorkflowCancelled, $result['accepted']);
+        $this->assertSame(match ($terminal) {
+            HistoryEventType::WorkflowCancelled => 'cancelled',
+            HistoryEventType::WorkflowCompleted => 'completed',
+            default => 'failed',
+        }, $call->status);
+        $this->assertSame('keep-me', $call->metadata['trace']);
+        $this->assertNotEmpty($call->metadata['linked_terminal_event_id']);
+        $this->assertSame([
+            'accepted' => true,
+            'command_id' => 'linked-cancel',
+        ], $call->metadata['linked_cancel']);
+        if ($terminal === HistoryEventType::WorkflowCompleted) {
+            $this->assertSame(Serializer::serializeWithCodec('avro', false), $call->metadata['nexus_result']['blob']);
+        }
+        $before = $call->getRawOriginal();
+        $control->cancelCall($call->id, [
+            'namespace' => 'service',
+        ]);
+        $this->assertSame($before, $call->fresh()->getRawOriginal());
+    }
+
+    public static function cancellationTerminalWinners(): iterable
+    {
+        foreach ([
+            HistoryEventType::WorkflowCompleted,
+            HistoryEventType::WorkflowCancelled,
+            HistoryEventType::WorkflowFailed,
+        ] as $terminal) {
+            yield $terminal->value => [$terminal];
+        }
+    }
+
+    public function testLinkedCancellationFailureIsTypedWithoutLosingTheLocalCancellation(): void
+    {
+        $run = $this->createRun();
+        $call = $this->createCall($run, [
+            'cancellation_policy' => [
+                'propagate_to_linked_workflow' => true,
+            ],
+        ]);
+        $workflows = Mockery::mock(WorkflowControlPlane::class);
+        $workflows->shouldReceive('cancel')
+            ->once()
+            ->andThrow(new RuntimeException('private backend detail'));
+        $control = new DefaultServiceControlPlane($workflows);
+        $result = $control->cancelCall($call->id, [
+            'namespace' => 'service',
+        ]);
+        $this->assertTrue($result['accepted']);
+        $call->refresh();
+        $this->assertSame('cancelled', $call->status);
+        $this->assertSame([
+            'accepted' => false,
+            'reason' => 'workflow_cancel_exception',
+            'exception_type' => RuntimeException::class,
+        ], $call->metadata['linked_cancel']);
+        $before = $call->getRawOriginal();
+        $control->cancelCall($call->id, [
+            'namespace' => 'service',
+        ]);
+        $this->assertSame($before, $call->fresh()->getRawOriginal());
+    }
+
+    public function testDeadlineStillWinsWhileLinkedCancellationIsInFlight(): void
+    {
+        Carbon::setTestNow('2026-10-11T10:00:00.123456Z');
+        try {
+            $run = $this->createRun();
+            $deadline = now()
+                ->addSecond();
+            $call = $this->createCall($run, [
+                'cancellation_policy' => [
+                    'propagate_to_linked_workflow' => true,
+                ],
+                'call_deadline_at' => $deadline,
+            ]);
+            $workflows = Mockery::mock(WorkflowControlPlane::class);
+            $workflows->shouldReceive('cancel')
+                ->once()
+                ->andReturnUsing(static function () use ($run, $deadline): array {
+                    Carbon::setTestNow($deadline);
+                    WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowCancelled, [
+                        'message' => 'late cancellation',
+                    ]);
+                    return [
+                        'accepted' => true,
+                    ];
+                });
+            $result = (new DefaultServiceControlPlane($workflows))->cancelCall($call->id, [
+                'namespace' => 'service',
+            ]);
+            $this->assertFalse($result['accepted']);
+            $call->refresh();
+            $this->assertSame(ServiceCallOutcome::TimedOut, $call->outcome);
+            $this->assertSame([
+                'accepted' => true,
+            ], $call->metadata['linked_cancel']);
+            $this->assertTrue($deadline->equalTo($call->failed_at));
+            $this->assertNull($call->cancelled_at);
+        } finally {
+            Carbon::setTestNow();
         }
     }
 
@@ -822,6 +1022,71 @@ final class LinkedServiceCallCloserTest extends TestCase
             'codec' => 'avro',
             'external_storage' => $reference,
         ], $view['result_envelope']);
+    }
+
+    #[DataProvider('nestedUpdateHistoryResults')]
+    public function testNestedAvroUpdateHistoryResultIsRetainedOnImmediateAndLateLinks(bool $external, bool $late): void
+    {
+        $run = $this->createRun();
+        $blob = Serializer::serializeWithCodec('avro', [
+            'answer' => false,
+            'source' => 'Ω',
+        ]);
+        $update = WorkflowUpdate::query()->create([
+            'workflow_command_id' => (string) Str::ulid(),
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'update_name' => 'answer',
+            'status' => 'completed',
+            'payload_codec' => 'avro',
+        ]);
+        $reference = [
+            'uri' => 'fixture://nested-result',
+            'codec' => 'avro',
+            'sha256' => hash('sha256', $blob),
+            'size_bytes' => strlen($blob),
+        ];
+        $envelope = [
+            'codec' => 'avro',
+        ] + ($external ? [
+            'external_storage' => $reference,
+        ] : [
+            'blob' => $blob,
+        ]);
+        $overrides = [
+            'resolved_binding_kind' => ServiceCallBindingKind::WorkflowUpdate->value,
+            'linked_workflow_update_id' => $update->id,
+            'output_payload_reference' => 'fixture://stale',
+            'metadata' => [
+                'trace' => 'keep-me',
+                'nexus_result' => [
+                    'codec' => 'avro',
+                    'blob' => 'stale',
+                ],
+            ],
+        ];
+        $call = $late ? null : $this->createCall($run, $overrides);
+        WorkflowHistoryEvent::record($run, HistoryEventType::UpdateCompleted, [
+            'update_id' => $update->id,
+            'result' => $envelope,
+        ]);
+        $call ??= $this->createCall($run, $overrides);
+        LinkedServiceCallCloser::reconcile($call);
+        $call->refresh();
+        $this->assertSame('completed', $call->status);
+        $this->assertSame('keep-me', $call->metadata['trace']);
+        $this->assertSame($external ? $reference['uri'] : null, $call->output_payload_reference);
+        $this->assertSameJsonObject($envelope, \Workflow\V2\Support\ServiceCallResultEnvelope::fromCall($call));
+        $this->assertArrayNotHasKey($external ? 'blob' : 'external_reference', $call->metadata['nexus_result']);
+    }
+
+    public static function nestedUpdateHistoryResults(): iterable
+    {
+        foreach ([false, true] as $external) {
+            foreach ([false, true] as $late) {
+                yield (int) $external . '-' . (int) $late => [$external, $late];
+            }
+        }
     }
 
     #[DataProvider('externalCallerNamespaces')]
@@ -995,6 +1260,25 @@ final class LinkedServiceCallCloserTest extends TestCase
             'handler_binding_kind' => ServiceCallBindingKind::WorkflowRun->value,
             'handler_target_reference' => 'nexus.service',
         ]);
+    }
+
+    private function registerTrustedServiceOperationHost(): void
+    {
+        $this->app->instance(
+            WorkflowServiceOperationAuthorizer::class,
+            new class() implements WorkflowServiceOperationAuthorizer {
+                public function authorize(WorkflowRun $run, array $command): ServiceCallPrincipal
+                {
+                    if ($run->namespace !== 'caller' || ($command['namespace'] ?? null) !== 'service'
+                        || [$command['endpoint_name'], $command['service_name'], $command['operation_name']]
+                            !== ['php-service', 'greeter', 'greet']) {
+                        throw new ServiceOperationAuthorizationException();
+                    }
+
+                    return new ServiceCallPrincipal(subject: 'workflow:' . $run->id, method: 'workflow');
+                }
+            }
+        );
     }
 
     private function createRun(string $namespace = 'service'): WorkflowRun

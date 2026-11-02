@@ -9,6 +9,7 @@ use RuntimeException;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
 use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
+use Workflow\V2\Contracts\PredictableExternalPayloadStorageDriver;
 
 final class ExternalPayloads
 {
@@ -48,7 +49,18 @@ final class ExternalPayloads
         }
 
         $canonicalCodec = CodecRegistry::canonicalize($codec);
-        $reference = ExternalPayloadStorage::store($driver, $payload, $canonicalCodec);
+        // In a metered workflow task completion, a driver that predicts its
+        // URI has the object staged and stored only once the completion has
+        // passed every limit. Any other driver stores it now, as before, after
+        // its raw bytes are charged; a completion refused later leaves that
+        // object unreferenced.
+        $meter = HistoryTransactionMeter::current();
+        if ($meter !== null && $driver instanceof PredictableExternalPayloadStorageDriver) {
+            $reference = $meter->stage($driver, $payload, $canonicalCodec);
+        } else {
+            $meter?->chargeUnstaged(strlen($payload));
+            $reference = ExternalPayloadStorage::store($driver, $payload, $canonicalCodec);
+        }
 
         return self::encodeStoredEnvelope([
             'codec' => $canonicalCodec,

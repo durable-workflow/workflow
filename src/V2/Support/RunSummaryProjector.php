@@ -29,7 +29,7 @@ final class RunSummaryProjector
      * Summaries with a NULL or lower version are eligible for schema-upgrade
      * rebuild via `workflow:v2:rebuild-projections --needs-rebuild`.
      */
-    public const SCHEMA_VERSION = 2;
+    public const SCHEMA_VERSION = 3;
 
     public static function bufferedSignalSummary(WorkflowRun $run): ?WorkflowRunSummary
     {
@@ -98,6 +98,9 @@ final class RunSummaryProjector
 
     public static function project(WorkflowRun $run): WorkflowRunSummary
     {
+        if (ImportedLineageReferences::imported($run)) {
+            RunInstanceMetadata::detachForeign($run);
+        }
         $claimedTask = WorkflowTaskClaimProjectionContext::taskFor($run);
 
         if ($claimedTask instanceof WorkflowTask) {
@@ -135,6 +138,7 @@ final class RunSummaryProjector
 
         $run->loadMissing(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']);
         $run->loadMissing(['childLinks.childRun.instance.currentRun', 'childLinks.childRun.failures']);
+        RunInstanceMetadata::detachForeign($run);
         $currentRun = $run->instance === null
             ? null
             : CurrentRunResolver::forInstance($run->instance);
@@ -481,7 +485,7 @@ final class RunSummaryProjector
             $failureIds,
         );
 
-        RunWaitProjector::project($run, RunWaitView::forRun($run, $activities, $timers));
+        RunWaitProjector::project($run, RunWaitView::forRun($run, $activities, $timers), collectRows: false);
         RunTimelineProjector::project(
             $run,
             $scopeActivityTimeline
@@ -489,7 +493,7 @@ final class RunSummaryProjector
                 : null,
             collectRows: false,
         );
-        RunTimerProjector::project($run, $timers);
+        RunTimerProjector::project($run, $timers, collectRows: false);
         RunLineageProjector::project($run);
 
         return $summary;
@@ -639,10 +643,11 @@ final class RunSummaryProjector
             $livenessReason = sprintf('Timer task %s is leased to a worker.', $task->id);
         }
 
-        $isCurrentRun = $existingSummary instanceof WorkflowRunSummary
+        $imported = ImportedLineageReferences::imported($run);
+        $isCurrentRun = $existingSummary instanceof WorkflowRunSummary && ! $imported
             ? (bool) $existingSummary->is_current_run
             : self::claimIsCurrentRun($run);
-        $repairBlockedReason = $projectTaskLiveness || ! $existingSummary instanceof WorkflowRunSummary
+        $repairBlockedReason = $projectTaskLiveness || ! $existingSummary instanceof WorkflowRunSummary || $imported
             ? RepairBlockedReason::forRun(
                 $run,
                 $isCurrentRun,
@@ -675,7 +680,7 @@ final class RunSummaryProjector
         $exceptionCount = self::claimExceptionCount($run, $existingSummary, $childResolutionEvents);
         $values['exception_count'] = $exceptionCount['count'];
 
-        if (! $existingSummary instanceof WorkflowRunSummary) {
+        if (! $existingSummary instanceof WorkflowRunSummary || $imported) {
             $values = array_merge(self::claimSummaryIdentity($run), $values);
         }
 
@@ -869,6 +874,9 @@ final class RunSummaryProjector
         /** @var WorkflowInstance|null $instance */
         $instance = $run->instance()
             ->first();
+        if ($instance !== null && $instance->namespace !== $run->namespace) {
+            $instance = null;
+        }
         $commandContract = self::freshRunCommandContract($run);
         $sortTimestamp = RunSummarySortKey::timestamp($run->started_at, $run->created_at, $run->updated_at);
 
@@ -905,7 +913,10 @@ final class RunSummaryProjector
 
     private static function claimIsCurrentRun(WorkflowRun $run): bool
     {
-        return ConfiguredV2Models::query('instance_model', WorkflowInstance::class)
+        return NamespaceIdentity::constrain(
+            ConfiguredV2Models::query('instance_model', WorkflowInstance::class),
+            $run->namespace,
+        )
             ->whereKey($run->workflow_instance_id)
             ->where('current_run_id', $run->id)
             ->exists();
@@ -1132,6 +1143,7 @@ final class RunSummaryProjector
         }
 
         $run->loadMissing('instance');
+        RunInstanceMetadata::detachForeign($run);
 
         $waitReason = match (true) {
             self::taskWaitingForCompatibleWorker(

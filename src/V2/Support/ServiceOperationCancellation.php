@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use LogicException;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\ServiceCallStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
@@ -26,9 +27,12 @@ final class ServiceOperationCancellation
         }
         foreach ($run->historyEvents as $event) {
             $payload = $event->payload;
-            if ($event->event_type !== HistoryEventType::ServiceCallStarted
+            if (! in_array($event->event_type, [
+                HistoryEventType::ServiceOperationScheduled,
+                HistoryEventType::ServiceCallStarted,
+            ], true)
                 || ($payload['operation_mode'] ?? null) !== 'sync'
-                || ($payload['wait_for'] ?? null) !== 'completed') {
+                || ! self::waitsForCompletion($event)) {
                 continue;
             }
             $sequence = $payload['sequence'] ?? null;
@@ -50,10 +54,13 @@ final class ServiceOperationCancellation
                     ->where('namespace', $call->target_namespace)
                     ->where('workflow_instance_id', $call->linked_workflow_instance_id)
                     ->find($call->linked_workflow_run_id);
-                $reason = $call === null || $target === null ? 'nexus_cancellation_owner_unavailable'
-                    : (ServiceCallCancellationOrigin::validateOwnership($call, $run, $target)
-                        ?? ServiceCallCancellationOrigin::validateTargetCreation($call));
-                if ($reason === null && ! $target->status->isTerminal()
+                $reason = $call === null ? 'nexus_cancellation_owner_unavailable'
+                    : ($target === null && $call->status === ServiceCallStatus::Accepted->value
+                        ? null
+                        : ($target === null ? 'nexus_cancellation_owner_unavailable'
+                            : (ServiceCallCancellationOrigin::validateOwnership($call, $run, $target)
+                                ?? ServiceCallCancellationOrigin::validateTargetCreation($call))));
+                if ($reason === null && $target instanceof WorkflowRun && ! $target->status->isTerminal()
                     && is_string($target->cancellation_request_command_id)
                     && CooperativeCancellationDelivery::context($target)?->rootRequestId !== $incomingRootRequestId) {
                     $reason = 'nexus_cancellation_target_root_conflict';
@@ -92,6 +99,11 @@ final class ServiceOperationCancellation
             ->where('namespace', $call->target_namespace)
             ->where('workflow_instance_id', $call->linked_workflow_instance_id)
             ->find($call->linked_workflow_run_id);
+        if ($target === null
+            && $call->status === ServiceCallStatus::Cancelled->value
+            && $call->outcome_reason === 'caller_cancellation_requested') {
+            return false;
+        }
         if ($context === null || $target === null) {
             throw new LogicException('nexus_cancellation_owner_unavailable');
         }
@@ -181,7 +193,10 @@ final class ServiceOperationCancellation
             $run->loadMissing('historyEvents');
         }
         $started = $run->historyEvents->first(static fn (WorkflowHistoryEvent $event): bool =>
-            $event->event_type === HistoryEventType::ServiceCallStarted
+            in_array($event->event_type, [
+                HistoryEventType::ServiceOperationScheduled,
+                HistoryEventType::ServiceCallStarted,
+            ], true)
             && ($event->payload['sequence'] ?? null) === $sequence);
         if ($started === null) {
             return null;
@@ -197,5 +212,14 @@ final class ServiceOperationCancellation
         }
 
         return $call;
+    }
+
+    private static function waitsForCompletion(WorkflowHistoryEvent $event): bool
+    {
+        if ($event->event_type === HistoryEventType::ServiceOperationScheduled) {
+            return ($event->payload['workflow_resume_on_admission'] ?? null) === false;
+        }
+
+        return ($event->payload['wait_for'] ?? null) === 'completed';
     }
 }

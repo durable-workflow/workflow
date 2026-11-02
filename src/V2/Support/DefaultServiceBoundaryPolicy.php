@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
-use Workflow\V2\Contracts\ServiceBoundaryPolicy;
+use Workflow\V2\Contracts\ServiceBoundaryReplayPolicy;
 use Workflow\V2\Enums\ServiceCallOperationMode;
 
 /**
@@ -15,7 +15,7 @@ use Workflow\V2\Enums\ServiceCallOperationMode;
  * tests exercise the contract without requiring Redis or a dedicated policy
  * service.
  */
-final class DefaultServiceBoundaryPolicy implements ServiceBoundaryPolicy
+final class DefaultServiceBoundaryPolicy implements ServiceBoundaryReplayPolicy
 {
     public const POLICY_NAME = 'workflow.default-service-boundary';
 
@@ -80,6 +80,13 @@ final class DefaultServiceBoundaryPolicy implements ServiceBoundaryPolicy
         if (--$this->inFlight[$key] <= 0) {
             unset($this->inFlight[$key]);
         }
+    }
+
+    public function authorizeReplay(ServiceBoundaryRequest $request): ServiceBoundaryDecision
+    {
+        return $this->checkAuthorization($request)
+            ?? $this->checkCircuitBreak($request)
+            ?? ServiceBoundaryDecision::allow(policyName: self::POLICY_NAME);
     }
 
     /**

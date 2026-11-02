@@ -9,6 +9,9 @@ use Psr\Log\AbstractLogger;
 use Tests\TestCase;
 use Workflow\V2\Enums\StructuralLimitKind;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
+use Workflow\V2\Support\BackendCapabilities;
+use Workflow\V2\Support\HealthCheck;
+use Workflow\V2\Support\OperatorMetrics;
 use Workflow\V2\Support\StructuralLimits;
 
 final class StructuralLimitsTest extends TestCase
@@ -644,7 +647,38 @@ final class StructuralLimitsTest extends TestCase
         $this->assertArrayHasKey('memo_size_bytes', $snapshot);
         $this->assertArrayHasKey('search_attribute_size_bytes', $snapshot);
         $this->assertArrayHasKey('history_transaction_size', $snapshot);
+        $this->assertArrayHasKey('history_transaction_bytes', $snapshot);
+        $this->assertArrayHasKey('history_transaction_rows', $snapshot);
+        $this->assertArrayHasKey('external_payload_transaction_bytes', $snapshot);
         $this->assertArrayHasKey('warning_threshold_percent', $snapshot);
+    }
+
+    public function testCompletionBudgetLimitsArePublishedOnEveryOperatorSurface(): void
+    {
+        $configured = [
+            'history_transaction_bytes' => 123_456,
+            'history_transaction_rows' => 7_890,
+            'external_payload_transaction_bytes' => 654_321,
+        ];
+        foreach ($configured as $key => $value) {
+            config([
+                'workflows.v2.structural_limits.' . $key => $value,
+            ]);
+        }
+
+        $capabilities = BackendCapabilities::snapshot()['structural_limits'];
+        $surfaces = [
+            'StructuralLimits::snapshot' => StructuralLimits::snapshot(),
+            'HealthCheck::snapshot' => HealthCheck::snapshot()['structural_limits'],
+            'OperatorMetrics::snapshot' => OperatorMetrics::snapshot()['structural_limits'],
+            'BackendCapabilities configured' => $capabilities['configured'],
+            'BackendCapabilities effective' => $capabilities['effective'],
+        ];
+        foreach ($surfaces as $surface => $limits) {
+            foreach ($configured as $key => $value) {
+                $this->assertSame($value, $limits[$key] ?? null, "{$surface} must publish {$key}.");
+            }
+        }
     }
 
     // ---------------------------------------------------------------
@@ -664,6 +698,9 @@ final class StructuralLimitsTest extends TestCase
             'pending_signal_count',
             'pending_update_count',
             'command_batch_size',
+            'history_transaction_bytes',
+            'history_transaction_rows',
+            'external_payload_transaction_bytes',
         ];
 
         $actual = array_map(

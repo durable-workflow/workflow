@@ -24,24 +24,32 @@ final class ActivityRowLockOrder
      *     snapshot_attempt_id: string|null
      * }
      */
-    public static function lockForExecution(string $executionId, bool $includeClosedAttempt = false): array
-    {
+    public static function lockForExecution(
+        string $executionId,
+        bool $includeClosedAttempt = false,
+        bool $waitForLocks = true
+    ): array {
         /** @var ActivityExecution|null $snapshot */
         $snapshot = ActivityExecution::query()->find($executionId);
-        $snapshotAttemptId = $snapshot instanceof ActivityExecution
-            ? ($includeClosedAttempt ? $snapshot->current_attempt_id : self::runningAttemptId($snapshot))
-            : null;
+        $snapshotAttemptId = null;
+        if ($snapshot instanceof ActivityExecution) {
+            $snapshotAttemptId = $includeClosedAttempt ? $snapshot->current_attempt_id : self::runningAttemptId(
+                $snapshot
+            );
+        }
+
+        $lockMode = $waitForLocks ? true : 'for update nowait';
 
         /** @var ActivityAttempt|null $attempt */
         $attempt = $snapshotAttemptId === null
             ? null
             : ActivityAttempt::query()
-                ->lockForUpdate()
+                ->lock($lockMode)
                 ->find($snapshotAttemptId);
 
         /** @var ActivityExecution|null $execution */
         $execution = ActivityExecution::query()
-            ->lockForUpdate()
+            ->lock($lockMode)
             ->find($executionId);
 
         return [

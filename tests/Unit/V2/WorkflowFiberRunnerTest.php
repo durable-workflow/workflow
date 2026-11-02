@@ -2014,6 +2014,50 @@ final class WorkflowFiberRunnerTest extends TestCase
         $this->assertInstanceOf(ServiceOperationCall::class, $waiting->yielded);
     }
 
+    public function testRunnerWaitsForScheduledSyncOperationDespiteInternalAcceptedDispatch(): void
+    {
+        $waiting = WorkflowFiberRunner::forClass(
+            WorkerProtocolRunnerServiceOperationWorkflow::class,
+            'workflow-1',
+            'run-1',
+            [],
+            'avro',
+            [[
+                'sequence' => 1,
+                'event_type' => 'WorkflowStarted',
+                'payload' => [],
+                'recorded_at' => '2026-05-12T10:11:12+00:00',
+            ], [
+                'sequence' => 2,
+                'event_type' => 'ServiceOperationScheduled',
+                'payload' => [
+                    'sequence' => 1,
+                    'service_call_id' => 'svc-sync-scheduled-1',
+                    'endpoint_name' => 'payments',
+                    'service_name' => 'PythonPayments',
+                    'operation_name' => 'authorize',
+                    'operation_mode' => 'sync',
+                    'wait_for' => 'accepted',
+                    'workflow_resume_on_admission' => false,
+                    'status' => 'accepted',
+                    'outcome' => 'accepted',
+                    'service_call' => [
+                        'service_call_id' => 'svc-sync-scheduled-1',
+                        'operation_mode' => 'sync',
+                        'wait_for' => 'accepted',
+                        'status' => 'accepted',
+                    ],
+                ],
+                'recorded_at' => '2026-05-12T10:11:13+00:00',
+            ]],
+        )->step();
+
+        $this->assertFalse($waiting->completed);
+        $this->assertNull($waiting->command);
+        $this->assertSame([], $waiting->commands);
+        $this->assertInstanceOf(ServiceOperationCall::class, $waiting->yielded);
+    }
+
     public function testRunnerThrowsTypedServiceOperationFailureIntoWorkflow(): void
     {
         $completed = WorkflowFiberRunner::forClass(
