@@ -91,12 +91,14 @@ class WorkflowTask extends Model
             return;
         }
 
-        $fields = $this->task_type === TaskType::Activity
+        $fields = TaskSchedulingFields::nonDefault($this->task_type === TaskType::Activity
             ? TaskSchedulingFields::forActivity($run, $this->activityExecution($run))
-            : TaskSchedulingFields::forRun($run);
+            : TaskSchedulingFields::forRun($run));
 
         foreach ($missing as $field) {
-            $this->setAttribute($field, $fields[$field]);
+            if (array_key_exists($field, $fields)) {
+                $this->setAttribute($field, $fields[$field]);
+            }
         }
     }
 

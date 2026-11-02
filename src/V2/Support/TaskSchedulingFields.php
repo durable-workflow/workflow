@@ -20,6 +20,24 @@ final class TaskSchedulingFields
     public const FIELDS = ['priority', 'fairness_key', 'fairness_weight'];
 
     /**
+     * Keep only the fields that differ from the column defaults (priority 5,
+     * no fairness key, weight 1). Writing defaults is redundant, and omitting
+     * them keeps configured run and task tables that predate these columns
+     * working for runs that use the default scheduling class.
+     *
+     * @param  array{priority: int, fairness_key: ?string, fairness_weight: int}  $fields
+     * @return array<string, int|string>
+     */
+    public static function nonDefault(array $fields): array
+    {
+        return array_filter([
+            'priority' => $fields['priority'] === TaskPriority::DEFAULT ? null : $fields['priority'],
+            'fairness_key' => $fields['fairness_key'],
+            'fairness_weight' => $fields['fairness_weight'] === 1 ? null : $fields['fairness_weight'],
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
      * @return array{priority: int, fairness_key: ?string, fairness_weight: int}
      */
     public static function forRun(WorkflowRun $run): array
