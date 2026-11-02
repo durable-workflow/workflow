@@ -109,6 +109,9 @@ final class CommandRequestIdentityTest extends TestCase
         }
     }
 
+    /**
+     * @return iterable<string, array{string, string}>
+     */
     public static function invalidCallerKeys(): iterable
     {
         foreach (self::keyRoutes() as $route) {
@@ -118,7 +121,7 @@ final class CommandRequestIdentityTest extends TestCase
                 'unicode-256' => str_repeat('雪', 256),
                 'four-byte-256' => str_repeat('🧭', 256),
             ] as $case => $key) {
-                yield $route.'-'.$case => [$route, $key];
+                yield $route . '-' . $case => [$route, $key];
             }
         }
     }
@@ -139,11 +142,14 @@ final class CommandRequestIdentityTest extends TestCase
         $this->assertSame($before, $this->rows());
     }
 
+    /**
+     * @return iterable<string, array{string, string}>
+     */
     public static function maximumCallerKeys(): iterable
     {
         foreach (self::keyRoutes() as $route) {
             foreach (['a', '雪', '🧭'] as $character) {
-                yield $route.'-'.strlen($character).'-byte' => [$route, str_repeat($character, 255)];
+                yield $route . '-' . strlen($character) . '-byte' => [$route, str_repeat($character, 255)];
             }
         }
     }
@@ -165,6 +171,9 @@ final class CommandRequestIdentityTest extends TestCase
         $this->assertCount(5, array_unique($commandIds));
     }
 
+    /**
+     * @return iterable<string, array{string}>
+     */
     public static function callerKeyRoutes(): iterable
     {
         foreach (self::keyRoutes() as $route) {
@@ -172,37 +181,48 @@ final class CommandRequestIdentityTest extends TestCase
         }
     }
 
-    /** @return list<string> */
-    private static function keyRoutes(): array
+    public function testSignalWithStartRejectsAnInvalidContextKeyBeforeStarting(): void
     {
-        return ['stub-signal', 'stub-update', 'plane-signal', 'plane-update', 'context-signal', 'context-update'];
+        $stub = WorkflowStub::make(CommandRequestIdentityWorkflow::class, 'invalid-key-start');
+        $before = $this->rows();
+
+        try {
+            $stub->withCommandContext(CommandContext::controlPlane()->with([
+                'request' => [
+                    'request_id' => "\xFF",
+                ],
+            ]))->signalWithStart('changed', [1]);
+            $this->fail('An invalid key must not start a run.');
+        } catch (InvalidCommandRequestIdException) {
+            $this->assertSame($before, $this->rows());
+        }
     }
 
-    /** @return array<string, mixed> */
-    private function keyedAdmission(WorkflowStub $workflow, string $route, string $key): array
+    public function testAnExplicitEmptyKeyIsRefusedBeforeAdmission(): void
     {
-        if (str_starts_with($route, 'plane-')) {
-            $method = $route === 'plane-signal' ? 'signal' : 'update';
+        $workflow = $this->waitingWorkflow();
+        $before = $this->rows();
 
-            return app(WorkflowControlPlane::class)->{$method}(
-                $workflow->workflowId(),
-                $method === 'signal' ? 'changed' : 'rename',
-                ['arguments' => $method === 'signal' ? [1] : ['x'], 'request_id' => $key],
-            );
+        try {
+            $workflow->withRequestId('');
+            $this->fail('An explicitly empty key is invalid.');
+        } catch (InvalidCommandRequestIdException) {
+            $this->assertSame($before, $this->rows());
         }
+    }
 
-        $stub = str_starts_with($route, 'context-')
-            ? $workflow->withCommandContext(CommandContext::controlPlane()->with(['request' => ['request_id' => $key]]))
-            : $workflow->withRequestId($key);
-        $result = str_ends_with($route, '-signal')
-            ? $stub->signal('changed', 1)
-            : $stub->submitUpdateWithArguments('rename', ['x']);
+    public function testNullClearsTheExplicitKeyAndPreservesIndependentAdmission(): void
+    {
+        $workflow = $this->waitingWorkflow()
+            ->withRequestId('cleared-key')
+            ->withRequestId(null);
+        $first = $workflow->signal('changed', 1);
+        $second = $workflow->signal('changed', 1);
 
-        return [
-            'request_id' => $result->requestId(),
-            'command_id' => $result->commandId(),
-            'retained' => $result->retained(),
-        ];
+        $this->assertNull($first->requestId());
+        $this->assertNull($second->requestId());
+        $this->assertFalse($second->retained());
+        $this->assertNotSame($first->commandId(), $second->commandId());
     }
 
     public function testKeyReuseWithDifferentIntentIsRefusedWithoutConsumingTheKey(): void
@@ -601,6 +621,50 @@ final class CommandRequestIdentityTest extends TestCase
         $this->assertTrue($retry->retained());
         $this->assertSame($first->commandId(), $retry->commandId());
         $this->assertSame(1, $this->signalReceivedCount($workflow));
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function keyRoutes(): array
+    {
+        return ['stub-signal', 'stub-update', 'plane-signal', 'plane-update', 'context-signal', 'context-update'];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function keyedAdmission(WorkflowStub $workflow, string $route, string $key): array
+    {
+        if (str_starts_with($route, 'plane-')) {
+            $method = $route === 'plane-signal' ? 'signal' : 'update';
+
+            return app(WorkflowControlPlane::class)->{$method}(
+                $workflow->workflowId(),
+                $method === 'signal' ? 'changed' : 'rename',
+                [
+                    'arguments' => $method === 'signal' ? [1] : ['x'],
+                    'request_id' => $key,
+                ],
+            );
+        }
+
+        $stub = str_starts_with($route, 'context-')
+            ? $workflow->withCommandContext(CommandContext::controlPlane()->with([
+                'request' => [
+                    'request_id' => $key,
+                ],
+            ]))
+            : $workflow->withRequestId($key);
+        $result = str_ends_with($route, '-signal')
+            ? $stub->signal('changed', 1)
+            : $stub->submitUpdateWithArguments('rename', ['x']);
+
+        return [
+            'request_id' => $result->requestId(),
+            'command_id' => $result->commandId(),
+            'retained' => $result->retained(),
+        ];
     }
 
     private function waitingWorkflow(): WorkflowStub

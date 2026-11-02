@@ -912,11 +912,15 @@ final class WorkflowStub
      * A retry with the same key and the same command returns the retained
      * admission instead of recording another command; reuse of the key with a
      * different command name, arguments or run target is refused.
+     * Keys contain 1 to 255 Unicode characters without normalization. Null
+     * clears the explicit key; invalid UTF-8 or length throws before admission.
      *
      * @api Stable v2 command identity API.
      */
     public function withRequestId(?string $requestId): self
     {
+        CommandRequestIdentity::validate($requestId);
+
         $context = $this->resolvedCommandContext();
         $attributes = $context->attributes()['context'];
         $patch = [
@@ -2328,6 +2332,7 @@ final class WorkflowStub
      */
     private function recordAcceptedUpdateWithArguments(string $method, array $arguments): array
     {
+        $this->validateCommandRequestId(CommandType::Update);
         $this->refresh();
 
         /** @var WorkflowCommand|null $command */
@@ -2775,6 +2780,8 @@ final class WorkflowStub
         ?string $payloadBlob = null,
         bool $runtimeReserved = false,
     ): CommandResult {
+        $this->validateCommandRequestId(CommandType::Signal);
+
         if ($name === '') {
             throw new LogicException('Signal name cannot be empty.');
         }
@@ -3143,6 +3150,8 @@ final class WorkflowStub
         array $startArguments,
         StartOptions $startOptions,
     ): SignalWithStartResult {
+        $this->validateCommandRequestId(CommandType::Signal);
+
         if ($name === '') {
             throw new LogicException('Signal name cannot be empty.');
         }
@@ -4212,9 +4221,13 @@ final class WorkflowStub
         return $command;
     }
 
-    /**
-     * @return array<string, mixed>
-     */
+    private function validateCommandRequestId(CommandType $type): void
+    {
+        $context = $this->resolvedCommandContext()
+            ->attributes()['context'];
+        CommandRequestIdentity::validate(CommandRequestIdentity::fromContext($context, $type));
+    }
+
     /**
      * Find the receipt retained for the caller's command key, if any, and
      * compare the retry's intent against it. Called under the instance lock.

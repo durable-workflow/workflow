@@ -24,6 +24,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\InvalidCommandRequestIdException;
 use Workflow\V2\Exceptions\InvalidQueryArgumentsException;
 use Workflow\V2\Exceptions\WorkflowExecutionUnavailableException;
 use Workflow\V2\Models\WorkflowCommand;
@@ -834,17 +835,21 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             ? UpdateWaitPolicy::requestedWaitFor($options['wait_for'])
             : UpdateWaitPolicy::WAIT_FOR_ACCEPTED;
 
-        $stub = $this->withRequestIdOption($stub->withCommandContext($this->commandContext($options)), $options);
+        try {
+            $stub = $this->withRequestIdOption($stub->withCommandContext($this->commandContext($options)), $options);
 
-        if (($options['wait_timeout_seconds'] ?? null) !== null && $waitFor !== UpdateWaitPolicy::WAIT_FOR_ACCEPTED) {
-            $stub = $stub->withUpdateWaitTimeout(
-                UpdateWaitPolicy::requestedTimeoutSeconds($options['wait_timeout_seconds'] ?? null),
-            );
+            if (($options['wait_timeout_seconds'] ?? null) !== null && $waitFor !== UpdateWaitPolicy::WAIT_FOR_ACCEPTED) {
+                $stub = $stub->withUpdateWaitTimeout(
+                    UpdateWaitPolicy::requestedTimeoutSeconds($options['wait_timeout_seconds'] ?? null),
+                );
+            }
+
+            $result = $waitFor === UpdateWaitPolicy::WAIT_FOR_ACCEPTED
+                ? $stub->submitUpdateWithArguments($name, $this->commandArguments($options))
+                : $stub->attemptUpdateWithArguments($name, $this->commandArguments($options));
+        } catch (InvalidCommandRequestIdException $exception) {
+            return $this->invalidRequestIdResult($instanceId, $exception);
         }
-
-        $result = $waitFor === UpdateWaitPolicy::WAIT_FOR_ACCEPTED
-            ? $stub->submitUpdateWithArguments($name, $this->commandArguments($options))
-            : $stub->attemptUpdateWithArguments($name, $this->commandArguments($options));
 
         return array_merge(
             CommandResponse::payload($result),
@@ -1139,10 +1144,14 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
         }
 
         $arguments = $this->commandArguments($options);
-        $stub = $this->withRequestIdOption($stub->withCommandContext($this->commandContext($options)), $options);
-        $result = $runtimeReserved
-            ? $stub->attemptRuntimeSignalWithArguments($name, $arguments, $payloadCodec, $payloadBlob)
-            : $stub->attemptSignalWithArguments($name, $arguments, $payloadCodec, $payloadBlob);
+        try {
+            $stub = $this->withRequestIdOption($stub->withCommandContext($this->commandContext($options)), $options);
+            $result = $runtimeReserved
+                ? $stub->attemptRuntimeSignalWithArguments($name, $arguments, $payloadCodec, $payloadBlob)
+                : $stub->attemptSignalWithArguments($name, $arguments, $payloadCodec, $payloadBlob);
+        } catch (InvalidCommandRequestIdException $exception) {
+            return $this->invalidRequestIdResult($instanceId, $exception);
+        }
 
         return array_merge(
             CommandResponse::payload($result),
@@ -1337,6 +1346,27 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
         return is_string($requestId) && $requestId !== ''
             ? $stub->withRequestId($requestId)
             : $stub;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function invalidRequestIdResult(string $instanceId, InvalidCommandRequestIdException $exception): array
+    {
+        return [
+            'success' => false,
+            'accepted' => false,
+            'recorded' => false,
+            'workflow_instance_id' => $instanceId,
+            'workflow_id' => $instanceId,
+            'workflow_command_id' => null,
+            'command_id' => null,
+            'update_id' => null,
+            'reason' => 'invalid_request_id',
+            'message' => $exception->getMessage(),
+            'validation_errors' => $exception->validationErrors(),
+            'status' => 422,
+        ];
     }
 
     /**

@@ -9,6 +9,7 @@ use Illuminate\Support\Str;
 use Throwable;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
+use Workflow\V2\Exceptions\InvalidCommandRequestIdException;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowSignal;
@@ -35,6 +36,15 @@ final class CommandRequestIdentity
     public const INTENT_DIFFERENT = 'different';
 
     public const INTENT_UNVERIFIED = 'unverified';
+
+    public static function validate(?string $requestId): void
+    {
+        if ($requestId !== null && (
+            strlen($requestId) > 1020 || preg_match('/\A.{1,255}\z/us', $requestId) !== 1
+        )) {
+            throw new InvalidCommandRequestIdException();
+        }
+    }
 
     public static function supports(CommandType|string|null $type): bool
     {
