@@ -514,6 +514,8 @@ models should update app-owned projections at domain milestones and store
 `workflow_id` plus `run_id` beside those business rows. See
 [`docs/architecture/business-reporting-read-models.md`](architecture/business-reporting-read-models.md).
 
+<a id="update-request-identity"></a>
+
 ## Signal and update command identity
 
 In unreleased Core source, a caller key identifies a retained command within
