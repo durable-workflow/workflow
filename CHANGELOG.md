@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 2.15.14 - 2026-11-02
+
+- Persist `StartOptions::withPriority()` and `withFairness()` on runs started
+  through the embedded `WorkflowStub`; they were accepted but not stored, so
+  embedded runs always used the default priority and fairness class (#971).
+- Give every task of a run the run's priority, fairness key and fairness
+  weight. Workflow tasks that resume a run after a timer, signal, update,
+  child or activity outcome, timer tasks, and repair tasks no longer fall
+  back to the default priority and the shared fairness class. Activity
+  retries keep per-call overrides. Values a task creator sets explicitly
+  still win. Embedded continue-as-new and child retry runs keep the
+  predecessor run's priority and fairness, as control-plane continue-as-new
+  already did (#971).
+
 ## 2.15.13 - 2026-11-02
 
 - Fire a cron schedule once for a wall-clock time that repeats when daylight

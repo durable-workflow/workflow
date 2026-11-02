@@ -1,0 +1,62 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "continue-as-new-preserves-run-scheduling",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestContinueAsNewWorkflow",
+    "arguments": [
+      0,
+      1
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-02T12:00:00.000000Z"
+    },
+    {
+      "sequence": 2,
+      "event_type": "ActivityScheduled",
+      "recorded_at": "2026-11-02T12:00:00.000001Z",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "01j00000000000000000000c01",
+        "activity_class": "Tests\\Fixtures\\V2\\TestContinueAsNewActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestContinueAsNewActivity"
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "ActivityCompleted",
+      "recorded_at": "2026-11-02T12:00:01.000000Z",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "01j00000000000000000000c01",
+        "activity_class": "Tests\\Fixtures\\V2\\TestContinueAsNewActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestContinueAsNewActivity",
+        "result": "wwHioz3/VYAiNwQA",
+        "payload_codec": "avro"
+      }
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "continue_as_new",
+        "payload_codec": "avro"
+      }
+    ]
+  }
+}

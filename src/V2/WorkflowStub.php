@@ -81,6 +81,7 @@ use Workflow\V2\Support\SqliteTransaction;
 use Workflow\V2\Support\StructuralLimits;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
+use Workflow\V2\Support\TaskSchedulingFields;
 use Workflow\V2\Support\TerminalCancellationHistory;
 use Workflow\V2\Support\TimerCancellation;
 use Workflow\V2\Support\TraceCarrier;
@@ -1761,6 +1762,11 @@ final class WorkflowStub
                 'arguments' => $serializedArguments,
                 'connection' => $connection,
                 'queue' => $queue,
+                ...TaskSchedulingFields::nonDefault([
+                    'priority' => $startOptions->priority,
+                    'fairness_key' => $startOptions->fairnessKey,
+                    'fairness_weight' => $startOptions->fairnessWeight,
+                ]),
                 'started_at' => $startedAt,
                 'last_progress_at' => $startedAt,
                 'last_history_sequence' => 0,
@@ -3467,6 +3473,11 @@ final class WorkflowStub
             'arguments' => $serializedArguments,
             'connection' => $connection,
             'queue' => $queue,
+            ...TaskSchedulingFields::nonDefault([
+                'priority' => $startOptions->priority,
+                'fairness_key' => $startOptions->fairnessKey,
+                'fairness_weight' => $startOptions->fairnessWeight,
+            ]),
             'started_at' => $startedAt,
             'last_progress_at' => $startedAt,
             'last_history_sequence' => 0,

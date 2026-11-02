@@ -144,6 +144,14 @@ final class WorkflowExecutorChildRetryTest extends TestCase
         $this->assertSame($this->ordered($expectedPolicy), $this->ordered($scheduled->payload['retry_policy']));
         $this->assertSame($this->ordered($timeoutPolicy), $this->ordered($scheduled->payload['timeout_policy']));
         $initialLink = WorkflowLink::query()->where('parent_workflow_run_id', $parentRun->id)->sole();
+        // Non-default scheduling proves each retry run copies its predecessor's (#971).
+        WorkflowRun::query()
+            ->whereKey($initialLink->child_workflow_run_id)
+            ->update([
+                'priority' => 2,
+                'fairness_key' => 'child',
+                'fairness_weight' => 4,
+            ]);
         $initialRun = WorkflowRun::query()->findOrFail($initialLink->child_workflow_run_id);
         $executionDeadline = $initialRun->execution_deadline_at?->toIso8601String();
         $current = $initialRun;
@@ -178,7 +186,8 @@ final class WorkflowExecutorChildRetryTest extends TestCase
                 $this->assertSame($attempt + 1, $retry->run_number);
                 $this->assertSame(RunStatus::Pending, $retry->status);
                 foreach (['workflow_instance_id', 'workflow_class', 'workflow_type', 'namespace',
-                    'arguments', 'payload_codec', 'compatibility', 'connection', 'queue'] as $field) {
+                    'arguments', 'payload_codec', 'compatibility', 'connection', 'queue',
+                    'priority', 'fairness_key', 'fairness_weight'] as $field) {
                     $this->assertSame($initialRun->{$field}, $retry->{$field});
                 }
                 $this->assertSame($executionDeadline, $retry->execution_deadline_at?->toIso8601String());
@@ -194,6 +203,10 @@ final class WorkflowExecutorChildRetryTest extends TestCase
                 $this->assertSame($attempt + 1, $instance->run_count);
                 $retryTask = WorkflowTask::query()->where('workflow_run_id', $retry->id)->sole();
                 $this->assertSame(TaskStatus::Ready, $retryTask->status);
+                $this->assertSame(
+                    [2, 'child', 4],
+                    [$retryTask->priority, $retryTask->fairness_key, $retryTask->fairness_weight],
+                );
                 $this->assertSame(
                     now()
                         ->addSeconds($backoff)
