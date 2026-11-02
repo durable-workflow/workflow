@@ -516,9 +516,10 @@ class WorkflowCommand extends Model
     private static function withRequestIdentity(WorkflowInstance $instance, array $attributes): array
     {
         $commandType = $attributes['command_type'] ?? null;
-        $keyedType = $commandType instanceof CommandType
-            ? $commandType
-            : (is_string($commandType) ? CommandType::tryFrom($commandType) : null);
+        $keyedType = $commandType;
+        if (! $keyedType instanceof CommandType) {
+            $keyedType = is_string($commandType) ? CommandType::tryFrom($commandType) : null;
+        }
         $usesRequestId = $commandType === CommandType::Redrive
             || $commandType === CommandType::Redrive->value;
         $context = is_array($attributes['context'] ?? null) ? $attributes['context'] : [];

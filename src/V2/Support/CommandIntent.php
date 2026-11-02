@@ -64,72 +64,56 @@ final class CommandIntent
      */
     public static function canonical(mixed $value): string
     {
-        if ($value === null) {
-            return 'n';
+        return match (true) {
+            $value === null => 'n',
+            is_bool($value) => $value ? 'b1' : 'b0',
+            is_int($value) => 'i' . $value,
+            is_float($value) => 'd' . self::floatToken($value),
+            is_string($value) => 's' . strlen($value) . ':' . $value,
+            $value instanceof AvroBinaryValue => 'x' . strlen($value->bytes) . ':' . $value->bytes,
+            $value instanceof AvroMapValue => self::avroMapToken($value),
+            is_array($value) => self::arrayToken($value),
+            $value instanceof \BackedEnum => self::canonical($value->value),
+            $value instanceof \DateTimeInterface => 't' . $value->format('Y-m-d\TH:i:s.uP'),
+            $value instanceof \Stringable => self::canonical((string) $value),
+            default => self::serializedToken($value),
+        };
+    }
+
+    private static function avroMapToken(AvroMapValue $value): string
+    {
+        $pairs = [];
+        foreach ($value->pairs as $pair) {
+            $pairs[] = [(string) $pair[0], $pair[1]];
         }
 
-        if (is_bool($value)) {
-            return $value ? 'b1' : 'b0';
-        }
+        return self::mapToken($pairs);
+    }
 
-        if (is_int($value)) {
-            return 'i' . $value;
-        }
-
-        if (is_float($value)) {
-            return 'd' . self::floatToken($value);
-        }
-
-        if (is_string($value)) {
-            return 's' . strlen($value) . ':' . $value;
-        }
-
-        if ($value instanceof AvroBinaryValue) {
-            return 'x' . strlen($value->bytes) . ':' . $value->bytes;
-        }
-
-        if ($value instanceof AvroMapValue) {
-            $pairs = [];
-
-            foreach ($value->pairs as $pair) {
-                $pairs[] = [(string) $pair[0], $pair[1]];
+    /**
+     * @param array<int|string, mixed> $value
+     */
+    private static function arrayToken(array $value): string
+    {
+        if (array_is_list($value)) {
+            $items = '';
+            foreach ($value as $item) {
+                $items .= self::canonical($item);
             }
 
-            return self::mapToken($pairs);
+            return 'l' . count($value) . '[' . $items . ']';
         }
 
-        if (is_array($value)) {
-            if (array_is_list($value)) {
-                $items = '';
-
-                foreach ($value as $item) {
-                    $items .= self::canonical($item);
-                }
-
-                return 'l' . count($value) . '[' . $items . ']';
-            }
-
-            $pairs = [];
-
-            foreach ($value as $key => $item) {
-                $pairs[] = [(string) $key, $item];
-            }
-
-            return self::mapToken($pairs);
+        $pairs = [];
+        foreach ($value as $key => $item) {
+            $pairs[] = [(string) $key, $item];
         }
 
-        if ($value instanceof \BackedEnum) {
-            return self::canonical($value->value);
-        }
+        return self::mapToken($pairs);
+    }
 
-        if ($value instanceof \DateTimeInterface) {
-            return 't' . $value->format('Y-m-d\TH:i:s.uP');
-        }
-
-        if ($value instanceof \Stringable) {
-            return self::canonical((string) $value);
-        }
-
+    private static function serializedToken(mixed $value): string
+    {
         $serialized = serialize($value);
 
         return 'o' . strlen($serialized) . ':' . $serialized;

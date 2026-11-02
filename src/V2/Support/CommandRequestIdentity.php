@@ -91,11 +91,7 @@ final class CommandRequestIdentity
         }
 
         $column = self::nonEmptyString($command->request_id);
-        if ($column === null || self::isToken($column)) {
-            return null;
-        }
-
-        return $column;
+        return $column !== null && ! self::isToken($column) ? $column : null;
     }
 
     /**
@@ -183,12 +179,8 @@ final class CommandRequestIdentity
     {
         $stored = self::nonEmptyString($retained->intent_digest ?? null);
 
-        if ($stored !== null) {
+        if ($stored !== null || $retained->status !== CommandStatus::Accepted) {
             return $stored;
-        }
-
-        if ($retained->status !== CommandStatus::Accepted) {
-            return null;
         }
 
         try {

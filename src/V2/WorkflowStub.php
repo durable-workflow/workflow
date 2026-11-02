@@ -2799,13 +2799,10 @@ final class WorkflowStub
 
     private function updateForCommand(WorkflowCommand $command): ?WorkflowUpdate
     {
-        /** @var WorkflowUpdate|null $update */
-        $update = ConfiguredV2Models::query('update_model', WorkflowUpdate::class)
+        return ConfiguredV2Models::query('update_model', WorkflowUpdate::class)
             ->where('workflow_command_id', $command->id)
             ->lockForUpdate()
             ->first();
-
-        return $update;
     }
 
     private function processAcceptedUpdateInline(?string $runId, string $updateId): void
@@ -4705,16 +4702,13 @@ final class WorkflowStub
             return null;
         }
 
-        /** @var WorkflowCommand|null $start */
-        $start = ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+        return ConfiguredV2Models::query('command_model', WorkflowCommand::class)
             ->where('workflow_instance_id', $signalCommand->workflow_instance_id)
             ->where('command_type', CommandType::Start->value)
             ->where('context->intake->group_id', $groupId)
             ->orderBy('created_at')
             ->orderBy('id')
             ->first();
-
-        return $start;
     }
 
     private function signalCommandPayloadAttributes(

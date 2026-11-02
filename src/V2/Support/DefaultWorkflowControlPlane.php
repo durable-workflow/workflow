@@ -839,15 +839,11 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
     public function update(string $instanceId, string $name, array $options = []): array
     {
         $loaded = $this->loadControlPlaneWorkflow($instanceId, $options);
-
-        if (($loaded['error'] ?? null) !== null) {
-            return $loaded['error'];
-        }
-
         $stub = $loaded['workflow'] ?? null;
+        $error = $loaded['error'] ?? null;
 
-        if (! $stub instanceof WorkflowStub) {
-            return $this->notFoundControlPlaneResult($instanceId, 'update_id');
+        if ($error !== null || ! $stub instanceof WorkflowStub) {
+            return $error ?? $this->notFoundControlPlaneResult($instanceId, 'update_id');
         }
 
         $waitFor = array_key_exists('wait_for', $options)
@@ -1151,15 +1147,11 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             : null;
         $payloadBlob = $options['payload_blob'] ?? null;
         $loaded = $this->loadControlPlaneWorkflow($instanceId, $options);
-
-        if (($loaded['error'] ?? null) !== null) {
-            return $loaded['error'];
-        }
-
         $stub = $loaded['workflow'] ?? null;
+        $error = $loaded['error'] ?? null;
 
-        if (! $stub instanceof WorkflowStub) {
-            return $this->notFoundControlPlaneResult($instanceId, 'workflow_command_id');
+        if ($error !== null || ! $stub instanceof WorkflowStub) {
+            return $error ?? $this->notFoundControlPlaneResult($instanceId, 'workflow_command_id');
         }
 
         $arguments = $this->commandArguments($options);
