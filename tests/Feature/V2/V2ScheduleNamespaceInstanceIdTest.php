@@ -13,6 +13,7 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Support\PhpClassScheduleStarter;
 use Workflow\V2\Support\ScheduleManager;
+use Workflow\V2\WorkflowStub;
 
 /**
  * The same schedule ID in different namespaces starts independent workflow
@@ -96,6 +97,24 @@ final class V2ScheduleNamespaceInstanceIdTest extends TestCase
         $this->assertSame(['triggered', 'triggered'], array_column($ticked, 'outcome'));
         $this->assertCount(2, array_unique($tickInstances));
         $this->assertSame(4, WorkflowInstance::query()->count());
+    }
+
+    public function testLegacyScheduledInstanceStaysReadableAfterUpgrade(): void
+    {
+        $tenant = $this->schedule('shared', 'tenant-b');
+        $from = Carbon::parse('2026-10-20T12:00:00Z');
+        $legacyId = 'schedule:shared:backfill:' . $from->getTimestamp();
+
+        // An instance started for this namespace by a release using the original ID form.
+        $legacy = WorkflowStub::make(TestScheduledWorkflow::class, $legacyId, 'tenant-b');
+        $legacy->start('legacy');
+
+        $results = ScheduleManager::backfill($tenant, $from, Carbon::parse('2026-10-20T13:00:00Z'));
+
+        $this->assertArrayNotHasKey('error', $results[0]);
+        $this->assertNotSame($legacyId, $results[0]['instance_id']);
+        $this->assertSame('tenant-b', WorkflowInstance::query()->findOrFail($legacyId)->namespace);
+        $this->assertSame($legacy->runId(), WorkflowStub::load($legacyId, 'tenant-b')->runId());
     }
 
     public function testNamespacedInstanceIdsAreUnambiguousAndBounded(): void
