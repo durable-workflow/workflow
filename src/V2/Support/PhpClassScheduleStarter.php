@@ -18,8 +18,6 @@ use Workflow\WorkflowOptions;
  */
 final class PhpClassScheduleStarter implements ScheduleWorkflowStarter
 {
-    private const MAX_INSTANCE_ID_LENGTH = 191;
-
     public function start(
         WorkflowSchedule $schedule,
         ?DateTimeInterface $occurrenceTime,
@@ -73,33 +71,26 @@ final class PhpClassScheduleStarter implements ScheduleWorkflowStarter
 
     /**
      * Workflow instance IDs are global, but schedule IDs are unique only per
-     * namespace (#874). Schedules in the configured default namespace keep the
-     * original `schedule:{schedule_id}:{suffix}` form, so existing IDs and
-     * readers are unchanged. Other namespaces use a reserved form that can
-     * never equal an original ID, because those always start `schedule:`:
+     * namespace (#874). Every new scheduled start uses
      *
-     *   schedule@{namespace sha256, 32 hex}:{byte length}:{schedule_id}:{suffix}
+     *   schedule.ns:{namespace sha256, 32 hex}:{byte length}:{schedule_id}:{suffix}
      *
-     * The length prefix makes the schedule ID boundary unambiguous whatever
-     * it contains. When the result would exceed the instance key bound, the
-     * schedule ID is replaced by `h:{sha256}`; `h` cannot be a length.
+     * independent of the configured default namespace, so changing that
+     * default cannot make two namespaces share an ID. Instances started under
+     * the original `schedule:{schedule_id}:{suffix}` form stay readable; the
+     * `schedule.` prefix can never equal one of them. The length prefix makes
+     * the schedule ID boundary unambiguous. A schedule ID that would exceed
+     * the instance key bound or use characters outside the instance ID
+     * alphabet is replaced by `h:{sha256}`; `h` cannot be a length.
      */
     public static function instanceId(WorkflowSchedule $schedule, string $suffix): string
     {
-        $namespace = is_string($schedule->namespace) && $schedule->namespace !== ''
-            ? $schedule->namespace
-            : null;
-        $defaultNamespace = config('workflows.v2.namespace') ?? 'default';
+        $namespace = is_string($schedule->namespace) ? $schedule->namespace : '';
         $scheduleId = (string) $schedule->schedule_id;
-
-        if ($namespace === null || $namespace === $defaultNamespace) {
-            return sprintf('schedule:%s:%s', $scheduleId, $suffix);
-        }
-
-        $prefix = sprintf('schedule@%s:', substr(hash('sha256', $namespace), 0, 32));
+        $prefix = sprintf('schedule.ns:%s:', substr(hash('sha256', $namespace), 0, 32));
         $instanceId = sprintf('%s%d:%s:%s', $prefix, strlen($scheduleId), $scheduleId, $suffix);
 
-        if (strlen($instanceId) > self::MAX_INSTANCE_ID_LENGTH) {
+        if (! WorkflowInstanceId::isValid($instanceId)) {
             $instanceId = sprintf('%sh:%s:%s', $prefix, hash('sha256', $scheduleId), $suffix);
         }
 

@@ -3114,7 +3114,6 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             $instances[] = $instanceId;
         }
 
-        $this->assertSame('schedule:corpus-shared:backfill:' . $from->getTimestamp(), $instances[0]);
         $this->assertNotSame($instances[0], $instances[1]);
     }
 
