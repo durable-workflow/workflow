@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 2.15.15 - 2026-11-02
+
+- Start an independent workflow instance for each namespace when schedules
+  in different namespaces share a schedule ID. New scheduled starts use
+  instance IDs of the form
+  `schedule.ns:{namespace hash}:{length}:{schedule_id}:{suffix}`, so the same
+  occurrence no longer collides across namespaces or after the configured
+  default namespace changes. Instances started under the earlier
+  `schedule:{schedule_id}:{suffix}` form stay readable, and occurrences that
+  already fired stay deduplicated through schedule history (#874).
+
 ## 2.15.14 - 2026-11-02
 
 - Persist `StartOptions::withPriority()` and `withFairness()` on runs started

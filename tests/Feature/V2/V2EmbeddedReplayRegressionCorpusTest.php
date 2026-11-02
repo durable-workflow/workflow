@@ -39,6 +39,7 @@ use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\CancellationPolicy;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\ScheduleOverlapPolicy;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Events\WorkflowStarted;
@@ -90,6 +91,7 @@ use Workflow\V2\Support\ReplayDiff;
 use Workflow\V2\Support\RunActivityView;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunTimelineProjector;
+use Workflow\V2\Support\ScheduleManager;
 use Workflow\V2\Support\ServiceCallPrincipal;
 use Workflow\V2\Support\ServiceCallScheduler;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
@@ -799,6 +801,10 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
             if (($fixture['id'] ?? null) === 'continue-as-new-preserves-run-scheduling') {
                 $this->assertContinueAsNewPreservesRunScheduling($fixture);
+            }
+
+            if (($fixture['id'] ?? null) === 'schedule-namespace-instance-identity') {
+                $this->assertScheduleNamespaceInstanceIdentity($fixture);
             }
 
             if ($fixture['id'] === 'legacy-version-shared-step-position') {
@@ -3070,6 +3076,45 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             ->firstOrFail();
 
         $this->app->call([new RunWorkflowTask($task->id), 'handle']);
+    }
+
+    /**
+     * The fixture's scheduled workflow, backfilled for one occurrence by the
+     * same schedule ID in two namespaces, starts one instance per namespace
+     * instead of colliding on the global instance key (#874).
+     *
+     * @param array<string, mixed> $fixture
+     */
+    private function assertScheduleNamespaceInstanceIdentity(array $fixture): void
+    {
+        $from = Carbon::parse('2026-10-20T12:00:00Z');
+        $to = Carbon::parse('2026-10-20T13:00:00Z');
+        $instances = [];
+
+        foreach (['default', 'corpus-tenant-b'] as $namespace) {
+            $schedule = ScheduleManager::create(
+                scheduleId: 'corpus-shared',
+                workflowClass: $fixture['workflow']['type'],
+                cronExpression: '0 * * * *',
+                arguments: $fixture['workflow']['arguments'],
+                overlapPolicy: ScheduleOverlapPolicy::AllowAll,
+                namespace: $namespace,
+            );
+            $results = ScheduleManager::backfill($schedule, $from, $to);
+
+            $this->assertCount(1, $results, "{$fixture['id']} {$namespace} occurrence count.");
+            $this->assertArrayNotHasKey('error', $results[0], "{$fixture['id']} {$namespace} start failed.");
+            $instanceId = $results[0]['instance_id'];
+            $this->assertIsString($instanceId, "{$fixture['id']} {$namespace} started no instance.");
+            $this->assertSame(
+                $namespace,
+                WorkflowInstance::query()->findOrFail($instanceId)->namespace,
+                "{$fixture['id']} {$namespace} instance namespace.",
+            );
+            $instances[] = $instanceId;
+        }
+
+        $this->assertNotSame($instances[0], $instances[1]);
     }
 
     /**
