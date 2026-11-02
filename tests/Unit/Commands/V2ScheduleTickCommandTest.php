@@ -84,32 +84,37 @@ final class V2ScheduleTickCommandTest extends TestCase
     }
 
     #[DataProvider('invalidLimits')]
-    public function testItRefusesAnInvalidLimitOptionWithoutTicking(string $limit): void
+    public function testItRefusesAnInvalidLimitOptionWithoutTicking(string $limit, string $shown): void
     {
         $fake = $this->recordingRole();
 
         $this->artisan('workflow:v2:schedule-tick', [
             '--limit' => $limit,
         ])
-            ->expectsOutputToContain(sprintf('Invalid --limit value [%s]: expected a positive integer.', $limit))
+            ->expectsOutputToContain(sprintf('Invalid --limit value [%s]: expected a positive integer.', $shown))
             ->assertFailed();
 
         $this->assertSame([], $fake->limits);
     }
 
     /**
-     * @return iterable<string, array{string}>
+     * @return iterable<string, array{string, string}>
      */
     public static function invalidLimits(): iterable
     {
-        yield 'zero' => ['0'];
-        yield 'negative' => ['-5'];
-        yield 'empty' => [''];
-        yield 'word' => ['all'];
-        yield 'decimal' => ['1.5'];
-        yield 'leading zero' => ['010'];
-        yield 'surrounding space' => [' 10'];
-        yield 'overflow' => ['99999999999999999999'];
+        yield 'zero' => ['0', '0'];
+        yield 'negative' => ['-5', '-5'];
+        yield 'empty' => ['', ''];
+        yield 'word' => ['all', 'all'];
+        yield 'decimal' => ['1.5', '1.5'];
+        yield 'leading zero' => ['010', '010'];
+        yield 'surrounding space' => [' 10', ' 10'];
+        yield 'trailing newline' => ["3\n", '3\n'];
+        yield 'trailing carriage return and newline' => ["3\r\n", '3\r\n'];
+        yield 'leading newline' => ["\n3", '\n3'];
+        yield 'embedded newline' => ["3\n4", '3\n4'];
+        yield 'console tag' => ['<info>3</info>', '<info>3</info>'];
+        yield 'overflow' => ['99999999999999999999', '99999999999999999999'];
     }
 
     #[DataProvider('invalidConfiguredLimits')]
@@ -138,6 +143,9 @@ final class V2ScheduleTickCommandTest extends TestCase
         yield 'negative' => [-1, '-1'];
         yield 'zero string' => ['0', '0'];
         yield 'word' => ['unlimited', 'unlimited'];
+        yield 'trailing newline' => ["3\n", '3\n'];
+        yield 'environment trailing newline' => ["250\n", '250\n'];
+        yield 'boolean' => [true, 'true'];
         yield 'float' => [12.5, '12.5'];
         yield 'empty string' => ['', ''];
         yield 'array' => [[10], 'array'];

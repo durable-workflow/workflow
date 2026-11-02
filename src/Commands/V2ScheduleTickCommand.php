@@ -6,6 +6,7 @@ namespace Workflow\Commands;
 
 use Illuminate\Console\Command;
 use JsonException;
+use Symfony\Component\Console\Formatter\OutputFormatter;
 use Workflow\V2\Contracts\SchedulerRole;
 
 class V2ScheduleTickCommand extends Command
@@ -72,7 +73,7 @@ class V2ScheduleTickCommand extends Command
             if ($limit === null) {
                 $this->error(sprintf(
                     'Invalid --limit value [%s]: expected a positive integer.',
-                    is_scalar($option) ? (string) $option : get_debug_type($option),
+                    self::describe($option),
                 ));
             }
 
@@ -90,7 +91,7 @@ class V2ScheduleTickCommand extends Command
         if ($limit === null) {
             $this->error(sprintf(
                 'Invalid workflows.v2.schedules.tick_limit value [%s]: expected a positive integer.',
-                is_scalar($configured) ? (string) $configured : get_debug_type($configured),
+                self::describe($configured),
             ));
         }
 
@@ -103,7 +104,8 @@ class V2ScheduleTickCommand extends Command
             return $value >= 1 ? $value : null;
         }
 
-        if (! is_string($value) || preg_match('/^[1-9][0-9]*$/', $value) !== 1) {
+        // \z, not $: $ would also match before a trailing newline.
+        if (! is_string($value) || preg_match('/\A[1-9][0-9]*\z/', $value) !== 1) {
             return null;
         }
 
@@ -111,5 +113,20 @@ class V2ScheduleTickCommand extends Command
         $limit = filter_var($value, FILTER_VALIDATE_INT);
 
         return is_int($limit) ? $limit : null;
+    }
+
+    /**
+     * Show a rejected value on one line, with control characters escaped
+     * and no console formatting tags interpreted.
+     */
+    private static function describe(mixed $value): string
+    {
+        $shown = match (true) {
+            is_bool($value) => $value ? 'true' : 'false',
+            is_scalar($value) => (string) $value,
+            default => get_debug_type($value),
+        };
+
+        return OutputFormatter::escape(addcslashes($shown, "\0..\37\177"));
     }
 }
