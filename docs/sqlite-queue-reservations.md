@@ -20,7 +20,7 @@ An application's custom queue manager or database connector is not replaced.
 Applications that own those integrations must handle their reservation behavior.
 The reservation guard covers Laravel 12.54 through Laravel 13. Older supported
 frameworks retain their original reservation handling. The acknowledgement guard
-below covers Laravel 9 through Laravel 13. A new framework major requires explicit
+below covers Laravel 10 through Laravel 13. A new framework major requires explicit
 qualification.
 
 ## Acknowledging completed work
