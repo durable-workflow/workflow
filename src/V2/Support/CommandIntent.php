@@ -56,7 +56,7 @@ final class CommandIntent
 
     public static function isDigest(mixed $value): bool
     {
-        return is_string($value) && preg_match('/^v[0-9]+:[0-9a-f]{64}$/', $value) === 1;
+        return is_string($value) && preg_match('/^v\d+:[0-9a-f]{64}$/', $value) === 1;
     }
 
     /**
