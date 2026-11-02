@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.15.15 - 2026-11-02
+
 - Start an independent workflow instance for each namespace when schedules
   in different namespaces share a schedule ID. New scheduled starts use
   instance IDs of the form
