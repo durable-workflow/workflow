@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
-use Composer\InstalledVersions;
 use Illuminate\Auth\TokenGuard;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Contracts\Auth\UserProvider;
@@ -13,15 +12,6 @@ use PHPUnit\Framework\TestCase;
 
 final class LaravelTokenGuardSecurityFloorTest extends TestCase
 {
-    protected function setUp(): void
-    {
-        parent::setUp();
-        $version = InstalledVersions::getVersion('laravel/framework');
-        if (! is_string($version) || version_compare($version, '10.0.0', '<')) {
-            $this->markTestSkipped('Laravel 9 retains an explicit upgrade/drain-only security disposition.');
-        }
-    }
-
     public function testNonStringTokenNeverReachesTheUserLookup(): void
     {
         $provider = $this->createMock(UserProvider::class);

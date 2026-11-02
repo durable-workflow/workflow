@@ -11,6 +11,14 @@
   were never pruned keep their existing dedupe key. Bundle verification reports
   pruned bundles as `history.details_pruned`, so replay verification fails
   them, and history import rejects them (#856).
+- Drop Laravel 9 from the supported `laravel/framework` constraint, which is
+  now `^10.50.4|^11.56.1|^12.69.0|^13.30.0`. Laravel 9 has no fix for the
+  TokenGuard advisory GHSA-f9x3-7vq9-cph6. Composer keeps Laravel 9
+  applications on Workflow 2.16.x, so updating does not break them; to move
+  past 2.16.x, upgrade the framework to a patched Laravel 12 or 13 release
+  first. The embedded upgrade contract no longer lists Laravel 9 cells, and the
+  dependency security policy records the removal. The dependency security audit
+  now requires Composer to refuse this package with Laravel 9 (#922).
 
 ## 2.16.0 - 2026-11-02
 

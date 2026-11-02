@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Composer\Semver\Semver;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Process\Process;
 use Symfony\Component\Yaml\Yaml;
@@ -46,6 +47,50 @@ final class LaravelDependencySecurityPolicyTest extends TestCase
             array_map(static fn ($major): string => $major . '.*', array_keys($policy['supported_majors'])),
             array_keys($upgrade['supported_intersection']['authority']['laravel_minimum_php']),
         );
+    }
+
+    public function testTheComposerConstraintRefusesRemovedLaravelMajors(): void
+    {
+        $root = dirname(__DIR__, 3);
+        $composer = json_decode(
+            (string) file_get_contents($root . '/composer.json'),
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+        $policy = json_decode(
+            (string) file_get_contents($root . '/resources/laravel-dependency-security-policy.json'),
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+        $upgrade = json_decode(
+            (string) file_get_contents($root . '/resources/laravel-embedded-upgrade-contract.json'),
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+        $constraint = $composer['require']['laravel/framework'];
+
+        $this->assertSame(['9'], array_map('strval', array_keys($policy['removed_majors'])));
+        $this->assertSame('2.16', $policy['removed_majors']['9']['last_workflow_minor']);
+
+        // 9.52.23 is the newest Laravel 9 release; its TokenGuard is unfixed.
+        foreach (['9.0.0', '9.52.17', '9.52.23', '9.99.99'] as $version) {
+            $this->assertFalse(Semver::satisfies($version, $constraint), "{$version} must be refused");
+        }
+        foreach (['10.50.3', '11.56.0', '12.68.9', '13.29.9'] as $version) {
+            $this->assertFalse(Semver::satisfies($version, $constraint), "{$version} is below its floor");
+        }
+        foreach ($policy['supported_majors'] as $major) {
+            $this->assertTrue(Semver::satisfies($major['minimum'], $constraint), $major['minimum']);
+        }
+
+        $this->assertArrayNotHasKey('9.*', $upgrade['supported_intersection']['authority']['laravel_minimum_php']);
+        $this->assertNotContains('9.*', array_column($upgrade['supported_intersection']['cells'], 'laravel'));
+        foreach ($policy['accepted_advisories'] as $advisory) {
+            $this->assertNotContains('9', $advisory['affected_supported_majors']);
+        }
     }
 
     public function testRootComposerDependabotUpdatesCannotBeConfigured(): void
