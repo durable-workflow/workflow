@@ -76,6 +76,7 @@ use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\ActivityCancellationAcknowledgement;
+use Workflow\V2\Support\BundleIntegrityVerifier;
 use Workflow\V2\Support\CancellationScopeDelivery;
 use Workflow\V2\Support\CancellationScopeHistory;
 use Workflow\V2\Support\CancellationScopeRequests;
@@ -97,6 +98,7 @@ use Workflow\V2\Support\ServiceCallScheduler;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Support\WorkflowReplayer;
+use Workflow\V2\Support\WorkflowRunRetentionCleanup;
 use Workflow\V2\Support\WorkflowStep;
 use Workflow\V2\Support\WorkflowStepHistory;
 use Workflow\V2\Support\WorkflowTaskPayload;
@@ -157,6 +159,57 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertNull(ChildRunHistory::childRunForSequence($imported, 1));
         foreach ([RunDetailView::forRun($imported->fresh()), HistoryExport::forRun($imported->fresh())] as $view) {
             $this->assertStringNotContainsString('unrelated-later', json_encode($view, JSON_THROW_ON_ERROR));
+        }
+    }
+
+    public function testRetentionPrunedRunExportCorpusIsNeverCompleteHistory(): void
+    {
+        $path = self::FIXTURE_DIR . '/retention-pruned-run-export.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The retention-pruned export evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['retention_pruned_export'];
+        self::stopWorkers();
+        Queue::fake();
+        config([
+            'queue.default' => 'database',
+        ]);
+
+        foreach ($scenario['terminal_statuses'] as $status) {
+            $this->clearWorkflowState();
+            $run = $this->createRunFromFixture($fixture);
+            $run->forceFill([
+                'status' => RunStatus::from($status),
+                'closed_at' => now(),
+            ])->save();
+
+            $full = HistoryExport::forRun($run->fresh());
+            $this->assertTrue($full['history_complete'], $status);
+            $this->assertNotSame([], $full['history_events'], $status);
+
+            WorkflowRunRetentionCleanup::pruneRun($run->id);
+            $pruned = HistoryExport::forRun(WorkflowRun::query()->findOrFail($run->id));
+
+            $this->assertFalse($pruned['history_complete'], $status);
+            $this->assertSame($status, $pruned['workflow']['status']);
+            $this->assertSame('pruned', $pruned['workflow']['details_state'] ?? null, $status);
+            $this->assertNotNull($pruned['workflow']['details_pruned_at'] ?? null, $status);
+            $this->assertSame([], $pruned['history_events'], $status);
+            $this->assertNotSame($full['dedupe_key'], $pruned['dedupe_key'], $status);
+            $this->assertStringStartsWith($full['dedupe_key'] . ':details-pruned:', $pruned['dedupe_key']);
+            $this->assertContains(
+                $scenario['pruned_verification_rule'],
+                array_column(BundleIntegrityVerifier::verify($pruned)['findings'], 'rule'),
+                $status,
+            );
+            $this->assertContains(
+                $scenario['pruned_import_rule'],
+                array_column(EmbeddedV2HistoryImport::import($pruned, [
+                    'dry_run' => true,
+                ])['eligibility']['errors'], 'rule'),
+                $status,
+            );
         }
     }
 

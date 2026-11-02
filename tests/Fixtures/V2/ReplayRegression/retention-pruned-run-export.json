@@ -1,0 +1,41 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "retention-pruned-run-export",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestGoldenReplayWorkflow",
+    "arguments": [
+      "single-activity"
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-02T12:00:00+00:00"
+    }
+  ],
+  "retention_pruned_export": {
+    "terminal_statuses": [
+      "completed",
+      "failed"
+    ],
+    "pruned_verification_rule": "history.details_pruned",
+    "pruned_import_rule": "workflow.terminal_history_incomplete"
+  },
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "schedule_activity"
+      }
+    ]
+  }
+}

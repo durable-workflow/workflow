@@ -87,7 +87,9 @@ final class HistoryExport
             'schema_version' => self::SCHEMA_VERSION,
             'exported_at' => self::timestamp($exportedAt),
             'dedupe_key' => self::dedupeKey($run),
-            'history_complete' => $run->status->isTerminal(),
+            // Retention cleanup deletes a pruned run's history, so its export
+            // never claims to be complete.
+            'history_complete' => $run->status->isTerminal() && $run->details_pruned_at === null,
             'workflow' => [
                 'instance_id' => $run->workflow_instance_id,
                 'run_id' => $run->id,
@@ -118,6 +120,8 @@ final class HistoryExport
                 'started_at' => self::timestamp($summary?->started_at ?? $run->started_at),
                 'closed_at' => self::timestamp($summary?->closed_at ?? $run->closed_at),
                 'last_progress_at' => self::timestamp($run->last_progress_at),
+                'details_state' => $run->details_pruned_at === null ? 'retained' : 'pruned',
+                'details_pruned_at' => self::timestamp($run->details_pruned_at),
             ],
             'payloads' => [
                 'codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
@@ -1129,11 +1133,19 @@ final class HistoryExport
 
     private static function dedupeKey(WorkflowRun $run): string
     {
-        return implode(':', [
+        $key = implode(':', [
             $run->id,
             (string) $run->last_history_sequence,
             self::timestamp($run->last_progress_at ?? $run->updated_at) ?? 'unknown',
         ]);
+
+        // Pruning leaves the sequence and progress time unchanged, so mark the
+        // key; a post-prune export must not match the earlier full export.
+        if ($run->details_pruned_at !== null) {
+            $key .= ':details-pruned:' . self::timestamp($run->details_pruned_at);
+        }
+
+        return $key;
     }
 
     /**

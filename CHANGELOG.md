@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Do not export a retention-pruned run as complete history. After
+  `WorkflowRunRetentionCleanup::pruneRun()`, `HistoryExport::forRun()` sets
+  `history_complete` to `false`, adds `workflow.details_state: "pruned"` and
+  `workflow.details_pruned_at`, and appends `:details-pruned:{time}` to the
+  `dedupe_key`, so the post-prune export can't be mistaken for the full export
+  taken before cleanup. Every bundle now carries `details_state`; runs that
+  were never pruned keep their existing dedupe key. Bundle verification reports
+  pruned bundles as `history.details_pruned`, so replay verification fails
+  them, and history import rejects them (#856).
+
 ## 2.16.0 - 2026-11-02
 
 - Let embedded operators size schedule evaluation passes.
