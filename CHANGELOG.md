@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.15.13 - 2026-11-02
+
 - Fire a cron schedule once for a wall-clock time that repeats when daylight
   saving time ends. A daily `30 1 * * *` schedule in `America/New_York` no
   longer starts a second run at 01:30 EST on the day clocks go back, and
