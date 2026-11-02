@@ -7,10 +7,8 @@
     "php"
   ],
   "workflow": {
-    "type": "Tests\\Fixtures\\V2\\TestGoldenReplayWorkflow",
-    "arguments": [
-      "single-activity"
-    ],
+    "type": "Tests\\Fixtures\\V2\\TestFailingWorkflow",
+    "arguments": [],
     "payload_codec": "avro"
   },
   "history": [
