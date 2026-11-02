@@ -89,7 +89,11 @@ final class V2ScheduleTickBurstTest extends TestCase
         $this->assertSame([], $third);
         $this->assertSame(
             WorkflowSchedule::query()->pluck('schedule_id')->sort()->values()->all(),
-            collect(array_merge($first, $second))->pluck('schedule_id')->sort()->values()->all(),
+            collect(array_merge($first, $second))
+                ->pluck('schedule_id')
+                ->sort()
+                ->values()
+                ->all(),
         );
         $this->assertEveryScheduleFiredOnce(101);
     }
@@ -112,11 +116,19 @@ final class V2ScheduleTickBurstTest extends TestCase
 
     public function testBufferedActionsDrainAtTheLimitPerPassAlongsideDueSchedules(): void
     {
-        foreach (['alpha-1' => 40, 'alpha-2' => 30, 'alpha-3' => 20] as $scheduleId => $secondsAgo) {
+        foreach ([
+            'alpha-1' => 40,
+            'alpha-2' => 30,
+            'alpha-3' => 20,
+        ] as $scheduleId => $secondsAgo) {
             $this->bufferedSchedule($scheduleId, 'alpha', $secondsAgo);
         }
         $this->bufferedSchedule('beta-buffered', 'beta', 10);
-        foreach (['beta-due-1' => 3, 'beta-due-2' => 2, 'beta-due-3' => 1] as $scheduleId => $minutesAgo) {
+        foreach ([
+            'beta-due-1' => 3,
+            'beta-due-2' => 2,
+            'beta-due-3' => 1,
+        ] as $scheduleId => $minutesAgo) {
             $this->dueSchedule($scheduleId, 'beta', $minutesAgo);
         }
 
