@@ -116,6 +116,7 @@ final class CommandRequestIdentityTest extends TestCase
     {
         foreach (self::keyRoutes() as $route) {
             foreach ([
+                'empty' => '',
                 'malformed-utf8' => "\xFF",
                 'ascii-256' => str_repeat('a', 256),
                 'unicode-256' => str_repeat('雪', 256),
