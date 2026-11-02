@@ -4532,7 +4532,7 @@ final class WorkflowStub
         if ($this->usesInternalCommandIdentity($context)) {
             return;
         }
-        CommandRequestIdentity::validate(CommandRequestIdentity::fromContext($context, $type));
+        CommandRequestIdentity::validateContext($context, $type);
     }
 
     /**

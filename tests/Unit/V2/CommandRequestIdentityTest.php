@@ -83,7 +83,7 @@ final class CommandRequestIdentityTest extends TestCase
     }
 
     #[DataProvider('invalidCallerKeys')]
-    public function testInvalidCallerKeysAreRefusedWithoutDurableWrites(string $route, string $key): void
+    public function testInvalidCallerKeysAreRefusedWithoutDurableWrites(string $route, mixed $key): void
     {
         $workflow = $this->waitingWorkflow();
         $before = $this->rows();
@@ -110,18 +110,26 @@ final class CommandRequestIdentityTest extends TestCase
     }
 
     /**
-     * @return iterable<string, array{string, string}>
+     * @return iterable<string, array{string, mixed}>
      */
     public static function invalidCallerKeys(): iterable
     {
         foreach (self::keyRoutes() as $route) {
-            foreach ([
+            $keys = [
                 'empty' => '',
                 'malformed-utf8' => "\xFF",
                 'ascii-256' => str_repeat('a', 256),
                 'unicode-256' => str_repeat('雪', 256),
                 'four-byte-256' => str_repeat('🧭', 256),
-            ] as $case => $key) {
+            ];
+            if (! str_starts_with($route, 'stub-')) {
+                $keys += [
+                    'not-string-int' => 0,
+                    'not-string-bool' => false,
+                    'not-string-array' => [],
+                ];
+            }
+            foreach ($keys as $case => $key) {
                 yield $route . '-' . $case => [$route, $key];
             }
         }
@@ -179,6 +187,80 @@ final class CommandRequestIdentityTest extends TestCase
     {
         foreach (self::keyRoutes() as $route) {
             yield $route => [$route];
+        }
+    }
+
+    #[DataProvider('callerKeyRoutes')]
+    public function testNullCallerKeysRemainUnkeyedAcrossAllRoutes(string $route): void
+    {
+        $workflow = $this->waitingWorkflow();
+        $first = $this->keyedAdmission($workflow, $route, null);
+        $second = $this->keyedAdmission($workflow, $route, null);
+
+        $this->assertNull($first['request_id']);
+        $this->assertNull($second['request_id']);
+        $this->assertFalse($second['retained']);
+        $this->assertNotSame($first['command_id'], $second['command_id']);
+    }
+
+    public function testExplicitNullOptionsClearInheritedKeysWhileOmittedOptionsRetainThem(): void
+    {
+        $workflow = $this->waitingWorkflow();
+        $control = app(WorkflowControlPlane::class);
+        $context = CommandContext::controlPlane()->with([
+            'request' => [
+                'request_id' => 'inherited-key',
+            ],
+        ]);
+        foreach ([
+            'signal' => 'changed',
+            'update' => 'rename',
+        ] as $method => $name) {
+            $options = [
+                'arguments' => $method === 'signal' ? [1] : ['x'],
+                'command_context' => $context,
+            ];
+            $first = $control->{$method}($workflow->workflowId(), $name, $options);
+            $retry = $control->{$method}($workflow->workflowId(), $name, $options);
+            $cleared = $control->{$method}($workflow->workflowId(), $name, $options + [
+                'request_id' => null,
+            ]);
+
+            $this->assertSame('inherited-key', $first['request_id']);
+            $this->assertSame($first['command_id'], $retry['command_id']);
+            $this->assertTrue($retry['retained']);
+            $this->assertNull($cleared['request_id']);
+            $this->assertFalse($cleared['retained']);
+            $this->assertNotSame($first['command_id'], $cleared['command_id']);
+        }
+    }
+
+    public function testEmptyServerBodyKeysCannotFallBackToProxyCorrelation(): void
+    {
+        $workflow = $this->waitingWorkflow();
+        foreach (['signal', 'update'] as $method) {
+            $before = $this->rows();
+            $stub = $workflow->withCommandContext(CommandContext::controlPlane()->with([
+                'request' => [
+                    'request_id' => 'proxy-correlation',
+                ],
+                'server' => [
+                    'command' => $method,
+                    'metadata' => [
+                        'request_id' => '',
+                    ],
+                ],
+            ]));
+            try {
+                if ($method === 'signal') {
+                    $stub->signal('changed', 1);
+                } else {
+                    $stub->submitUpdateWithArguments('rename', ['x']);
+                }
+                $this->fail('An explicit empty body key must be refused.');
+            } catch (InvalidCommandRequestIdException) {
+                $this->assertSame($before, $this->rows());
+            }
         }
     }
 
@@ -635,7 +717,7 @@ final class CommandRequestIdentityTest extends TestCase
     /**
      * @return array<string, mixed>
      */
-    private function keyedAdmission(WorkflowStub $workflow, string $route, string $key): array
+    private function keyedAdmission(WorkflowStub $workflow, string $route, mixed $key): array
     {
         if (str_starts_with($route, 'plane-')) {
             $method = $route === 'plane-signal' ? 'signal' : 'update';

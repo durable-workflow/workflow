@@ -1355,16 +1355,17 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
     /**
      * An explicit request_id option is the caller's command key and takes
      * precedence over any key already carried by the command context.
+     * Null clears an inherited key; empty or invalid values are refused.
      *
      * @param array<string, mixed> $options
      */
     private function withRequestIdOption(WorkflowStub $stub, array $options): WorkflowStub
     {
-        $requestId = $options['request_id'] ?? null;
+        if (! array_key_exists('request_id', $options)) {
+            return $stub;
+        }
 
-        return is_string($requestId) && $requestId !== ''
-            ? $stub->withRequestId($requestId)
-            : $stub;
+        return $stub->withRequestId(CommandRequestIdentity::validate($options['request_id']));
     }
 
     /**

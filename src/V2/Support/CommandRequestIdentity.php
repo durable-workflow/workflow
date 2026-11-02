@@ -37,13 +37,19 @@ final class CommandRequestIdentity
 
     public const INTENT_UNVERIFIED = 'unverified';
 
-    public static function validate(?string $requestId): void
+    public static function validate(mixed $requestId): ?string
     {
-        if ($requestId !== null && (
-            strlen($requestId) > 1020 || preg_match('/\A.{1,255}\z/us', $requestId) !== 1
-        )) {
+        if ($requestId === null) {
+            return null;
+        }
+
+        if (! is_string($requestId)
+            || strlen($requestId) > 1020
+            || preg_match('/\A.{1,255}\z/us', $requestId) !== 1) {
             throw new InvalidCommandRequestIdException();
         }
+
+        return $requestId;
     }
 
     public static function supports(CommandType|string|null $type): bool
@@ -58,16 +64,15 @@ final class CommandRequestIdentity
      */
     public static function fromContext(array $context, CommandType $type): ?string
     {
-        // Server has always retained the caller's body key separately from
-        // proxy correlation. Its omission means an independent operation.
-        $server = $context['server'] ?? null;
-        if (is_array($server) && ($server['command'] ?? null) === $type->value) {
-            $metadata = is_array($server['metadata'] ?? null) ? $server['metadata'] : [];
-            return self::nonEmptyString($metadata['request_id'] ?? null);
-        }
+        return self::nonEmptyString(self::contextValue($context, $type));
+    }
 
-        $request = is_array($context['request'] ?? null) ? $context['request'] : [];
-        return self::nonEmptyString($request['request_id'] ?? null);
+    /**
+     * @param array<string, mixed> $context
+     */
+    public static function validateContext(array $context, CommandType $type): void
+    {
+        self::validate(self::contextValue($context, $type));
     }
 
     public static function fromCommand(WorkflowCommand $command): ?string
@@ -234,6 +239,23 @@ final class CommandRequestIdentity
     public static function keyToken(CommandType $type, string $key): string
     {
         return self::tokenPrefix($type) . hash('sha256', $key);
+    }
+
+    /**
+     * @param array<string, mixed> $context
+     */
+    private static function contextValue(array $context, CommandType $type): mixed
+    {
+        // Server has always retained the caller's body key separately from
+        // proxy correlation. Its omission means an independent operation.
+        $server = $context['server'] ?? null;
+        if (is_array($server) && ($server['command'] ?? null) === $type->value) {
+            $metadata = is_array($server['metadata'] ?? null) ? $server['metadata'] : [];
+            return $metadata['request_id'] ?? null;
+        }
+
+        $request = is_array($context['request'] ?? null) ? $context['request'] : [];
+        return $request['request_id'] ?? null;
     }
 
     private static function tokenPrefix(CommandType $type): string

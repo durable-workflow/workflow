@@ -10,7 +10,7 @@ final class InvalidCommandRequestIdException extends InvalidArgumentException
 {
     public function __construct()
     {
-        parent::__construct('The request ID must be valid UTF-8 and contain 1 to 255 Unicode characters.');
+        parent::__construct('The request ID must be a valid UTF-8 string containing 1 to 255 Unicode characters.');
     }
 
     /**
