@@ -18,6 +18,8 @@ use Workflow\WorkflowOptions;
  */
 final class PhpClassScheduleStarter implements ScheduleWorkflowStarter
 {
+    private const MAX_INSTANCE_ID_LENGTH = 191;
+
     public function start(
         WorkflowSchedule $schedule,
         ?DateTimeInterface $occurrenceTime,
@@ -41,7 +43,7 @@ final class PhpClassScheduleStarter implements ScheduleWorkflowStarter
 
         $stub = WorkflowStub::make(
             $workflowClass,
-            sprintf('schedule:%s:%s', $schedule->schedule_id, $suffix),
+            self::instanceId($schedule, $suffix),
             $schedule->namespace,
         );
 
@@ -67,5 +69,40 @@ final class PhpClassScheduleStarter implements ScheduleWorkflowStarter
         $result = $stub->start(...$arguments);
 
         return new ScheduleStartResult(instanceId: $result->instanceId(), runId: $result->runId());
+    }
+
+    /**
+     * Workflow instance IDs are global, but schedule IDs are unique only per
+     * namespace (#874). Schedules in the configured default namespace keep the
+     * original `schedule:{schedule_id}:{suffix}` form, so existing IDs and
+     * readers are unchanged. Other namespaces use a reserved form that can
+     * never equal an original ID, because those always start `schedule:`:
+     *
+     *   schedule@{namespace sha256, 32 hex}:{byte length}:{schedule_id}:{suffix}
+     *
+     * The length prefix makes the schedule ID boundary unambiguous whatever
+     * it contains. When the result would exceed the instance key bound, the
+     * schedule ID is replaced by `h:{sha256}`; `h` cannot be a length.
+     */
+    public static function instanceId(WorkflowSchedule $schedule, string $suffix): string
+    {
+        $namespace = is_string($schedule->namespace) && $schedule->namespace !== ''
+            ? $schedule->namespace
+            : null;
+        $defaultNamespace = config('workflows.v2.namespace') ?? 'default';
+        $scheduleId = (string) $schedule->schedule_id;
+
+        if ($namespace === null || $namespace === $defaultNamespace) {
+            return sprintf('schedule:%s:%s', $scheduleId, $suffix);
+        }
+
+        $prefix = sprintf('schedule@%s:', substr(hash('sha256', $namespace), 0, 32));
+        $instanceId = sprintf('%s%d:%s:%s', $prefix, strlen($scheduleId), $scheduleId, $suffix);
+
+        if (strlen($instanceId) > self::MAX_INSTANCE_ID_LENGTH) {
+            $instanceId = sprintf('%sh:%s:%s', $prefix, hash('sha256', $scheduleId), $suffix);
+        }
+
+        return $instanceId;
     }
 }

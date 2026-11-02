@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Start an independent workflow instance for each namespace when schedules
+  in different namespaces share a schedule ID. Schedules outside the
+  configured default namespace now start instances named
+  `schedule@{namespace hash}:{length}:{schedule_id}:{suffix}` instead of
+  colliding with `schedule:{schedule_id}:{suffix}`, which made the second
+  namespace's backfill, tick or trigger fail. Default-namespace instance IDs
+  are unchanged, and repeated occurrences stay deduplicated per schedule (#874).
+
 ## 2.15.14 - 2026-11-02
 
 - Persist `StartOptions::withPriority()` and `withFairness()` on runs started
