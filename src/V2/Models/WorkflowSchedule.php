@@ -272,29 +272,25 @@ class WorkflowSchedule extends Model
         string $timezone = 'UTC'
     ): ?DateTimeInterface {
         $tz = new DateTimeZone($timezone);
-        $runsOnElapsedTime = self::cronHourFieldIsWildcard($expression);
-        $cursor = $after;
+        $next = self::rawNextCronOccurrence($expression, $after, $tz);
 
-        // One jump past a repeated window is enough; the bound only guards
-        // against an unexpected timezone database.
-        for ($attempt = 0; $attempt < 4; $attempt++) {
-            $next = self::rawNextCronOccurrence($expression, $cursor, $tz);
-
-            if ($next === null || $runsOnElapsedTime) {
-                return $next;
-            }
-
-            $repeatedWindowEnd = self::repeatedWallClockWindowEnd($next->getTimestamp(), $tz);
-
-            if ($repeatedWindowEnd === null) {
-                return $next;
-            }
-
-            // This wall-clock time already occurred before clocks went back.
-            $cursor = Carbon::createFromTimestamp($repeatedWindowEnd - 1, 'UTC');
+        if ($next === null || self::cronHourFieldIsWildcard($expression)) {
+            return $next;
         }
 
-        return null;
+        $repeatedWindowEnd = self::repeatedWallClockWindowEnd($next->getTimestamp(), $tz);
+
+        if ($repeatedWindowEnd === null) {
+            return $next;
+        }
+
+        // This wall-clock time already fired before clocks went back. Every
+        // match after the repeated range is a first pass, so one retry is enough.
+        return self::rawNextCronOccurrence(
+            $expression,
+            Carbon::createFromTimestamp($repeatedWindowEnd - 1, 'UTC'),
+            $tz
+        );
     }
 
     /**
@@ -306,24 +302,18 @@ class WorkflowSchedule extends Model
         // The end bound is exclusive; include a transition at $timestamp itself.
         $transitions = $timezone->getTransitions($timestamp - 86400, $timestamp + 1);
 
-        if (! is_array($transitions)) {
+        if (! is_array($transitions) || count($transitions) < 2) {
             return null;
         }
 
-        for ($index = count($transitions) - 1; $index >= 1; $index--) {
-            $transition = $transitions[$index];
+        // Every listed transition is at or before $timestamp; the first entry
+        // only states the offset in effect at the start of the range.
+        $last = count($transitions) - 1;
 
-            if ($transition['ts'] > $timestamp) {
-                continue;
-            }
+        $repeatedSeconds = $transitions[$last - 1]['offset'] - $transitions[$last]['offset'];
+        $windowEnd = $transitions[$last]['ts'] + $repeatedSeconds;
 
-            $repeatedSeconds = $transitions[$index - 1]['offset'] - $transition['offset'];
-            $windowEnd = $transition['ts'] + $repeatedSeconds;
-
-            return $repeatedSeconds > 0 && $timestamp < $windowEnd ? $windowEnd : null;
-        }
-
-        return null;
+        return $repeatedSeconds > 0 && $timestamp < $windowEnd ? $windowEnd : null;
     }
 
     /**
@@ -530,20 +520,15 @@ class WorkflowSchedule extends Model
      */
     private static function cronHourFieldIsWildcard(string $expression): bool
     {
-        if (class_exists(\Cron\CronExpression::class)) {
-            try {
-                $hourField = (new \Cron\CronExpression($expression))->getExpression(\Cron\CronExpression::HOUR);
-            } catch (\InvalidArgumentException) {
-                return false;
-            }
-        } else {
-            $parts = preg_split('/\s+/', trim($expression));
-            $hourField = is_array($parts) ? ($parts[1] ?? null) : null;
+        $expression = strtolower(trim($expression));
+
+        // Of the supported macros, only @hourly leaves the hour unrestricted.
+        if (str_starts_with($expression, '@')) {
+            return $expression === '@hourly';
         }
 
-        if (! is_string($hourField) || $hourField === '') {
-            return false;
-        }
+        $parts = preg_split('/\s+/', $expression) ?: [];
+        $hourField = $parts[1] ?? '';
 
         for ($hour = 0; $hour <= 23; $hour++) {
             if (! self::cronFieldMatches($hourField, $hour, 0, 23)) {

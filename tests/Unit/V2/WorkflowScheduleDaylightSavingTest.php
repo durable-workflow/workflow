@@ -110,6 +110,18 @@ final class WorkflowScheduleDaylightSavingTest extends TestCase
                 '2026-11-03T00:00:00Z',
                 ['2026-11-03T14:00:00Z', '2026-11-04T14:00:00Z'],
             ],
+            'hourly macro keeps elapsed time' => [
+                '@hourly',
+                'America/New_York',
+                '2026-11-01T05:30:00Z',
+                ['2026-11-01T06:00:00Z', '2026-11-01T07:00:00Z'],
+            ],
+            'daily macro fires once at a fixed hour' => [
+                '@daily',
+                'America/New_York',
+                '2026-10-31T12:00:00Z',
+                ['2026-11-01T04:00:00Z', '2026-11-02T05:00:00Z'],
+            ],
             'utc is unaffected' => [
                 '30 1 * * *',
                 'UTC',
@@ -217,6 +229,12 @@ final class WorkflowScheduleDaylightSavingTest extends TestCase
                 '2026-11-03T00:00:00Z',
                 ['2026-11-03T00:30:00Z', '2026-11-03T01:30:00Z'],
             ],
+            'stepped hour range' => [
+                '0 9-17/4 * * *',
+                'UTC',
+                '2026-11-03T00:00:00Z',
+                ['2026-11-03T09:00:00Z', '2026-11-03T13:00:00Z', '2026-11-03T17:00:00Z'],
+            ],
             'wildcard hour keeps elapsed time' => [
                 '*/30 * * * *',
                 'America/New_York',
@@ -249,6 +267,17 @@ final class WorkflowScheduleDaylightSavingTest extends TestCase
             $startUtc,
             count($expected),
         ));
+    }
+
+    public function testFallbackScannerReturnsNullWithoutAMatch(): void
+    {
+        $scanner = new ReflectionMethod(WorkflowSchedule::class, 'scanNextCronOccurrence');
+        $after = Carbon::parse('2026-06-01T00:00:00Z');
+        $utc = new DateTimeZone('UTC');
+
+        $this->assertNull($scanner->invoke(null, 'not a cron', $after, $utc));
+        // The scanner looks 48 hours ahead.
+        $this->assertNull($scanner->invoke(null, '0 0 1 1 *', $after, $utc));
     }
 
     /**
