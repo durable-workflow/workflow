@@ -1015,6 +1015,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
         $startedPayload = $startedEvent instanceof WorkflowHistoryEvent && is_array($startedEvent->payload)
             ? $startedEvent->payload
             : [];
+        $redriveBlockedReason = FailedRunRedriveEligibility::blockedReason($run, $currentRun);
 
         return [
             'found' => true,
@@ -1066,6 +1067,8 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 'can_terminate' => $isCurrentRun && $isOpen,
                 'can_repair' => $isCurrentRun && $isOpen,
                 'can_archive' => $run->status->isTerminal() && $run->archived_at === null,
+                'can_redrive' => $redriveBlockedReason === null,
+                'redrive_blocked_reason' => $redriveBlockedReason,
             ],
             'reason' => null,
         ];

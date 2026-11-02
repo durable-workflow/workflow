@@ -68,6 +68,7 @@ final class RunDetailView
             self::hasReplayBlockedTask($tasks),
         );
         $archiveBlockedReason = self::archiveBlockedReason($run);
+        $redriveBlockedReason = FailedRunRedriveEligibility::blockedReason($run, $currentRun);
         $canCancel = $cancelBlockedReason === null;
         $canTerminate = $terminateBlockedReason === null;
         $canIssueTerminalCommands = $canCancel && $canTerminate;
@@ -265,6 +266,8 @@ final class RunDetailView
             'repair_blocked' => RepairBlockedReason::metadata($repairBlockedReason),
             'can_archive' => $canArchive,
             'archive_blocked_reason' => $archiveBlockedReason,
+            'can_redrive' => $redriveBlockedReason === null,
+            'redrive_blocked_reason' => $redriveBlockedReason,
             'read_only_reason' => self::readOnlyReason($run, $isCurrentRun),
             'created_at' => $summary?->started_at ?? $run->started_at ?? $run->created_at,
             'updated_at' => $summary?->closed_at ?? $run->last_progress_at ?? $run->updated_at,

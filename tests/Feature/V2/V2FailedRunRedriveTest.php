@@ -592,16 +592,14 @@ final class V2FailedRunRedriveTest extends TestCase
     ): void {
         $detail = RunDetailView::forRun(WorkflowRun::query()->findOrFail($runId));
         $this->assertSame($allowed, $detail['can_redrive'] ?? null, "run detail can_redrive for {$runId}");
-        $this->assertSame($reason, $detail['redrive_blocked_reason'] ?? 'absent', "run detail reason for {$runId}");
+        $this->assertArrayHasKey('redrive_blocked_reason', $detail);
+        $this->assertSame($reason, $detail['redrive_blocked_reason'], "run detail reason for {$runId}");
 
         $describe = $controlPlane->describe($instanceId, [
             'run_id' => $runId,
         ]);
         $this->assertSame($allowed, $describe['actions']['can_redrive'] ?? null, "describe can_redrive for {$runId}");
-        $this->assertSame(
-            $reason,
-            $describe['actions']['redrive_blocked_reason'] ?? 'absent',
-            "describe reason for {$runId}",
-        );
+        $this->assertArrayHasKey('redrive_blocked_reason', $describe['actions']);
+        $this->assertSame($reason, $describe['actions']['redrive_blocked_reason'], "describe reason for {$runId}");
     }
 }

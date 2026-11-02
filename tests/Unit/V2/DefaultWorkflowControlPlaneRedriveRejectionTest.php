@@ -222,7 +222,8 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
         ]);
 
         $this->assertTrue($describe['actions']['can_redrive'] ?? null);
-        $this->assertNull($describe['actions']['redrive_blocked_reason'] ?? 'absent');
+        $this->assertArrayHasKey('redrive_blocked_reason', $describe['actions']);
+        $this->assertNull($describe['actions']['redrive_blocked_reason']);
 
         $wrongWorker = $this->redriveOptions();
         $wrongWorker['external_workflow_definition_fingerprint'] = 'worker-definition-2';
