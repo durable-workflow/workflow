@@ -213,6 +213,49 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         }
     }
 
+    public function testRecordedWorkflowFailureCorpusReplaysAsTheRecordedFailure(): void
+    {
+        $path = self::FIXTURE_DIR . '/recorded-workflow-failure-replay.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The recorded workflow failure replay evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['recorded_workflow_failure'];
+        self::stopWorkers();
+        Queue::fake();
+        config([
+            'queue.default' => 'database',
+        ]);
+        $this->clearWorkflowState();
+
+        $stub = WorkflowStub::make($scenario['workflow'], 'regression-corpus-recorded-workflow-failure');
+        $stub->start();
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $this->runReadyWorkflowTask($run);
+        $this->assertSame(RunStatus::Failed, $run->fresh()->status);
+
+        $bundle = HistoryExport::forRun($run->fresh());
+        $report = (new ReplayDiff())->diffExport($bundle);
+
+        $this->assertSame($scenario['reproduced_status'], $report['status'], json_encode($report));
+        $this->assertSame([
+            'exception_class' => $scenario['exception_class'],
+            'message' => $scenario['message'],
+        ], $report['replay']['recorded_failure'] ?? null);
+
+        foreach ($bundle['history_events'] as &$event) {
+            if (($event['type'] ?? null) === HistoryEventType::WorkflowFailed->value) {
+                $event['payload']['message'] = $scenario['different_message'];
+            }
+        }
+        unset($event);
+        $different = (new ReplayDiff())->diffExport($bundle);
+
+        $this->assertSame($scenario['different_failure_status'], $different['status']);
+        $this->assertSame($scenario['different_failure_reason'], $different['reason']);
+        $this->assertSame($scenario['different_message'], $different['error']['recorded_failure']['message'] ?? null);
+    }
+
     public function testLateChildResumeCorpusCreatesDeliveryAfterALeasedParentWaits(): void
     {
         $path = self::FIXTURE_DIR . '/late-child-resolution-during-parent-lease.json';

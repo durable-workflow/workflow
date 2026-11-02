@@ -1,0 +1,42 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "recorded-workflow-failure-replay",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestGoldenReplayWorkflow",
+    "arguments": [
+      "single-activity"
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-02T12:00:00+00:00"
+    }
+  ],
+  "recorded_workflow_failure": {
+    "workflow": "Tests\\Fixtures\\V2\\TestImmediateFailureWorkflow",
+    "exception_class": "RuntimeException",
+    "message": "The workflow refused the order.",
+    "different_message": "The workflow refused an older order.",
+    "reproduced_status": "replayed",
+    "different_failure_status": "failed",
+    "different_failure_reason": "replay_error"
+  },
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "schedule_activity"
+      }
+    ]
+  }
+}
