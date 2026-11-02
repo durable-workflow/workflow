@@ -90,6 +90,26 @@ final class V2ResumeTaskSchedulingTest extends TestCase
         $this->assertSame([self::RUN_SCHEDULING], $this->scheduling($runId, TaskType::Activity));
     }
 
+    public function testSignalWithStartRunAndItsTasksCarryStartScheduling(): void
+    {
+        $workflow = WorkflowStub::make(TestSignalWorkflow::class, 'scheduling-signal-with-start');
+        $workflow->signalWithStart(
+            'name-provided',
+            ['Taylor'],
+            StartOptions::returnExistingActive()
+                ->withPriority(1)
+                ->withFairness('x', 3),
+        );
+        $runId = (string) $workflow->runId();
+
+        $this->assertSame(self::RUN_SCHEDULING, $this->runFields($runId));
+        $this->assertSame([self::RUN_SCHEDULING], $this->scheduling($runId, TaskType::Workflow));
+
+        $this->runReady($runId, TaskType::Workflow);
+
+        $this->assertSame([self::RUN_SCHEDULING], $this->scheduling($runId, TaskType::Activity));
+    }
+
     public function testContinueAsNewRunKeepsRunScheduling(): void
     {
         $workflow = WorkflowStub::make(TestContinueAsNewWorkflow::class, 'scheduling-continue');
