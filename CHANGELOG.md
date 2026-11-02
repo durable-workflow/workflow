@@ -9,6 +9,9 @@
   exception class and message now report `replayed` with
   `replay.recorded_failure`. A different exception stays `replay_error` and
   names the recorded failure in `error.recorded_failure` (#983).
+
+## 2.17.0 - 2026-11-02
+
 - Do not export a retention-pruned run as complete history. After
   `WorkflowRunRetentionCleanup::pruneRun()`, `HistoryExport::forRun()` sets
   `history_complete` to `false`, adds `workflow.details_state: "pruned"` and
