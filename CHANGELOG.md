@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.15.14 - 2026-11-02
+
 - Persist `StartOptions::withPriority()` and `withFairness()` on runs started
   through the embedded `WorkflowStub`; they were accepted but not stored, so
   embedded runs always used the default priority and fairness class (#971).
