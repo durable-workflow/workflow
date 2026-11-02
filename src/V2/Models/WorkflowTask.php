@@ -11,6 +11,7 @@ use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\TaskSchedulingFields;
 
 class WorkflowTask extends Model
 {
@@ -53,5 +54,59 @@ class WorkflowTask extends Model
     public function run(): BelongsTo
     {
         return $this->belongsTo(ConfiguredV2Models::resolve('run_model', WorkflowRun::class), 'workflow_run_id');
+    }
+
+    protected static function booted(): void
+    {
+        static::creating(static function (self $task): void {
+            $task->inheritRunScheduling();
+        });
+    }
+
+    /**
+     * Give a new task its run's priority and fairness when the creator did
+     * not set them, so resume, timer, retry and repair tasks keep the run's
+     * scheduling class. Activity tasks keep their per-call overrides.
+     */
+    private function inheritRunScheduling(): void
+    {
+        $missing = array_diff(
+            TaskSchedulingFields::FIELDS,
+            array_keys($this->getAttributes()),
+        );
+        $runId = $this->getAttribute('workflow_run_id');
+
+        if ($missing === [] || ! is_string($runId) || $runId === '') {
+            return;
+        }
+
+        $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)->find($runId);
+
+        if (! $run instanceof WorkflowRun) {
+            return;
+        }
+
+        $fields = $this->task_type === TaskType::Activity
+            ? TaskSchedulingFields::forActivity($run, $this->activityExecution())
+            : TaskSchedulingFields::forRun($run);
+
+        foreach ($missing as $field) {
+            $this->setAttribute($field, $fields[$field]);
+        }
+    }
+
+    private function activityExecution(): ?ActivityExecution
+    {
+        $payload = is_array($this->payload) ? $this->payload : [];
+        $executionId = $payload['activity_execution_id'] ?? null;
+
+        if (! is_string($executionId) || $executionId === '') {
+            return null;
+        }
+
+        $execution = ConfiguredV2Models::query('activity_execution_model', ActivityExecution::class)
+            ->find($executionId);
+
+        return $execution instanceof ActivityExecution ? $execution : null;
     }
 }

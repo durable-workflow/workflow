@@ -17,6 +17,8 @@ use Workflow\V2\Models\WorkflowRun;
  */
 final class TaskSchedulingFields
 {
+    public const FIELDS = ['priority', 'fairness_key', 'fairness_weight'];
+
     /**
      * @return array{priority: int, fairness_key: ?string, fairness_weight: int}
      */

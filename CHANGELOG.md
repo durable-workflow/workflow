@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Give every task of a run the run's priority, fairness key and fairness
+  weight. Workflow tasks that resume a run after a timer, signal, update,
+  child or activity outcome, timer tasks, and repair tasks no longer fall
+  back to the default priority and the shared fairness class. Activity
+  retries keep per-call overrides. Values a task creator sets explicitly
+  still win (#971).
+
 ## 2.15.13 - 2026-11-02
 
 - Fire a cron schedule once for a wall-clock time that repeats when daylight
