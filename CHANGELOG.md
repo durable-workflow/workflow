@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 2.16.0 - 2026-11-02
+
+- Let embedded operators size schedule evaluation passes.
+  `workflow:v2:schedule-tick` accepts `--limit=N`, and the new
+  `workflows.v2.schedules.tick_limit` config (`DW_V2_SCHEDULE_TICK_LIMIT`)
+  sets the default. The default stays 100, so existing behavior is
+  unchanged. Each pass starts at most that many due schedules and drains at
+  most that many buffered actions, shared round-robin across namespaces;
+  the rest fire on later passes. A limit that is not a positive integer is
+  refused, and the command fails without evaluating schedules (#875).
+
 ## 2.15.15 - 2026-11-02
 
 - Start an independent workflow instance for each namespace when schedules

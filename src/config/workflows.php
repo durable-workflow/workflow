@@ -381,6 +381,17 @@ return [
             ),
         ],
 
+        'schedules' => [
+            // Pass size for `workflow:v2:schedule-tick`. Each pass starts at
+            // most this many due schedules, plus at most this many buffered
+            // actions, shared round-robin across namespaces (oldest first).
+            // Due schedules beyond it fire on a later pass. Set it at or above
+            // the largest number of schedules that can fall due together. The
+            // command's --limit option overrides it; a value that is not a
+            // positive integer makes the command refuse the pass.
+            'tick_limit' => env('DW_V2_SCHEDULE_TICK_LIMIT', Workflow\Commands\V2ScheduleTickCommand::DEFAULT_LIMIT),
+        ],
+
         'task_repair' => [
             'redispatch_after_seconds' => (int) Env::dw(
                 'DW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS',
