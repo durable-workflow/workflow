@@ -1,0 +1,61 @@
+name: Committed Composer lock audit
+
+on:
+  pull_request:
+    paths:
+      - '**/composer.json'
+      - '**/composer.lock'
+      - composer.json
+      - composer.lock
+      - resources/committed-composer-lock-audit.json
+      - scripts/ci/check-committed-composer-locks.php
+      - tests/Unit/CommittedComposerLockAuditTest.php
+      - .github/workflows/committed-composer-lock-audit.yml
+  push:
+    branches: [main]
+    paths:
+      - '**/composer.json'
+      - '**/composer.lock'
+      - composer.json
+      - composer.lock
+      - resources/committed-composer-lock-audit.json
+      - scripts/ci/check-committed-composer-locks.php
+      - tests/Unit/CommittedComposerLockAuditTest.php
+      - .github/workflows/committed-composer-lock-audit.yml
+  schedule:
+    - cron: '37 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: committed-composer-lock-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Audit every committed Composer lock
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13'
+      - name: Select authenticated dependency trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@76f333804e68725059039fd54df241d40d855cd3 # clean-trust
+        with:
+          clients: pip,python,composer,curl,git,npm
+      - name: Set up PHP
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2.40.0
+        with:
+          php-version: '8.4'
+          coverage: none
+          tools: composer:2.10.3
+      - name: Verify actual Composer trust
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@76f333804e68725059039fd54df241d40d855cd3 # clean-trust
+      - name: Audit the committed inventory and exact historical exceptions
+        run: php scripts/ci/check-committed-composer-locks.php
