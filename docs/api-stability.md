@@ -187,6 +187,26 @@ Confirm older cleanup from an authoritative retention record before choosing
 remediation. Do not use a projection rebuild to recover deleted history; restore
 an appropriate backup if that history is required.
 
+`HistoryExport::forRun()` reads the same marker. Every bundle's `workflow`
+object carries `details_state` (`retained` or `pruned`) and
+`details_pruned_at` (the marker as a UTC timestamp, or null). For a pruned run
+the bundle sets `history_complete` to `false` even though the run is terminal,
+keeps the run's terminal `status`, and has an empty `history_events` list.
+Pruning does not change the run's history sequence or progress time, so a
+pruned run's `dedupe_key` appends `:details-pruned:{details_pruned_at}` to the
+key its full export used; a post-prune export never shares a dedupe key or
+checksum with the export taken before cleanup. A run that was never pruned
+keeps its existing key and `history_complete` value. These fields are additive:
+readers that ignore unknown keys are unaffected.
+
+`BundleIntegrityVerifier` reports a pruned bundle as a `history.details_pruned`
+error, so `workflow:v2:replay-verify` fails it without attempting replay.
+History import rejects it as `workflow.terminal_history_incomplete`, because a
+terminal run import requires `history_complete: true`. An export taken before
+this change marked a pruned run complete and carried no marker; it cannot be
+told apart from the bundle alone, so compare it with an export recorded before
+cleanup.
+
 The package migration adds the nullable column to `workflow_runs`. Hosts that
 replace the configured run model's table must add the same column in their
 own migration before invoking retention cleanup. The run and its configured
