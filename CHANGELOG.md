@@ -5,7 +5,7 @@
 - Retain keyed signal admissions and compare canonical typed intent for keyed
   signals and updates. Conflicting key reuse refuses without durable writes;
   undecodable legacy receipts remain explicitly unverified. This strengthens
-  the earlier same-key update receipt contract (#877, shared #216).
+  the earlier same-key update receipt contract (#877).
 - Require valid UTF-8 caller keys of 1..255 code points before admission.
   Explicit empty or non-string keys refuse; null clears an inherited key.
   Apply the nullable `intent_digest` migration, drain and upgrade all embedded

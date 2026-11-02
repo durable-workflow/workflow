@@ -524,9 +524,9 @@ A same-intent retry returns the original admission and lifecycle, including
 after closure or continue-as-new while its receipt remains retained. Omitted
 keys admit independent operations. A signal and an update have separate key
 spaces. Embedded webhook callers retain their existing `X-Request-Id` contract.
-This embedded contract does not advertise retry safety for a Server release;
-native service support and the published SDK/CLI cohort are tracked separately
-in [shared #216](https://github.com/durable-workflow/.github/issues/216).
+This embedded contract does not advertise retry safety for a Server release.
+Native service support requires separate published runtime and SDK/CLI
+qualification.
 
 Intent comparison includes the command name, typed arguments and target scope,
 including an explicitly requested run. Reusing a key for different intent
