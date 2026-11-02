@@ -167,6 +167,47 @@ final class BundleIntegrityVerifierTest extends NonDatabaseTestCase
         $this->assertSame(BundleIntegrityVerifier::STATUS_FAILED, $report['status']);
     }
 
+    public function testPrunedRunDetailsFailVerificationWithAClearFinding(): void
+    {
+        $bundle = self::wellFormedBundle();
+        $bundle['history_complete'] = false;
+        $bundle['history_events'] = [];
+        $bundle['workflow']['last_history_sequence'] = 2;
+        $bundle['workflow']['details_state'] = 'pruned';
+        $bundle['workflow']['details_pruned_at'] = '2026-11-02T21:30:00.000000Z';
+        $bundle['integrity'] = self::buildIntegrity($bundle);
+
+        $report = BundleIntegrityVerifier::verify($bundle);
+
+        $this->assertSame(BundleIntegrityVerifier::STATUS_FAILED, $report['status']);
+        $this->assertTrue($report['integrity']['checksum_matches']);
+        $findings = array_values(array_filter(
+            $report['findings'],
+            static fn (array $finding): bool => $finding['rule'] === 'history.details_pruned',
+        ));
+        $this->assertCount(1, $findings);
+        $this->assertSame(BundleIntegrityVerifier::SEVERITY_ERROR, $findings[0]['severity']);
+        $this->assertSame('workflow.details_state', $findings[0]['path']);
+        $this->assertStringContainsString('2026-11-02T21:30:00.000000Z', $findings[0]['message']);
+        $this->assertSame([
+            'details_pruned_at' => '2026-11-02T21:30:00.000000Z',
+            'history_complete' => false,
+        ], $findings[0]['context']);
+    }
+
+    public function testRetainedRunDetailsAddNoFinding(): void
+    {
+        $bundle = self::wellFormedBundle();
+        $bundle['workflow']['details_state'] = 'retained';
+        $bundle['workflow']['details_pruned_at'] = null;
+        $bundle['integrity'] = self::buildIntegrity($bundle);
+
+        $report = BundleIntegrityVerifier::verify($bundle);
+
+        $this->assertSame(BundleIntegrityVerifier::STATUS_OK, $report['status']);
+        $this->assertSame([], $report['findings']);
+    }
+
     public function testDuplicateHistoryEventIdsAreReported(): void
     {
         $bundle = self::wellFormedBundle();
