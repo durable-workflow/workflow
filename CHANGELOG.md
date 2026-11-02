@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.16.0 - 2026-11-02
+
 - Let embedded operators size schedule evaluation passes.
   `workflow:v2:schedule-tick` accepts `--limit=N`, and the new
   `workflows.v2.schedules.tick_limit` config (`DW_V2_SCHEDULE_TICK_LIMIT`)
