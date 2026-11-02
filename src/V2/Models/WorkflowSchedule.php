@@ -255,40 +255,161 @@ class WorkflowSchedule extends Model
      *
      * Uses dragonmantank/cron-expression when available, otherwise falls back
      * to a minute-resolution scanner for standard 5-field cron expressions.
+     *
+     * Daylight saving rules for a schedule timezone:
+     *   - A wall-clock time that happens twice when clocks go back fires once,
+     *     at its first (pre-transition) instant, when the hour field names
+     *     specific hours. An hour field of `*` runs on elapsed time instead, so
+     *     sub-hourly schedules keep firing through both passes of the
+     *     repeated hour.
+     *   - A wall-clock time skipped when clocks go forward fires once, moved
+     *     forward by the length of the gap (02:30 becomes 03:30 for a one-hour
+     *     gap).
      */
     public static function nextCronOccurrence(
         string $expression,
         DateTimeInterface $after,
         string $timezone = 'UTC'
     ): ?DateTimeInterface {
+        $tz = new DateTimeZone($timezone);
+        $runsOnElapsedTime = self::cronHourFieldIsWildcard($expression);
+        $cursor = $after;
+
+        // One jump past a repeated window is enough; the bound only guards
+        // against an unexpected timezone database.
+        for ($attempt = 0; $attempt < 4; $attempt++) {
+            $next = self::rawNextCronOccurrence($expression, $cursor, $tz);
+
+            if ($next === null || $runsOnElapsedTime) {
+                return $next;
+            }
+
+            $repeatedWindowEnd = self::repeatedWallClockWindowEnd($next->getTimestamp(), $tz);
+
+            if ($repeatedWindowEnd === null) {
+                return $next;
+            }
+
+            // This wall-clock time already occurred before clocks went back.
+            $cursor = Carbon::createFromTimestamp($repeatedWindowEnd - 1, 'UTC');
+        }
+
+        return null;
+    }
+
+    /**
+     * When $timestamp falls in the second pass of a wall-clock range repeated
+     * because clocks went back, return the first instant after that range.
+     */
+    public static function repeatedWallClockWindowEnd(int $timestamp, DateTimeZone $timezone): ?int
+    {
+        $transitions = $timezone->getTransitions($timestamp - 86400, $timestamp);
+
+        if (! is_array($transitions)) {
+            return null;
+        }
+
+        for ($index = count($transitions) - 1; $index >= 1; $index--) {
+            $transition = $transitions[$index];
+
+            if ($transition['ts'] > $timestamp) {
+                continue;
+            }
+
+            $repeatedSeconds = $transitions[$index - 1]['offset'] - $transition['offset'];
+            $windowEnd = $transition['ts'] + $repeatedSeconds;
+
+            return $repeatedSeconds > 0 && $timestamp < $windowEnd ? $windowEnd : null;
+        }
+
+        return null;
+    }
+
+    private static function cronHourFieldIsWildcard(string $expression): bool
+    {
+        if (class_exists(\Cron\CronExpression::class)) {
+            try {
+                return (new \Cron\CronExpression($expression))->getExpression(\Cron\CronExpression::HOUR) === '*';
+            } catch (\InvalidArgumentException) {
+                return false;
+            }
+        }
+
+        $parts = preg_split('/\s+/', trim($expression));
+
+        return is_array($parts) && ($parts[1] ?? null) === '*';
+    }
+
+    private static function rawNextCronOccurrence(
+        string $expression,
+        DateTimeInterface $after,
+        DateTimeZone $tz
+    ): ?DateTimeInterface {
         if (class_exists(\Cron\CronExpression::class)) {
             $cron = new \Cron\CronExpression($expression);
 
-            return Carbon::instance($cron->getNextRunDate($after, 0, false, $timezone));
+            return Carbon::instance($cron->getNextRunDate($after, 0, false, $tz->getName()));
         }
 
-        $tz = new DateTimeZone($timezone);
-        $candidate = Carbon::instance($after)->setTimezone($tz)->addMinute()->startOfMinute();
-        $limit = (clone $candidate)->addHours(48);
+        return self::scanNextCronOccurrence($expression, $after, $tz);
+    }
 
+    /**
+     * Minute-resolution scanner for standard 5-field cron expressions, used
+     * when dragonmantank/cron-expression is not installed.
+     */
+    private static function scanNextCronOccurrence(
+        string $expression,
+        DateTimeInterface $after,
+        DateTimeZone $tz
+    ): ?DateTimeInterface {
         $parts = preg_split('/\s+/', trim($expression));
-        if (count($parts) !== 5) {
+        if (! is_array($parts) || count($parts) !== 5) {
             return null;
         }
 
         [$minSpec, $hourSpec, $domSpec, $monSpec, $dowSpec] = $parts;
 
-        while ($candidate <= $limit) {
-            if (
-                self::cronFieldMatches($minSpec, $candidate->minute, 0, 59)
-                && self::cronFieldMatches($hourSpec, $candidate->hour, 0, 23)
-                && self::cronFieldMatches($domSpec, $candidate->day, 1, 31)
-                && self::cronFieldMatches($monSpec, $candidate->month, 1, 12)
-                && self::cronFieldMatches($dowSpec, $candidate->dayOfWeekIso % 7, 0, 6)
-            ) {
-                return $candidate->setTimezone('UTC');
+        // Scan absolute minutes so a repeated local hour is visited twice and
+        // a skipped local hour is not visited at all.
+        $candidate = (intdiv($after->getTimestamp(), 60) + 1) * 60;
+        $limit = $candidate + 48 * 3600;
+        $transitions = $tz->getTransitions($candidate - 86400, $limit);
+        $transitions = is_array($transitions) ? $transitions : [];
+
+        for (; $candidate <= $limit; $candidate += 60) {
+            $offsets = [];
+            $previousOffset = null;
+
+            foreach ($transitions as $transition) {
+                if ($transition['ts'] > $candidate) {
+                    break;
+                }
+
+                $gap = $previousOffset === null ? 0 : $transition['offset'] - $previousOffset;
+                $offsets = [$transition['offset']];
+
+                // A skipped wall-clock time runs this far after the transition.
+                if ($gap > 0 && $candidate < $transition['ts'] + $gap) {
+                    $offsets[] = $previousOffset;
+                }
+
+                $previousOffset = $transition['offset'];
             }
-            $candidate->addMinute();
+
+            foreach ($offsets === [] ? [0] : $offsets as $offset) {
+                $wallClock = $candidate + $offset;
+
+                if (
+                    self::cronFieldMatches($minSpec, (int) gmdate('i', $wallClock), 0, 59)
+                    && self::cronFieldMatches($hourSpec, (int) gmdate('G', $wallClock), 0, 23)
+                    && self::cronFieldMatches($domSpec, (int) gmdate('j', $wallClock), 1, 31)
+                    && self::cronFieldMatches($monSpec, (int) gmdate('n', $wallClock), 1, 12)
+                    && self::cronFieldMatches($dowSpec, (int) gmdate('w', $wallClock), 0, 6)
+                ) {
+                    return Carbon::createFromTimestamp($candidate, 'UTC');
+                }
+            }
         }
 
         return null;

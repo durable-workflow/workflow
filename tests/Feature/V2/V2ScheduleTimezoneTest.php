@@ -289,4 +289,106 @@ final class V2ScheduleTimezoneTest extends TestCase
             date_default_timezone_set($originalPhpTimezone);
         }
     }
+
+    /**
+     * @return array<string, array{string, string, string, string, list<string>}>
+     */
+    public static function daylightSavingTickCases(): array
+    {
+        return [
+            'new york daily repeated time fires once' => [
+                '30 1 * * *',
+                'America/New_York',
+                '2026-10-31T12:00:00Z',
+                '2026-11-02T12:00:00Z',
+                ['2026-11-01T05:30:00Z', '2026-11-02T06:30:00Z'],
+            ],
+            'new york daily time after the repeated hour fires once' => [
+                '30 2 * * *',
+                'America/New_York',
+                '2026-10-31T12:00:00Z',
+                '2026-11-02T12:00:00Z',
+                ['2026-11-01T07:30:00Z', '2026-11-02T07:30:00Z'],
+            ],
+            'new york daily skipped time fires once after the gap' => [
+                '30 2 * * *',
+                'America/New_York',
+                '2026-03-07T12:00:00Z',
+                '2026-03-09T12:00:00Z',
+                ['2026-03-08T07:30:00Z', '2026-03-09T06:30:00Z'],
+            ],
+            'kyiv daily repeated time fires once' => [
+                '30 3 * * *',
+                'Europe/Kyiv',
+                '2026-10-24T12:00:00Z',
+                '2026-10-26T12:00:00Z',
+                ['2026-10-25T00:30:00Z', '2026-10-26T01:30:00Z'],
+            ],
+            'kyiv daily skipped time fires once after the gap' => [
+                '30 3 * * *',
+                'Europe/Kyiv',
+                '2026-03-28T12:00:00Z',
+                '2026-03-30T12:00:00Z',
+                ['2026-03-29T01:30:00Z', '2026-03-30T00:30:00Z'],
+            ],
+            'sub-hourly schedule keeps every elapsed occurrence in the repeated hour' => [
+                '*/20 * * * *',
+                'America/New_York',
+                '2026-11-01T04:50:00Z',
+                '2026-11-01T07:10:00Z',
+                [
+                    '2026-11-01T05:00:00Z',
+                    '2026-11-01T05:20:00Z',
+                    '2026-11-01T05:40:00Z',
+                    '2026-11-01T06:00:00Z',
+                    '2026-11-01T06:20:00Z',
+                    '2026-11-01T06:40:00Z',
+                    '2026-11-01T07:00:00Z',
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * @param  list<string>  $expected
+     */
+    #[DataProvider('daylightSavingTickCases')]
+    public function testSchedulerTickFiresEachScheduledOccurrenceOnceAcrossDaylightSaving(
+        string $cron,
+        string $timezone,
+        string $startUtc,
+        string $untilUtc,
+        array $expected,
+    ): void {
+        WorkflowStub::fake();
+        Carbon::setTestNowAndTimezone(Carbon::parse($startUtc), 'UTC');
+
+        try {
+            ScheduleManager::create(
+                scheduleId: 'dst-' . md5($cron . $timezone . $startUtc),
+                workflowClass: TestScheduledWorkflow::class,
+                cronExpression: $cron,
+                timezone: $timezone,
+                overlapPolicy: ScheduleOverlapPolicy::AllowAll,
+            );
+
+            $until = Carbon::parse($untilUtc);
+            $fired = [];
+
+            // Every expected occurrence is on a 10-minute boundary; ticking at
+            // each one would also pick up any duplicate due occurrence.
+            for ($now = Carbon::parse($startUtc); $now < $until; $now = $now->copy()->addMinutes(10)) {
+                Carbon::setTestNowAndTimezone($now, 'UTC');
+
+                foreach (ScheduleManager::tick() as $result) {
+                    $this->assertSame('triggered', $result['outcome']);
+                    $fired[] = Carbon::parse($result['occurrence_time'])->utc()->format('Y-m-d\TH:i:s\Z');
+                }
+            }
+
+            $this->assertSame($expected, $fired);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
 }
