@@ -26,6 +26,7 @@
     "tests/Unit/V2/WorkflowFiberRunnerTest.php",
     "tests/Unit/V2/WorkflowHistoryPayloadCastTest.php",
     "tests/Unit/V2/WorkflowInstanceIdTest.php",
+    "tests/Unit/V2/WorkflowScheduleDaylightSavingTest.php",
     "tests/Unit/V2/WorkflowStepHistoryTest.php"
   ],
   "mysql_smoke": [
