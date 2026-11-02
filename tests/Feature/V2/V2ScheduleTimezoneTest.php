@@ -361,7 +361,7 @@ final class V2ScheduleTimezoneTest extends TestCase
         array $expected,
     ): void {
         WorkflowStub::fake();
-        Carbon::setTestNowAndTimezone(Carbon::parse($startUtc), 'UTC');
+        Carbon::setTestNowAndTimezone(Carbon::parse($startUtc)->utc(), 'UTC');
 
         try {
             ScheduleManager::create(
@@ -372,12 +372,12 @@ final class V2ScheduleTimezoneTest extends TestCase
                 overlapPolicy: ScheduleOverlapPolicy::AllowAll,
             );
 
-            $until = Carbon::parse($untilUtc);
+            $until = Carbon::parse($untilUtc)->utc();
             $fired = [];
 
             // Every expected occurrence is on a 10-minute boundary; ticking at
             // each one would also pick up any duplicate due occurrence.
-            for ($now = Carbon::parse($startUtc); $now < $until; $now = $now->copy()->addMinutes(10)) {
+            for ($now = Carbon::parse($startUtc)->utc(); $now < $until; $now = $now->copy()->addMinutes(10)) {
                 Carbon::setTestNowAndTimezone($now, 'UTC');
 
                 foreach (ScheduleManager::tick() as $result) {

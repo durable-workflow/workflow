@@ -116,7 +116,9 @@ final class WorkflowScheduleDaylightSavingTest extends TestCase
     {
         $newYork = new DateTimeZone('America/New_York');
 
-        $this->assertNull(WorkflowSchedule::repeatedWallClockWindowEnd($this->timestamp('2026-11-01T05:30:00Z'), $newYork));
+        $this->assertNull(
+            WorkflowSchedule::repeatedWallClockWindowEnd($this->timestamp('2026-11-01T05:30:00Z'), $newYork)
+        );
         $this->assertSame(
             $this->timestamp('2026-11-01T07:00:00Z'),
             WorkflowSchedule::repeatedWallClockWindowEnd($this->timestamp('2026-11-01T06:00:00Z'), $newYork),
@@ -125,10 +127,17 @@ final class WorkflowScheduleDaylightSavingTest extends TestCase
             $this->timestamp('2026-11-01T07:00:00Z'),
             WorkflowSchedule::repeatedWallClockWindowEnd($this->timestamp('2026-11-01T06:59:00Z'), $newYork),
         );
-        $this->assertNull(WorkflowSchedule::repeatedWallClockWindowEnd($this->timestamp('2026-11-01T07:00:00Z'), $newYork));
-        $this->assertNull(WorkflowSchedule::repeatedWallClockWindowEnd($this->timestamp('2026-03-08T07:30:00Z'), $newYork));
         $this->assertNull(
-            WorkflowSchedule::repeatedWallClockWindowEnd($this->timestamp('2026-11-01T06:30:00Z'), new DateTimeZone('UTC'))
+            WorkflowSchedule::repeatedWallClockWindowEnd($this->timestamp('2026-11-01T07:00:00Z'), $newYork)
+        );
+        $this->assertNull(
+            WorkflowSchedule::repeatedWallClockWindowEnd($this->timestamp('2026-03-08T07:30:00Z'), $newYork)
+        );
+        $this->assertNull(
+            WorkflowSchedule::repeatedWallClockWindowEnd(
+                $this->timestamp('2026-11-01T06:30:00Z'),
+                new DateTimeZone('UTC')
+            )
         );
     }
 
@@ -183,7 +192,12 @@ final class WorkflowScheduleDaylightSavingTest extends TestCase
         $tz = new DateTimeZone($timezone);
 
         $this->assertSame($expected, $this->occurrences(
-            static fn (DateTimeInterface $after): ?DateTimeInterface => $scanner->invoke(null, $expression, $after, $tz),
+            static fn (DateTimeInterface $after): ?DateTimeInterface => $scanner->invoke(
+                null,
+                $expression,
+                $after,
+                $tz
+            ),
             $startUtc,
             count($expected),
         ));

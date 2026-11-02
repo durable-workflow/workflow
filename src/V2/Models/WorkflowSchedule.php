@@ -325,96 +325,6 @@ class WorkflowSchedule extends Model
         return null;
     }
 
-    private static function cronHourFieldIsWildcard(string $expression): bool
-    {
-        if (class_exists(\Cron\CronExpression::class)) {
-            try {
-                return (new \Cron\CronExpression($expression))->getExpression(\Cron\CronExpression::HOUR) === '*';
-            } catch (\InvalidArgumentException) {
-                return false;
-            }
-        }
-
-        $parts = preg_split('/\s+/', trim($expression));
-
-        return is_array($parts) && ($parts[1] ?? null) === '*';
-    }
-
-    private static function rawNextCronOccurrence(
-        string $expression,
-        DateTimeInterface $after,
-        DateTimeZone $tz
-    ): ?DateTimeInterface {
-        if (class_exists(\Cron\CronExpression::class)) {
-            $cron = new \Cron\CronExpression($expression);
-
-            return Carbon::instance($cron->getNextRunDate($after, 0, false, $tz->getName()));
-        }
-
-        return self::scanNextCronOccurrence($expression, $after, $tz);
-    }
-
-    /**
-     * Minute-resolution scanner for standard 5-field cron expressions, used
-     * when dragonmantank/cron-expression is not installed.
-     */
-    private static function scanNextCronOccurrence(
-        string $expression,
-        DateTimeInterface $after,
-        DateTimeZone $tz
-    ): ?DateTimeInterface {
-        $parts = preg_split('/\s+/', trim($expression));
-        if (! is_array($parts) || count($parts) !== 5) {
-            return null;
-        }
-
-        [$minSpec, $hourSpec, $domSpec, $monSpec, $dowSpec] = $parts;
-
-        // Scan absolute minutes so a repeated local hour is visited twice and
-        // a skipped local hour is not visited at all.
-        $candidate = (intdiv($after->getTimestamp(), 60) + 1) * 60;
-        $limit = $candidate + 48 * 3600;
-        $transitions = $tz->getTransitions($candidate - 86400, $limit);
-        $transitions = is_array($transitions) ? $transitions : [];
-
-        for (; $candidate <= $limit; $candidate += 60) {
-            $offsets = [];
-            $previousOffset = null;
-
-            foreach ($transitions as $transition) {
-                if ($transition['ts'] > $candidate) {
-                    break;
-                }
-
-                $gap = $previousOffset === null ? 0 : $transition['offset'] - $previousOffset;
-                $offsets = [$transition['offset']];
-
-                // A skipped wall-clock time runs this far after the transition.
-                if ($gap > 0 && $candidate < $transition['ts'] + $gap) {
-                    $offsets[] = $previousOffset;
-                }
-
-                $previousOffset = $transition['offset'];
-            }
-
-            foreach ($offsets === [] ? [0] : $offsets as $offset) {
-                $wallClock = $candidate + $offset;
-
-                if (
-                    self::cronFieldMatches($minSpec, (int) gmdate('i', $wallClock), 0, 59)
-                    && self::cronFieldMatches($hourSpec, (int) gmdate('G', $wallClock), 0, 23)
-                    && self::cronFieldMatches($domSpec, (int) gmdate('j', $wallClock), 1, 31)
-                    && self::cronFieldMatches($monSpec, (int) gmdate('n', $wallClock), 1, 12)
-                    && self::cronFieldMatches($dowSpec, (int) gmdate('w', $wallClock), 0, 6)
-                ) {
-                    return Carbon::createFromTimestamp($candidate, 'UTC');
-                }
-            }
-        }
-
-        return null;
-    }
-
     /**
      * Normalize the `workflow_execution_timeout` / `workflow_run_timeout` aliases
      * into `execution_timeout_seconds` / `run_timeout_seconds`. Accepts the
@@ -611,6 +521,96 @@ class WorkflowSchedule extends Model
             'created_at' => $this->created_at?->toIso8601String(),
             'updated_at' => $this->updated_at?->toIso8601String(),
         ];
+    }
+
+    private static function cronHourFieldIsWildcard(string $expression): bool
+    {
+        if (class_exists(\Cron\CronExpression::class)) {
+            try {
+                return (new \Cron\CronExpression($expression))->getExpression(\Cron\CronExpression::HOUR) === '*';
+            } catch (\InvalidArgumentException) {
+                return false;
+            }
+        }
+
+        $parts = preg_split('/\s+/', trim($expression));
+
+        return is_array($parts) && ($parts[1] ?? null) === '*';
+    }
+
+    private static function rawNextCronOccurrence(
+        string $expression,
+        DateTimeInterface $after,
+        DateTimeZone $tz
+    ): ?DateTimeInterface {
+        if (class_exists(\Cron\CronExpression::class)) {
+            $cron = new \Cron\CronExpression($expression);
+
+            return Carbon::instance($cron->getNextRunDate($after, 0, false, $tz->getName()));
+        }
+
+        return self::scanNextCronOccurrence($expression, $after, $tz);
+    }
+
+    /**
+     * Minute-resolution scanner for standard 5-field cron expressions, used
+     * when dragonmantank/cron-expression is not installed.
+     */
+    private static function scanNextCronOccurrence(
+        string $expression,
+        DateTimeInterface $after,
+        DateTimeZone $tz
+    ): ?DateTimeInterface {
+        $parts = preg_split('/\s+/', trim($expression));
+        if (! is_array($parts) || count($parts) !== 5) {
+            return null;
+        }
+
+        [$minSpec, $hourSpec, $domSpec, $monSpec, $dowSpec] = $parts;
+
+        // Scan absolute minutes so a repeated local hour is visited twice and
+        // a skipped local hour is not visited at all.
+        $candidate = (intdiv($after->getTimestamp(), 60) + 1) * 60;
+        $limit = $candidate + 48 * 3600;
+        $transitions = $tz->getTransitions($candidate - 86400, $limit);
+        $transitions = is_array($transitions) ? $transitions : [];
+
+        for (; $candidate <= $limit; $candidate += 60) {
+            $offsets = [];
+            $previousOffset = null;
+
+            foreach ($transitions as $transition) {
+                if ($transition['ts'] > $candidate) {
+                    break;
+                }
+
+                $gap = $previousOffset === null ? 0 : $transition['offset'] - $previousOffset;
+                $offsets = [$transition['offset']];
+
+                // A skipped wall-clock time runs this far after the transition.
+                if ($gap > 0 && $candidate < $transition['ts'] + $gap) {
+                    $offsets[] = $previousOffset;
+                }
+
+                $previousOffset = $transition['offset'];
+            }
+
+            foreach ($offsets === [] ? [0] : $offsets as $offset) {
+                $wallClock = $candidate + $offset;
+
+                if (
+                    self::cronFieldMatches($minSpec, (int) gmdate('i', $wallClock), 0, 59)
+                    && self::cronFieldMatches($hourSpec, (int) gmdate('G', $wallClock), 0, 23)
+                    && self::cronFieldMatches($domSpec, (int) gmdate('j', $wallClock), 1, 31)
+                    && self::cronFieldMatches($monSpec, (int) gmdate('n', $wallClock), 1, 12)
+                    && self::cronFieldMatches($dowSpec, (int) gmdate('w', $wallClock), 0, 6)
+                ) {
+                    return Carbon::createFromTimestamp($candidate, 'UTC');
+                }
+            }
+        }
+
+        return null;
     }
 
     private static function cronFieldMatches(string $field, int $value, int $min, int $max): bool
