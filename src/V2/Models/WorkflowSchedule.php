@@ -259,9 +259,9 @@ class WorkflowSchedule extends Model
      * Daylight saving rules for a schedule timezone:
      *   - A wall-clock time that happens twice when clocks go back fires once,
      *     at its first (pre-transition) instant, when the hour field names
-     *     specific hours. An hour field of `*` runs on elapsed time instead, so
-     *     sub-hourly schedules keep firing through both passes of the
-     *     repeated hour.
+     *     specific hours. An hour field that selects every hour (`*`, `0-23`,
+     *     a step of one) runs on elapsed time instead, so hourly and sub-hourly
+     *     schedules keep firing through both passes of the repeated hour.
      *   - A wall-clock time skipped when clocks go forward fires once, moved
      *     forward by the length of the gap (02:30 becomes 03:30 for a one-hour
      *     gap).
@@ -523,19 +523,34 @@ class WorkflowSchedule extends Model
         ];
     }
 
+    /**
+     * Whether the hour field selects every hour, however it is spelled:
+     * `*`, `0-23`, a step of one, or a full list.
+     */
     private static function cronHourFieldIsWildcard(string $expression): bool
     {
         if (class_exists(\Cron\CronExpression::class)) {
             try {
-                return (new \Cron\CronExpression($expression))->getExpression(\Cron\CronExpression::HOUR) === '*';
+                $hourField = (new \Cron\CronExpression($expression))->getExpression(\Cron\CronExpression::HOUR);
             } catch (\InvalidArgumentException) {
+                return false;
+            }
+        } else {
+            $parts = preg_split('/\s+/', trim($expression));
+            $hourField = is_array($parts) ? ($parts[1] ?? null) : null;
+        }
+
+        if (! is_string($hourField) || $hourField === '') {
+            return false;
+        }
+
+        for ($hour = 0; $hour <= 23; $hour++) {
+            if (! self::cronFieldMatches($hourField, $hour, 0, 23)) {
                 return false;
             }
         }
 
-        $parts = preg_split('/\s+/', trim($expression));
-
-        return is_array($parts) && ($parts[1] ?? null) === '*';
+        return true;
     }
 
     private static function rawNextCronOccurrence(
@@ -574,6 +589,8 @@ class WorkflowSchedule extends Model
         $limit = $candidate + 48 * 3600;
         $transitions = $tz->getTransitions($candidate - 86400, $limit);
         $transitions = is_array($transitions) ? $transitions : [];
+        // Fixed-offset zones such as "+02:00" report no transitions.
+        $fixedOffset = $tz->getOffset(new \DateTimeImmutable('@' . $candidate));
 
         for (; $candidate <= $limit; $candidate += 60) {
             $offsets = [];
@@ -595,7 +612,7 @@ class WorkflowSchedule extends Model
                 $previousOffset = $transition['offset'];
             }
 
-            foreach ($offsets === [] ? [0] : $offsets as $offset) {
+            foreach ($offsets === [] ? [$fixedOffset] : $offsets as $offset) {
                 $wallClock = $candidate + $offset;
 
                 if (
@@ -632,6 +649,9 @@ class WorkflowSchedule extends Model
                     $rangeEnd = $max;
                 } elseif (str_contains($range, '-')) {
                     [$rangeStart, $rangeEnd] = array_map('intval', explode('-', $range, 2));
+                } elseif (ctype_digit($range)) {
+                    $rangeStart = (int) $range;
+                    $rangeEnd = $max;
                 } else {
                     continue;
                 }

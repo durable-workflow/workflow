@@ -7,9 +7,9 @@
   longer starts a second run at 01:30 EST on the day clocks go back, and
   `30 2 * * *` no longer fires early inside the repeated hour. A time skipped
   when clocks go forward still fires once, moved forward by the gap (02:30
-  runs at 03:30). Schedules whose hour field is `*` keep running on elapsed
-  time, so sub-hourly schedules fire through both passes of the repeated
-  hour (#882).
+  runs at 03:30). Schedules whose hour field selects every hour (`*`,
+  `0-23` or a step of one) keep running on elapsed time, so hourly and
+  sub-hourly schedules fire through both passes of the repeated hour (#882).
 
 ## 2.15.11 - 2026-11-01
 

@@ -80,6 +80,30 @@ final class WorkflowScheduleDaylightSavingTest extends TestCase
                     '2026-11-01T07:00:00Z',
                 ],
             ],
+            'every-hour step keeps elapsed time like a wildcard' => [
+                '30 */1 * * *',
+                'America/New_York',
+                '2026-11-01T05:30:00Z',
+                ['2026-11-01T06:30:00Z', '2026-11-01T07:30:00Z'],
+            ],
+            'full hour range keeps elapsed time like a wildcard' => [
+                '30 0-23 * * *',
+                'America/New_York',
+                '2026-11-01T05:30:00Z',
+                ['2026-11-01T06:30:00Z', '2026-11-01T07:30:00Z'],
+            ],
+            'positive fixed offset' => [
+                '0 9 * * *',
+                '+02:00',
+                '2026-11-03T00:00:00Z',
+                ['2026-11-03T07:00:00Z', '2026-11-04T07:00:00Z'],
+            ],
+            'negative fixed offset' => [
+                '0 9 * * *',
+                '-05:00',
+                '2026-11-03T00:00:00Z',
+                ['2026-11-03T14:00:00Z', '2026-11-04T14:00:00Z'],
+            ],
             'utc is unaffected' => [
                 '30 1 * * *',
                 'UTC',
@@ -168,6 +192,24 @@ final class WorkflowScheduleDaylightSavingTest extends TestCase
                 'Europe/Kyiv',
                 '2026-03-28T12:00:00Z',
                 ['2026-03-29T01:30:00Z', '2026-03-30T00:30:00Z'],
+            ],
+            'positive fixed offset' => [
+                '0 9 * * *',
+                '+02:00',
+                '2026-11-03T00:00:00Z',
+                ['2026-11-03T07:00:00Z', '2026-11-04T07:00:00Z'],
+            ],
+            'negative fixed offset' => [
+                '0 9 * * *',
+                '-05:00',
+                '2026-11-03T00:00:00Z',
+                ['2026-11-03T14:00:00Z', '2026-11-04T14:00:00Z'],
+            ],
+            'every-hour step matches every hour' => [
+                '30 0/1 * * *',
+                'UTC',
+                '2026-11-03T00:00:00Z',
+                ['2026-11-03T00:30:00Z', '2026-11-03T01:30:00Z'],
             ],
             'wildcard hour keeps elapsed time' => [
                 '*/30 * * * *',

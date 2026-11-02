@@ -331,6 +331,13 @@ final class V2ScheduleTimezoneTest extends TestCase
                 '2026-03-30T12:00:00Z',
                 ['2026-03-29T01:30:00Z', '2026-03-30T00:30:00Z'],
             ],
+            'full hour range keeps hourly elapsed time in the repeated hour' => [
+                '30 0-23 * * *',
+                'America/New_York',
+                '2026-11-01T04:50:00Z',
+                '2026-11-01T07:40:00Z',
+                ['2026-11-01T05:30:00Z', '2026-11-01T06:30:00Z', '2026-11-01T07:30:00Z'],
+            ],
             'sub-hourly schedule keeps every elapsed occurrence in the repeated hour' => [
                 '*/20 * * * *',
                 'America/New_York',

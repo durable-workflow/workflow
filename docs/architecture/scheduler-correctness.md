@@ -363,9 +363,9 @@ EDT, or 07:30 UTC.
 A minute repeated by a fall clock change fires once, at its first
 (pre-transition) instant, when the hour field names specific hours. New York
 `30 1 * * *` on 2026-11-01 fires at 05:30 UTC only, and `30 2 * * *` fires
-once at 02:30 EST, or 07:30 UTC. An hour field of `*` runs on elapsed time
-instead: `*/15 * * * *` keeps firing every 15 minutes through both passes of
-the repeated hour. Use UTC when a fixed interval matters more than local
+once at 02:30 EST, or 07:30 UTC. An hour field that selects every hour (`*`,
+`0-23` or a step of one) runs on elapsed time instead: `*/15 * * * *` keeps
+firing every 15 minutes through both passes of the repeated hour. Use UTC when a fixed interval matters more than local
 wall-clock time. The same rules apply to other IANA timezones, including
 Europe/Kyiv.
 
