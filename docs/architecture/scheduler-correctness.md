@@ -324,15 +324,33 @@ whose oldest candidate is oldest, and oldest first within a namespace
 actions). One busy namespace therefore cannot hold back another.
 
 Due schedules beyond `limit` stay due and are selected by the next
-pass. When `N` schedules fall due together, every one fires once
-within `ceil(N / limit)` passes. With the every-minute recipe the last
-of them starts up to `ceil(N / limit) - 1` minutes after the first, so
-set `limit` at or above the largest burst you expect. Under sustained overload, a schedule
-whose occurrences fall due faster than it is reached fires once for
-its oldest missed occurrence and then resumes from the next future
-occurrence, so the occurrences in between are skipped. Alert on the
-operator metrics `schedules.missed`, `schedules.oldest_overdue_at` and
-`schedules.max_overdue_ms`, which read due schedules from durable rows.
+pass. The pass bound holds for a fixed set of candidates whose starts
+succeed: when `N` such schedules fall due together and no other due
+schedule is older, every one fires once within `ceil(N / limit)`
+passes. With the every-minute recipe and ticks that run on cadence, the
+last of them starts up to `ceil(N / limit) - 1` minutes after the
+first. Set `limit` at or above the largest burst you expect.
+
+The bound is longer when any of those conditions fails:
+
+- A start that fails leaves its occurrence due, and the schedule is
+  retried on later passes. A schedule that keeps failing keeps taking a
+  slot in each pass while it stays oldest; with a small `limit` it can
+  hold back the later schedules of its namespace.
+- Schedules that became due earlier, or more schedules falling due
+  before the burst clears, are selected first.
+- Ticks that run late or are skipped add their delay.
+
+Under sustained overload, a schedule whose occurrences fall due faster
+than it is reached fires once for its oldest missed occurrence and
+then resumes from the next future occurrence, so the occurrences in
+between are skipped.
+
+Alert on the operator metrics `schedules.missed`,
+`schedules.oldest_overdue_at` and `schedules.max_overdue_ms`, which
+read due schedules from durable rows, and on increases in
+`schedules.failures_total`, the failed starts recorded across active
+schedules.
 
 If the acceleration layer is unavailable, scheduled workflows
 continue to fire at their next tick cadence. If the acceleration
