@@ -797,6 +797,10 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 $this->assertRunInheritedScopedCleanupAfterColdReload($fixture);
             }
 
+            if (($fixture['id'] ?? null) === 'continue-as-new-preserves-run-scheduling') {
+                $this->assertContinueAsNewPreservesRunScheduling($fixture);
+            }
+
             if ($fixture['id'] === 'legacy-version-shared-step-position') {
                 $this->assertLegacyVersionSharesTheRecordedStepPosition($fixture);
 
@@ -3066,6 +3070,48 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             ->firstOrFail();
 
         $this->app->call([new RunWorkflowTask($task->id), 'handle']);
+    }
+
+    /**
+     * The recorded history continues as new through WorkflowExecutor; the
+     * persisted successor run and its first task keep the run's priority and
+     * fairness (#971).
+     *
+     * @param array<string, mixed> $fixture
+     */
+    private function assertContinueAsNewPreservesRunScheduling(array $fixture): void
+    {
+        $run = $this->createRunFromFixture($fixture);
+        $run->forceFill([
+            'priority' => 1,
+            'fairness_key' => 'x',
+            'fairness_weight' => 3,
+        ])->save();
+
+        $this->runReadyWorkflowTask($run);
+
+        /** @var WorkflowRun $continuedRun */
+        $continuedRun = WorkflowRun::query()
+            ->where('workflow_instance_id', $run->workflow_instance_id)
+            ->where('run_number', $run->run_number + 1)
+            ->firstOrFail();
+
+        /** @var WorkflowTask $continuedTask */
+        $continuedTask = WorkflowTask::query()
+            ->where('workflow_run_id', $continuedRun->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->firstOrFail();
+
+        $this->assertSame(
+            [1, 'x', 3],
+            [$continuedRun->priority, $continuedRun->fairness_key, $continuedRun->fairness_weight],
+            "{$fixture['id']} successor run lost the run's scheduling.",
+        );
+        $this->assertSame(
+            [1, 'x', 3],
+            [$continuedTask->priority, $continuedTask->fairness_key, $continuedTask->fairness_weight],
+            "{$fixture['id']} successor task lost the run's scheduling.",
+        );
     }
 
     /**
