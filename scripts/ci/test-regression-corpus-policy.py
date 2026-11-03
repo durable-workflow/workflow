@@ -2254,5 +2254,63 @@ final class DefaultWorkflowTaskBridge {
         self.assertIn("replay implementation changed but its corpus did not grow", result.stderr)
 
 
+
+def load_validator() -> Any:
+    import importlib.util
+
+    # Loading the validator must not leave bytecode in the checkout either.
+    sys.dont_write_bytecode = True
+    spec = importlib.util.spec_from_file_location("validate_regression_corpus", VALIDATOR)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class ConsumerScratchTreeTest(unittest.TestCase):
+    """The official consumer tree must never be committable source."""
+
+    def test_a_consumer_tree_under_the_repository_root_is_ignored(self) -> None:
+        validator = load_validator()
+        probe = "src/ConsumerScratchProbe.php"
+        root = str(REPOSITORY_ROOT)
+
+        # The real consumer run: it materializes the tree under the root, then
+        # lists untracked and ignored files from inside it.
+        result = validator._consumer_result(
+            REPOSITORY_ROOT,
+            {probe: b"<?php\n"},
+            (
+                "sh",
+                "-c",
+                'git -C "$0" ls-files --others --exclude-standard; '
+                'echo "--- ignored"; '
+                'git -C "$0" ls-files --others --ignored --exclude-standard --directory',
+                root,
+            ),
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        untracked, _, ignored = result.stdout.partition("--- ignored")
+        prefix = validator.CONSUMER_TREE_PREFIX
+        # Positive control: the tree really was under the root.
+        self.assertIn(prefix, ignored)
+        self.assertNotIn(prefix, untracked)
+        self.assertFalse(any(path.name.startswith(prefix) for path in REPOSITORY_ROOT.iterdir()))
+
+    def test_the_consumer_tree_prefix_is_ignored_by_git(self) -> None:
+        prefix = load_validator().CONSUMER_TREE_PREFIX
+        result = run(
+            "git",
+            "check-ignore",
+            "--no-index",
+            "--quiet",
+            f"{prefix}abc123/src/V2/Support/Probe.php",
+            cwd=REPOSITORY_ROOT,
+        )
+        self.assertEqual(0, result.returncode, "consumer scratch tree is not ignored by .gitignore")
+
+
 if __name__ == "__main__":
     unittest.main()

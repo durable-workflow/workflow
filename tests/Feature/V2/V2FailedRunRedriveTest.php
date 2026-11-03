@@ -18,6 +18,7 @@ use Tests\Fixtures\V2\TestRedrivePatchedWorkflow;
 use Tests\Fixtures\V2\TestRedriveSignalWorkflow;
 use Tests\Fixtures\V2\TestRedriveTimerWorkflow;
 use Tests\Fixtures\V2\TestRedriveTwoSignalsWorkflow;
+use Tests\Fixtures\V2\TestRedriveUpdateWorkflow;
 use Tests\Fixtures\V2\TestRedriveVersionedBuggyWorkflow;
 use Tests\Fixtures\V2\TestRedriveVersionedIncompatibleWorkflow;
 use Tests\Fixtures\V2\TestRedriveVisibilityWorkflow;
@@ -40,6 +41,7 @@ use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\EmbeddedV2HistoryImport;
@@ -796,6 +798,25 @@ final class V2FailedRunRedriveTest extends TestCase
         yield 'external applied value' => [
             HistoryEventType::SignalApplied, 'value', $external, 'external_signal_payload_not_supported',
         ];
+        // Any external-storage key is external, even a null one.
+        yield 'null external storage key on receipt arguments' => [
+            HistoryEventType::SignalReceived,
+            'arguments',
+            [
+                'codec' => 'avro',
+                'external_storage' => null,
+            ],
+            'external_signal_payload_not_supported',
+        ];
+        yield 'null external storage key on applied value' => [
+            HistoryEventType::SignalApplied,
+            'value',
+            [
+                'codec' => 'avro',
+                'external_storage' => null,
+            ],
+            'external_signal_payload_not_supported',
+        ];
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('signalStepMutations')]
@@ -1144,6 +1165,447 @@ final class V2FailedRunRedriveTest extends TestCase
         $this->assertNull($controlPlane->describe('redrive-corrected-chain', [
             'run_id' => $final->id,
         ])['run']['definition_changed_from'] ?? null);
+    }
+
+    public function testRedriveReappliesAnUpdateTheSourceApplied(): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestRedriveUpdateWorkflow::class, 'redrive-update-1');
+        $workflow->start('Taylor');
+        $this->assertSame('noted urgent', $workflow->update('set-note', 'urgent'));
+        $workflow->signal('go');
+        $this->assertTrue($workflow->refresh()->failed());
+        $source = WorkflowRun::query()->findOrFail($workflow->runId());
+        $sourceApplied = $this->sourceEvent($source, HistoryEventType::UpdateApplied);
+
+        $result = app(WorkflowControlPlane::class)->redrive('redrive-update-1', $source->id);
+
+        $this->assertTrue($result['accepted'], (string) $result['reason']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame(RunStatus::Completed, $successor->status);
+        $this->assertSame(1, (int) Cache::get('test:redrive:first-calls'));
+        // The update's state change is replayed, not delivered again.
+        $this->assertSame([
+            'result' => 'Hello, Taylor! Redrive completed.',
+            'note' => 'urgent',
+        ], $successor->workflowOutput());
+        $this->assertSame(0, WorkflowUpdate::query()->where('workflow_run_id', $successor->id)->count());
+
+        $types = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $successor->id)
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn (HistoryEventType $type): string => $type->value)
+            ->all();
+        $applied = array_search('UpdateApplied', $types, true);
+        $this->assertNotFalse($applied);
+        $this->assertSame('UpdateAccepted', $types[$applied - 1]);
+        $this->assertSame('UpdateCompleted', $types[$applied + 1]);
+        // It is written ahead of the step it ran before.
+        $this->assertLessThan(array_search('SignalWaitOpened', $types, true), $applied);
+        // Replay applies it from the same recorded position as the source.
+        $this->assertSame(
+            $sourceApplied->payload['sequence'],
+            $this->sourceEvent($successor, HistoryEventType::UpdateApplied)->payload['sequence'],
+        );
+        foreach ([
+            HistoryEventType::UpdateAccepted,
+            HistoryEventType::UpdateApplied,
+            HistoryEventType::UpdateCompleted,
+        ] as $type) {
+            $original = $this->sourceEvent($source, $type);
+            $reused = $this->sourceEvent($successor, $type);
+            $this->assertSame($source->id, $reused->payload['reused_from_run_id'] ?? null);
+            $this->assertSame(
+                $original->recorded_at?->toIso8601String(),
+                $reused->payload['reused_recorded_at'] ?? null
+            );
+        }
+    }
+
+    public function testAnUpdateAndSignalWaitRedriveAcrossAChain(): void
+    {
+        WorkflowStub::fake();
+        config([
+            'workflows.v2.testing.redrive_failures_before_success' => 2,
+        ]);
+        $controlPlane = app(WorkflowControlPlane::class);
+
+        $workflow = WorkflowStub::make(TestRedriveUpdateWorkflow::class, 'redrive-update-chain');
+        $workflow->start('Taylor');
+        $workflow->update('set-note', 'urgent');
+        $workflow->signal('go');
+        $this->assertTrue($workflow->refresh()->failed());
+        $first = WorkflowRun::query()->findOrFail($workflow->runId());
+
+        $second = $controlPlane->redrive('redrive-update-chain', $first->id);
+        $this->assertTrue($second['accepted'], (string) $second['reason']);
+        $secondRun = WorkflowRun::query()->findOrFail($second['workflow_run_id']);
+        $this->assertSame(RunStatus::Failed, $secondRun->status);
+
+        $third = $controlPlane->redrive('redrive-update-chain', $secondRun->id);
+
+        $this->assertTrue($third['accepted'], (string) $third['reason']);
+        $thirdRun = WorkflowRun::query()->findOrFail($third['workflow_run_id']);
+        $this->assertSame(RunStatus::Completed, $thirdRun->status);
+        $this->assertSame('urgent', $thirdRun->workflowOutput()['note']);
+        $this->assertSame(1, (int) Cache::get('test:redrive:first-calls'));
+        foreach ([
+            HistoryEventType::UpdateAccepted,
+            HistoryEventType::UpdateApplied,
+            HistoryEventType::UpdateCompleted,
+            HistoryEventType::SignalReceived,
+            HistoryEventType::SignalApplied,
+        ] as $type) {
+            $events = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $thirdRun->id)
+                ->where('event_type', $type)
+                ->get();
+            $this->assertCount(1, $events, $type->value);
+            $original = $this->sourceEvent($first, $type);
+            // The immediate source, the original run and its first time.
+            $this->assertSame($secondRun->id, $events[0]->payload['reused_from_run_id'], $type->value);
+            $this->assertSame($first->id, $events[0]->payload['workflow_run_id'] ?? $first->id, $type->value);
+            $this->assertSame(
+                $original->recorded_at?->toIso8601String(),
+                $events[0]->payload['reused_recorded_at'],
+                $type->value,
+            );
+        }
+        $this->assertSame(
+            1,
+            WorkflowUpdate::query()->where('workflow_instance_id', 'redrive-update-chain')->count(),
+        );
+        $this->assertSame(
+            0,
+            WorkflowCommand::query()
+                ->whereIn('workflow_run_id', [$secondRun->id, $thirdRun->id])
+                ->whereIn('command_type', ['update', 'signal'])
+                ->count(),
+        );
+    }
+
+    /**
+     * @return iterable<string, array{string, string}>
+     */
+    public static function malformedUpdateHistories(): iterable
+    {
+        yield 'acceptance then rejection' => ['accepted_then_rejected', 'mismatched_update_history'];
+        yield 'lone terminal completion' => ['lone_terminal_completion', 'mismatched_update_history'];
+        yield 'application before acceptance' => ['reversed_order', 'mismatched_update_history'];
+        yield 'no command or update name' => ['null_identity', 'mismatched_update_history'];
+        yield 'applied arguments differ' => ['changed_arguments', 'mismatched_update_history'];
+        yield 'failure key on a successful completion' => ['null_failure_key', 'incomplete_update_step'];
+        yield 'null external storage key' => ['null_external_storage', 'external_update_payload_not_supported'];
+        yield 'undecodable inline result' => ['undecodable_result', 'unavailable_update_payload'];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('malformedUpdateHistories')]
+    public function testRedriveRefusesMalformedUpdateHistoryWithoutMutation(string $mutation, string $reason): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestRedriveUpdateWorkflow::class, 'redrive-update-malformed');
+        $workflow->start('Taylor');
+        $workflow->update('set-note', 'urgent');
+        $workflow->signal('go');
+        $this->assertTrue($workflow->refresh()->failed());
+        $source = WorkflowRun::query()->findOrFail($workflow->runId());
+        $accepted = $this->sourceEvent($source, HistoryEventType::UpdateAccepted);
+        $applied = $this->sourceEvent($source, HistoryEventType::UpdateApplied);
+        $completed = $this->sourceEvent($source, HistoryEventType::UpdateCompleted);
+        $merge = static function (WorkflowHistoryEvent $event, array $values): void {
+            $event->forceFill([
+                'payload' => array_merge($event->payload, $values),
+            ])->save();
+        };
+
+        match ($mutation) {
+            'accepted_then_rejected' => (static function () use ($applied, $completed): void {
+                $completed->delete();
+                $applied->forceFill([
+                    'event_type' => HistoryEventType::UpdateRejected,
+                ])->save();
+            })(),
+            'lone_terminal_completion' => (static function () use ($accepted, $applied, $completed, $merge): void {
+                $accepted->delete();
+                $applied->delete();
+                $merge($completed, [
+                    'terminal_reason' => 'failed',
+                ]);
+            })(),
+            'reversed_order' => (static function () use ($accepted, $applied): void {
+                [$acceptedSequence, $appliedSequence] = [$accepted->sequence, $applied->sequence];
+                $accepted->forceFill([
+                    'sequence' => 100000,
+                ])->save();
+                $applied->forceFill([
+                    'sequence' => $acceptedSequence,
+                ])->save();
+                $accepted->forceFill([
+                    'sequence' => $appliedSequence,
+                ])->save();
+            })(),
+            'null_identity' => array_map(static fn (WorkflowHistoryEvent $event) => $merge($event, [
+                'workflow_command_id' => null,
+                'update_name' => null,
+            ]), [$accepted, $applied, $completed]),
+            'changed_arguments' => $merge($applied, [
+                'arguments' => Serializer::serializeWithCodec('avro', ['calm']),
+            ]),
+            'null_failure_key' => $merge($completed, [
+                'failure_id' => null,
+            ]),
+            'null_external_storage' => array_map(static fn (WorkflowHistoryEvent $event) => $merge($event, [
+                'arguments' => [
+                    'codec' => 'avro',
+                    'external_storage' => null,
+                ],
+            ]), [$accepted, $applied]),
+            'undecodable_result' => $merge($completed, [
+                'result' => 'not-an-avro-payload',
+            ]),
+        };
+
+        $before = $this->engineSnapshot();
+        $currentRun = $source->instance->fresh()
+->current_run_id;
+
+        $result = app(WorkflowControlPlane::class)->redrive('redrive-update-malformed', $source->id);
+
+        $this->assertFalse($result['accepted']);
+        $this->assertSame($reason, $result['reason']);
+        $this->assertSame($before, $this->engineSnapshot());
+        $this->assertSame($currentRun, $source->instance->fresh()->current_run_id);
+    }
+
+    /**
+     * @return iterable<string, array{string, string, string|null}>
+     */
+    public static function closedUpdateShapes(): iterable
+    {
+        yield 'closed with the run' => ['terminal', 'none', null];
+        yield 'closed with a null terminal reason' => ['terminal', 'null_terminal_reason', 'mismatched_update_history'];
+        yield 'closed with a blank terminal reason' => [
+            'terminal',
+            'blank_terminal_reason',
+            'mismatched_update_history',
+        ];
+        yield 'closed with a result' => ['terminal', 'result', 'mismatched_update_history'];
+        yield 'closed at a step' => ['terminal', 'step_sequence', 'mismatched_update_history'];
+        yield 'closed without a failure' => ['terminal', 'missing_failure_id', 'mismatched_update_history'];
+        yield 'closed by another run' => ['terminal', 'foreign_run', 'mismatched_update_history'];
+        yield 'closed for another command' => ['terminal', 'foreign_command', 'mismatched_update_history'];
+        yield 'closed for another handler' => ['terminal', 'foreign_name', 'mismatched_update_history'];
+        yield 'closed with a lone reuse time' => ['terminal', 'lone_recorded_at', 'mismatched_update_history'];
+        yield 'rejected' => ['rejected', 'none', null];
+        yield 'rejected by another run' => ['rejected', 'foreign_run', 'mismatched_update_history'];
+        yield 'rejected in another instance' => ['rejected', 'foreign_instance', 'mismatched_update_history'];
+        yield 'rejected without a command' => ['rejected', 'null_command', 'mismatched_update_history'];
+        yield 'rejected without a handler name' => ['rejected', 'blank_name', 'mismatched_update_history'];
+        yield 'rejected with a lone reuse time' => ['rejected', 'lone_recorded_at', 'mismatched_update_history'];
+        yield 'rejected with a lone reuse source' => ['rejected', 'lone_source', 'mismatched_update_history'];
+    }
+
+    /**
+     * A rejected update, or one the run's failure closed before it ran, is not
+     * replayed. Redrive skips it only when it is exactly that shape and belongs
+     * to the source run.
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('closedUpdateShapes')]
+    public function testRedriveSkipsOnlyAnExactlyClosedOrRejectedUpdate(
+        string $shape,
+        string $mutation,
+        ?string $reason,
+    ): void {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestRedriveUpdateWorkflow::class, 'redrive-update-closed');
+        $workflow->start('Taylor');
+        $workflow->update('set-note', 'urgent');
+        $workflow->signal('go');
+        $this->assertTrue($workflow->refresh()->failed());
+        $source = WorkflowRun::query()->findOrFail($workflow->runId());
+        $accepted = $this->sourceEvent($source, HistoryEventType::UpdateAccepted);
+        $applied = $this->sourceEvent($source, HistoryEventType::UpdateApplied);
+        $completed = $this->sourceEvent($source, HistoryEventType::UpdateCompleted);
+        $applied->delete();
+
+        if ($shape === 'terminal') {
+            // The shape PendingUpdateCloser records: a failure, no result, no step.
+            $closed = $completed->payload;
+            unset($closed['result'], $closed['sequence']);
+            $completed->forceFill([
+                'payload' => array_merge($closed, [
+                    'failure_id' => 'update-closed-failure',
+                    'terminal_reason' => 'failed',
+                ]),
+            ])->save();
+            $target = $completed;
+        } else {
+            $completed->delete();
+            $accepted->forceFill([
+                'event_type' => HistoryEventType::UpdateRejected,
+            ])->save();
+            $target = $accepted;
+        }
+
+        $payload = $target->fresh()
+            ->payload;
+        match ($mutation) {
+            'none' => null,
+            'null_terminal_reason' => $payload['terminal_reason'] = null,
+            'blank_terminal_reason' => $payload['terminal_reason'] = ' ',
+            'result' => $payload['result'] = Serializer::serializeWithCodec('avro', 'noted urgent'),
+            'step_sequence' => $payload['sequence'] = 2,
+            'missing_failure_id' => (static function () use (&$payload): void {
+                unset($payload['failure_id']);
+            })(),
+            'foreign_run' => $payload['workflow_run_id'] = 'another-run',
+            'foreign_instance' => $payload['workflow_instance_id'] = 'another-instance',
+            'foreign_command' => $payload['workflow_command_id'] = 'another-command',
+            'null_command' => $payload['workflow_command_id'] = null,
+            'foreign_name' => $payload['update_name'] = 'another-update',
+            'blank_name' => $payload['update_name'] = '',
+            'lone_recorded_at' => $payload['reused_recorded_at'] = now()->toIso8601String(),
+            'lone_source' => $payload['reused_from_run_id'] = $source->id,
+        };
+        $target->forceFill([
+            'payload' => $payload,
+        ])->save();
+
+        $plan = FailedRunRedrivePlan::forRun($source->fresh());
+
+        if ($reason === null) {
+            $this->assertTrue($plan['eligible'], (string) $plan['reason']);
+            $this->assertSame([], $plan['update_bundles']);
+
+            return;
+        }
+
+        $this->assertRefusedWithoutMutation('redrive-update-closed', $source, $reason);
+    }
+
+    /**
+     * @return iterable<string, array{string, HistoryEventType, string, string}>
+     */
+    public static function chainedProvenanceMutations(): iterable
+    {
+        $types = [
+            HistoryEventType::UpdateAccepted,
+            HistoryEventType::UpdateApplied,
+            HistoryEventType::UpdateCompleted,
+            HistoryEventType::SignalWaitOpened,
+            HistoryEventType::SignalReceived,
+            HistoryEventType::SignalApplied,
+        ];
+
+        foreach ($types as $type) {
+            $reason = str_starts_with($type->value, 'Update')
+                ? 'mismatched_update_history'
+                : 'mismatched_signal_receipt';
+
+            // Recorded by the source itself: the reuse keys are both absent.
+            yield $type->value . ' original with a lone reuse time' => ['source', $type, 'lone_recorded_at', $reason];
+            yield $type->value . ' original with a lone reuse source' => ['source', $type, 'lone_source', $reason];
+
+            // Reused by a redrive: the keys are both present, name the
+            // immediate source and keep the first time.
+            foreach ([
+                'missing_time',
+                'null_time',
+                'blank_time',
+                'missing_source',
+                'null_source',
+                'foreign_source',
+            ] as $mutation) {
+                yield $type->value . ' reused with ' . str_replace('_', ' ', $mutation) => [
+                    'successor',
+                    $type,
+                    $mutation,
+                    $reason,
+                ];
+            }
+        }
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('chainedProvenanceMutations')]
+    public function testRedriveRefusesABrokenReuseProvenancePairWithoutMutation(
+        string $run,
+        HistoryEventType $type,
+        string $mutation,
+        string $reason,
+    ): void {
+        WorkflowStub::fake();
+        config([
+            'workflows.v2.testing.redrive_failures_before_success' => 2,
+        ]);
+
+        $workflow = WorkflowStub::make(TestRedriveUpdateWorkflow::class, 'redrive-update-pair');
+        $workflow->start('Taylor');
+        $workflow->update('set-note', 'urgent');
+        $workflow->signal('go');
+        $this->assertTrue($workflow->refresh()->failed());
+        $source = WorkflowRun::query()->findOrFail($workflow->runId());
+
+        if ($run === 'successor') {
+            $redriven = app(WorkflowControlPlane::class)->redrive('redrive-update-pair', $source->id);
+            $this->assertTrue($redriven['accepted'], (string) $redriven['reason']);
+            $source = WorkflowRun::query()->findOrFail($redriven['workflow_run_id']);
+            $this->assertSame(RunStatus::Failed, $source->status);
+            // The unmodified redriven run is redrivable again.
+            $this->assertTrue(FailedRunRedrivePlan::forRun($source->fresh())['eligible']);
+        }
+
+        $event = $this->sourceEvent($source, $type);
+        $payload = $event->payload;
+        match ($mutation) {
+            'lone_recorded_at' => $payload['reused_recorded_at'] = now()->toIso8601String(),
+            'lone_source' => $payload['reused_from_run_id'] = $source->id,
+            'missing_time' => (static function () use (&$payload): void {
+                unset($payload['reused_recorded_at']);
+            })(),
+            'null_time' => $payload['reused_recorded_at'] = null,
+            'blank_time' => $payload['reused_recorded_at'] = '',
+            'missing_source' => (static function () use (&$payload): void {
+                unset($payload['reused_from_run_id']);
+            })(),
+            'null_source' => $payload['reused_from_run_id'] = null,
+            'foreign_source' => $payload['reused_from_run_id'] = 'another-run',
+        };
+        $event->forceFill([
+            'payload' => $payload,
+        ])->save();
+        $before = $this->engineSnapshot();
+        $currentRun = $source->instance->fresh()
+            ->current_run_id;
+
+        $result = app(WorkflowControlPlane::class)->redrive('redrive-update-pair', $source->id);
+
+        $this->assertFalse($result['accepted']);
+        $this->assertSame($reason, $result['reason']);
+        $this->assertSame($before, $this->engineSnapshot());
+        $this->assertSame($currentRun, $source->instance->fresh()->current_run_id);
+    }
+
+    public function testRedriveRefusesAnUpdateTheSourceNeverResolved(): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestRedriveUpdateWorkflow::class, 'redrive-update-pending');
+        $workflow->start('Taylor');
+        $workflow->update('set-note', 'urgent');
+        $workflow->signal('go');
+        $this->assertTrue($workflow->refresh()->failed());
+        $source = WorkflowRun::query()->findOrFail($workflow->runId());
+        // Only the acceptance remains: the source never applied or closed it.
+        WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $source->id)
+            ->whereIn('event_type', [HistoryEventType::UpdateApplied->value, HistoryEventType::UpdateCompleted->value])
+            ->delete();
+
+        $this->assertRefusedWithoutMutation('redrive-update-pending', $source, 'unsupported_pending_update');
     }
 
     public function testRedriveReusesOneMarkerForARepeatedPatchCall(): void
@@ -1498,6 +1960,40 @@ final class V2FailedRunRedriveTest extends TestCase
         $this->assertTrue($workflow->refresh()->failed());
 
         return WorkflowRun::query()->findOrFail($workflow->runId());
+    }
+
+    /**
+     * Every engine table and read projection a refused redrive must leave
+     * untouched, including the run's message cursor.
+     *
+     * @return array<string, list<array<string, mixed>>>
+     */
+    private function engineSnapshot(): array
+    {
+        $snapshot = [];
+        foreach ([
+            \Workflow\V2\Models\WorkflowInstance::class,
+            WorkflowRun::class,
+            WorkflowCommand::class,
+            WorkflowHistoryEvent::class,
+            \Workflow\V2\Models\WorkflowTask::class,
+            WorkflowLink::class,
+            \Workflow\V2\Models\WorkflowMemo::class,
+            \Workflow\V2\Models\WorkflowSearchAttribute::class,
+            WorkflowSignal::class,
+            WorkflowUpdate::class,
+            \Workflow\V2\Models\ActivityExecution::class,
+            \Workflow\V2\Models\ActivityAttempt::class,
+            \Workflow\V2\Models\WorkflowFailure::class,
+            \Workflow\V2\Models\WorkflowRunSummary::class,
+            \Workflow\V2\Models\WorkflowTimelineEntry::class,
+        ] as $model) {
+            $snapshot[$model] = $model::query()->orderBy((new $model())->getKeyName())->get()->map(
+                static fn (\Illuminate\Database\Eloquent\Model $row): array => $row->getRawOriginal(),
+            )->all();
+        }
+
+        return $snapshot;
     }
 
     private function sourceEvent(WorkflowRun $source, HistoryEventType $type): WorkflowHistoryEvent

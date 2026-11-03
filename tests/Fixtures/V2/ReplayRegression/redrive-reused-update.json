@@ -1,0 +1,44 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "redrive-reused-update",
+  "protocol_version": "1.0",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestRedriveUpdateWorkflow",
+    "arguments": ["Taylor"],
+    "payload_codec": "avro"
+  },
+  "redrive_reused_update": {
+    "update": "set-note",
+    "update_arguments": ["urgent"],
+    "update_result": "noted urgent",
+    "signal": "go",
+    "redrive": "accepted",
+    "successor_status": "completed",
+    "output": {
+      "result": "Hello, Taylor! Redrive completed.",
+      "note": "urgent"
+    },
+    "reused_events": ["UpdateAccepted", "UpdateApplied", "UpdateCompleted"]
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-03T00:00:00+00:00",
+      "payload": {}
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "schedule_activity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+        "payload_codec": "avro"
+      }
+    ]
+  }
+}

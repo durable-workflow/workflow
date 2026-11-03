@@ -108,12 +108,12 @@ final class FailedRunRedriveEligibility
         }
 
         // Service-mode SDK workers are qualified to replay reused activities,
-        // side effects, version markers and timers. Reused signal, memo and
-        // search-attribute steps are not qualified yet, so a run a service
-        // worker started refuses them before anything is written.
+        // side effects, version markers and timers. Reused signal, memo,
+        // search-attribute and update steps are not qualified yet, so a run a
+        // service worker started refuses them before anything is written.
         if (
             ($startedPayload['workflow_definition_fingerprint_source'] ?? null) === 'worker'
-            && self::reusesServiceUnqualifiedSteps($plan['reused_steps'])
+            && (self::reusesServiceUnqualifiedSteps($plan['reused_steps']) || ($plan['update_bundles'] ?? []) !== [])
         ) {
             return self::refuse('service_redrive_history_not_qualified');
         }

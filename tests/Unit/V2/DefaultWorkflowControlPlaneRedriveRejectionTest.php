@@ -221,6 +221,7 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
         yield 'memo upsert' => ['memo'];
         yield 'search attribute upsert' => ['search_attributes'];
         yield 'signal wait' => ['signal'];
+        yield 'applied update' => ['update'];
     }
 
     #[DataProvider('serviceUnqualifiedSteps')]
@@ -258,8 +259,11 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
                 ],
             ]),
             'signal' => $this->recordAppliedSignal($source),
+            'update' => null,
         };
-        $this->recordFailure($source, includeCompletedPrefix: false);
+        $this->recordFailure($source, includeCompletedPrefix: $step === 'update', beforeFailure: $step === 'update'
+            ? fn () => $this->recordAppliedUpdate($source)
+            : null);
         $source = $source->fresh();
         $before = $this->records();
         $projections = $this->projections();
@@ -671,8 +675,11 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
         return $source->fresh();
     }
 
-    private function recordFailure(WorkflowRun $source, bool $includeCompletedPrefix = true): void
-    {
+    private function recordFailure(
+        WorkflowRun $source,
+        bool $includeCompletedPrefix = true,
+        ?\Closure $beforeFailure = null,
+    ): void {
         if ($includeCompletedPrefix) {
             $firstActivityId = (string) Str::ulid();
             WorkflowHistoryEvent::record($source, HistoryEventType::ActivityScheduled, [
@@ -687,6 +694,9 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
                 'result' => Serializer::serializeWithCodec('avro', [0, false, '']),
                 'payload_codec' => 'avro',
             ]);
+        }
+        if ($beforeFailure !== null) {
+            $beforeFailure();
         }
         $activityId = (string) Str::ulid();
         WorkflowHistoryEvent::record($source, HistoryEventType::ActivityScheduled, [
@@ -718,6 +728,29 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
         ]]);
         $this->assertTrue($result['completed']);
         $this->assertSame(RunStatus::Failed, $source->fresh()->status);
+    }
+
+    private function recordAppliedUpdate(WorkflowRun $source): void
+    {
+        $identity = [
+            'workflow_command_id' => (string) Str::ulid(),
+            'update_id' => (string) Str::ulid(),
+            'workflow_instance_id' => $source->workflow_instance_id,
+            'workflow_run_id' => $source->id,
+            'update_name' => 'set-note',
+        ];
+        $arguments = Serializer::serializeWithCodec('avro', ['urgent']);
+        WorkflowHistoryEvent::record($source, HistoryEventType::UpdateAccepted, $identity + [
+            'arguments' => $arguments,
+        ]);
+        WorkflowHistoryEvent::record($source, HistoryEventType::UpdateApplied, $identity + [
+            'arguments' => $arguments,
+            'sequence' => 1,
+        ]);
+        WorkflowHistoryEvent::record($source, HistoryEventType::UpdateCompleted, $identity + [
+            'sequence' => 1,
+            'result' => Serializer::serializeWithCodec('avro', 'noted urgent'),
+        ]);
     }
 
     private function recordAppliedSignal(WorkflowRun $source): WorkflowHistoryEvent
