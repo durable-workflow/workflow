@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Mockery;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
@@ -88,6 +89,7 @@ use Workflow\V2\Support\DefaultServiceControlPlane;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\EmbeddedV2HistoryImport;
 use Workflow\V2\Support\HistoryExport;
+use Workflow\V2\Support\MemoPayload;
 use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\ReplayDiff;
 use Workflow\V2\Support\RunActivityView;
@@ -254,6 +256,82 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             $scenario['search_attributes']['region'],
             $successor->typedSearchAttributes()['region'] ?? null
         );
+    }
+
+    public function testRedriveServiceFenceCorpusRefusesUnqualifiedReuse(): void
+    {
+        $path = self::FIXTURE_DIR . '/redrive-service-unqualified-history.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The redrive service-fence evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['redrive_service_unqualified_history'];
+        self::stopWorkers();
+        config([
+            'queue.default' => 'sync',
+            'queue.connections.sync.driver' => 'sync',
+        ]);
+        $this->clearWorkflowState();
+        $controlPlane = app(WorkflowControlPlane::class);
+        $options = [
+            'namespace' => 'regression-corpus-service',
+            'queue' => 'service-workflows',
+            'external_workflow_definition_fingerprint' => $scenario['worker_fingerprint'],
+        ];
+
+        $start = $controlPlane->start(
+            $scenario['service_workflow_type'],
+            'regression-corpus-service-fence',
+            $options + [
+                'arguments' => Serializer::serializeWithCodec('avro', $fixture['workflow']['arguments']),
+            ]
+        );
+        $this->assertTrue($start['started']);
+        $source = WorkflowRun::query()->findOrFail($start['workflow_run_id']);
+        // Step 1: the worker's memo upsert. Step 2: an activity that fails the run.
+        WorkflowHistoryEvent::record($source, HistoryEventType::MemoUpserted, [
+            'sequence' => 1,
+            'entries' => MemoPayload::mapEnvelope($scenario['memo']),
+            'merged' => MemoPayload::mapEnvelope($scenario['memo']),
+        ]);
+        $activityId = (string) Str::ulid();
+        WorkflowHistoryEvent::record($source, HistoryEventType::ActivityScheduled, [
+            'activity_execution_id' => $activityId,
+            'activity_type' => 'remote.second',
+            'sequence' => 2,
+        ]);
+        WorkflowHistoryEvent::record($source, HistoryEventType::ActivityFailed, [
+            'activity_execution_id' => $activityId,
+            'activity_type' => 'remote.second',
+            'sequence' => 2,
+            'message' => 'temporary failure',
+        ]);
+        $task = WorkflowTask::query()->where('workflow_run_id', $source->id)->firstOrFail();
+        $task->forceFill([
+            'status' => TaskStatus::Leased,
+            'lease_owner' => 'service-worker',
+            'lease_expires_at' => now()
+                ->addMinute(),
+        ])->save();
+        $source->forceFill([
+            'status' => RunStatus::Waiting,
+        ])->save();
+        $this->assertTrue(app(DefaultWorkflowTaskBridge::class)->complete($task->id, [[
+            'type' => 'fail_workflow',
+            'message' => 'temporary failure',
+            'failed_step_sequence' => 2,
+            'failed_activity_execution_id' => $activityId,
+        ]])['completed']);
+        $runs = WorkflowRun::query()->count();
+        $events = WorkflowHistoryEvent::query()->count();
+
+        $result = $controlPlane->redrive('regression-corpus-service-fence', $source->id, $options);
+
+        $this->assertSame($scenario['redrive'] === 'accepted', $result['accepted']);
+        $this->assertSame($scenario['reason'], $result['reason']);
+        $this->assertSame($runs, WorkflowRun::query()->count());
+        $this->assertSame($events, WorkflowHistoryEvent::query()->count());
+        $this->assertSame($source->id, $source->instance->fresh()->current_run_id);
     }
 
     public function testRedriveReusedMarkersCorpusKeepsTheirStepsAndTime(): void
