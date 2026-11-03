@@ -41,6 +41,49 @@ final class ActivityOutcomeRetentionProcessTest extends TestCase
                 'recorded' => false,
                 'reason' => 'pruned',
             ];
+        } elseif ($input['outcome'] === 'renew') {
+            // Hold the attempt lock, as renewal takes it first, until released.
+            // Then announce the run lock request that waits on the audit.
+            $paused = false;
+            $connection->listen(static function (QueryExecuted $event) use ($input, &$paused): void {
+                if ($paused || ! str_contains(strtolower($event->sql), 'for update')
+                    || ! str_contains($event->sql, 'activity_attempts')) {
+                    return;
+                }
+                $paused = true;
+                file_put_contents($input['ready'], 'attempt locked');
+                self::waitFor($input['continue'], $input['deadline']);
+            });
+            $connection->beforeExecuting(static function (string $query) use ($input): void {
+                if (str_contains(strtolower($query), 'for update') && str_contains($query, 'workflow_runs')) {
+                    file_put_contents($input['waiting'], 'requesting run lock');
+                }
+            });
+            $status = $this->app->make(ActivityTaskBridge::class)->renewLease(
+                $input['attempt_id'],
+                $input['lease_owner'],
+            );
+            $reply = [
+                'recorded' => $status['lease_renewed'],
+                'reason' => $status['reason'],
+            ];
+        } elseif ($input['pause_after_run_lock'] ?? false) {
+            // Hold the run lock before the audit append until released.
+            $paused = false;
+            $connection->listen(static function (QueryExecuted $event) use ($input, &$paused): void {
+                if ($paused || ! str_contains(strtolower($event->sql), 'for update')
+                    || ! str_contains($event->sql, 'workflow_runs')) {
+                    return;
+                }
+                $paused = true;
+                file_put_contents($input['ready'], 'run locked');
+                self::waitFor($input['continue'], $input['deadline']);
+            });
+            $reply = $this->app->make(ActivityTaskBridge::class)->complete(
+                $input['attempt_id'],
+                'discarded late result',
+            );
+            self::assertFalse($reply['recorded']);
         } else {
             // Signal before this query can wait on retention's run lock. The
             // preceding implementation already holds task/execution locks here.
@@ -92,6 +135,16 @@ final class ActivityOutcomeRetentionProcessTest extends TestCase
         $app['config']->set('queue.default', 'sync');
         $app['config']->set('cache.default', 'array');
         $app['config']->set('logging.default', 'null');
+    }
+
+    private static function waitFor(string $path, int $deadline): void
+    {
+        while (! is_file($path)) {
+            if (hrtime(true) >= $deadline) {
+                self::fail('The interleaving exceeded its original process budget.');
+            }
+            usleep(1_000);
+        }
     }
 
     private function input(): array

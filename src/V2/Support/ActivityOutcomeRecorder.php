@@ -43,8 +43,15 @@ final class ActivityOutcomeRecorder
     ): array {
         $sqlite = (new ActivityAttempt())->getConnection()
             ->getDriverName() === 'sqlite';
+        $attemptedOutcome = $throwable === null ? 'completed' : 'failed';
         if (! $sqlite) {
-            $refused = self::refusedExpiredAttempt($taskId, $attemptId, $attemptCount, $admissionDeadline);
+            $refused = self::refusedExpiredAttempt(
+                $taskId,
+                $attemptId,
+                $attemptCount,
+                $attemptedOutcome,
+                $admissionDeadline,
+            );
             if ($refused !== null) {
                 return $refused;
             }
@@ -60,12 +67,19 @@ final class ActivityOutcomeRecorder
             $backoffSeconds,
             $codec,
             $sqlite,
+            $attemptedOutcome,
             $admissionDeadline,
         ): array {
             // Even an unlocked SQLite read can wait behind an exclusive writer.
             // Keep the refusal metadata behind the original bounded admission.
             if ($sqlite) {
-                $refused = self::refusedExpiredAttempt($taskId, $attemptId, $attemptCount, $admissionDeadline);
+                $refused = self::refusedExpiredAttempt(
+                    $taskId,
+                    $attemptId,
+                    $attemptCount,
+                    $attemptedOutcome,
+                    $admissionDeadline,
+                );
                 if ($refused !== null) {
                     return $refused;
                 }
@@ -143,6 +157,15 @@ final class ActivityOutcomeRecorder
                 || $lockedExecution->current_attempt_id !== $attemptId
             ) {
                 self::closeAttemptIfStale($run, $attemptId);
+                ActivityOutcomeRejection::record(
+                    $run,
+                    $lockedExecution,
+                    $task,
+                    $attemptId,
+                    $attemptCount,
+                    $attemptedOutcome,
+                    'stale_attempt',
+                );
 
                 return self::ignored('stale_attempt');
             }
@@ -151,9 +174,16 @@ final class ActivityOutcomeRecorder
                 return self::ignored('activity_deadline_elapsed');
             }
 
-            $expiredReason = ActivityAttemptAuthority::expiredReason($task, $lockedExecution, now(), $run);
-            if ($expiredReason !== null) {
-                return self::ignored($expiredReason);
+            $refusal = self::expiredOutcome(
+                $run,
+                $lockedExecution,
+                $task,
+                $attemptId,
+                $attemptCount,
+                $attemptedOutcome
+            );
+            if ($refusal !== null) {
+                return $refusal;
             }
 
             $runCodec = is_string($run->payload_codec) && $run->payload_codec !== ''
@@ -201,9 +231,16 @@ final class ActivityOutcomeRecorder
             }
 
             // Payload preparation can outlive a claim even while its rows stay locked.
-            $expiredReason = ActivityAttemptAuthority::expiredReason($task, $lockedExecution, now(), $run);
-            if ($expiredReason !== null) {
-                return self::ignored($expiredReason);
+            $refusal = self::expiredOutcome(
+                $run,
+                $lockedExecution,
+                $task,
+                $attemptId,
+                $attemptCount,
+                $attemptedOutcome
+            );
+            if ($refusal !== null) {
+                return $refusal;
             }
 
             if (in_array($run->status, [RunStatus::Completed, RunStatus::Failed], true)) {
@@ -243,9 +280,16 @@ final class ActivityOutcomeRecorder
             $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
             $resolutionEvent = null;
 
-            $expiredReason = ActivityAttemptAuthority::expiredReason($task, $lockedExecution, now(), $run);
-            if ($expiredReason !== null) {
-                return self::ignored($expiredReason);
+            $refusal = self::expiredOutcome(
+                $run,
+                $lockedExecution,
+                $task,
+                $attemptId,
+                $attemptCount,
+                $attemptedOutcome
+            );
+            if ($refusal !== null) {
+                return $refusal;
             }
 
             if ($throwable === null) {
@@ -551,6 +595,7 @@ final class ActivityOutcomeRecorder
         string $taskId,
         string $attemptId,
         int $attemptNumber,
+        string $attemptedOutcome,
         ?int $admissionDeadline,
     ): ?array {
         $original = ActivityAttempt::query()->find($attemptId);
@@ -567,8 +612,8 @@ final class ActivityOutcomeRecorder
         $connection = $original->getConnection();
         $runId = (string) $original->workflow_run_id;
 
-        return SqliteTransaction::run(static function () use ($original): ?array {
-            return self::refusedExpiredAttemptUnderRunLock($original);
+        return SqliteTransaction::run(static function () use ($original, $attemptedOutcome): ?array {
+            return self::refusedExpiredAttemptUnderRunLock($original, $attemptedOutcome);
         }, admission: static function () use ($connection, $runId): void {
             WorkflowRun::on($connection->getName())->whereKey($runId)->toBase()->update([
                 'id' => $runId,
@@ -579,8 +624,10 @@ final class ActivityOutcomeRecorder
     /**
      * @return array{recorded: bool, reason: string|null, next_task: WorkflowTask|null}|null
      */
-    private static function refusedExpiredAttemptUnderRunLock(ActivityAttempt $original): ?array
-    {
+    private static function refusedExpiredAttemptUnderRunLock(
+        ActivityAttempt $original,
+        string $attemptedOutcome,
+    ): ?array {
         $connection = $original->getConnectionName();
         $run = WorkflowRun::on($connection)->whereKey($original->workflow_run_id)->lockForUpdate()->first();
         if (! $run instanceof WorkflowRun || $run->details_pruned_at !== null) {
@@ -600,8 +647,23 @@ final class ActivityOutcomeRecorder
         }
 
         $reason = self::expiredAttemptReason($run, $execution, $task, $attempt);
+        if ($reason === null) {
+            return null;
+        }
 
-        return $reason === null ? null : self::ignored($reason);
+        // The audit append reads the attempt without a lock, so it adds no lock
+        // after this run lock (renewal locks the attempt before the run).
+        ActivityOutcomeRejection::record(
+            $run,
+            $execution,
+            $task,
+            $attempt->id,
+            $attempt->attempt_number,
+            $attemptedOutcome,
+            $reason,
+        );
+
+        return self::ignored($reason);
     }
 
     private static function expiredAttemptReason(
@@ -734,6 +796,35 @@ final class ActivityOutcomeRecorder
             'reason' => $reason,
             'next_task' => null,
         ];
+    }
+
+    /**
+     * @return array{recorded: bool, reason: string|null, next_task: WorkflowTask|null}|null
+     */
+    private static function expiredOutcome(
+        WorkflowRun $run,
+        ActivityExecution $execution,
+        WorkflowTask $task,
+        string $attemptId,
+        int $attemptCount,
+        string $attemptedOutcome,
+    ): ?array {
+        $reason = ActivityAttemptAuthority::expiredReason($task, $execution, now(), $run);
+        if ($reason === null) {
+            return null;
+        }
+
+        ActivityOutcomeRejection::record(
+            $run,
+            $execution,
+            $task,
+            $attemptId,
+            $attemptCount,
+            $attemptedOutcome,
+            $reason
+        );
+
+        return self::ignored($reason);
     }
 
     /**

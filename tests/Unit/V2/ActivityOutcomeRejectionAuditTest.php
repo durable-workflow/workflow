@@ -1,0 +1,402 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tests\Unit\V2;
+
+use Carbon\CarbonInterface;
+use Illuminate\Support\Facades\Date;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
+use PHPUnit\Framework\Attributes\DataProvider;
+use RuntimeException;
+use Tests\Fixtures\V2\TestRetryWorkflow;
+use Tests\TestCase;
+use Workflow\V2\Contracts\ActivityTaskBridge;
+use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
+use Workflow\V2\Contracts\ExternalPayloadStoragePolicy;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\ActivityAttempt;
+use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimelineEntry;
+use Workflow\V2\Support\ActivityOutcomeRejection;
+use Workflow\V2\Support\ActivityTimeoutEnforcer;
+use Workflow\V2\Support\HistoryBudget;
+use Workflow\V2\Support\RunTimelineProjector;
+use Workflow\V2\Support\SqliteTransaction;
+use Workflow\V2\WorkflowStub;
+
+final class ActivityOutcomeRejectionAuditTest extends TestCase
+{
+    protected function setUp(): void
+    {
+        parent::setUp();
+        Queue::fake();
+        $this->freezeTime();
+        config([
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+    }
+
+    public static function lateOutcomes(): array
+    {
+        return [
+            'active completion' => [false, 'completed'],
+            'closed completion' => [true, 'completed'],
+            'active failure' => [false, 'failed'],
+            'closed failure' => [true, 'failed'],
+        ];
+    }
+
+    #[DataProvider('lateOutcomes')]
+    public function testFirstLateOutcomeIsAnImmutableDiagnosticFact(bool $closed, string $outcome): void
+    {
+        [$bridge, $claim, $run] = $this->expiredOriginal($closed);
+        $prefix = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->map->getAttributes()
+            ->all();
+        $before = $this->businessState($run);
+        $this->travel(2)
+            ->seconds();
+        $reply = $this->refusedOutcome($bridge, $claim['activity_attempt_id'], $outcome);
+
+        self::assertFalse($reply['recorded']);
+        self::assertSame('stale_attempt', $reply['reason']);
+        self::assertNull($reply['next_task_id']);
+        $notices = $this->notices($run);
+        self::assertCount(1, $notices);
+        $notice = $notices[0];
+        self::assertSame($claim['task_id'], $notice->workflow_task_id);
+        self::assertSame($claim['activity_execution_id'], $notice->payload['activity_execution_id']);
+        self::assertSame($claim['activity_attempt_id'], $notice->payload['activity_attempt_id']);
+        self::assertSame($claim['lease_owner'], $notice->payload['lease_owner']);
+        self::assertSame(1, $notice->payload['attempt_number']);
+        self::assertSame($outcome, $notice->payload['outcome']);
+        self::assertSame('stale_attempt', $notice->payload['reason']);
+        self::assertSame($before, $this->businessState($run));
+        self::assertSame($prefix, $run->historyEvents()->orderBy('sequence')->limit(count($prefix))
+            ->get()
+            ->map->getAttributes()
+            ->all());
+        foreach (['result', 'failure', 'message', 'stack_trace', 'details', 'task', 'command'] as $field) {
+            self::assertArrayNotHasKey($field, $notice->payload);
+        }
+
+        $retained = $notice->getAttributes();
+        $this->travel(3)
+            ->seconds();
+        $this->refusedOutcome(
+            $bridge,
+            $claim['activity_attempt_id'],
+            $outcome === 'completed' ? 'failed' : 'completed'
+        );
+        self::assertCount(1, $this->notices($run));
+        self::assertSame($retained, $this->notices($run)[0]->getAttributes());
+        self::assertSame($before, $this->businessState($run));
+    }
+
+    public function testPrunedRunIsNotRepopulatedByARefusedOutcome(): void
+    {
+        [$bridge, $claim, $run] = $this->expiredOriginal();
+        $run->forceFill([
+            'details_pruned_at' => now(),
+        ])->save();
+        $before = $this->businessState($run);
+        $history = $run->historyEvents()
+            ->count();
+
+        self::assertFalse($bridge->complete($claim['activity_attempt_id'], 'late')['recorded']);
+        self::assertCount(0, $this->notices($run));
+        self::assertSame($history, $run->historyEvents()->count());
+        self::assertSame($before, $this->businessState($run));
+    }
+
+    public function testDiagnosticRequiresExactAttemptIdDespiteCaseInsensitiveStorage(): void
+    {
+        [, $claim, $run] = $this->expiredOriginal();
+        $alias = strtolower($claim['activity_attempt_id']);
+        if ($alias === $claim['activity_attempt_id']) {
+            $alias = strtoupper($claim['activity_attempt_id']);
+        }
+        self::assertNotSame($claim['activity_attempt_id'], $alias);
+        $lookup = ActivityAttempt::query()->find($alias);
+        if (DB::connection()->getDriverName() === 'mysql') {
+            self::assertInstanceOf(ActivityAttempt::class, $lookup);
+            self::assertSame($claim['activity_attempt_id'], $lookup->id);
+        }
+        $before = $this->businessState($run);
+
+        self::assertNull($this->recordDiagnostic($claim, $run, $alias));
+        self::assertCount(0, $this->notices($run));
+        self::assertSame($before, $this->businessState($run));
+
+        $canonical = $this->recordDiagnostic($claim, $run, $claim['activity_attempt_id']);
+        self::assertInstanceOf(WorkflowHistoryEvent::class, $canonical);
+        self::assertSame($claim['activity_attempt_id'], $canonical->payload['activity_attempt_id']);
+        self::assertSame($claim['lease_owner'], $canonical->payload['lease_owner']);
+        self::assertCount(1, $this->notices($run));
+        self::assertSame($before, $this->businessState($run));
+    }
+
+    public static function missingOriginalOwners(): array
+    {
+        return [
+            'unknown original owner' => [null],
+            'empty original owner' => [''],
+        ];
+    }
+
+    #[DataProvider('missingOriginalOwners')]
+    public function testDiagnosticDoesNotInventMissingOriginalOwnership(?string $owner): void
+    {
+        [, $claim, $run] = $this->expiredOriginal();
+        ActivityAttempt::query()->findOrFail($claim['activity_attempt_id'])->forceFill([
+            'lease_owner' => $owner,
+        ])->save();
+        $before = $this->businessState($run);
+
+        self::assertNull($this->recordDiagnostic($claim, $run, $claim['activity_attempt_id']));
+        self::assertCount(0, $this->notices($run));
+        self::assertSame($before, $this->businessState($run));
+    }
+
+    public function testAuditAppendRollsBackWithItsStorageTransaction(): void
+    {
+        [$bridge, $claim, $run] = $this->expiredOriginal();
+        $before = $this->businessState($run);
+        try {
+            DB::connection($run->getConnectionName())->transaction(function () use ($bridge, $claim, $run): void {
+                $bridge->complete($claim['activity_attempt_id'], 'late');
+                self::assertCount(1, $this->notices($run));
+                throw new RuntimeException('rollback diagnostic');
+            });
+            self::fail('The outer transaction must roll back.');
+        } catch (RuntimeException $exception) {
+            self::assertSame('rollback diagnostic', $exception->getMessage());
+        }
+        self::assertCount(0, $this->notices($run));
+        self::assertSame($before, $this->businessState($run));
+    }
+
+    public function testRetryingACommittedBusinessOutcomeCreatesNoRejectionAudit(): void
+    {
+        [$bridge, $claim, $run] = $this->claimedOriginal();
+        self::assertTrue($bridge->complete($claim['activity_attempt_id'], 'accepted')['recorded']);
+        $history = $run->historyEvents()
+            ->count();
+
+        self::assertFalse($bridge->complete($claim['activity_attempt_id'], 'duplicate')['recorded']);
+        self::assertCount(0, $this->notices($run));
+        self::assertSame($history, $run->historyEvents()->count());
+    }
+
+    public function testDiagnosticAppendKeepsBoundedCountersAndTimelineCurrent(): void
+    {
+        [$bridge, $claim, $run] = $this->expiredOriginal(closed: true);
+        self::assertFalse(
+            RunTimelineProjector::driftStatusForRun($run->fresh())['stale'],
+            'The original timeline must already be current.'
+        );
+        $summary = WorkflowRunSummary::query()->findOrFail($run->id);
+        $summaryBefore = $summary->getAttributes();
+        $prefix = WorkflowTimelineEntry::query()->where('workflow_run_id', $run->id)->orderBy('sequence')
+            ->get()
+            ->map->getAttributes()
+            ->all();
+        $this->travel(2)
+            ->seconds();
+        $bridge->complete($claim['activity_attempt_id'], 'late');
+
+        $summary = $summary->fresh();
+        self::assertTrue(HistoryBudget::hasCompleteSummary($run->fresh(), $summary));
+        self::assertSame((int) $summaryBefore['history_event_count'] + 1, $summary->history_event_count);
+        self::assertGreaterThan((int) $summaryBefore['history_size_bytes'], $summary->history_size_bytes);
+        self::assertEquals($summaryBefore['updated_at'], $summary->getRawOriginal('updated_at'));
+        foreach (['status', 'next_task_id', 'last_failure_id', 'open_wait_count'] as $field) {
+            self::assertEquals($summaryBefore[$field] ?? null, $summary->getRawOriginal($field));
+        }
+        $rows = WorkflowTimelineEntry::query()->where('workflow_run_id', $run->id)->orderBy('sequence')->get();
+        self::assertCount(count($prefix) + 1, $rows);
+        self::assertSame($prefix, $rows->take(count($prefix))->map->getAttributes()->all());
+        self::assertSame('ActivityOutcomeRejected', $rows->last()->type);
+        self::assertStringContainsString('stale_attempt', $rows->last()->summary);
+        self::assertFalse(RunTimelineProjector::driftStatusForRun($run->fresh())['stale']);
+    }
+
+    public static function publicationDeadlines(): array
+    {
+        return [
+            'lease boundary' => ['lease_expired', false],
+            'activity boundary' => ['start_to_close_timeout', false],
+            'run boundary' => ['run_timeout', false],
+            'completed request converted by payload guard' => ['lease_expired', true],
+        ];
+    }
+
+    #[DataProvider('publicationDeadlines')]
+    public function testRefusalDuringPreparationRetainsOriginalOutcome(string $reason, bool $payloadLimit): void
+    {
+        [$bridge, $claim, $run] = $this->claimedOriginal();
+        $task = WorkflowTask::query()->findOrFail($claim['task_id']);
+        $boundary = now()
+            ->addSecond();
+        if ($reason === 'lease_expired') {
+            $boundary = $task->lease_expires_at;
+        } elseif ($reason === 'start_to_close_timeout') {
+            ActivityExecution::query()->findOrFail($claim['activity_execution_id'])->forceFill([
+                'close_deadline_at' => $boundary,
+            ])->save();
+        } else {
+            $run->forceFill([
+                'run_deadline_at' => $boundary,
+            ])->save();
+        }
+        if ($payloadLimit) {
+            config([
+                'workflows.v2.structural_limits.payload_size_bytes' => 1,
+            ]);
+        }
+        $this->app->instance(ExternalPayloadStoragePolicy::class, new class(
+            $boundary
+        ) implements ExternalPayloadStoragePolicy {
+            public function __construct(
+                private readonly CarbonInterface $boundary
+            ) {
+            }
+
+            public function driverFor(?string $namespace): ?ExternalPayloadStorageDriver
+            {
+                Date::setTestNow($this->boundary);
+
+                return null;
+            }
+
+            public function thresholdBytesFor(?string $namespace): ?int
+            {
+                return null;
+            }
+        });
+        $before = $this->businessState($run);
+
+        $reply = $bridge->complete($claim['activity_attempt_id'], 'discarded-private-result');
+
+        self::assertFalse($reply['recorded']);
+        self::assertSame($reason, $reply['reason']);
+        self::assertCount(1, $this->notices($run));
+        $notice = $this->notices($run)[0];
+        self::assertSame('completed', $notice->payload['outcome']);
+        self::assertSame($reason, $notice->payload['reason']);
+        self::assertSame($claim['activity_attempt_id'], $notice->payload['activity_attempt_id']);
+        self::assertStringNotContainsString('discarded-private-result', json_encode($notice->payload));
+        self::assertSame($before, $this->businessState($run));
+    }
+
+    private function expiredOriginal(bool $closed = false): array
+    {
+        [$bridge, $claim, $run] = $this->claimedOriginal();
+        $this->travel(301)
+            ->seconds();
+        self::assertTrue(ActivityTimeoutEnforcer::enforceLeaseExpiry($claim['task_id'])['enforced']);
+        if ($closed) {
+            $this->travel(10)
+                ->seconds();
+            $retry = $bridge->poll(null, null, 1)[0];
+            $replacement = $bridge->claimStatus($retry['task_id'], 'replacement-worker');
+            self::assertTrue($replacement['claimed']);
+            self::assertTrue($bridge->complete($replacement['activity_attempt_id'], 'accepted')['recorded']);
+            $this->runWorkflowTask();
+            self::assertTrue($run->fresh()->status->isTerminal());
+        }
+
+        return [$bridge, $claim, $run];
+    }
+
+    private function claimedOriginal(): array
+    {
+        $workflow = WorkflowStub::make(TestRetryWorkflow::class, 'outcome-rejection-audit');
+        $workflow->start('Ada');
+        $this->runWorkflowTask();
+        $bridge = $this->app->make(ActivityTaskBridge::class);
+        $task = $bridge->poll(null, null, 1)[0];
+        $claim = $bridge->claimStatus($task['task_id'], 'original-worker');
+        self::assertTrue($claim['claimed']);
+
+        return [$bridge, $claim, WorkflowRun::query()->findOrFail($workflow->runId())];
+    }
+
+    private function runWorkflowTask(): void
+    {
+        $task = WorkflowTask::query()->where('task_type', TaskType::Workflow)
+            ->where('status', TaskStatus::Ready)->sole();
+        $this->app->call([new RunWorkflowTask($task->id), 'handle']);
+    }
+
+    private function refusedOutcome(ActivityTaskBridge $bridge, string $attemptId, string $outcome): array
+    {
+        return $outcome === 'completed'
+            ? $bridge->complete($attemptId, new class() {
+                public function __serialize(): array
+                {
+                    throw new RuntimeException('Rejected output must never be serialized.');
+                }
+            })
+            : $bridge->fail($attemptId, [
+                'message' => 'private failure that must not enter audit history',
+            ]);
+    }
+
+    private function recordDiagnostic(array $claim, WorkflowRun $run, string $attemptId): ?WorkflowHistoryEvent
+    {
+        return SqliteTransaction::forTask($claim['task_id'], static function () use ($claim, $run, $attemptId) {
+            $task = WorkflowTask::query()->lockForUpdate()->findOrFail($claim['task_id']);
+            $execution = ActivityExecution::query()->lockForUpdate()->findOrFail($claim['activity_execution_id']);
+            $lockedRun = WorkflowRun::query()->lockForUpdate()->findOrFail($run->id);
+
+            return ActivityOutcomeRejection::record(
+                $lockedRun,
+                $execution,
+                $task,
+                $attemptId,
+                $claim['attempt_number'],
+                'completed',
+                'stale_attempt',
+            );
+        });
+    }
+
+    private function notices(WorkflowRun $run): array
+    {
+        return $run->historyEvents()
+            ->where('event_type', 'ActivityOutcomeRejected')
+            ->get()
+            ->all();
+    }
+
+    private function businessState(WorkflowRun $run): array
+    {
+        $attributes = $run->fresh()
+            ->getAttributes();
+        unset($attributes['last_history_sequence'], $attributes['updated_at']);
+
+        return [
+            $attributes,
+            WorkflowTask::query()->where('workflow_run_id', $run->id)->orderBy('id')->get()
+                ->map->getAttributes()
+                ->all(),
+            ActivityExecution::query()->where('workflow_run_id', $run->id)->orderBy('id')->get()
+                ->map->getAttributes()
+                ->all(),
+            ActivityAttempt::query()->where('workflow_run_id', $run->id)->orderBy('id')->get()
+                ->map->getAttributes()
+                ->all(),
+        ];
+    }
+}

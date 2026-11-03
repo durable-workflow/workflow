@@ -1021,6 +1021,12 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 continue;
             }
 
+            if ($fixture['id'] === 'activity-lease-expired-late-completion-audit') {
+                $this->clearWorkflowState();
+                $this->assertExpiredLeaseLateCompletionAppendsItsAudit($fixture);
+                continue;
+            }
+
             if ($fixture['id'] === 'external-worker-pending-count-limit-rollback') {
                 $this->assertExternalWorkerPendingCountLimitRollsBackCompletion($fixture);
                 continue;
@@ -1457,6 +1463,54 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     /**
      * @param array<string, mixed> $fixture
      */
+    /**
+     * #878: a completion that arrives after its lease expired is refused by the
+     * early expired-attempt fence. That refusal must still append the bounded
+     * audit fact this fixture records, and nothing else.
+     *
+     * @param array<string, mixed> $fixture
+     */
+    private function assertExpiredLeaseLateCompletionAppendsItsAudit(array $fixture): void
+    {
+        $expected = collect($fixture['history'])->firstWhere('event_type', 'ActivityOutcomeRejected')['payload'];
+        $workflow = \Workflow\V2\WorkflowStub::make($fixture['workflow']['type'], 'late-completion-audit');
+        $workflow->start(...$fixture['workflow']['arguments']);
+        $task = \Workflow\V2\Models\WorkflowTask::query()
+            ->where('task_type', TaskType::Workflow)
+            ->where('status', TaskStatus::Ready)
+            ->sole();
+        $this->app->call([new RunWorkflowTask($task->id), 'handle']);
+        $bridge = $this->app->make(ActivityTaskBridge::class);
+        $claim = $bridge->claimStatus($bridge->poll(null, null, 1)[0]['task_id'], $expected['lease_owner']);
+        $this->assertTrue($claim['claimed']);
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $before = $run->historyEvents()
+            ->count();
+
+        $this->travel(301)
+            ->seconds();
+        $reply = $bridge->complete($claim['activity_attempt_id'], 'late result');
+
+        $this->assertFalse($reply['recorded']);
+        $this->assertSame($expected['reason'], $reply['reason']);
+        $events = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get();
+        $this->assertCount($before + 1, $events);
+        $audit = $events->last();
+        $this->assertSame(HistoryEventType::ActivityOutcomeRejected, $audit->event_type);
+        $this->assertSame($claim['activity_attempt_id'], $audit->payload['activity_attempt_id']);
+        // JSON columns do not keep key order on every database (MySQL reorders).
+        $expectedKeys = array_keys($expected);
+        $actualKeys = array_keys($audit->payload);
+        sort($expectedKeys);
+        sort($actualKeys);
+        $this->assertSame($expectedKeys, $actualKeys);
+        foreach (['attempt_number', 'lease_owner', 'outcome', 'reason'] as $key) {
+            $this->assertSame($expected[$key], $audit->payload[$key], $key);
+        }
+    }
+
     private function assertExternalWorkerPendingCountLimitRollsBackCompletion(array $fixture): void
     {
         $cases = $fixture['external_worker_pending_counts'];
