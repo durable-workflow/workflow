@@ -74,11 +74,27 @@ final class FailedRunRedrivePlanTest extends TestCase
         self::assertSame('unrecorded_failure_boundary', $plan['reason']);
     }
 
-    public function testRefusesUnsupportedSideEffectInCompletedPrefix(): void
+    public function testRefusesSideEffectThatSharesAnActivityStep(): void
     {
         $history = $this->linearFailureHistory();
         array_splice($history, 3, 0, [[
             'event_type' => HistoryEventType::SideEffectRecorded,
+            'payload' => [
+                'sequence' => 1,
+            ],
+        ]]);
+
+        $plan = FailedRunRedrivePlan::forRun($this->runWithHistory($history));
+
+        self::assertFalse($plan['eligible']);
+        self::assertSame('duplicate_step_sequence', $plan['reason']);
+    }
+
+    public function testRefusesUnsupportedHistoryInCompletedPrefix(): void
+    {
+        $history = $this->linearFailureHistory();
+        array_splice($history, 3, 0, [[
+            'event_type' => HistoryEventType::ChildWorkflowScheduled,
             'payload' => [
                 'sequence' => 1,
             ],
