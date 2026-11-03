@@ -134,7 +134,7 @@ final class FailedRunRedriveDefinitionCheck
                 $throwable->workflowSequence,
                 'condition_wait_definition',
             ],
-            $throwable instanceof VersionRangeMismatchException => [null, 'version_range'],
+            $throwable instanceof VersionRangeMismatchException => [$throwable->workflowSequence, 'version_range'],
             $throwable instanceof WorkflowEntryArgumentsMismatchException => [null, 'entry_arguments'],
             default => [null, 'replay_error'],
         };

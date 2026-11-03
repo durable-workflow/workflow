@@ -18,6 +18,8 @@ use Tests\Fixtures\V2\TestRedrivePatchedWorkflow;
 use Tests\Fixtures\V2\TestRedriveSignalWorkflow;
 use Tests\Fixtures\V2\TestRedriveTimerWorkflow;
 use Tests\Fixtures\V2\TestRedriveTwoSignalsWorkflow;
+use Tests\Fixtures\V2\TestRedriveVersionedBuggyWorkflow;
+use Tests\Fixtures\V2\TestRedriveVersionedIncompatibleWorkflow;
 use Tests\Fixtures\V2\TestRedriveVisibilityWorkflow;
 use Tests\Fixtures\V2\TestRedriveWorkflow;
 use Tests\Fixtures\V2\TestThrowAfterGreetingWorkflow;
@@ -1016,7 +1018,7 @@ final class V2FailedRunRedriveTest extends TestCase
         config([
             'workflows.v2.history_budget.continue_as_new_event_threshold' => 1,
         ]);
-        $this->assertRefusedWithoutMutation(
+        $overBudget = $this->assertRefusedWithoutMutation(
             'redrive-corrected-1',
             $source,
             'definition_check_over_budget',
@@ -1024,6 +1026,8 @@ final class V2FailedRunRedriveTest extends TestCase
                 'allow_definition_change' => true,
             ],
         );
+        // Only an incompatible prefix names a step.
+        $this->assertArrayNotHasKey('definition_mismatch', $overBudget);
         config([
             'workflows.v2.history_budget.continue_as_new_event_threshold' => 10000,
         ]);
@@ -1056,6 +1060,40 @@ final class V2FailedRunRedriveTest extends TestCase
             RunDetailView::forRun($successor->fresh())['workflow_definition_changed_from'] ?? null,
         );
         $this->assertNull(RunDetailView::forRun($source->fresh())['workflow_definition_changed_from'] ?? null);
+    }
+
+    public function testADefinitionThatDropsTheRecordedVersionNamesTheMarkerStep(): void
+    {
+        WorkflowStub::fake();
+        config([
+            'workflows.v2.types.workflows' => [
+                'test-redrive-versioned' => TestRedriveVersionedBuggyWorkflow::class,
+            ],
+        ]);
+        $workflow = WorkflowStub::make(TestRedriveVersionedBuggyWorkflow::class, 'redrive-versioned-1');
+        $workflow->start('Taylor');
+        $this->assertTrue($workflow->refresh()->failed());
+        $source = WorkflowRun::query()->findOrFail($workflow->runId());
+        $this->assertSame(1, $this->sourceEvent($source, HistoryEventType::VersionMarkerRecorded)->payload['sequence']);
+        config([
+            'workflows.v2.types.workflows' => [
+                'test-redrive-versioned' => TestRedriveVersionedIncompatibleWorkflow::class,
+            ],
+        ]);
+
+        $result = $this->assertRefusedWithoutMutation(
+            'redrive-versioned-1',
+            $source,
+            'definition_incompatible_with_prefix',
+            [
+                'allow_definition_change' => true,
+            ],
+        );
+
+        $this->assertSame([
+            'sequence' => 1,
+            'kind' => 'version_range',
+        ], $result['definition_mismatch'] ?? null);
     }
 
     public function testALaterRedriveOnTheSameDefinitionRecordsNoInheritedChange(): void

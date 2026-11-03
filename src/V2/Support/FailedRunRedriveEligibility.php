@@ -139,12 +139,17 @@ final class FailedRunRedriveEligibility
             );
 
             if ($definitionRefusal !== null) {
-                return array_merge(self::refuse($definitionRefusal['reason']), [
-                    'definition_mismatch' => [
+                $refusal = self::refuse($definitionRefusal['reason']);
+
+                // Only an incompatible prefix has a step to name.
+                if ($definitionRefusal['reason'] === 'definition_incompatible_with_prefix') {
+                    $refusal['definition_mismatch'] = [
                         'sequence' => $definitionRefusal['mismatch_sequence'],
                         'kind' => $definitionRefusal['mismatch_kind'],
-                    ],
-                ]);
+                    ];
+                }
+
+                return $refusal;
             }
 
             $definitionChange = [
