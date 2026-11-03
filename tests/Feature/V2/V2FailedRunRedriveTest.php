@@ -1146,6 +1146,67 @@ final class V2FailedRunRedriveTest extends TestCase
         ])['run']['definition_changed_from'] ?? null);
     }
 
+    public function testRunDetailReportsRedriveLineageAsTypedHistory(): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestRedriveWorkflow::class, 'redrive-lineage-1');
+        $workflow->start('Taylor');
+        $this->assertTrue($workflow->refresh()->failed());
+        $source = WorkflowRun::query()->findOrFail($workflow->runId());
+        $result = app(WorkflowControlPlane::class)->redrive('redrive-lineage-1', $source->id);
+        $this->assertTrue($result['accepted'], (string) $result['reason']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $link = WorkflowLink::query()->where('link_type', 'redrive')->sole();
+
+        $parents = array_values(array_filter(
+            RunDetailView::forRun($successor->fresh())['parents'],
+            static fn (array $entry): bool => $entry['link_type'] === 'redrive',
+        ));
+        $this->assertCount(1, $parents);
+        $this->assertSame($link->id, $parents[0]['id']);
+        $this->assertSame($source->id, $parents[0]['workflow_run_id']);
+        $this->assertSame(1, $parents[0]['run_number']);
+        $this->assertFalse($parents[0]['diagnostic_only']);
+        $this->assertSame('typed_history', $parents[0]['history_authority']);
+
+        $successors = array_values(array_filter(
+            RunDetailView::forRun($source->fresh())['continuedWorkflows'],
+            static fn (array $entry): bool => $entry['link_type'] === 'redrive',
+        ));
+        $this->assertCount(1, $successors);
+        $this->assertSame($successor->id, $successors[0]['workflow_run_id']);
+        $this->assertSame(2, $successors[0]['run_number']);
+        $this->assertFalse($successors[0]['diagnostic_only']);
+        $this->assertSame('typed_history', $successors[0]['history_authority']);
+    }
+
+    public function testARedriveLinkTheSuccessorDoesNotConfirmStaysADiagnosticFallback(): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestRedriveWorkflow::class, 'redrive-lineage-2');
+        $workflow->start('Taylor');
+        $this->assertTrue($workflow->refresh()->failed());
+        $source = WorkflowRun::query()->findOrFail($workflow->runId());
+        $result = app(WorkflowControlPlane::class)->redrive('redrive-lineage-2', $source->id);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        // The successor's history names a different link.
+        $started = $this->sourceEvent($successor, HistoryEventType::WorkflowStarted);
+        $started->forceFill([
+            'payload' => array_merge($started->payload, [
+                'workflow_link_id' => 'another-link',
+            ]),
+        ])->save();
+
+        $successors = array_values(array_filter(
+            RunDetailView::forRun($source->fresh())['continuedWorkflows'],
+            static fn (array $entry): bool => $entry['link_type'] === 'redrive',
+        ));
+        $this->assertCount(1, $successors);
+        $this->assertTrue($successors[0]['diagnostic_only']);
+    }
+
     public function testRedriveReusesOneMarkerForARepeatedPatchCall(): void
     {
         WorkflowStub::fake();

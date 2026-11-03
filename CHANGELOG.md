@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Run detail and describe report a redrive link as typed lineage. The
+  successor's `parents` and the failed run's `continuedWorkflows` show
+  `link_type: redrive` with `history_authority: typed_history` and
+  `diagnostic_only: false`, because the successor's `WorkflowStarted` records
+  `recovery_kind: redrive`, `continued_from_run_id` and `workflow_link_id`.
+  Before, both sides showed a diagnostic-only fallback. A link the successor's
+  history does not confirm stays a diagnostic fallback (#864).
+
 ## 2.19.0 - 2026-11-03
 
 - Rollback: releases before 2.19.0 ignore `reused_recorded_at` on the signal,

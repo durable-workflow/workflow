@@ -24,7 +24,11 @@ final class RunLineageView
         $entries = [];
         $seen = [];
 
-        foreach ([self::continuedParentEntry($run), self::childParentEntry($run)] as $entry) {
+        foreach ([
+            self::continuedParentEntry($run),
+            self::redriveParentEntry($run),
+            self::childParentEntry($run),
+        ] as $entry) {
             if ($entry !== null) {
                 $entries[] = $entry;
                 $seen[self::key((string) $entry['link_type'], (string) $entry['workflow_run_id'])] = true;
@@ -113,6 +117,11 @@ final class RunLineageView
 
                 $seen[self::key('continue_as_new', $continuedRunId)] = true;
             }
+        }
+
+        foreach (self::redriveSuccessorEntries($run) as $entry) {
+            $entries[] = $entry;
+            $seen[self::key('redrive', (string) $entry['workflow_run_id'])] = true;
         }
 
         foreach (self::childSequences($run) as $sequence) {
@@ -275,6 +284,90 @@ final class RunLineageView
         }
 
         return null;
+    }
+
+    /**
+     * A redrive successor names the failed run it continues in its own
+     * WorkflowStarted, so the link is typed history, not a fallback.
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function redriveParentEntry(WorkflowRun $run): ?array
+    {
+        $started = self::workflowStartedEvent($run);
+        $payload = $started?->payload;
+
+        if (! is_array($payload) || ($payload['recovery_kind'] ?? null) !== 'redrive') {
+            return null;
+        }
+
+        $sourceRunId = self::stringValue($payload['continued_from_run_id'] ?? null);
+        $source = $sourceRunId === null ? null : self::resolveRun($run, $sourceRunId);
+
+        if ($sourceRunId === null || (ImportedLineageReferences::imported($run) && $source === null)) {
+            return null;
+        }
+
+        return self::entry(
+            id: self::stringValue($payload['workflow_link_id'] ?? null) ?? sprintf('redrive:%s', $sourceRunId),
+            linkType: 'redrive',
+            sequence: self::intValue($payload['resume_step_sequence'] ?? null),
+            isPrimaryParent: true,
+            relatedRun: $source,
+            instanceId: $run->workflow_instance_id,
+            runId: $sourceRunId,
+            createdAt: $started->recorded_at ?? $started->created_at,
+            historyAuthority: ChildRunHistory::HISTORY_AUTHORITY_TYPED,
+        );
+    }
+
+    /**
+     * The failed run's history is closed, so its redrive successor is typed
+     * only when the successor's WorkflowStarted names this run and this link.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function redriveSuccessorEntries(WorkflowRun $run): array
+    {
+        $entries = [];
+
+        foreach ($run->childLinks as $link) {
+            if (
+                ! $link instanceof WorkflowLink
+                || $link->link_type !== 'redrive'
+                || $link->parent_workflow_run_id !== $run->id
+                || $link->child_workflow_instance_id !== $run->workflow_instance_id
+            ) {
+                continue;
+            }
+
+            $successor = self::resolveRun($run, $link->child_workflow_run_id);
+            $payload = $successor === null ? null : self::workflowStartedEvent($successor)?->payload;
+
+            if (
+                ! is_array($payload)
+                || ($payload['recovery_kind'] ?? null) !== 'redrive'
+                || ($payload['continued_from_run_id'] ?? null) !== $run->id
+                || ($payload['workflow_link_id'] ?? null) !== $link->id
+            ) {
+                continue;
+            }
+
+            $entries[] = self::entry(
+                id: $link->id,
+                linkType: 'redrive',
+                sequence: $link->sequence,
+                isPrimaryParent: true,
+                relatedRun: $successor,
+                instanceId: $run->workflow_instance_id,
+                runId: $successor->id,
+                relationPrefix: 'child',
+                createdAt: $link->created_at,
+                historyAuthority: ChildRunHistory::HISTORY_AUTHORITY_TYPED,
+            );
+        }
+
+        return $entries;
     }
 
     /**
