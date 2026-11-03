@@ -1,0 +1,80 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "redrive-eligibility-report",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestRedriveWorkflow",
+    "arguments": [
+      "Taylor"
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {
+        "recovery_kind": "redrive",
+        "resume_step_sequence": 2
+      },
+      "recorded_at": "2026-11-03T00:05:00+00:00"
+    },
+    {
+      "sequence": 2,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+        "result": "wwHioz3/VYAiNwocSGVsbG8sIFRheWxvciE=",
+        "payload_codec": "avro",
+        "reused_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "reused_recorded_at": "2026-11-03T00:00:00+00:00"
+      },
+      "recorded_at": "2026-11-03T00:05:00+00:00"
+    }
+  ],
+  "redrive_eligibility_report": {
+    "redrivable": {
+      "before": {
+        "can_redrive": true,
+        "redrive_blocked_reason": null
+      },
+      "redrive": "accepted",
+      "source_after": {
+        "can_redrive": false,
+        "redrive_blocked_reason": "already_redriven"
+      },
+      "successor_status": "completed",
+      "successor": {
+        "can_redrive": false,
+        "redrive_blocked_reason": "run_not_failed"
+      }
+    },
+    "refused": {
+      "workflow": "Tests\\Fixtures\\V2\\TestThrowAfterGreetingWorkflow",
+      "arguments": [
+        "Taylor"
+      ],
+      "report": {
+        "can_redrive": false,
+        "redrive_blocked_reason": "unrecorded_failure_boundary"
+      },
+      "redrive_reason": "unrecorded_failure_boundary"
+    }
+  },
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "schedule_activity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestRedriveSecondActivity",
+        "payload_codec": "avro"
+      }
+    ]
+  }
+}
