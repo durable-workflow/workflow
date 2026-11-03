@@ -283,8 +283,8 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             $scenario['service_workflow_type'],
             'regression-corpus-service-fence',
             $options + [
-            'arguments' => Serializer::serializeWithCodec('avro', $fixture['workflow']['arguments']),
-        ]
+                'arguments' => Serializer::serializeWithCodec('avro', $fixture['workflow']['arguments']),
+            ]
         );
         $this->assertTrue($start['started']);
         $source = WorkflowRun::query()->findOrFail($start['workflow_run_id']);
