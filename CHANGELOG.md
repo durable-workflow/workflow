@@ -31,6 +31,18 @@
   null one. Before,
   redriving such a successor was refused with `mismatched_signal_receipt`
   (#864).
+- Run detail and describe report a redrive link as typed lineage. The
+  successor's `parents` and the failed run's `continuedWorkflows` show
+  `link_type: redrive` with `history_authority: typed_history` and
+  `diagnostic_only: false`, because the successor's `WorkflowStarted` records
+  `recovery_kind: redrive`, `continued_from_run_id` and `workflow_link_id`.
+  Both sides take the step (`resume_step_sequence`) and time from that event,
+  not from the link row. The start must name the successor's own run and
+  instance, an earlier run of the same instance as the source, a nonblank link
+  id and a positive resume step, and exactly one redrive link row must join
+  that source to the successor under that link id. Before, both sides showed
+  a diagnostic-only fallback. A link the successor's history does not confirm stays a single
+  diagnostic fallback (#864).
 
 ## 2.19.0 - 2026-11-03
 

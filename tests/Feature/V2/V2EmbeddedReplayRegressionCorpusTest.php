@@ -94,6 +94,7 @@ use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\ReplayDiff;
 use Workflow\V2\Support\RunActivityView;
 use Workflow\V2\Support\RunDetailView;
+use Workflow\V2\Support\RunLineageView;
 use Workflow\V2\Support\RunTimelineProjector;
 use Workflow\V2\Support\ScheduleManager;
 use Workflow\V2\Support\ServiceCallPrincipal;
@@ -635,6 +636,52 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 ->where('event_type', $type)
                 ->sole();
             $this->assertSame($sourceRunId, $reused->payload['reused_from_run_id'] ?? null);
+        }
+    }
+
+    public function testRedriveTypedLineageCorpusLinksBothRunsFromHistory(): void
+    {
+        $path = self::FIXTURE_DIR . '/redrive-typed-lineage.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The redrive typed-lineage evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['redrive_typed_lineage'];
+        self::stopWorkers();
+        config([
+            'queue.default' => 'sync',
+            'queue.connections.sync.driver' => 'sync',
+        ]);
+        Cache::forget('test:redrive:first-calls');
+        Cache::forget('test:redrive:second-calls');
+        $this->clearWorkflowState();
+        WorkflowStub::fake();
+
+        $stub = WorkflowStub::make($fixture['workflow']['type'], 'regression-corpus-redrive-lineage');
+        $stub->start(...$fixture['workflow']['arguments']);
+        $this->assertTrue($stub->refresh()->failed());
+        $source = WorkflowRun::query()->findOrFail($stub->runId());
+        $result = app(WorkflowControlPlane::class)->redrive('regression-corpus-redrive-lineage', $source->id);
+        $this->assertTrue($result['accepted'], (string) $result['reason']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+
+        foreach ([
+            [RunLineageView::parentsForRun($successor->fresh()), $source->id, $scenario['source_run_number']],
+            [
+                RunLineageView::continuedWorkflowsForRun($source->fresh()),
+                $successor->id,
+                $scenario['successor_run_number'],
+            ],
+        ] as [$entries, $runId, $runNumber]) {
+            $redrive = array_values(array_filter(
+                $entries,
+                static fn (array $entry): bool => $entry['link_type'] === $scenario['link_type'],
+            ));
+            $this->assertCount(1, $redrive);
+            $this->assertSame($runId, $redrive[0]['workflow_run_id']);
+            $this->assertSame($runNumber, $redrive[0]['run_number']);
+            $this->assertSame($scenario['history_authority'], $redrive[0]['history_authority']);
+            $this->assertSame($scenario['diagnostic_only'], $redrive[0]['diagnostic_only']);
         }
     }
 
