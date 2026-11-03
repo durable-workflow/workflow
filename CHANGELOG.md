@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Replay verification accepts a failed run that replays to its recorded
+  failure. Before, `ReplayDiff` and `workflow:v2:replay-verify` reported
+  `replay_error` for any run that failed because workflow code threw, even when
+  replay reproduced the recorded `WorkflowFailed` exception. A matching
+  exception class and message now report `replayed` with
+  `replay.recorded_failure`. A different exception stays `replay_error` and
+  names the recorded failure in `error.recorded_failure` (#983).
+
 ## 2.17.0 - 2026-11-02
 
 - Do not export a retention-pruned run as complete history. After

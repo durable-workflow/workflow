@@ -213,6 +213,23 @@ own migration before invoking retention cleanup. The run and its configured
 detail models must use the same workflow storage connection for the deletion
 and marker to be atomic.
 
+### Replay of a failed run
+
+A run that failed because workflow code threw replays to that exception.
+`ReplayDiff` compares it with the run's recorded `WorkflowFailed` failure. When
+the exception class and message match, the report is `status: replayed` and
+`reason: none`. `replay.recorded_failure` names the class and message, and
+`replay.sequence` is null because the workflow ended by throwing.
+`workflow:v2:replay-verify` then reports `ok`. Only the class is compared when
+the bundle's `redaction.applied` is true, because a redactor may rewrite the
+recorded message.
+
+Any other exception is still `status: failed` and `reason: replay_error`. When
+the run recorded a failure, `error.recorded_failure` names it so the report
+shows both exceptions. A run whose history did not fail reports the exception
+as before. These fields are additive, and the replay-diff reason set is
+unchanged.
+
 ### Workflow command grammar ownership
 
 `Workflow\V2\Support\WorkflowCommandNormalizer` is the single source of
