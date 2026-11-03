@@ -212,6 +212,27 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
         $this->assertSame($sourceAttributes, $source->fresh()->typedSearchAttributes());
     }
 
+    public function testDescribeReportsAServiceRunAsRedrivableWhenItsFingerprintIsRecorded(): void
+    {
+        $source = $this->failedSource();
+
+        $describe = $this->controlPlane->describe($source->workflow_instance_id, [
+            'run_id' => $source->id,
+            'namespace' => 'tenant-redrive',
+        ]);
+
+        $this->assertTrue($describe['actions']['can_redrive'] ?? null);
+        $this->assertArrayHasKey('redrive_blocked_reason', $describe['actions']);
+        $this->assertNull($describe['actions']['redrive_blocked_reason']);
+
+        $wrongWorker = $this->redriveOptions();
+        $wrongWorker['external_workflow_definition_fingerprint'] = 'worker-definition-2';
+        $this->assertSame(
+            'workflow_definition_unavailable_or_changed',
+            $this->controlPlane->redrive($source->workflow_instance_id, $source->id, $wrongWorker)['reason'],
+        );
+    }
+
     #[DataProvider('unsafeHistories')]
     public function testUnsafeRecordedHistoryReturnsItsSpecificReasonWithoutMutation(string $case, string $reason): void
     {

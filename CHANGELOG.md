@@ -7,6 +7,11 @@
   `unsupported_visibility_metadata`. The successor now inherits the start
   values, as continue-as-new does. A value upserted by workflow code is still
   refused until redrive replays that part of the history (#864).
+- Run detail and describe report whether redrive would accept a run.
+  `can_redrive` and `redrive_blocked_reason` come from the same decision
+  `redrive()` applies, so the action an operator sees matches what redrive
+  does. Runs that are not failed report `run_not_failed`, and a source that
+  was already redriven reports `already_redriven` (#864).
 
 ## 2.17.1 - 2026-11-03
 

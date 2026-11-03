@@ -119,99 +119,29 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
 
             $currentRun = CurrentRunResolver::forInstance($instance, lockForUpdate: true);
 
-            if ($currentRun?->id !== $source->id) {
-                $result['reason'] = 'source_run_not_current';
+            $externalFingerprint = $options['external_workflow_definition_fingerprint'] ?? null;
+            $eligibility = FailedRunRedriveEligibility::evaluate(
+                $source,
+                $currentRun,
+                is_string($externalFingerprint) ? $externalFingerprint : null,
+            );
+
+            if ($eligibility['reason'] !== null || $eligibility['plan'] === null) {
+                $result['reason'] = $eligibility['reason'];
                 $result['status'] = 409;
 
                 return;
             }
 
-            $plan = FailedRunRedrivePlan::forRun($source);
-
-            if (! $plan['eligible']) {
-                $result['reason'] = $plan['reason'];
-                $result['status'] = 409;
-
-                return;
-            }
-
-            // Start-time memos and search attributes carry to the successor.
-            // Values upserted by workflow code belong to the replayed prefix,
-            // which redrive does not copy yet.
-            if (
-                $source->memos()
-                    ->where('upserted_at_sequence', '>', 0)
-                    ->exists()
-                || $source->searchAttributes()
-                    ->where('upserted_at_sequence', '>', 0)
-                    ->exists()
-            ) {
-                $result['reason'] = 'unsupported_visibility_metadata';
-                $result['status'] = 409;
-
-                return;
-            }
-
-            if (
-                (is_string($source->arguments) && ExternalPayloads::isStoredReference($source->arguments))
-                || WorkflowLink::query()
-                    ->where('child_workflow_run_id', $source->id)
-                    ->where('link_type', 'child_workflow')
-                    ->exists()
-            ) {
-                $result['reason'] = 'unsupported_source_link_or_payload';
-                $result['status'] = 409;
-
-                return;
-            }
-
+            $plan = $eligibility['plan'];
+            $startedPayload = $eligibility['started_payload'];
             $now = now();
             $executionDeadlineAt = $source->execution_deadline_at;
-            if ($executionDeadlineAt !== null && $now->gte($executionDeadlineAt)) {
-                $result['reason'] = 'execution_deadline_elapsed';
-                $result['status'] = 409;
-
-                return;
-            }
             $runTimeoutSeconds = $source->run_timeout_seconds;
             $runDeadlineAt = $runTimeoutSeconds !== null && $runTimeoutSeconds > 0
                 ? $now->copy()
                     ->addSeconds($runTimeoutSeconds)
                 : null;
-
-            $workflowClass = $this->tryResolveWorkflowClass($source->workflow_type)
-                ?? (is_subclass_of($source->workflow_class, \Workflow\V2\Workflow::class)
-                    ? $source->workflow_class
-                    : null);
-            $startedEvent = $source->historyEvents->firstWhere('event_type', HistoryEventType::WorkflowStarted);
-            $startedPayload = $startedEvent instanceof WorkflowHistoryEvent && is_array($startedEvent->payload)
-                ? $startedEvent->payload
-                : [];
-            unset($startedPayload['command'], $startedPayload['task']);
-            if (! empty($startedPayload['parent_workflow_run_id'])) {
-                $result['reason'] = 'unsupported_source_metadata';
-                $result['status'] = 409;
-
-                return;
-            }
-            $sourceFingerprint = $startedPayload['workflow_definition_fingerprint'] ?? null;
-            $externalFingerprint = $options['external_workflow_definition_fingerprint'] ?? null;
-            $localDefinitionMatches = $workflowClass !== null
-                && is_string($sourceFingerprint)
-                && $sourceFingerprint === WorkflowDefinition::fingerprint($workflowClass);
-            $externalDefinitionMatches = $workflowClass === null
-                && $source->workflow_class === $source->workflow_type
-                && is_string($sourceFingerprint)
-                && $sourceFingerprint !== ''
-                && is_string($externalFingerprint)
-                && hash_equals($sourceFingerprint, $externalFingerprint);
-
-            if (! $localDefinitionMatches && ! $externalDefinitionMatches) {
-                $result['reason'] = 'workflow_definition_unavailable_or_changed';
-                $result['status'] = 409;
-
-                return;
-            }
 
             if ($requestId !== null && WorkflowCommand::query()
                 ->where('workflow_instance_id', $instance->id)
@@ -1085,6 +1015,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
         $startedPayload = $startedEvent instanceof WorkflowHistoryEvent && is_array($startedEvent->payload)
             ? $startedEvent->payload
             : [];
+        $redriveBlockedReason = FailedRunRedriveEligibility::blockedReason($run, $currentRun);
 
         return [
             'found' => true,
@@ -1136,6 +1067,8 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 'can_terminate' => $isCurrentRun && $isOpen,
                 'can_repair' => $isCurrentRun && $isOpen,
                 'can_archive' => $run->status->isTerminal() && $run->archived_at === null,
+                'can_redrive' => $redriveBlockedReason === null,
+                'redrive_blocked_reason' => $redriveBlockedReason,
             ],
             'reason' => null,
         ];

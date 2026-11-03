@@ -306,6 +306,8 @@ final class DefaultWorkflowControlPlaneRoutingContractTest extends TestCase
             'can_terminate' => false,
             'can_repair' => false,
             'can_archive' => true,
+            'can_redrive' => false,
+            'redrive_blocked_reason' => $historical ? 'already_redriven' : 'run_not_failed',
         ], $result['actions']);
         $this->assertSame(1, (int) Cache::get('test:redrive:first-calls'));
         $this->assertSame(2, (int) Cache::get('test:redrive:second-calls'));
