@@ -14,7 +14,21 @@ use Workflow\V2\Models\WorkflowRun;
 final class FailedRunRedrivePlan
 {
     /**
-     * @return array{eligible: bool, reason: string|null, resume_step_sequence: int|null, completed: list<array<string, mixed>>}
+     * Reused steps are every step before the failed activity, in step order.
+     * `completed` lists only the reused activity completions.
+     *
+     * @return array{
+     *     eligible: bool,
+     *     reason: string|null,
+     *     resume_step_sequence: int|null,
+     *     completed: list<array<string, mixed>>,
+     *     reused_steps: list<array{
+     *         event_type: HistoryEventType,
+     *         payload: array<string, mixed>,
+     *         recorded_at: string|null,
+     *         scheduled_payload?: array<string, mixed>
+     *     }>
+     * }
      */
     public static function forRun(WorkflowRun $run): array
     {
@@ -29,6 +43,8 @@ final class FailedRunRedrivePlan
         $started = null;
         $failure = null;
         $activityEvents = [];
+        $markerEvents = [];
+        $timerEvents = [];
         $lastActivityEvent = null;
 
         foreach ($events as $event) {
@@ -64,6 +80,50 @@ final class FailedRunRedrivePlan
                 if ($started !== null) {
                     return self::reject('unexpected_start');
                 }
+
+                continue;
+            }
+
+            if (in_array($event->event_type, [
+                HistoryEventType::SideEffectRecorded,
+                HistoryEventType::VersionMarkerRecorded,
+            ], true)) {
+                $payload = $event->payload;
+                $sequence = is_array($payload) ? ($payload['sequence'] ?? null) : null;
+
+                if ($started === null || ! is_int($sequence) || $sequence < 1) {
+                    return self::reject('invalid_step_sequence');
+                }
+
+                if (isset($markerEvents[$sequence])) {
+                    return self::reject('duplicate_step_sequence');
+                }
+
+                if (
+                    $event->event_type === HistoryEventType::SideEffectRecorded
+                    && self::isExternalResult($payload['result'] ?? null)
+                ) {
+                    return self::reject('external_side_effect_result_not_supported');
+                }
+
+                $markerEvents[$sequence] = $event;
+
+                continue;
+            }
+
+            if (in_array($event->event_type, [HistoryEventType::TimerScheduled, HistoryEventType::TimerFired], true)) {
+                $payload = $event->payload;
+                $sequence = is_array($payload) ? ($payload['sequence'] ?? null) : null;
+
+                if ($started === null || ! is_int($sequence) || $sequence < 1) {
+                    return self::reject('invalid_step_sequence');
+                }
+
+                if (! self::isPlainTimer($payload)) {
+                    return self::reject('unsupported_timer');
+                }
+
+                $timerEvents[$sequence][] = $event;
 
                 continue;
             }
@@ -111,13 +171,62 @@ final class FailedRunRedrivePlan
             return self::reject('unrecorded_failure_boundary');
         }
 
-        if (count($activityEvents) !== $boundary) {
+        foreach ([...array_keys($markerEvents), ...array_keys($timerEvents)] as $sequence) {
+            if ($sequence >= $boundary) {
+                return self::reject('invalid_failed_step');
+            }
+        }
+
+        foreach (array_keys($timerEvents) as $sequence) {
+            if (isset($activityEvents[$sequence]) || isset($markerEvents[$sequence])) {
+                return self::reject('duplicate_step_sequence');
+            }
+        }
+
+        foreach (array_keys($markerEvents) as $sequence) {
+            if (isset($activityEvents[$sequence])) {
+                return self::reject('duplicate_step_sequence');
+            }
+        }
+
+        if (count($activityEvents) + count($markerEvents) + count($timerEvents) !== $boundary) {
             return self::reject('activity_sequence_gap');
         }
 
         $completed = [];
+        $reusedSteps = [];
 
         for ($sequence = 1; $sequence <= $boundary; ++$sequence) {
+            $marker = $markerEvents[$sequence] ?? null;
+
+            if ($marker instanceof WorkflowHistoryEvent) {
+                $markerPayload = $marker->payload;
+                // The task and command are the source run's recording
+                // context, not part of the reused step.
+                unset($markerPayload['task'], $markerPayload['command']);
+                $reusedSteps[] = [
+                    'event_type' => $marker->event_type,
+                    'payload' => $markerPayload,
+                    'recorded_at' => $marker->recorded_at?->toIso8601String(),
+                ];
+
+                continue;
+            }
+
+            $timerStep = $timerEvents[$sequence] ?? null;
+
+            if (is_array($timerStep)) {
+                $timer = self::firedTimerStep($timerStep);
+
+                if ($timer === null) {
+                    return self::reject('incomplete_timer_step');
+                }
+
+                $reusedSteps[] = $timer;
+
+                continue;
+            }
+
             $stepEvents = $activityEvents[$sequence] ?? null;
 
             if (! is_array($stepEvents)) {
@@ -177,11 +286,7 @@ final class FailedRunRedrivePlan
                 return self::reject('missing_activity_result');
             }
 
-            if (is_array($payload['result']) && isset($payload['result']['external_storage'])) {
-                return self::reject('external_activity_result_not_supported');
-            }
-
-            if (is_string($payload['result']) && ExternalPayloads::isStoredReference($payload['result'])) {
+            if (self::isExternalResult($payload['result'])) {
                 return self::reject('external_activity_result_not_supported');
             }
 
@@ -198,6 +303,11 @@ final class FailedRunRedrivePlan
             }
 
             $completed[] = $payload;
+            $reusedSteps[] = [
+                'event_type' => HistoryEventType::ActivityCompleted,
+                'payload' => $payload,
+                'recorded_at' => $completion->recorded_at?->toIso8601String(),
+            ];
         }
 
         if (
@@ -213,11 +323,89 @@ final class FailedRunRedrivePlan
             'reason' => null,
             'resume_step_sequence' => $boundary,
             'completed' => $completed,
+            'reused_steps' => $reusedSteps,
         ];
     }
 
     /**
-     * @return array{eligible: false, reason: string, resume_step_sequence: null, completed: []}
+     * A durable timer authored with timer(). Condition and signal timeouts,
+     * cancellation cleanup and timers in a scope or parallel group belong to
+     * history redrive does not copy yet.
+     *
+     * @param array<string, mixed>|null $payload
+     */
+    private static function isPlainTimer(?array $payload): bool
+    {
+        if (! is_array($payload) || ($payload['timer_kind'] ?? null) !== null) {
+            return false;
+        }
+
+        foreach ([
+            'cancellation_cleanup',
+            'cancellation_scope_id',
+            'parallel_group_id',
+            'condition_wait_id',
+            'signal_wait_id',
+        ] as $key) {
+            if (($payload[$key] ?? null) !== null) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @param list<WorkflowHistoryEvent> $events
+     *
+     * @return array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null, scheduled_payload: array<string, mixed>}|null
+     */
+    private static function firedTimerStep(array $events): ?array
+    {
+        if (count($events) !== 2) {
+            return null;
+        }
+
+        [$scheduled, $fired] = $events;
+
+        if (
+            $scheduled->event_type !== HistoryEventType::TimerScheduled
+            || $fired->event_type !== HistoryEventType::TimerFired
+            || ! is_string($scheduled->payload['timer_id'] ?? null)
+            || ($scheduled->payload['timer_id'] ?? null) !== ($fired->payload['timer_id'] ?? null)
+        ) {
+            return null;
+        }
+
+        $scheduledPayload = $scheduled->payload;
+        $firedPayload = $fired->payload;
+        // The task and command are the source run's recording context, and
+        // the successor gets its own timer identity.
+        unset(
+            $scheduledPayload['task'],
+            $scheduledPayload['command'],
+            $scheduledPayload['timer_id'],
+            $firedPayload['task'],
+            $firedPayload['command'],
+            $firedPayload['timer_id'],
+        );
+
+        return [
+            'event_type' => HistoryEventType::TimerFired,
+            'payload' => $firedPayload,
+            'recorded_at' => $fired->recorded_at?->toIso8601String(),
+            'scheduled_payload' => $scheduledPayload,
+        ];
+    }
+
+    private static function isExternalResult(mixed $result): bool
+    {
+        return (is_array($result) && isset($result['external_storage']))
+            || (is_string($result) && ExternalPayloads::isStoredReference($result));
+    }
+
+    /**
+     * @return array{eligible: false, reason: string, resume_step_sequence: null, completed: [], reused_steps: []}
      */
     private static function reject(string $reason): array
     {
@@ -226,6 +414,7 @@ final class FailedRunRedrivePlan
             'reason' => $reason,
             'resume_step_sequence' => null,
             'completed' => [],
+            'reused_steps' => [],
         ];
     }
 }

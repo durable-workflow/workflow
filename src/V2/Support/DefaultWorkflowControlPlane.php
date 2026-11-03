@@ -120,93 +120,29 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
 
             $currentRun = CurrentRunResolver::forInstance($instance, lockForUpdate: true);
 
-            if ($currentRun?->id !== $source->id) {
-                $result['reason'] = 'source_run_not_current';
+            $externalFingerprint = $options['external_workflow_definition_fingerprint'] ?? null;
+            $eligibility = FailedRunRedriveEligibility::evaluate(
+                $source,
+                $currentRun,
+                is_string($externalFingerprint) ? $externalFingerprint : null,
+            );
+
+            if ($eligibility['reason'] !== null || $eligibility['plan'] === null) {
+                $result['reason'] = $eligibility['reason'];
                 $result['status'] = 409;
 
                 return;
             }
 
-            $plan = FailedRunRedrivePlan::forRun($source);
-
-            if (! $plan['eligible']) {
-                $result['reason'] = $plan['reason'];
-                $result['status'] = 409;
-
-                return;
-            }
-
-            if ($source->memos()->exists() || $source->searchAttributes()->exists()) {
-                $result['reason'] = 'unsupported_visibility_metadata';
-                $result['status'] = 409;
-
-                return;
-            }
-
-            if (
-                (is_string($source->arguments) && ExternalPayloads::isStoredReference($source->arguments))
-                || WorkflowLink::query()
-                    ->where('child_workflow_run_id', $source->id)
-                    ->where('link_type', 'child_workflow')
-                    ->exists()
-            ) {
-                $result['reason'] = 'unsupported_source_link_or_payload';
-                $result['status'] = 409;
-
-                return;
-            }
-
+            $plan = $eligibility['plan'];
+            $startedPayload = $eligibility['started_payload'];
             $now = now();
             $executionDeadlineAt = $source->execution_deadline_at;
-            if ($executionDeadlineAt !== null && $now->gte($executionDeadlineAt)) {
-                $result['reason'] = 'execution_deadline_elapsed';
-                $result['status'] = 409;
-
-                return;
-            }
             $runTimeoutSeconds = $source->run_timeout_seconds;
             $runDeadlineAt = $runTimeoutSeconds !== null && $runTimeoutSeconds > 0
                 ? $now->copy()
                     ->addSeconds($runTimeoutSeconds)
                 : null;
-
-            $workflowClass = $this->tryResolveWorkflowClass($source->workflow_type)
-                ?? (is_subclass_of($source->workflow_class, \Workflow\V2\Workflow::class)
-                    ? $source->workflow_class
-                    : null);
-            $startedEvent = $source->historyEvents->firstWhere('event_type', HistoryEventType::WorkflowStarted);
-            $startedPayload = $startedEvent instanceof WorkflowHistoryEvent && is_array($startedEvent->payload)
-                ? $startedEvent->payload
-                : [];
-            unset($startedPayload['command'], $startedPayload['task']);
-            if (
-                ! empty($startedPayload['memo'])
-                || ! empty($startedPayload['search_attributes'])
-                || ! empty($startedPayload['parent_workflow_run_id'])
-            ) {
-                $result['reason'] = 'unsupported_source_metadata';
-                $result['status'] = 409;
-
-                return;
-            }
-            $sourceFingerprint = $startedPayload['workflow_definition_fingerprint'] ?? null;
-            $externalFingerprint = $options['external_workflow_definition_fingerprint'] ?? null;
-            $localDefinitionMatches = $workflowClass !== null
-                && is_string($sourceFingerprint)
-                && $sourceFingerprint === WorkflowDefinition::fingerprint($workflowClass);
-            $externalDefinitionMatches = $workflowClass === null
-                && $source->workflow_class === $source->workflow_type
-                && is_string($sourceFingerprint)
-                && $sourceFingerprint !== ''
-                && is_string($externalFingerprint)
-                && hash_equals($sourceFingerprint, $externalFingerprint);
-
-            if (! $localDefinitionMatches && ! $externalDefinitionMatches) {
-                $result['reason'] = 'workflow_definition_unavailable_or_changed';
-                $result['status'] = 409;
-
-                return;
-            }
 
             if ($requestId !== null && WorkflowCommand::query()
                 ->where('workflow_instance_id', $instance->id)
@@ -304,23 +240,54 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 ],
             ), null, $command);
 
-            foreach ($plan['completed'] as $completion) {
+            app(MemoUpsertService::class)->inheritFromParent($source, $continuedRun, 1);
+            app(SearchAttributeUpsertService::class)->inheritFromParent($source, $continuedRun, 1);
+
+            foreach ($plan['reused_steps'] as $step) {
+                $reused = $step['payload'];
+                // A step reused more than once keeps the time it first ran.
+                $reusedRecordedAt = is_string($reused['reused_recorded_at'] ?? null)
+                    ? $reused['reused_recorded_at']
+                    : $step['recorded_at'];
+
+                if ($step['event_type'] === HistoryEventType::TimerFired) {
+                    // The timer already fired, so the successor records it
+                    // fired with no timer row or task to wait on.
+                    $timerId = (string) Str::ulid();
+                    WorkflowHistoryEvent::record($continuedRun, HistoryEventType::TimerScheduled, array_merge(
+                        $step['scheduled_payload'] ?? [],
+                        [
+                            'timer_id' => $timerId,
+                        ],
+                    ));
+                    WorkflowHistoryEvent::record($continuedRun, HistoryEventType::TimerFired, array_merge($reused, [
+                        'timer_id' => $timerId,
+                        'reused_from_run_id' => $source->id,
+                        'reused_recorded_at' => $reusedRecordedAt,
+                    ]));
+
+                    continue;
+                }
+
+                if ($step['event_type'] !== HistoryEventType::ActivityCompleted) {
+                    WorkflowHistoryEvent::record($continuedRun, $step['event_type'], array_merge($reused, [
+                        'reused_from_run_id' => $source->id,
+                        'reused_recorded_at' => $reusedRecordedAt,
+                    ]));
+
+                    continue;
+                }
+
                 WorkflowHistoryEvent::record($continuedRun, HistoryEventType::ActivityCompleted, [
                     'activity_execution_id' => (string) Str::ulid(),
-                    'activity_class' => $completion['activity_class'] ?? null,
-                    'activity_type' => $completion['activity_type'],
-                    'sequence' => $completion['sequence'],
-                    'result' => $completion['result'],
-                    'payload_codec' => $completion['payload_codec'],
+                    'activity_class' => $reused['activity_class'] ?? null,
+                    'activity_type' => $reused['activity_type'],
+                    'sequence' => $reused['sequence'],
+                    'result' => $reused['result'],
+                    'payload_codec' => $reused['payload_codec'],
                     'reused_from_run_id' => $source->id,
-                    'reused_activity_execution_id' => $completion['activity_execution_id'] ?? null,
-                    'reused_recorded_at' => is_string($completion['reused_recorded_at'] ?? null)
-                        ? $completion['reused_recorded_at']
-                        : $source->historyEvents
-                            ->first(
-                                static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ActivityCompleted
-                                && ($event->payload['sequence'] ?? null) === $completion['sequence']
-                            )?->recorded_at?->toIso8601String(),
+                    'reused_activity_execution_id' => $reused['activity_execution_id'] ?? null,
+                    'reused_recorded_at' => $reusedRecordedAt,
                 ]);
             }
 
@@ -1077,6 +1044,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
         $startedPayload = $startedEvent instanceof WorkflowHistoryEvent && is_array($startedEvent->payload)
             ? $startedEvent->payload
             : [];
+        $redriveBlockedReason = FailedRunRedriveEligibility::blockedReason($run, $currentRun);
 
         return [
             'found' => true,
@@ -1128,6 +1096,8 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 'can_terminate' => $isCurrentRun && $isOpen,
                 'can_repair' => $isCurrentRun && $isOpen,
                 'can_archive' => $run->status->isTerminal() && $run->archived_at === null,
+                'can_redrive' => $redriveBlockedReason === null,
+                'redrive_blocked_reason' => $redriveBlockedReason,
             ],
             'reason' => null,
         ];

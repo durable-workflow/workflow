@@ -281,7 +281,7 @@ final class QueryStateReplayer
 
                 if ($timerFired !== null) {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
-                    $current = $workflowExecution->send(true, $timerFired->recorded_at);
+                    $current = $workflowExecution->send(true, RedriveReplayClock::recordedAt($timerFired));
 
                     ++$sequence;
 
@@ -338,7 +338,7 @@ final class QueryStateReplayer
                 $this->syncWorkflowCursor($workflow, $sequence + 1);
                 $current = $workflowExecution->send(
                     $this->sideEffectResult($sideEffectEvent, $run),
-                    $sideEffectEvent->recorded_at,
+                    RedriveReplayClock::recordedAt($sideEffectEvent),
                 );
 
                 ++$sequence;
@@ -367,7 +367,7 @@ final class QueryStateReplayer
                 $this->syncWorkflowCursor($workflow, $sequence + ($resolution->advancesSequence ? 1 : 0));
                 $current = $workflowExecution->send(
                     $current->resolveValue($resolution->version),
-                    $versionEvent?->recorded_at
+                    RedriveReplayClock::recordedAt($versionEvent)
                 );
 
                 if ($resolution->advancesSequence) {
@@ -1069,7 +1069,7 @@ final class QueryStateReplayer
                     'resolved' => true,
                     'value' => true,
                     'failure' => null,
-                    'recorded_at' => $event->recorded_at,
+                    'recorded_at' => RedriveReplayClock::recordedAt($event),
                 ];
             }
             $timer = $run->timers->firstWhere('sequence', $sequence);

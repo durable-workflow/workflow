@@ -22,6 +22,7 @@ $temporaryRoot = createTemporaryDirectory();
 
 try {
     auditSupportedMajors($temporaryRoot, $policy);
+    assertRemovedMajorsAreRefused($root, $temporaryRoot, $policy);
 } finally {
     removeTemporaryDirectory($temporaryRoot);
 }
@@ -126,8 +127,137 @@ function validatePolicy(string $root, array $policy, array $composer, array $upg
         fail('The shipped Laravel dependency security policy is not discoverable from package metadata.');
     }
 
+    validateRemovedMajors($majors, $policy['removed_majors'] ?? [], $expectedConstraint);
     validateAcceptedAdvisories($majors, $acceptedAdvisories);
     validateDependabotConfiguration($root);
+}
+
+/**
+ * @param array<string, mixed> $majors
+ */
+function validateRemovedMajors(array $majors, mixed $removedMajors, string $constraint): void
+{
+    if (! is_array($removedMajors)) {
+        fail('Removed Laravel majors must be an object keyed by major.');
+    }
+
+    foreach ($removedMajors as $majorKey => $removal) {
+        $major = (string) $majorKey;
+
+        if (! ctype_digit($major) || ! is_array($removal)) {
+            fail('Every removed Laravel major must have an object record.');
+        }
+
+        if (isset($majors[$major]) || preg_match('/(^|\|)\^' . $major . '\./', $constraint) === 1) {
+            fail(sprintf('Laravel %s is both removed and still supported.', $major));
+        }
+
+        $lastMinor = $removal['last_workflow_minor'] ?? null;
+        $reason = $removal['reason'] ?? null;
+
+        if (! is_string($lastMinor) || preg_match('/^\d+\.\d+$/', $lastMinor) !== 1) {
+            fail(sprintf('Removed Laravel %s must name the last Workflow minor that supports it.', $major));
+        }
+
+        if (! is_string($reason) || trim($reason) === '') {
+            fail(sprintf('Removed Laravel %s must explain the removal.', $major));
+        }
+    }
+}
+
+/**
+ * Resolve this package from source with each removed Laravel major and
+ * require Composer to refuse it. The newest supported floor must resolve,
+ * so a refusal can't come from a broken fixture.
+ */
+function assertRemovedMajorsAreRefused(string $root, string $temporaryRoot, array $policy): void
+{
+    $package = (string) $policy['package'];
+    $supported = array_map('strval', array_keys($policy['supported_majors']));
+    $newest = (string) max(array_map('intval', $supported));
+    $control = resolveWithThisPackage(
+        $root,
+        $temporaryRoot . '/workflow-laravel-' . $newest . '-control',
+        $package,
+        '^' . $policy['supported_majors'][$newest]['minimum'],
+    );
+
+    if ($control['exit_code'] !== 0) {
+        fail(
+            sprintf("This package does not resolve with supported Laravel %s:\n%s", $newest, trim($control['stderr']))
+        );
+    }
+
+    foreach (array_keys($policy['removed_majors'] ?? []) as $majorKey) {
+        $major = (string) $majorKey;
+        $removed = resolveWithThisPackage(
+            $root,
+            $temporaryRoot . '/workflow-laravel-' . $major . '-removed',
+            $package,
+            $major . '.*',
+        );
+
+        if ($removed['exit_code'] === 0) {
+            fail(sprintf('Composer resolved this package with removed Laravel %s.', $major));
+        }
+
+        if (! str_contains($removed['stderr'], 'durable-workflow/workflow') || ! str_contains(
+            $removed['stderr'],
+            $package
+        )) {
+            fail(sprintf("Composer refused Laravel %s for an unrelated reason:\n%s", $major, trim($removed['stderr'])));
+        }
+
+        echo sprintf("Laravel %s is refused; Laravel %s control resolves.\n", $major, $newest);
+    }
+}
+
+/**
+ * @return array{exit_code: int, stdout: string, stderr: string}
+ */
+function resolveWithThisPackage(string $root, string $auditRoot, string $package, string $constraint): array
+{
+    if (! mkdir($auditRoot, 0700, true) && ! is_dir($auditRoot)) {
+        fail('Unable to create the removed-major resolution directory.');
+    }
+
+    $manifest = [
+        'name' => 'durable-workflow/laravel-removed-major-resolution',
+        'type' => 'project',
+        'minimum-stability' => 'dev',
+        'prefer-stable' => true,
+        'repositories' => [[
+            'type' => 'path',
+            'url' => $root,
+            'options' => [
+                'symlink' => false,
+                'versions' => [
+                    'durable-workflow/workflow' => 'dev-source',
+                ],
+            ],
+        ]],
+        'require' => [
+            'durable-workflow/workflow' => 'dev-source',
+            $package => $constraint,
+        ],
+    ];
+
+    file_put_contents(
+        $auditRoot . '/composer.json',
+        json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n",
+    );
+
+    return runCommand([
+        'composer',
+        'update',
+        '--no-install',
+        '--no-interaction',
+        '--no-progress',
+        '--no-blocking',
+        '--no-audit',
+        '--no-plugins',
+        '--no-scripts',
+    ], $auditRoot);
 }
 
 /**

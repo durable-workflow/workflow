@@ -47,6 +47,7 @@ final class WorkflowsConfigTest extends NonDatabaseTestCase
         'DW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS', 'WORKFLOW_V2_TASK_REPAIR_REDISPATCH_AFTER_SECONDS',
         'DW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS', 'WORKFLOW_V2_TASK_REPAIR_LOOP_THROTTLE_SECONDS',
         'DW_V2_TASK_REPAIR_SCAN_LIMIT', 'WORKFLOW_V2_TASK_REPAIR_SCAN_LIMIT',
+        'DW_V2_SCHEDULE_TICK_LIMIT', 'WORKFLOW_V2_SCHEDULE_TICK_LIMIT',
         'DW_V2_TASK_REPAIR_FAILURE_BACKOFF_MAX_SECONDS', 'WORKFLOW_V2_TASK_REPAIR_FAILURE_BACKOFF_MAX_SECONDS',
         'DW_V2_MULTI_NODE', 'WORKFLOW_V2_MULTI_NODE',
         'DW_V2_VALIDATE_CACHE_BACKEND', 'WORKFLOW_V2_VALIDATE_CACHE_BACKEND',
@@ -173,6 +174,7 @@ final class WorkflowsConfigTest extends NonDatabaseTestCase
             $this->assertSame('queue', $config['v2']['task_dispatch_mode']);
             $this->assertSame(300, $config['v2']['workflow_task_lease_seconds']);
             $this->assertSame('warn', $config['v2']['guardrails']['boot']);
+            $this->assertSame(100, $config['v2']['schedules']['tick_limit']);
         } finally {
             $this->restoreEnv($previous);
         }
@@ -228,6 +230,33 @@ final class WorkflowsConfigTest extends NonDatabaseTestCase
 
             $config = require dirname(__DIR__, 3) . '/src/config/workflows.php';
             $this->assertSame(8, $config['v2']['workflow_task_lease_seconds']);
+        } finally {
+            $this->restoreEnv($previous);
+        }
+    }
+
+    public function testScheduleTickLimitReadsOnlyTheDwEnvironmentName(): void
+    {
+        $keys = ['DW_V2_SCHEDULE_TICK_LIMIT', 'WORKFLOW_V2_SCHEDULE_TICK_LIMIT'];
+        $previous = $this->snapshotEnv($keys);
+        $this->clearEnv($keys);
+
+        putenv('WORKFLOW_V2_SCHEDULE_TICK_LIMIT=17');
+        $_ENV['WORKFLOW_V2_SCHEDULE_TICK_LIMIT'] = '17';
+        $_SERVER['WORKFLOW_V2_SCHEDULE_TICK_LIMIT'] = '17';
+
+        try {
+            $config = require dirname(__DIR__, 3) . '/src/config/workflows.php';
+            $this->assertSame(100, $config['v2']['schedules']['tick_limit']);
+
+            putenv('DW_V2_SCHEDULE_TICK_LIMIT=500');
+            $_ENV['DW_V2_SCHEDULE_TICK_LIMIT'] = '500';
+            $_SERVER['DW_V2_SCHEDULE_TICK_LIMIT'] = '500';
+
+            // The command validates the raw value, so an invalid setting is
+            // refused instead of being cast to some other pass size.
+            $config = require dirname(__DIR__, 3) . '/src/config/workflows.php';
+            $this->assertSame('500', $config['v2']['schedules']['tick_limit']);
         } finally {
             $this->restoreEnv($previous);
         }

@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- Redrive a failed run that has start-time memos or search attributes. Before,
+  any memo or search attribute row refused redrive with
+  `unsupported_visibility_metadata`. The successor now inherits the start
+  values, as continue-as-new does. A value upserted by workflow code is still
+  refused until redrive replays that part of the history (#864).
+- Run detail and describe report whether redrive would accept a run.
+  `can_redrive` and `redrive_blocked_reason` come from the same decision
+  `redrive()` applies, so the action an operator sees matches what redrive
+  does. Runs that are not failed report `run_not_failed`, and a source that
+  was already redriven reports `already_redriven` (#864).
+- Redrive a failed run whose completed steps include side effects or version
+  markers. Before, any `SideEffectRecorded` or `VersionMarkerRecorded` event
+  refused redrive with `unsupported_history`. The successor reuses them in step
+  order without running the side effect again. Like reused activity
+  completions, they carry `reused_from_run_id` and `reused_recorded_at`, and
+  replay uses `reused_recorded_at` so workflow time after the step matches the
+  source run. New refusal reasons: `invalid_step_sequence`,
+  `duplicate_step_sequence` and `external_side_effect_result_not_supported`
+  (#864).
+- Redrive a failed run whose completed steps include a fired `timer()`. The
+  successor records the timer as already fired, under a new timer id, with no
+  timer row or task, so it does not wait again. `TimerFired` carries
+  `reused_from_run_id` and `reused_recorded_at`, and replay uses the original
+  fire time. Condition and signal timeouts, cancellation cleanup timers and
+  timers in a cancellation scope or parallel group are refused with
+  `unsupported_timer`. A timer step without both its scheduled and fired events
+  is refused with `incomplete_timer_step` (#864).
 - Retain keyed signal admissions and compare canonical typed intent for keyed
   signals and updates. Conflicting key reuse refuses without durable writes;
   undecodable legacy receipts remain explicitly unverified. This strengthens
@@ -11,6 +38,83 @@
   Apply the nullable `intent_digest` migration, drain and upgrade all embedded
   database writers together, and allocate new keys for different operations.
   Native Server and published SDK/CLI qualification remain separate.
+
+## 2.17.1 - 2026-11-03
+
+- Replay verification accepts a failed run that replays to its recorded
+  failure. Before, `ReplayDiff` and `workflow:v2:replay-verify` reported
+  `replay_error` for any run that failed because workflow code threw, even when
+  replay reproduced the recorded `WorkflowFailed` exception. A matching
+  exception class and message now report `replayed` with
+  `replay.recorded_failure`. A different exception stays `replay_error` and
+  names the recorded failure in `error.recorded_failure` (#983).
+
+## 2.17.0 - 2026-11-02
+
+- Do not export a retention-pruned run as complete history. After
+  `WorkflowRunRetentionCleanup::pruneRun()`, `HistoryExport::forRun()` sets
+  `history_complete` to `false`, adds `workflow.details_state: "pruned"` and
+  `workflow.details_pruned_at`, and appends `:details-pruned:{time}` to the
+  `dedupe_key`, so the post-prune export can't be mistaken for the full export
+  taken before cleanup. Every bundle now carries `details_state`; runs that
+  were never pruned keep their existing dedupe key. Bundle verification reports
+  pruned bundles as `history.details_pruned`, so replay verification fails
+  them, and history import rejects them (#856).
+- Drop Laravel 9 from the supported `laravel/framework` constraint, which is
+  now `^10.50.4|^11.56.1|^12.69.0|^13.30.0`. Laravel 9 has no fix for the
+  TokenGuard advisory GHSA-f9x3-7vq9-cph6. Composer keeps Laravel 9
+  applications on Workflow 2.16.x, so updating does not break them; to move
+  past 2.16.x, upgrade the framework to a patched Laravel 12 or 13 release
+  first. The embedded upgrade contract no longer lists Laravel 9 cells, and the
+  dependency security policy records the removal. The dependency security audit
+  now requires Composer to refuse this package with Laravel 9 (#922).
+
+## 2.16.0 - 2026-11-02
+
+- Let embedded operators size schedule evaluation passes.
+  `workflow:v2:schedule-tick` accepts `--limit=N`, and the new
+  `workflows.v2.schedules.tick_limit` config (`DW_V2_SCHEDULE_TICK_LIMIT`)
+  sets the default. The default stays 100, so existing behavior is
+  unchanged. Each pass starts at most that many due schedules and drains at
+  most that many buffered actions, shared round-robin across namespaces;
+  the rest fire on later passes. A limit that is not a positive integer is
+  refused, and the command fails without evaluating schedules (#875).
+
+## 2.15.15 - 2026-11-02
+
+- Start an independent workflow instance for each namespace when schedules
+  in different namespaces share a schedule ID. New scheduled starts use
+  instance IDs of the form
+  `schedule.ns:{namespace hash}:{length}:{schedule_id}:{suffix}`, so the same
+  occurrence no longer collides across namespaces or after the configured
+  default namespace changes. Instances started under the earlier
+  `schedule:{schedule_id}:{suffix}` form stay readable, and occurrences that
+  already fired stay deduplicated through schedule history (#874).
+
+## 2.15.14 - 2026-11-02
+
+- Persist `StartOptions::withPriority()` and `withFairness()` on runs started
+  through the embedded `WorkflowStub`; they were accepted but not stored, so
+  embedded runs always used the default priority and fairness class (#971).
+- Give every task of a run the run's priority, fairness key and fairness
+  weight. Workflow tasks that resume a run after a timer, signal, update,
+  child or activity outcome, timer tasks, and repair tasks no longer fall
+  back to the default priority and the shared fairness class. Activity
+  retries keep per-call overrides. Values a task creator sets explicitly
+  still win. Embedded continue-as-new and child retry runs keep the
+  predecessor run's priority and fairness, as control-plane continue-as-new
+  already did (#971).
+
+## 2.15.13 - 2026-11-02
+
+- Fire a cron schedule once for a wall-clock time that repeats when daylight
+  saving time ends. A daily `30 1 * * *` schedule in `America/New_York` no
+  longer starts a second run at 01:30 EST on the day clocks go back, and
+  `30 2 * * *` no longer fires early inside the repeated hour. A time skipped
+  when clocks go forward still fires once, moved forward by the gap (02:30
+  runs at 03:30). Schedules whose hour field selects every hour (`*`,
+  `0-23` or a step of one) keep running on elapsed time, so hourly and
+  sub-hourly schedules fire through both passes of the repeated hour (#882).
 
 ## 2.15.11 - 2026-11-01
 

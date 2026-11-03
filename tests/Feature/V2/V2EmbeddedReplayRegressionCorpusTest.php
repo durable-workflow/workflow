@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use Illuminate\Queue\WorkerOptions;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
@@ -39,6 +40,7 @@ use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\CancellationPolicy;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\ScheduleOverlapPolicy;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Events\WorkflowStarted;
@@ -75,6 +77,7 @@ use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\ActivityCancellationAcknowledgement;
+use Workflow\V2\Support\BundleIntegrityVerifier;
 use Workflow\V2\Support\CancellationScopeDelivery;
 use Workflow\V2\Support\CancellationScopeHistory;
 use Workflow\V2\Support\CancellationScopeRequests;
@@ -90,11 +93,13 @@ use Workflow\V2\Support\ReplayDiff;
 use Workflow\V2\Support\RunActivityView;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunTimelineProjector;
+use Workflow\V2\Support\ScheduleManager;
 use Workflow\V2\Support\ServiceCallPrincipal;
 use Workflow\V2\Support\ServiceCallScheduler;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Support\WorkflowReplayer;
+use Workflow\V2\Support\WorkflowRunRetentionCleanup;
 use Workflow\V2\Support\WorkflowStep;
 use Workflow\V2\Support\WorkflowStepHistory;
 use Workflow\V2\Support\WorkflowTaskPayload;
@@ -156,6 +161,301 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         foreach ([RunDetailView::forRun($imported->fresh()), HistoryExport::forRun($imported->fresh())] as $view) {
             $this->assertStringNotContainsString('unrelated-later', json_encode($view, JSON_THROW_ON_ERROR));
         }
+    }
+
+    public function testRetentionPrunedRunExportCorpusIsNeverCompleteHistory(): void
+    {
+        $path = self::FIXTURE_DIR . '/retention-pruned-run-export.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The retention-pruned export evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['retention_pruned_export'];
+        self::stopWorkers();
+        Queue::fake();
+        config([
+            'queue.default' => 'database',
+        ]);
+
+        foreach ($scenario['terminal_statuses'] as $status) {
+            $this->clearWorkflowState();
+            $run = $this->createRunFromFixture($fixture);
+            $run->forceFill([
+                'status' => RunStatus::from($status),
+                'closed_at' => now(),
+            ])->save();
+
+            $full = HistoryExport::forRun($run->fresh());
+            $this->assertTrue($full['history_complete'], $status);
+            $this->assertNotSame([], $full['history_events'], $status);
+
+            WorkflowRunRetentionCleanup::pruneRun($run->id);
+            $pruned = HistoryExport::forRun(WorkflowRun::query()->findOrFail($run->id));
+
+            $this->assertFalse($pruned['history_complete'], $status);
+            $this->assertSame($status, $pruned['workflow']['status']);
+            $this->assertSame('pruned', $pruned['workflow']['details_state'] ?? null, $status);
+            $this->assertNotNull($pruned['workflow']['details_pruned_at'] ?? null, $status);
+            $this->assertSame([], $pruned['history_events'], $status);
+            $this->assertNotSame($full['dedupe_key'], $pruned['dedupe_key'], $status);
+            $this->assertStringStartsWith($full['dedupe_key'] . ':details-pruned:', $pruned['dedupe_key']);
+            $this->assertContains(
+                $scenario['pruned_verification_rule'],
+                array_column(BundleIntegrityVerifier::verify($pruned)['findings'], 'rule'),
+                $status,
+            );
+            $this->assertContains(
+                $scenario['pruned_import_rule'],
+                array_column(EmbeddedV2HistoryImport::import($pruned, [
+                    'dry_run' => true,
+                ])['eligibility']['errors'], 'rule'),
+                $status,
+            );
+        }
+    }
+
+    public function testRedriveStartVisibilityCorpusCarriesToTheSuccessor(): void
+    {
+        $path = self::FIXTURE_DIR . '/redrive-start-visibility-carryover.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The redrive start-visibility evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['redrive_start_visibility'];
+        self::stopWorkers();
+        config([
+            'queue.default' => 'sync',
+            'queue.connections.sync.driver' => 'sync',
+        ]);
+        Cache::forget('test:redrive:first-calls');
+        Cache::forget('test:redrive:second-calls');
+        $this->clearWorkflowState();
+        WorkflowStub::fake();
+
+        $stub = WorkflowStub::make($fixture['workflow']['type'], 'regression-corpus-redrive-visibility');
+        $stub->start(...[
+            ...$fixture['workflow']['arguments'],
+            StartOptions::rejectDuplicate()
+                ->withMemo($scenario['memo'])
+                ->withSearchAttributes($scenario['search_attributes']),
+        ]);
+        $this->assertTrue($stub->refresh()->failed());
+        $source = WorkflowRun::query()->findOrFail($stub->runId());
+
+        $result = app(WorkflowControlPlane::class)->redrive($source->workflow_instance_id, $source->id);
+
+        $this->assertSame($scenario['redrive'] === 'accepted', $result['accepted'], (string) $result['reason']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame($scenario['successor_status'], $successor->status->value);
+        $this->assertSame($source->typedMemos(), $successor->typedMemos());
+        $this->assertSame($source->typedSearchAttributes(), $successor->typedSearchAttributes());
+        $this->assertSame(
+            $scenario['search_attributes']['region'],
+            $successor->typedSearchAttributes()['region'] ?? null
+        );
+    }
+
+    public function testRedriveReusedMarkersCorpusKeepsTheirStepsAndTime(): void
+    {
+        $path = self::FIXTURE_DIR . '/redrive-reused-markers-clock.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The redrive reused-marker evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['redrive_reused_markers'];
+        self::stopWorkers();
+        config([
+            'queue.default' => 'sync',
+            'queue.connections.sync.driver' => 'sync',
+        ]);
+        foreach (['first-calls', 'second-calls', 'side-effect-calls'] as $counter) {
+            Cache::forget("test:redrive:{$counter}");
+        }
+        $this->clearWorkflowState();
+        WorkflowStub::fake();
+
+        $stub = WorkflowStub::make($fixture['workflow']['type'], 'regression-corpus-redrive-markers');
+        $stub->start(...$fixture['workflow']['arguments']);
+        $this->assertTrue($stub->refresh()->failed());
+        $sourceRunId = $stub->runId();
+        $sourceTimes = [];
+        foreach ($scenario['reused_steps'] as $step) {
+            $sourceTimes[$step['sequence']] = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $sourceRunId)
+                ->where('event_type', $step['event_type'])
+                ->firstOrFail()
+                ->recorded_at?->toIso8601String();
+        }
+
+        $this->travel($scenario['redrive_after_minutes'])
+            ->minutes();
+        $result = app(WorkflowControlPlane::class)->redrive('regression-corpus-redrive-markers', $sourceRunId);
+
+        $this->assertSame($scenario['redrive'] === 'accepted', $result['accepted'], (string) $result['reason']);
+        $this->assertSame($scenario['resume_step_sequence'], $result['resume_step_sequence']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame($scenario['successor_status'], $successor->status->value);
+        $this->assertSame($scenario['side_effect_calls'], (int) Cache::get('test:redrive:side-effect-calls'));
+        foreach ($scenario['reused_steps'] as $step) {
+            $reused = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $successor->id)
+                ->where('event_type', $step['event_type'])
+                ->firstOrFail();
+            $this->assertSame($step['sequence'], $reused->payload['sequence']);
+            $this->assertSame($sourceRunId, $reused->payload['reused_from_run_id'] ?? null);
+            $this->assertSame($sourceTimes[$step['sequence']], $reused->payload['reused_recorded_at'] ?? null);
+        }
+        $output = $successor->workflowOutput();
+        $this->assertSame($scenario['version'], $output['version']);
+        $this->assertSame([
+            'time_after_side_effect' => $sourceTimes[1],
+            'time_after_version' => $sourceTimes[2],
+        ], [
+            'time_after_side_effect' => $output['time_after_side_effect'],
+            'time_after_version' => $output['time_after_version'],
+        ]);
+    }
+
+    public function testRedriveReusedTimerCorpusDoesNotWaitAgain(): void
+    {
+        $path = self::FIXTURE_DIR . '/redrive-reused-timer-clock.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The redrive reused-timer evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['redrive_reused_timer'];
+        self::stopWorkers();
+        config([
+            'queue.default' => 'sync',
+            'queue.connections.sync.driver' => 'sync',
+        ]);
+        Cache::forget('test:redrive:first-calls');
+        Cache::forget('test:redrive:second-calls');
+        $this->clearWorkflowState();
+        WorkflowStub::fake();
+
+        $stub = WorkflowStub::make($fixture['workflow']['type'], 'regression-corpus-redrive-timer');
+        $stub->start(...$fixture['workflow']['arguments']);
+        $this->travel($scenario['timer_seconds'] + 1)
+            ->seconds();
+        $timerTask = WorkflowTask::query()
+            ->where('workflow_run_id', $stub->runId())
+            ->where('task_type', TaskType::Timer->value)
+            ->firstOrFail();
+        $this->app->call([new RunTimerTask($timerTask->id), 'handle']);
+        $this->assertTrue($stub->refresh()->failed());
+        $sourceRunId = $stub->runId();
+        $sourceFiredAt = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $sourceRunId)
+            ->where('event_type', HistoryEventType::TimerFired->value)
+            ->firstOrFail()
+            ->recorded_at?->toIso8601String();
+
+        $this->travel($scenario['redrive_after_minutes'])
+            ->minutes();
+        $result = app(WorkflowControlPlane::class)->redrive('regression-corpus-redrive-timer', $sourceRunId);
+
+        $this->assertSame($scenario['redrive'] === 'accepted', $result['accepted'], (string) $result['reason']);
+        $this->assertSame($scenario['resume_step_sequence'], $result['resume_step_sequence']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame($scenario['successor_status'], $successor->status->value);
+        $this->assertSame($scenario['successor_timer_tasks'], WorkflowTask::query()
+            ->where('workflow_run_id', $successor->id)
+            ->where('task_type', TaskType::Timer->value)
+            ->count());
+        $this->assertSame(
+            $scenario['successor_timer_rows'],
+            WorkflowTimer::query()->where('workflow_run_id', $successor->id)->count()
+        );
+        $this->assertSame($sourceFiredAt, $successor->workflowOutput()['time_after_timer']);
+    }
+
+    public function testRedriveEligibilityCorpusReportsWhatRedriveDoes(): void
+    {
+        $path = self::FIXTURE_DIR . '/redrive-eligibility-report.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The redrive eligibility report evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['redrive_eligibility_report'];
+        self::stopWorkers();
+        config([
+            'queue.default' => 'sync',
+            'queue.connections.sync.driver' => 'sync',
+        ]);
+        Cache::forget('test:redrive:first-calls');
+        Cache::forget('test:redrive:second-calls');
+        $this->clearWorkflowState();
+        WorkflowStub::fake();
+        $controlPlane = app(WorkflowControlPlane::class);
+
+        $redrivable = $scenario['redrivable'];
+        $stub = WorkflowStub::make($fixture['workflow']['type'], 'regression-corpus-redrive-report');
+        $stub->start(...$fixture['workflow']['arguments']);
+        $this->assertTrue($stub->refresh()->failed());
+        $sourceRunId = $stub->runId();
+        $this->assertRedriveReport($controlPlane, $sourceRunId, $redrivable['before']);
+
+        $result = $controlPlane->redrive('regression-corpus-redrive-report', $sourceRunId);
+
+        $this->assertSame($redrivable['redrive'] === 'accepted', $result['accepted'], (string) $result['reason']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame($redrivable['successor_status'], $successor->status->value);
+        $this->assertRedriveReport($controlPlane, $sourceRunId, $redrivable['source_after']);
+        $this->assertRedriveReport($controlPlane, $successor->id, $redrivable['successor']);
+
+        $refused = $scenario['refused'];
+        $refusedStub = WorkflowStub::make($refused['workflow'], 'regression-corpus-redrive-report-refused');
+        $refusedStub->start(...$refused['arguments']);
+        $this->assertTrue($refusedStub->refresh()->failed());
+        $this->assertRedriveReport($controlPlane, $refusedStub->runId(), $refused['report']);
+        $this->assertSame(
+            $refused['redrive_reason'],
+            $controlPlane->redrive('regression-corpus-redrive-report-refused', $refusedStub->runId())['reason'],
+        );
+    }
+
+    public function testRecordedWorkflowFailureCorpusReplaysAsTheRecordedFailure(): void
+    {
+        $path = self::FIXTURE_DIR . '/recorded-workflow-failure-replay.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The recorded workflow failure replay evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['recorded_workflow_failure'];
+        self::stopWorkers();
+        Queue::fake();
+        config([
+            'queue.default' => 'database',
+        ]);
+        $this->clearWorkflowState();
+
+        $stub = WorkflowStub::make($scenario['workflow'], 'regression-corpus-recorded-workflow-failure');
+        $stub->start();
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $this->runReadyWorkflowTask($run);
+        $this->assertSame(RunStatus::Failed, $run->fresh()->status);
+
+        $bundle = HistoryExport::forRun($run->fresh());
+        $report = (new ReplayDiff())->diffExport($bundle);
+
+        $this->assertSame($scenario['reproduced_status'], $report['status'], json_encode($report));
+        $this->assertSame([
+            'exception_class' => $scenario['exception_class'],
+            'message' => $scenario['message'],
+        ], $report['replay']['recorded_failure'] ?? null);
+
+        foreach ($bundle['history_events'] as &$event) {
+            if (($event['type'] ?? null) === HistoryEventType::WorkflowFailed->value) {
+                $event['payload']['message'] = $scenario['different_message'];
+            }
+        }
+        unset($event);
+        $different = (new ReplayDiff())->diffExport($bundle);
+
+        $this->assertSame($scenario['different_failure_status'], $different['status']);
+        $this->assertSame($scenario['different_failure_reason'], $different['reason']);
+        $this->assertSame($scenario['different_message'], $different['error']['recorded_failure']['message'] ?? null);
     }
 
     public function testLateChildResumeCorpusCreatesDeliveryAfterALeasedParentWaits(): void
@@ -795,6 +1095,14 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
             if (($fixture['id'] ?? null) === 'run-inherited-scoped-cleanup-cold-reload') {
                 $this->assertRunInheritedScopedCleanupAfterColdReload($fixture);
+            }
+
+            if (($fixture['id'] ?? null) === 'continue-as-new-preserves-run-scheduling') {
+                $this->assertContinueAsNewPreservesRunScheduling($fixture);
+            }
+
+            if (($fixture['id'] ?? null) === 'schedule-namespace-instance-identity') {
+                $this->assertScheduleNamespaceInstanceIdentity($fixture);
             }
 
             if ($fixture['id'] === 'legacy-version-shared-step-position') {
@@ -3069,6 +3377,87 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     }
 
     /**
+     * The fixture's scheduled workflow, backfilled for one occurrence by the
+     * same schedule ID in two namespaces, starts one instance per namespace
+     * instead of colliding on the global instance key (#874).
+     *
+     * @param array<string, mixed> $fixture
+     */
+    private function assertScheduleNamespaceInstanceIdentity(array $fixture): void
+    {
+        $from = Carbon::parse('2026-10-20T12:00:00Z');
+        $to = Carbon::parse('2026-10-20T13:00:00Z');
+        $instances = [];
+
+        foreach (['default', 'corpus-tenant-b'] as $namespace) {
+            $schedule = ScheduleManager::create(
+                scheduleId: 'corpus-shared',
+                workflowClass: $fixture['workflow']['type'],
+                cronExpression: '0 * * * *',
+                arguments: $fixture['workflow']['arguments'],
+                overlapPolicy: ScheduleOverlapPolicy::AllowAll,
+                namespace: $namespace,
+            );
+            $results = ScheduleManager::backfill($schedule, $from, $to);
+
+            $this->assertCount(1, $results, "{$fixture['id']} {$namespace} occurrence count.");
+            $this->assertArrayNotHasKey('error', $results[0], "{$fixture['id']} {$namespace} start failed.");
+            $instanceId = $results[0]['instance_id'];
+            $this->assertIsString($instanceId, "{$fixture['id']} {$namespace} started no instance.");
+            $this->assertSame(
+                $namespace,
+                WorkflowInstance::query()->findOrFail($instanceId)->namespace,
+                "{$fixture['id']} {$namespace} instance namespace.",
+            );
+            $instances[] = $instanceId;
+        }
+
+        $this->assertNotSame($instances[0], $instances[1]);
+    }
+
+    /**
+     * The recorded history continues as new through WorkflowExecutor; the
+     * persisted successor run and its first task keep the run's priority and
+     * fairness (#971).
+     *
+     * @param array<string, mixed> $fixture
+     */
+    private function assertContinueAsNewPreservesRunScheduling(array $fixture): void
+    {
+        $run = $this->createRunFromFixture($fixture);
+        $run->forceFill([
+            'priority' => 1,
+            'fairness_key' => 'x',
+            'fairness_weight' => 3,
+        ])->save();
+
+        $this->runReadyWorkflowTask($run);
+
+        /** @var WorkflowRun $continuedRun */
+        $continuedRun = WorkflowRun::query()
+            ->where('workflow_instance_id', $run->workflow_instance_id)
+            ->where('run_number', $run->run_number + 1)
+            ->firstOrFail();
+
+        /** @var WorkflowTask $continuedTask */
+        $continuedTask = WorkflowTask::query()
+            ->where('workflow_run_id', $continuedRun->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->firstOrFail();
+
+        $this->assertSame(
+            [1, 'x', 3],
+            [$continuedRun->priority, $continuedRun->fairness_key, $continuedRun->fairness_weight],
+            "{$fixture['id']} successor run lost the run's scheduling.",
+        );
+        $this->assertSame(
+            [1, 'x', 3],
+            [$continuedTask->priority, $continuedTask->fairness_key, $continuedTask->fairness_weight],
+            "{$fixture['id']} successor task lost the run's scheduling.",
+        );
+    }
+
+    /**
      * @param array<string, mixed> $fixture
      */
     private function assertPortableCleanupDeadlineAfterColdReload(array $fixture): void
@@ -3302,6 +3691,35 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 return $this->projectRun($run);
             }
         });
+    }
+
+    /**
+     * @param array{can_redrive: bool, redrive_blocked_reason: string|null} $expected
+     */
+    private function assertRedriveReport(WorkflowControlPlane $controlPlane, string $runId, array $expected): void
+    {
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $detail = RunDetailView::forRun($run);
+        $describe = $controlPlane->describe($run->workflow_instance_id, [
+            'run_id' => $runId,
+        ]);
+
+        foreach ([
+            'run detail' => $detail,
+            'describe' => $describe['actions'] ?? [],
+        ] as $surface => $actions) {
+            $this->assertSame(
+                $expected['can_redrive'],
+                $actions['can_redrive'] ?? null,
+                "{$surface} can_redrive for {$runId}"
+            );
+            $this->assertArrayHasKey('redrive_blocked_reason', $actions, "{$surface} for {$runId}");
+            $this->assertSame(
+                $expected['redrive_blocked_reason'],
+                $actions['redrive_blocked_reason'],
+                "{$surface} redrive_blocked_reason for {$runId}",
+            );
+        }
     }
 }
 

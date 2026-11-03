@@ -1054,7 +1054,7 @@ final class WorkflowExecutor
             $this->syncWorkflowCursor($workflow, $sequence + 1);
             $current = $workflowExecution->send(
                 $this->sideEffectResult($sideEffectEvent, $run),
-                $sideEffectEvent->recorded_at,
+                RedriveReplayClock::recordedAt($sideEffectEvent),
                 advanceCancellationTime: false
             );
         } catch (Throwable $throwable) {
@@ -1118,7 +1118,7 @@ final class WorkflowExecutor
             $this->syncWorkflowCursor($workflow, $sequence + ($resolution->advancesSequence ? 1 : 0));
             $current = $workflowExecution->send(
                 $current->resolveValue($version),
-                $versionMarkerEvent?->recorded_at,
+                RedriveReplayClock::recordedAt($versionMarkerEvent),
                 advanceCancellationTime: false
             );
         } catch (Throwable $throwable) {
@@ -1287,7 +1287,7 @@ final class WorkflowExecutor
             $this->syncWorkflowCursor($workflow, $sequence + 1);
             $current = $workflowExecution->send(
                 true,
-                $timer instanceof WorkflowHistoryEvent ? $timer->recorded_at : $timer->fired_at,
+                $timer instanceof WorkflowHistoryEvent ? RedriveReplayClock::recordedAt($timer) : $timer->fired_at,
             );
         } catch (Throwable $throwable) {
             $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -3722,6 +3722,7 @@ final class WorkflowExecutor
             'arguments' => $storedContinueAsNewArguments,
             'connection' => $run->connection,
             'queue' => $run->queue,
+            ...TaskSchedulingFields::nonDefault(TaskSchedulingFields::forRun($run)),
             'started_at' => $now,
             'last_progress_at' => $now,
             'last_history_sequence' => 0,
@@ -4914,6 +4915,7 @@ final class WorkflowExecutor
             'run_deadline_at' => $runDeadlineAt,
             'connection' => $failedChildRun->connection,
             'queue' => $failedChildRun->queue,
+            ...TaskSchedulingFields::nonDefault(TaskSchedulingFields::forRun($failedChildRun)),
             'started_at' => $now,
             'last_progress_at' => $now,
             'last_history_sequence' => 0,

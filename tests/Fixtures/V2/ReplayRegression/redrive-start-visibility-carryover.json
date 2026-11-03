@@ -1,0 +1,46 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "redrive-start-visibility-carryover",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestRedriveWorkflow",
+    "arguments": [
+      "Taylor"
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-03T00:00:00+00:00"
+    }
+  ],
+  "redrive_start_visibility": {
+    "memo": {
+      "customer": "Taylor",
+      "attempt_note": "first deploy"
+    },
+    "search_attributes": {
+      "region": "us-east"
+    },
+    "redrive": "accepted",
+    "successor_status": "completed"
+  },
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "schedule_activity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+        "payload_codec": "avro"
+      }
+    ]
+  }
+}

@@ -561,7 +561,7 @@ final class WorkflowFiberRunner
 
                 $this->execution->send(
                     $current->resolveValue($resolution->version),
-                    $versionMarkerEvent?->recorded_at,
+                    RedriveReplayClock::recordedAt($versionMarkerEvent),
                     advanceCancellationTime: false,
                 );
 
@@ -1829,7 +1829,8 @@ final class WorkflowFiberRunner
             if ($sequence !== null) {
                 $outcomes[$sequence] = [
                     'result' => true,
-                    'recorded_at' => self::eventRecordedAt($event, $payload, ['fired_at']),
+                    'recorded_at' => self::eventTime($payload['reused_recorded_at'] ?? null)
+                        ?? self::eventRecordedAt($event, $payload, ['fired_at']),
                 ];
             }
         }
@@ -2371,7 +2372,8 @@ final class WorkflowFiberRunner
                     self::stringValue($payload['payload_codec'] ?? null),
                     $namespace,
                 ),
-                'recorded_at' => self::eventRecordedAt($event, $payload),
+                'recorded_at' => self::eventTime($payload['reused_recorded_at'] ?? null)
+                    ?? self::eventRecordedAt($event, $payload),
             ];
         }
 
