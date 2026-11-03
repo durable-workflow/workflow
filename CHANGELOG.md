@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Redrive a failed run whose workflow applied an update before the failure.
+  The successor records the update's acceptance, application and completion
+  with `reused_from_run_id` and `reused_recorded_at`, ahead of the step it
+  ran before, and replay runs the update handler again from its recorded
+  arguments so the workflow state matches. The update is not delivered again.
+  A rejected update, and one the failure closed before it ran, are not reused.
+  An update the source accepted but never resolved is refused with
+  `unsupported_pending_update`, an externally stored update payload with
+  `external_update_payload_not_supported`, and malformed update history with
+  `incomplete_update_step` or `mismatched_update_history`. A run a service
+  worker started that applied an update is refused with
+  `service_redrive_history_not_qualified` (#864).
+
 ## 2.19.0 - 2026-11-03
 
 - Rollback: releases before 2.19.0 ignore `reused_recorded_at` on the signal,

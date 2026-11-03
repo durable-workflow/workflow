@@ -526,6 +526,8 @@ final class HistoryEventPayloadContract
             'queued_behind_command_id',
             'queued_behind_command_sequence',
             'queued_behind_command_type',
+            'reused_from_run_id',
+            'reused_recorded_at',
         ],
         'UpdateRejected' => [
             'workflow_command_id',
@@ -544,6 +546,8 @@ final class HistoryEventPayloadContract
             'update_name',
             'arguments',
             'sequence',
+            'reused_from_run_id',
+            'reused_recorded_at',
         ],
         'UpdateCompleted' => [
             'workflow_command_id',
@@ -562,6 +566,8 @@ final class HistoryEventPayloadContract
             'code',
             'exception',
             'terminal_reason',
+            'reused_from_run_id',
+            'reused_recorded_at',
         ],
         'ConditionWaitOpened' => [
             'condition_wait_id',

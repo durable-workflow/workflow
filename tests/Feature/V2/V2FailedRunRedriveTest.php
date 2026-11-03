@@ -18,6 +18,7 @@ use Tests\Fixtures\V2\TestRedrivePatchedWorkflow;
 use Tests\Fixtures\V2\TestRedriveSignalWorkflow;
 use Tests\Fixtures\V2\TestRedriveTimerWorkflow;
 use Tests\Fixtures\V2\TestRedriveTwoSignalsWorkflow;
+use Tests\Fixtures\V2\TestRedriveUpdateWorkflow;
 use Tests\Fixtures\V2\TestRedriveVersionedBuggyWorkflow;
 use Tests\Fixtures\V2\TestRedriveVersionedIncompatibleWorkflow;
 use Tests\Fixtures\V2\TestRedriveVisibilityWorkflow;
@@ -40,6 +41,7 @@ use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\EmbeddedV2HistoryImport;
@@ -1144,6 +1146,82 @@ final class V2FailedRunRedriveTest extends TestCase
         $this->assertNull($controlPlane->describe('redrive-corrected-chain', [
             'run_id' => $final->id,
         ])['run']['definition_changed_from'] ?? null);
+    }
+
+    public function testRedriveReappliesAnUpdateTheSourceApplied(): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestRedriveUpdateWorkflow::class, 'redrive-update-1');
+        $workflow->start('Taylor');
+        $this->assertSame('noted urgent', $workflow->update('set-note', 'urgent'));
+        $workflow->signal('go');
+        $this->assertTrue($workflow->refresh()->failed());
+        $source = WorkflowRun::query()->findOrFail($workflow->runId());
+        $sourceApplied = $this->sourceEvent($source, HistoryEventType::UpdateApplied);
+
+        $result = app(WorkflowControlPlane::class)->redrive('redrive-update-1', $source->id);
+
+        $this->assertTrue($result['accepted'], (string) $result['reason']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame(RunStatus::Completed, $successor->status);
+        $this->assertSame(1, (int) Cache::get('test:redrive:first-calls'));
+        // The update's state change is replayed, not delivered again.
+        $this->assertSame([
+            'result' => 'Hello, Taylor! Redrive completed.',
+            'note' => 'urgent',
+        ], $successor->workflowOutput());
+        $this->assertSame(0, WorkflowUpdate::query()->where('workflow_run_id', $successor->id)->count());
+
+        $types = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $successor->id)
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn (HistoryEventType $type): string => $type->value)
+            ->all();
+        $applied = array_search('UpdateApplied', $types, true);
+        $this->assertNotFalse($applied);
+        $this->assertSame('UpdateAccepted', $types[$applied - 1]);
+        $this->assertSame('UpdateCompleted', $types[$applied + 1]);
+        // It is written ahead of the step it ran before.
+        $this->assertLessThan(array_search('SignalWaitOpened', $types, true), $applied);
+        // Replay applies it from the same recorded position as the source.
+        $this->assertSame(
+            $sourceApplied->payload['sequence'],
+            $this->sourceEvent($successor, HistoryEventType::UpdateApplied)->payload['sequence'],
+        );
+        foreach ([
+            HistoryEventType::UpdateAccepted,
+            HistoryEventType::UpdateApplied,
+            HistoryEventType::UpdateCompleted,
+        ] as $type) {
+            $original = $this->sourceEvent($source, $type);
+            $reused = $this->sourceEvent($successor, $type);
+            $this->assertSame($source->id, $reused->payload['reused_from_run_id'] ?? null);
+            $this->assertSame(
+                $original->recorded_at?->toIso8601String(),
+                $reused->payload['reused_recorded_at'] ?? null
+            );
+        }
+    }
+
+    public function testRedriveRefusesAnUpdateTheSourceNeverResolved(): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestRedriveUpdateWorkflow::class, 'redrive-update-pending');
+        $workflow->start('Taylor');
+        $workflow->update('set-note', 'urgent');
+        $workflow->signal('go');
+        $this->assertTrue($workflow->refresh()->failed());
+        $source = WorkflowRun::query()->findOrFail($workflow->runId());
+        // Only the acceptance remains: the source never applied or closed it.
+        WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $source->id)
+            ->whereIn('event_type', [HistoryEventType::UpdateApplied->value, HistoryEventType::UpdateCompleted->value])
+            ->delete();
+
+        $this->assertRefusedWithoutMutation('redrive-update-pending', $source, 'unsupported_pending_update');
     }
 
     public function testRedriveReusesOneMarkerForARepeatedPatchCall(): void

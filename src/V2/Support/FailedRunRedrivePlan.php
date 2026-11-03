@@ -49,6 +49,7 @@ final class FailedRunRedrivePlan
         $markerEvents = [];
         $timerEvents = [];
         $signalEvents = [];
+        $updateEvents = [];
         $lastActivityEvent = null;
 
         foreach ($events as $event) {
@@ -113,6 +114,21 @@ final class FailedRunRedrivePlan
                 }
 
                 $markerEvents[$sequence] = $event;
+
+                continue;
+            }
+
+            if (in_array($event->event_type, [
+                HistoryEventType::UpdateAccepted,
+                HistoryEventType::UpdateRejected,
+                HistoryEventType::UpdateApplied,
+                HistoryEventType::UpdateCompleted,
+            ], true)) {
+                if ($started === null) {
+                    return self::reject('invalid_step_sequence');
+                }
+
+                $updateEvents[] = $event;
 
                 continue;
             }
@@ -216,6 +232,12 @@ final class FailedRunRedrivePlan
 
         if (is_string($signalSteps)) {
             return self::reject($signalSteps);
+        }
+
+        $updateBundles = self::updateBundles($updateEvents, $run, $boundary);
+
+        if (is_string($updateBundles)) {
+            return self::reject($updateBundles);
         }
 
         foreach ([
@@ -392,6 +414,7 @@ final class FailedRunRedrivePlan
             'failed_step_kind' => $failedStepKind,
             'completed' => $completed,
             'reused_steps' => $reusedSteps,
+            'update_bundles' => $updateBundles,
         ];
     }
 
@@ -406,8 +429,29 @@ final class FailedRunRedrivePlan
     public static function successorEvents(array $plan, string $sourceRunId): array
     {
         $events = [];
+        $updateBundles = $plan['update_bundles'] ?? [];
+        // An applied update runs before the step it is recorded at, so it is
+        // written ahead of that step.
+        $emitUpdatesThrough = static function (?int $sequence) use (&$updateBundles, &$events, $sourceRunId): void {
+            while ($updateBundles !== [] && ($sequence === null || $updateBundles[0]['sequence'] <= $sequence)) {
+                foreach (array_shift($updateBundles)['events'] as $updateEvent) {
+                    $updatePayload = $updateEvent['payload'];
+                    $events[] = [
+                        'event_type' => $updateEvent['event_type'],
+                        'payload' => array_merge($updatePayload, [
+                            'reused_from_run_id' => $sourceRunId,
+                            'reused_recorded_at' => is_string($updatePayload['reused_recorded_at'] ?? null)
+                                ? $updatePayload['reused_recorded_at']
+                                : $updateEvent['recorded_at'],
+                        ]),
+                    ];
+                }
+            }
+        };
 
         foreach ($plan['reused_steps'] as $step) {
+            $stepSequence = $step['payload']['sequence'] ?? null;
+            $emitUpdatesThrough(is_int($stepSequence) ? $stepSequence : null);
             $reused = $step['payload'];
             // A step reused more than once keeps the time it first ran.
             $reusedRecordedAt = is_string($reused['reused_recorded_at'] ?? null)
@@ -484,7 +528,127 @@ final class FailedRunRedrivePlan
             ];
         }
 
+        $emitUpdatesThrough(null);
+
         return $events;
+    }
+
+    /**
+     * Group update events into applied updates keyed by the step they ran
+     * before. A rejected update and one the failure closed before it ran are
+     * not part of the replayed state. An update the source accepted but never
+     * resolved is refused, because the successor would lose it.
+     *
+     * @param list<WorkflowHistoryEvent> $events
+     *
+     * @return list<array{sequence: int, events: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null}>}>|string
+     */
+    private static function updateBundles(array $events, WorkflowRun $run, int $boundary): array|string
+    {
+        $byUpdate = [];
+        $types = [
+            HistoryEventType::UpdateAccepted->value => 'accepted',
+            HistoryEventType::UpdateRejected->value => 'rejected',
+            HistoryEventType::UpdateApplied->value => 'applied',
+            HistoryEventType::UpdateCompleted->value => 'completed',
+        ];
+
+        foreach ($events as $event) {
+            $updateId = is_array($event->payload) ? ($event->payload['update_id'] ?? null) : null;
+            $kind = $types[$event->event_type->value];
+
+            if (! is_string($updateId) || $updateId === '' || isset($byUpdate[$updateId][$kind])) {
+                return 'mismatched_update_history';
+            }
+
+            $byUpdate[$updateId][$kind] = $event;
+        }
+
+        $bundles = [];
+
+        foreach ($byUpdate as $update) {
+            if (isset($update['rejected'])) {
+                if (isset($update['applied']) || isset($update['completed'])) {
+                    return 'mismatched_update_history';
+                }
+
+                continue;
+            }
+
+            if (! isset($update['applied'])) {
+                // Closed with the run before its handler ran.
+                if (isset($update['completed']) && isset($update['completed']->payload['terminal_reason'])) {
+                    continue;
+                }
+
+                return 'unsupported_pending_update';
+            }
+
+            $accepted = $update['accepted'] ?? null;
+            $applied = $update['applied'];
+            $completed = $update['completed'] ?? null;
+
+            if (
+                ! $accepted instanceof WorkflowHistoryEvent
+                || ! $completed instanceof WorkflowHistoryEvent
+                || ! array_key_exists('result', $completed->payload)
+                || isset($completed->payload['failure_id'])
+            ) {
+                return 'incomplete_update_step';
+            }
+
+            $sequence = $applied->payload['sequence'] ?? null;
+
+            if (! is_int($sequence) || $sequence < 1 || $sequence > $boundary
+                || ($completed->payload['sequence'] ?? null) !== $sequence) {
+                return 'invalid_step_sequence';
+            }
+
+            foreach ([$accepted, $applied, $completed] as $event) {
+                if (
+                    ($event->payload['workflow_run_id'] ?? null) !== $run->id
+                    || ($event->payload['workflow_instance_id'] ?? null) !== $run->workflow_instance_id
+                    || ($event->payload['workflow_command_id'] ?? null) !== ($applied->payload['workflow_command_id'] ?? null)
+                    || ($event->payload['update_name'] ?? null) !== ($applied->payload['update_name'] ?? null)
+                ) {
+                    return 'mismatched_update_history';
+                }
+            }
+
+            if (
+                self::isExternalResult($accepted->payload['arguments'] ?? null)
+                || self::isExternalResult($applied->payload['arguments'] ?? null)
+                || self::isExternalResult($completed->payload['result'])
+            ) {
+                return 'external_update_payload_not_supported';
+            }
+
+            $bundleEvents = [];
+            foreach ([$accepted, $applied, $completed] as $event) {
+                $eventPayload = $event->payload;
+                // The task and command are the source run's recording context.
+                unset($eventPayload['task'], $eventPayload['command']);
+                $bundleEvents[] = [
+                    'event_type' => $event->event_type,
+                    'payload' => $eventPayload,
+                    'recorded_at' => $event->recorded_at?->toIso8601String(),
+                ];
+            }
+
+            $bundles[] = [
+                'sequence' => $sequence,
+                'order' => (int) $applied->sequence,
+                'events' => $bundleEvents,
+            ];
+        }
+
+        usort($bundles, static fn (array $left, array $right): int => [$left['sequence'], $left['order']]
+            <=> [$right['sequence'], $right['order']]);
+
+        return array_map(static fn (array $bundle): array => [
+            'sequence' => $bundle['sequence'],
+            'events' => $bundle['events'],
+        ], $bundles);
     }
 
     /**
