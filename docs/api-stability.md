@@ -551,30 +551,56 @@ models should update app-owned projections at domain milestones and store
 `workflow_id` plus `run_id` beside those business rows. See
 [`docs/architecture/business-reporting-read-models.md`](architecture/business-reporting-read-models.md).
 
-## Update Request Identity
+<a id="update-request-identity"></a>
 
-An update caller key identifies a retained command within one logical workflow
-instance, across update names and runs. A retry returns that original lifecycle
-and does not replace its arguments. Omitted keys admit independent operations.
-Server uses the body `request_id`; proxy correlation headers remain audit data.
-Embedded webhook callers retain their existing `X-Request-Id` contract.
+## Signal and update command identity
+
+In unreleased Core source, a caller key identifies a retained command within
+one logical workflow instance and command type, across command names and runs.
+A same-intent retry returns the original admission and lifecycle, including
+after closure or continue-as-new while its receipt remains retained. Omitted
+keys admit independent operations. A signal and an update have separate key
+spaces. Embedded webhook callers retain their existing `X-Request-Id` contract.
+This embedded contract does not advertise retry safety for a Server release.
+Native service support requires separate published runtime and SDK/CLI
+qualification.
+
+Intent comparison includes the command name, typed arguments and target scope,
+including an explicitly requested run. Reusing a key for different intent
+returns `request_id_conflict` without recording another command, consuming a
+sequence or changing the retained outcome. Integer, float and string values
+remain distinct. A retained legacy receipt whose original intent cannot be
+decoded returns `intent_verified: false`; it never authorizes a fresh command
+or claims that the new intent matches. Once a receipt is pruned, its key no
+longer provides duplicate protection. Activity effects still require their own
+application or provider idempotency.
+
+Caller keys must be valid UTF-8 strings containing 1..255 code points, with no
+normalization or truncation. Case and canonically equivalent Unicode spellings
+remain distinct. Explicit null clears an inherited key; an omitted control-plane
+option preserves it. Explicit empty, non-string, malformed and oversized keys
+are refused before admission. Embedded calls throw
+`InvalidCommandRequestIdException`; control-plane signal/update returns a
+nonrecorded 422 result with validation errors and no command identity.
 
 The logical key is available through `WorkflowCommand::requestId()` and command
-context. New update rows store a bounded `update-v1:` lookup token in the
-existing `workflow_commands.request_id` column. Consumers must not interpret
-that internal indexed value as caller text. Exact logical comparison preserves
-opaque case and long Unicode keys regardless of database collation. Legacy
-Server body keys remain readable from `context.server.metadata.request_id`,
-even when the old indexed column contains a proxy header. Existing rows are
-never rewritten. The earliest retained receipt wins if old code admitted more
-than one command for a caller key.
+context. New signal/update rows store bounded `signal-v1:` / `update-v1:` lookup
+tokens in `workflow_commands.request_id`. Consumers must not interpret that
+internal indexed value as caller text. Exact logical comparison preserves
+opaque keys regardless of database collation. Legacy Server body keys remain
+readable from `context.server.metadata.request_id`, even when the old indexed
+column contains a proxy header. Proxy correlation is not a command key. The
+earliest retained receipt wins if old code admitted several for one caller key.
 
-Upgrade every process that writes directly to the database together before
-admitting new updates with this storage format. Drain and restart old embedded
-workers and Server processes; do not roll back to an old writer after new
-update rows are admitted. Remote SDK clients do not write this column and do
-not need an upgrade for this change. Native takeover must qualify the new
-representation separately.
+Before upgrading writers, apply the additive migration that creates nullable
+`workflow_commands.intent_digest`. It performs no backfill or row rewrite;
+legacy intent is compared on read when recoverable. Drain and upgrade every
+process that writes directly to the workflow database together before admitting
+new keyed signals or updates. Mixed old/new writers and rollback to an old
+writer after admission are unsupported. Existing callers that reused a key for
+different intent must allocate a new key for a new operation; oversized keys
+must also be replaced before upgrade. Remote SDK clients do not write these
+columns. Native takeover must qualify the new representation separately.
 
 Update intake limits are checked before requiring a local executable workflow
 definition. A rejected update remains inspectable with

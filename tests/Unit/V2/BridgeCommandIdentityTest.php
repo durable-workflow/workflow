@@ -111,9 +111,20 @@ final class BridgeCommandIdentityTest extends TestCase
         $second = $control->signal($workflow->id(), 'finish', [
             'command_context' => $context,
         ]);
-        $this->assertNotSame($first['command_id'], $second['command_id']);
+        // A JSON object cannot become a host-created bridge identity. Its
+        // ordinary caller key still follows the signal receipt contract.
+        $this->assertSame($first['command_id'], $second['command_id']);
+        $this->assertTrue($second['retained']);
+        $command = WorkflowCommand::query()->findOrFail($first['command_id']);
+        $this->assertStringStartsWith('signal-v1:', $command->request_id);
+        $this->assertNotSame($key, $command->request_id);
+
+        $differentKey = $control->signal($workflow->id(), 'finish', [
+            'command_context' => $context,
+            'request_id' => 'different-caller-key',
+        ]);
+        $this->assertNotSame($first['command_id'], $differentKey['command_id']);
         $this->assertSame(2, WorkflowSignal::query()->count());
-        $this->assertNull(WorkflowCommand::query()->findOrFail($first['command_id'])->request_id);
     }
 
     public function testBridgeIdentityCannotOccupyThePrivilegedServiceCallNamespace(): void
@@ -145,6 +156,12 @@ final class BridgeCommandIdentityTest extends TestCase
             'arguments' => ['first'],
         ]);
         $this->assertTrue($first['accepted']);
+        // Recreate the pre-command-key receipt shape rather than relying on
+        // today's signal admission to omit its indexed identity and digest.
+        WorkflowCommand::query()->findOrFail($first['command_id'])->forceFill([
+            'request_id' => null,
+            'intent_digest' => null,
+        ])->save();
         $this->assertNull(WorkflowCommand::query()->findOrFail($first['command_id'])->request_id);
         $before = $this->rows();
         $second = $control->signal($workflow->id(), 'advance', [
