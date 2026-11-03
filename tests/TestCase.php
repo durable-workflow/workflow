@@ -16,6 +16,7 @@ use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 use Orchestra\Testbench\Concerns\WithLaravelMigrations;
+use function Orchestra\Testbench\default_skeleton_path;
 use Orchestra\Testbench\TestCase as BaseTestCase;
 use RuntimeException;
 use Symfony\Component\Process\Process;
@@ -32,6 +33,7 @@ use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub as V2WorkflowStub;
+
 use Workflow\WorkflowStub;
 
 abstract class TestCase extends BaseTestCase
@@ -715,6 +717,7 @@ abstract class TestCase extends BaseTestCase
             return;
         }
 
+        self::ensureSkeletonVendorLink();
         self::$workerResources = [];
 
         $environment = getenv();
@@ -747,6 +750,35 @@ abstract class TestCase extends BaseTestCase
 
             throw $exception;
         }
+    }
+
+    /**
+     * Testbench's console links the skeleton's vendor directory when the link
+     * is missing and removes it again on exit. Two workers booting together
+     * could then delete the link while the other read
+     * vendor/composer/installed.json, and that worker exited. Linking it once
+     * before the workers start means they find it and leave it alone.
+     */
+    private static function ensureSkeletonVendorLink(): void
+    {
+        $skeleton = default_skeleton_path();
+        $vendor = realpath(__DIR__ . '/../vendor');
+
+        if (! is_string($skeleton) || ! is_string($vendor)) {
+            return;
+        }
+
+        $link = $skeleton . DIRECTORY_SEPARATOR . 'vendor';
+
+        if (is_file($link . DIRECTORY_SEPARATOR . 'autoload.php')) {
+            return;
+        }
+
+        if (is_link($link)) {
+            @unlink($link);
+        }
+
+        @symlink($vendor, $link);
     }
 
     /**
