@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.19.0 - 2026-11-03
+
 - Redrive a failed run whose workflow code upserted memos or search
   attributes. Before, any `MemoUpserted` or `SearchAttributesUpserted` event
   refused redrive with `unsupported_history`. The successor reuses those
