@@ -96,7 +96,9 @@ final class FailedRunRedrivePlanTest extends TestCase
         array_splice($history, 3, 0, [[
             'event_type' => HistoryEventType::ChildWorkflowScheduled,
             'payload' => [
-                'sequence' => 1,
+                // Distinct from the activity steps (1 and 2) so the refusal
+                // can only come from the unsupported event type.
+                'sequence' => 3,
             ],
         ]]);
 
