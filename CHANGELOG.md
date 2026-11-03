@@ -7,8 +7,12 @@
   `link_type: redrive` with `history_authority: typed_history` and
   `diagnostic_only: false`, because the successor's `WorkflowStarted` records
   `recovery_kind: redrive`, `continued_from_run_id` and `workflow_link_id`.
-  Before, both sides showed a diagnostic-only fallback. A link the successor's
-  history does not confirm stays a diagnostic fallback (#864).
+  Both sides take the step (`resume_step_sequence`) and time from that event,
+  not from the link row. The start must name the successor's own run and
+  instance, an earlier run of the same instance as the source, a nonblank link
+  id and a positive resume step. Before, both sides showed a diagnostic-only
+  fallback. A link the successor's history does not confirm stays a single
+  diagnostic fallback (#864).
 
 ## 2.19.0 - 2026-11-03
 

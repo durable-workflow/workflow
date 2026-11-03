@@ -294,29 +294,32 @@ final class RunLineageView
      */
     private static function redriveParentEntry(WorkflowRun $run): ?array
     {
-        $started = self::workflowStartedEvent($run);
-        $payload = $started?->payload;
+        $start = self::redriveStart($run);
 
-        if (! is_array($payload) || ($payload['recovery_kind'] ?? null) !== 'redrive') {
+        if ($start === null) {
             return null;
         }
 
-        $sourceRunId = self::stringValue($payload['continued_from_run_id'] ?? null);
-        $source = $sourceRunId === null ? null : self::resolveRun($run, $sourceRunId);
+        // The source is an earlier run of this instance.
+        $source = self::resolveRun($run, $start['source_run_id']);
 
-        if ($sourceRunId === null || (ImportedLineageReferences::imported($run) && $source === null)) {
+        if (
+            $source === null
+            || $source->workflow_instance_id !== $run->workflow_instance_id
+            || (int) $source->run_number >= (int) $run->run_number
+        ) {
             return null;
         }
 
         return self::entry(
-            id: self::stringValue($payload['workflow_link_id'] ?? null) ?? sprintf('redrive:%s', $sourceRunId),
+            id: $start['link_id'],
             linkType: 'redrive',
-            sequence: self::intValue($payload['resume_step_sequence'] ?? null),
+            sequence: $start['resume_step_sequence'],
             isPrimaryParent: true,
             relatedRun: $source,
             instanceId: $run->workflow_instance_id,
-            runId: $sourceRunId,
-            createdAt: $started->recorded_at ?? $started->created_at,
+            runId: $start['source_run_id'],
+            createdAt: $start['created_at'],
             historyAuthority: ChildRunHistory::HISTORY_AUTHORITY_TYPED,
         );
     }
@@ -324,6 +327,7 @@ final class RunLineageView
     /**
      * The failed run's history is closed, so its redrive successor is typed
      * only when the successor's WorkflowStarted names this run and this link.
+     * The entry takes its step and time from that event, not the link row.
      *
      * @return list<array<string, mixed>>
      */
@@ -336,19 +340,22 @@ final class RunLineageView
                 ! $link instanceof WorkflowLink
                 || $link->link_type !== 'redrive'
                 || $link->parent_workflow_run_id !== $run->id
+                || $link->parent_workflow_instance_id !== $run->workflow_instance_id
                 || $link->child_workflow_instance_id !== $run->workflow_instance_id
             ) {
                 continue;
             }
 
             $successor = self::resolveRun($run, $link->child_workflow_run_id);
-            $payload = $successor === null ? null : self::workflowStartedEvent($successor)?->payload;
+            $start = $successor === null ? null : self::redriveStart($successor);
 
             if (
-                ! is_array($payload)
-                || ($payload['recovery_kind'] ?? null) !== 'redrive'
-                || ($payload['continued_from_run_id'] ?? null) !== $run->id
-                || ($payload['workflow_link_id'] ?? null) !== $link->id
+                $successor === null
+                || $start === null
+                || $successor->workflow_instance_id !== $run->workflow_instance_id
+                || (int) $successor->run_number <= (int) $run->run_number
+                || $start['source_run_id'] !== $run->id
+                || $start['link_id'] !== $link->id
             ) {
                 continue;
             }
@@ -356,18 +363,65 @@ final class RunLineageView
             $entries[] = self::entry(
                 id: $link->id,
                 linkType: 'redrive',
-                sequence: $link->sequence,
+                sequence: $start['resume_step_sequence'],
                 isPrimaryParent: true,
                 relatedRun: $successor,
                 instanceId: $run->workflow_instance_id,
                 runId: $successor->id,
                 relationPrefix: 'child',
-                createdAt: $link->created_at,
+                createdAt: $start['created_at'],
                 historyAuthority: ChildRunHistory::HISTORY_AUTHORITY_TYPED,
             );
         }
 
         return $entries;
+    }
+
+    /**
+     * The typed redrive identity a run's WorkflowStarted records: it names
+     * this exact run and instance, the failed source, the redrive link and the
+     * step the run resumes at. Anything less is not typed lineage.
+     *
+     * @return array{source_run_id: string, link_id: string, resume_step_sequence: int, created_at: CarbonInterface|null}|null
+     */
+    private static function redriveStart(WorkflowRun $run): ?array
+    {
+        $started = self::workflowStartedEvent($run);
+        $payload = $started?->payload;
+
+        if (! is_array($payload) || ($payload['recovery_kind'] ?? null) !== 'redrive') {
+            return null;
+        }
+
+        $sourceRunId = self::nonBlank($payload['continued_from_run_id'] ?? null);
+        $linkId = self::nonBlank($payload['workflow_link_id'] ?? null);
+        $resume = $payload['resume_step_sequence'] ?? null;
+
+        if (
+            ($payload['workflow_run_id'] ?? null) !== $run->id
+            || ($payload['workflow_instance_id'] ?? null) !== $run->workflow_instance_id
+            || $sourceRunId === null
+            || $sourceRunId === $run->id
+            || $linkId === null
+            || ! is_int($resume)
+            || $resume < 1
+        ) {
+            return null;
+        }
+
+        return [
+            'source_run_id' => $sourceRunId,
+            'link_id' => $linkId,
+            'resume_step_sequence' => $resume,
+            'created_at' => $started->recorded_at ?? $started->created_at,
+        ];
+    }
+
+    private static function nonBlank(mixed $value): ?string
+    {
+        return is_string($value) && trim($value) !== ''
+            ? $value
+            : null;
     }
 
     /**
