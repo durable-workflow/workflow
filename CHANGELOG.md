@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 2.19.0 - 2026-11-03
+
+- Rollback: releases before 2.19.0 ignore `reused_recorded_at` on the signal,
+  memo and search-attribute events that a 2.19.0 redrive successor reuses.
+  Replaying such a successor on an older release can change its workflow time
+  and the deadlines derived from it. Once a 2.19.0 redrive successor with
+  reused signal waits or upserts exists, keep 2.19.0 or later workers, or
+  confirm that no such history can replay before rolling back (#864).
 - Redrive a failed run whose workflow code upserted memos or search
   attributes. Before, any `MemoUpserted` or `SearchAttributesUpserted` event
   refused redrive with `unsupported_history`. The successor reuses those
