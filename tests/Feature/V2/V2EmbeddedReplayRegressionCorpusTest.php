@@ -1438,7 +1438,12 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $audit = $events->last();
         $this->assertSame(HistoryEventType::ActivityOutcomeRejected, $audit->event_type);
         $this->assertSame($claim['activity_attempt_id'], $audit->payload['activity_attempt_id']);
-        $this->assertSame(array_keys($expected), array_keys($audit->payload));
+        // JSON columns do not keep key order on every database (MySQL reorders).
+        $expectedKeys = array_keys($expected);
+        $actualKeys = array_keys($audit->payload);
+        sort($expectedKeys);
+        sort($actualKeys);
+        $this->assertSame($expectedKeys, $actualKeys);
         foreach (['attempt_number', 'lease_owner', 'outcome', 'reason'] as $key) {
             $this->assertSame($expected[$key], $audit->payload[$key], $key);
         }
