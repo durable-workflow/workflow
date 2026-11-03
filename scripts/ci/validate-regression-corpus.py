@@ -16,10 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
-import queue
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
@@ -310,12 +307,6 @@ PHP_CODEC_NAMES = {"avro"}
 PHP_CODEC_ALIASES: dict[str, str] = {}
 PHP_REPLAY_PAYLOAD_DECODER = Path(__file__).with_name("decode-replay-payload.php")
 RUNTIME_DEPENDENCY_PATHS = ("vendor",)
-# Consumer runs are independent, so they run concurrently. Each concurrent run
-# gets its own SQLite file and its own pair of Redis databases (0 and 1 stay
-# with the job), so 6 slots fit Redis's default 16 databases.
-CONSUMER_JOBS_ENV = "REGRESSION_CORPUS_CONSUMER_JOBS"
-DEFAULT_CONSUMER_JOBS = 3
-MAX_CONSUMER_JOBS = 6
 ZERO_COMMIT = re.compile(r"^0+$")
 LEGACY_MALFORMED_WIRE_REPAIRS = {
     "%%%": "JSUl",
@@ -1825,77 +1816,20 @@ def _consumer_result(
     source_root: Path,
     files: Mapping[str, bytes],
     command: Sequence[str],
-    slot: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    started = time.monotonic()
     with tempfile.TemporaryDirectory(
         prefix=".regression-corpus-consumer-",
         dir=source_root,
     ) as temporary:
         consumer_root = Path(temporary)
         _materialize_consumer_tree(source_root, consumer_root, files)
-        materialized = time.monotonic()
-        environment = None
-        if slot is not None:
-            database = consumer_root / ".regression-corpus-consumer.sqlite"
-            database.touch()
-            environment = {
-                **os.environ,
-                "DB_DATABASE": str(database),
-                "REDIS_DB": str(2 + 2 * slot),
-                "REDIS_CACHE_DB": str(3 + 2 * slot),
-            }
-        result = subprocess.run(
+        return subprocess.run(
             command,
             cwd=consumer_root,
             check=False,
             capture_output=True,
             text=True,
-            env=environment,
         )
-        print(
-            f"consumer run (slot {'-' if slot is None else slot}): tree {materialized - started:.1f}s, "
-            f"consumer {time.monotonic() - materialized:.1f}s, exit {result.returncode}",
-            file=sys.stderr,
-        )
-        return result
-
-
-def _consumer_jobs() -> int:
-    raw = os.environ.get(CONSUMER_JOBS_ENV, str(DEFAULT_CONSUMER_JOBS))
-    try:
-        jobs = int(raw)
-    except ValueError as error:
-        raise CorpusError(f"{CONSUMER_JOBS_ENV} must be an integer, got {raw!r}") from error
-    # Concurrent runs need separate databases, which only a SQLite file gives
-    # without provisioning. Other connections run one consumer at a time.
-    if os.environ.get("DB_CONNECTION", "sqlite") != "sqlite":
-        return 1
-    return max(1, min(jobs, MAX_CONSUMER_JOBS))
-
-
-def _consumer_results(
-    source_root: Path,
-    runs: Sequence[tuple[Mapping[str, bytes], tuple[str, ...]]],
-) -> list[subprocess.CompletedProcess[str]]:
-    jobs = min(_consumer_jobs(), len(runs))
-    if jobs <= 1:
-        return [_consumer_result(source_root, files, command) for files, command in runs]
-
-    slots: queue.SimpleQueue[int] = queue.SimpleQueue()
-    for slot in range(jobs):
-        slots.put(slot)
-
-    def run(files: Mapping[str, bytes], command: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
-        slot = slots.get()
-        try:
-            return _consumer_result(source_root, files, command, slot)
-        finally:
-            slots.put(slot)
-
-    with ThreadPoolExecutor(max_workers=jobs) as pool:
-        futures = [pool.submit(run, files, command) for files, command in runs]
-        return [future.result() for future in futures]
 
 
 def _consumer_failure_detail(result: subprocess.CompletedProcess[str]) -> str:
@@ -1925,10 +1859,7 @@ def _require_counterfactual_evidence(
     related_categories: set[str],
 ) -> dict[str, int]:
     verified = {category: 0 for category in related_categories}
-    plan: list[tuple[str, list[tuple[str, str, tuple[str, ...]]]]] = []
-    runs: list[tuple[Mapping[str, bytes], tuple[str, ...]]] = []
-    baseline_runs: dict[tuple[str, ...], int] = {}
-    fixture_runs: dict[str, tuple[int, int]] = {}
+    baseline_consumers: set[tuple[str, ...]] = set()
 
     for category_name in sorted(related_categories):
         evidence_paths = sorted(
@@ -1939,41 +1870,22 @@ def _require_counterfactual_evidence(
                 for item in current_evidence
             )
         )
-        category_plan: list[tuple[str, str, tuple[str, ...]]] = []
         for path in evidence_paths:
             consumer_name, command = _official_consumer(policy, category_name, path)
-            if command not in baseline_runs:
-                baseline_runs[command] = len(runs)
-                runs.append((_base_consumer_files(base_files, current_files, command), command))
-
-            isolated_head_files = dict(current_files)
-            for other_path in added_fixture_paths - {path}:
-                isolated_head_files.pop(other_path, None)
-            base_with_evidence = _base_consumer_files(base_files, current_files, command)
-            base_with_evidence[path] = current_files[path]
-            fixture_runs[path] = (len(runs), len(runs) + 1)
-            runs.append((isolated_head_files, command))
-            runs.append((base_with_evidence, command))
-            category_plan.append((path, consumer_name, command))
-        plan.append((category_name, category_plan))
-
-    results = _consumer_results(root, runs)
-    checked_baselines: set[tuple[str, ...]] = set()
-
-    # Report in the same order as running the consumers one at a time would.
-    for category_name, category_plan in plan:
-        for path, consumer_name, command in category_plan:
-            if command not in checked_baselines:
-                baseline = results[baseline_runs[command]]
+            if command not in baseline_consumers:
+                baseline_files = _base_consumer_files(base_files, current_files, command)
+                baseline = _consumer_result(root, baseline_files, command)
                 if baseline.returncode != 0:
                     raise CorpusError(
                         f"official {consumer_name} consumer does not pass at the base "
                         f"revision without new evidence: {_consumer_failure_detail(baseline)}"
                     )
-                checked_baselines.add(command)
+                baseline_consumers.add(command)
 
-            head_index, counterfactual_index = fixture_runs[path]
-            head = results[head_index]
+            isolated_head_files = dict(current_files)
+            for other_path in added_fixture_paths - {path}:
+                isolated_head_files.pop(other_path, None)
+            head = _consumer_result(root, isolated_head_files, command)
             if head.returncode != 0:
                 raise CorpusError(
                     f"new {category_name} evidence {path} does not pass the official "
@@ -1981,7 +1893,10 @@ def _require_counterfactual_evidence(
                     f"{_consumer_failure_detail(head)}"
                 )
 
-            if results[counterfactual_index].returncode == 0:
+            base_with_evidence = _base_consumer_files(base_files, current_files, command)
+            base_with_evidence[path] = current_files[path]
+            counterfactual = _consumer_result(root, base_with_evidence, command)
+            if counterfactual.returncode == 0:
                 raise CorpusError(
                     f"new {category_name} evidence {path} passes the official "
                     f"{consumer_name} consumer at both base and current revisions; "
@@ -1989,7 +1904,7 @@ def _require_counterfactual_evidence(
                 )
             verified[category_name] += 1
 
-        if category_plan and verified[category_name] == 0:
+        if evidence_paths and verified[category_name] == 0:
             raise CorpusError(
                 f"new {category_name} evidence includes no fixture that fails the "
                 "official consumer at the base revision and passes at the current revision"
