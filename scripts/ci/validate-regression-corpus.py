@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import queue
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -1826,12 +1827,14 @@ def _consumer_result(
     command: Sequence[str],
     slot: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    started = time.monotonic()
     with tempfile.TemporaryDirectory(
         prefix=".regression-corpus-consumer-",
         dir=source_root,
     ) as temporary:
         consumer_root = Path(temporary)
         _materialize_consumer_tree(source_root, consumer_root, files)
+        materialized = time.monotonic()
         environment = None
         if slot is not None:
             database = consumer_root / ".regression-corpus-consumer.sqlite"
@@ -1842,7 +1845,7 @@ def _consumer_result(
                 "REDIS_DB": str(2 + 2 * slot),
                 "REDIS_CACHE_DB": str(3 + 2 * slot),
             }
-        return subprocess.run(
+        result = subprocess.run(
             command,
             cwd=consumer_root,
             check=False,
@@ -1850,6 +1853,12 @@ def _consumer_result(
             text=True,
             env=environment,
         )
+        print(
+            f"consumer run (slot {'-' if slot is None else slot}): tree {materialized - started:.1f}s, "
+            f"consumer {time.monotonic() - materialized:.1f}s, exit {result.returncode}",
+            file=sys.stderr,
+        )
+        return result
 
 
 def _consumer_jobs() -> int:
