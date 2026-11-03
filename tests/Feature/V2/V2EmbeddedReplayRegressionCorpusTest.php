@@ -8,6 +8,7 @@ use DateTimeImmutable;
 use Illuminate\Queue\WorkerOptions;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
@@ -211,6 +212,90 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 $status,
             );
         }
+    }
+
+    public function testRedriveStartVisibilityCorpusCarriesToTheSuccessor(): void
+    {
+        $path = self::FIXTURE_DIR . '/redrive-start-visibility-carryover.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The redrive start-visibility evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['redrive_start_visibility'];
+        self::stopWorkers();
+        config([
+            'queue.default' => 'sync',
+            'queue.connections.sync.driver' => 'sync',
+        ]);
+        Cache::forget('test:redrive:first-calls');
+        Cache::forget('test:redrive:second-calls');
+        $this->clearWorkflowState();
+        WorkflowStub::fake();
+
+        $stub = WorkflowStub::make($fixture['workflow']['type'], 'regression-corpus-redrive-visibility');
+        $stub->start(...[
+            ...$fixture['workflow']['arguments'],
+            StartOptions::rejectDuplicate()
+                ->withMemo($scenario['memo'])
+                ->withSearchAttributes($scenario['search_attributes']),
+        ]);
+        $this->assertTrue($stub->refresh()->failed());
+        $source = WorkflowRun::query()->findOrFail($stub->runId());
+
+        $result = app(WorkflowControlPlane::class)->redrive($source->workflow_instance_id, $source->id);
+
+        $this->assertSame($scenario['redrive'] === 'accepted', $result['accepted'], (string) $result['reason']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame($scenario['successor_status'], $successor->status->value);
+        $this->assertSame($source->typedMemos(), $successor->typedMemos());
+        $this->assertSame($source->typedSearchAttributes(), $successor->typedSearchAttributes());
+        $this->assertSame(
+            $scenario['search_attributes']['region'],
+            $successor->typedSearchAttributes()['region'] ?? null
+        );
+    }
+
+    public function testRecordedWorkflowFailureCorpusReplaysAsTheRecordedFailure(): void
+    {
+        $path = self::FIXTURE_DIR . '/recorded-workflow-failure-replay.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The recorded workflow failure replay evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['recorded_workflow_failure'];
+        self::stopWorkers();
+        Queue::fake();
+        config([
+            'queue.default' => 'database',
+        ]);
+        $this->clearWorkflowState();
+
+        $stub = WorkflowStub::make($scenario['workflow'], 'regression-corpus-recorded-workflow-failure');
+        $stub->start();
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $this->runReadyWorkflowTask($run);
+        $this->assertSame(RunStatus::Failed, $run->fresh()->status);
+
+        $bundle = HistoryExport::forRun($run->fresh());
+        $report = (new ReplayDiff())->diffExport($bundle);
+
+        $this->assertSame($scenario['reproduced_status'], $report['status'], json_encode($report));
+        $this->assertSame([
+            'exception_class' => $scenario['exception_class'],
+            'message' => $scenario['message'],
+        ], $report['replay']['recorded_failure'] ?? null);
+
+        foreach ($bundle['history_events'] as &$event) {
+            if (($event['type'] ?? null) === HistoryEventType::WorkflowFailed->value) {
+                $event['payload']['message'] = $scenario['different_message'];
+            }
+        }
+        unset($event);
+        $different = (new ReplayDiff())->diffExport($bundle);
+
+        $this->assertSame($scenario['different_failure_status'], $different['status']);
+        $this->assertSame($scenario['different_failure_reason'], $different['reason']);
+        $this->assertSame($scenario['different_message'], $different['error']['recorded_failure']['message'] ?? null);
     }
 
     public function testLateChildResumeCorpusCreatesDeliveryAfterALeasedParentWaits(): void
