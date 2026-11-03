@@ -30,7 +30,7 @@ final class WorkerProtocolVersion
      * pagination semantics). Bump the minor for additive changes (new
      * optional fields, new non-terminal command types).
      */
-    public const VERSION = '1.20';
+    public const VERSION = '1.21';
 
     /**
      * Worker registration capability for server-routed workflow query
@@ -165,6 +165,8 @@ final class WorkerProtocolVersion
     public const LOCAL_ACTIVITY_ATTEMPT_REPORTS_MINIMUM_PROTOCOL_VERSION = '1.19';
 
     public const DURABLE_SELECTION_MINIMUM_PROTOCOL_VERSION = '1.19';
+
+    public const DURABLE_SERVICE_OPERATION_SCHEDULER_MINIMUM_PROTOCOL_VERSION = '1.21';
 
     private const QUERY_TASKS_MINIMUM_PROTOCOL_VERSION = '1.8';
 
@@ -334,6 +336,30 @@ final class WorkerProtocolVersion
             $protocolVersion,
             self::LOCAL_ACTIVITY_ATTEMPT_REPORTS_MINIMUM_PROTOCOL_VERSION,
         );
+    }
+
+    public static function supportsDurableServiceOperationScheduler(string $protocolVersion): bool
+    {
+        return self::supportsFeatureVersion(
+            $protocolVersion,
+            self::DURABLE_SERVICE_OPERATION_SCHEDULER_MINIMUM_PROTOCOL_VERSION,
+        );
+    }
+
+    public static function isWellFormed(string $protocolVersion): bool
+    {
+        return preg_match('/\A(0|[1-9]\d*)\.(0|[1-9]\d*)\z/D', $protocolVersion) === 1;
+    }
+
+    public static function isSupportedRequestVersion(string $protocolVersion): bool
+    {
+        if (! self::isWellFormed($protocolVersion)) {
+            return false;
+        }
+        [$requestedMajor, $requestedMinor] = explode('.', $protocolVersion);
+        [$currentMajor, $currentMinor] = explode('.', self::VERSION);
+
+        return $requestedMajor === $currentMajor && (int) $requestedMinor <= (int) $currentMinor;
     }
 
     /**
@@ -806,7 +832,14 @@ final class WorkerProtocolVersion
             ],
             'wait_timeout_seconds' => [
                 'shape' => 'non-negative integer',
+                'maximum' => UpdateWaitPolicy::MAX_COMPLETION_TIMEOUT_SECONDS,
                 'required' => false,
+            ],
+            'durable_scheduler' => [
+                'minimum_protocol_version' => self::DURABLE_SERVICE_OPERATION_SCHEDULER_MINIMUM_PROTOCOL_VERSION,
+                'admission_event' => 'ServiceOperationScheduled',
+                'resume_visibility_field' => 'workflow_resume_on_admission',
+                'effect_delivery' => 'after_commit_at_least_once',
             ],
             'metadata' => [
                 'shape' => 'array<string, mixed>',
@@ -818,6 +851,7 @@ final class WorkerProtocolVersion
                 ],
             ],
             'service_call_result_events' => [
+                'ServiceOperationScheduled',
                 'ServiceCallStarted',
                 'ServiceCallCompleted',
                 'ServiceCallFailed',

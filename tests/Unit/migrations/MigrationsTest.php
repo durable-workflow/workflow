@@ -232,6 +232,7 @@ final class MigrationsTest extends SchemaTestCase
         $this->assertTrue(Schema::hasTable('workflow_services'));
         $this->assertTrue(Schema::hasTable('workflow_service_operations'));
         $this->assertTrue(Schema::hasTable('workflow_service_calls'));
+        $this->assertTrue(Schema::hasTable('workflow_service_call_dispatches'));
         $this->assertTrue(Schema::hasColumn('workflow_service_endpoints', 'boundary_policy'));
         $this->assertTrue(Schema::hasColumn('workflow_services', 'boundary_policy'));
         $this->assertTrue(Schema::hasColumn('workflow_service_operations', 'boundary_policy'));
@@ -248,6 +249,9 @@ final class MigrationsTest extends SchemaTestCase
         $this->assertTrue(Schema::hasColumn('workflow_service_calls', 'caller_principal_roles'));
         $this->assertTrue(Schema::hasColumn('workflow_service_calls', 'caller_principal_tenant'));
         $this->assertTrue(Schema::hasColumn('workflow_service_calls', 'caller_principal_claims'));
+        $this->assertTrue(Schema::hasColumn('workflow_service_call_dispatches', 'claim_generation'));
+        $this->assertTrue(Schema::hasColumn('workflow_service_call_dispatches', 'authorized_catalog_revision'));
+        $this->assertTrue(Schema::hasColumn('workflow_service_call_dispatches', 'repair_available_at'));
         $this->assertTrue(Schema::hasColumn('activity_executions', 'current_attempt_id'));
         $this->assertTrue(Schema::hasColumn('workflow_history_events', 'workflow_command_id'));
         $this->assertTrue(Schema::hasColumn('workflow_run_summaries', 'sort_timestamp'));
@@ -279,6 +283,9 @@ final class MigrationsTest extends SchemaTestCase
         $this->assertIndexExists('workflow_run_summaries', 'wfrs_namespace_type_sort_idx');
         $this->assertIndexExists('workflow_run_summaries', 'wfrs_namespace_status_sort_idx');
         $this->assertIndexExists('workflow_tasks', 'workflow_tasks_namespace_queue_status_idx');
+        $this->assertIndexExists('workflow_service_call_dispatches', 'wf_service_dispatch_due_idx');
+        $this->assertIndexExists('workflow_service_call_dispatches', 'wf_service_dispatch_claim_idx');
+        $this->assertIndexExists('workflow_service_call_dispatches', 'wf_service_dispatch_repair_idx');
         $this->assertIndexExists(
             'workflow_child_projection_repairs',
             'workflow_child_projection_repairs_drain_idx',
@@ -311,6 +318,7 @@ final class MigrationsTest extends SchemaTestCase
         $this->assertFalse(Schema::hasTable('workflow_services'));
         $this->assertFalse(Schema::hasTable('workflow_service_operations'));
         $this->assertFalse(Schema::hasTable('workflow_service_calls'));
+        $this->assertFalse(Schema::hasTable('workflow_service_call_dispatches'));
     }
 
     /**
@@ -588,6 +596,7 @@ final class MigrationsTest extends SchemaTestCase
             'workflow_services',
             'workflow_service_operations',
             'workflow_service_calls',
+            'workflow_service_call_dispatches',
         ];
     }
 }

@@ -17,6 +17,7 @@ use PDOException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Throwable;
+use WeakReference;
 use Workflow\Support\SqliteWriteWaitException;
 use Workflow\V2\Support\SqliteTransaction;
 
@@ -101,6 +102,33 @@ final class SqliteTransactionTest extends TestCase
         $this->assertSame(1, (int) $this->connection->selectOne('SELECT value FROM state WHERE id=1')->value);
         $this->assertSame(0, $this->connection->transactionLevel());
         $this->assertFalse($this->connection->getPdo()->inTransaction());
+    }
+
+    public function testRetriedFailureDoesNotRetainTheDisconnectedPdoWithoutGarbageCollection(): void
+    {
+        $previousArguments = ini_set('zend.exception_ignore_args', '0');
+        $collectionEnabled = gc_enabled();
+        gc_disable();
+        $reference = WeakReference::create($this->connection->getPdo());
+        $writer = $this->writer();
+        $calls = 0;
+        try {
+            SqliteTransaction::run(function () use ($writer, &$calls): void {
+                $this->connection->selectOne('SELECT value FROM state WHERE id=1');
+                if (++$calls === 1) {
+                    $writer->exec('UPDATE state SET value=1 WHERE id=2');
+                }
+                $this->connection->update('UPDATE state SET value=value+1 WHERE id=1');
+            });
+            $this->assertSame(2, $calls);
+            $this->connection->disconnect();
+            $this->assertNull($reference->get(), 'A handled retry must release its original PDO when disconnected.');
+        } finally {
+            ini_set('zend.exception_ignore_args', (string) $previousArguments);
+            if ($collectionEnabled) {
+                gc_enable();
+            }
+        }
     }
 
     public function testExplicitConnectionDoesNotResolveAnUnrelatedApplicationDatabase(): void

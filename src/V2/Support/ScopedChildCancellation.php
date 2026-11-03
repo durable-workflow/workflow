@@ -68,6 +68,15 @@ final class ScopedChildCancellation
                 }
                 $runId = $next['child_workflow_run_id'];
             }
+            if (ImportedLineageReferences::imported($run)) {
+                $child = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                    ->where('namespace', $run->namespace)
+                    ->find($runId);
+                if (! $child instanceof WorkflowRun
+                    || ! ImportedLineageReferences::allowsChild($run, $child, $sequence, $callId)) {
+                    throw new LogicException('cancellation_scope_child_target_mismatch');
+                }
+            }
             $calls[$callId] = true;
             $sequences[$sequence] = true;
             $members[] = [

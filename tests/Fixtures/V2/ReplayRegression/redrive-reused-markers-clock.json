@@ -1,0 +1,78 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "redrive-reused-markers-clock",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestRedriveMarkersWorkflow",
+    "arguments": [
+      "Taylor"
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-03T00:05:00+00:00"
+    },
+    {
+      "sequence": 2,
+      "event_type": "SideEffectRecorded",
+      "payload": {
+        "sequence": 1,
+        "result": "wwHioz3/VYAiNwogMDEyMzQ1Njc4OWFiY2RlZg==",
+        "reused_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "reused_recorded_at": "2026-11-03T00:00:00+00:00"
+      },
+      "recorded_at": "2026-11-03T00:05:00+00:00"
+    },
+    {
+      "sequence": 3,
+      "event_type": "VersionMarkerRecorded",
+      "payload": {
+        "sequence": 2,
+        "change_id": "redrive-markers",
+        "version": 1,
+        "min_supported": -1,
+        "max_supported": 1,
+        "reused_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "reused_recorded_at": "2026-11-03T00:00:00+00:00"
+      },
+      "recorded_at": "2026-11-03T00:05:00+00:00"
+    }
+  ],
+  "redrive_reused_markers": {
+    "redrive_after_minutes": 5,
+    "redrive": "accepted",
+    "resume_step_sequence": 4,
+    "successor_status": "completed",
+    "side_effect_calls": 1,
+    "reused_steps": [
+      {
+        "sequence": 1,
+        "event_type": "SideEffectRecorded"
+      },
+      {
+        "sequence": 2,
+        "event_type": "VersionMarkerRecorded"
+      }
+    ],
+    "version": 1
+  },
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "schedule_activity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+        "payload_codec": "avro"
+      }
+    ]
+  }
+}

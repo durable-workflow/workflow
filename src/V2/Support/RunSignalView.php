@@ -20,7 +20,7 @@ final class RunSignalView
      */
     public static function forRun(WorkflowRun $run): array
     {
-        $run->loadMissing(['commands', 'historyEvents', 'signals.command']);
+        $run->loadMissing(['commands', 'historyEvents', 'signals.command.run']);
 
         $rows = [];
         $eventsByCommandId = $run->historyEvents
@@ -42,7 +42,7 @@ final class RunSignalView
                 continue;
             }
 
-            $rows[] = self::rowFromSignal($signal);
+            $rows[] = self::rowFromSignal($signal, $run);
         }
 
         foreach ($run->commands as $command) {
@@ -81,9 +81,14 @@ final class RunSignalView
     /**
      * @return array<string, mixed>
      */
-    private static function rowFromSignal(WorkflowSignal $signal): array
+    private static function rowFromSignal(WorkflowSignal $signal, WorkflowRun $run): array
     {
         $command = $signal->command;
+        if (! $command instanceof WorkflowCommand || $command->workflow_instance_id !== $signal->workflow_instance_id
+            || $command->command_type->value !== 'signal'
+            || ! $command->run instanceof WorkflowRun || $command->run->namespace !== $run->namespace) {
+            $command = null;
+        }
 
         return [
             'id' => $signal->id,

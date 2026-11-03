@@ -24,10 +24,14 @@ final class TimerCancellation
         WorkflowCommand|string|null $command = null,
         ?CarbonInterface $cancelledAt = null,
         ?array $cancellationScope = null,
+        ?TerminalCancellationHistory $terminalHistory = null,
     ): WorkflowHistoryEvent {
-        $run->loadMissing('historyEvents');
+        $terminalHistory?->assertRun($run);
+        if ($terminalHistory === null) {
+            $run->loadMissing('historyEvents');
+        }
 
-        $existing = $run->historyEvents
+        $existing = $terminalHistory !== null ? $terminalHistory->cancelledTimer($timer->id) : $run->historyEvents
             ->first(
                 static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::TimerCancelled
                 && ($event->payload['timer_id'] ?? null) === $timer->id
@@ -37,10 +41,12 @@ final class TimerCancellation
             return $existing;
         }
 
-        $scheduledPayload = self::scheduledPayload($run, $timer->id);
+        $scheduledPayload = $terminalHistory !== null
+            ? $terminalHistory->scheduledTimer($timer->id)
+            : self::scheduledPayload($run, $timer->id);
         $cancelledAt ??= now();
 
-        $event = WorkflowHistoryEvent::record($run, HistoryEventType::TimerCancelled, array_filter([
+        $event = WorkflowHistoryEvent::recordCancellation($run, HistoryEventType::TimerCancelled, array_filter([
             'timer_id' => $timer->id,
             'sequence' => self::intValue($scheduledPayload['sequence'] ?? null) ?? $timer->sequence,
             'delay_seconds' => self::intValue($scheduledPayload['delay_seconds'] ?? null) ?? $timer->delay_seconds,
@@ -59,11 +65,12 @@ final class TimerCancellation
             'cancelled_at' => $cancelledAt->toJSON(),
             'cancellation_scope' => $cancellationScope,
             ...ParallelChildGroup::payloadForPath(ParallelChildGroup::metadataPathFromPayload($scheduledPayload)),
-        ], static fn (mixed $value): bool => $value !== null), $task, $command);
+        ], static fn (mixed $value): bool => $value !== null), $task, $command, $terminalHistory);
 
         if ($run->relationLoaded('historyEvents')) {
             $run->historyEvents->push($event);
         }
+        $terminalHistory?->rememberTimer($timer->id, $event);
 
         return $event;
     }

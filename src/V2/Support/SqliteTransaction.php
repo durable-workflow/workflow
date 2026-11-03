@@ -6,12 +6,12 @@ namespace Workflow\V2\Support;
 
 use Closure;
 use Illuminate\Database\Connection;
-use Illuminate\Support\Facades\Config;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Database\QueryException;
 use PDO;
 use PDOException;
 use Throwable;
 use Workflow\Support\SqliteWriteWait;
+use Workflow\V2\Exceptions\SqliteWriteAdmissionUnavailableException;
 
 final class SqliteTransaction
 {
@@ -88,16 +88,67 @@ final class SqliteTransaction
         }, admissionDeadline: $admissionDeadline);
     }
 
+    /**
+     * Try one bounded writer admission for maintenance. Only the exact busy
+     * admission error, with rollback proved and no body entered, is deferrable.
+     *
+     * @internal
+     * @template T
+     * @param Closure(Connection): T $operation
+     * @return T
+     */
+    public static function forTaskOnce(\Workflow\V2\Models\WorkflowTask $task, Closure $operation): mixed
+    {
+        $connection = $task->getConnection();
+        // Metadata and query observers can throw busy-looking application
+        // errors. Only a QueryException from the admission write is deferrable.
+        $key = $task->getKeyName();
+        $taskId = $task->getKey();
+        $query = $connection->table($task->getTable())
+            ->where($key, $taskId);
+        $admissionSql = $query->getGrammar()
+            ->compileUpdate($query, [
+                $key => $taskId,
+            ]);
+        $admissionBindings = $connection->prepareBindings([$taskId, $taskId]);
+        $pdo = $connection->getPdo();
+        $root = $connection->getDriverName() === 'sqlite'
+            && $connection->transactionLevel() === 0 && ! $pdo->inTransaction();
+        $entered = false;
+        $admissionFailure = null;
+        $admit = static function () use ($query, $key, $taskId, &$admissionFailure): void {
+            try {
+                $query->update([
+                    $key => $taskId,
+                ]);
+            } catch (Throwable $error) {
+                $admissionFailure = $error;
+
+                throw $error;
+            }
+        };
+        try {
+            return self::run(static function (Connection $database) use ($operation, &$entered): mixed {
+                $entered = true;
+
+                return $operation($database);
+            }, attempts: 1, admission: $admit, connection: $connection);
+        } catch (Throwable $error) {
+            if ($root && ! $entered && $error instanceof QueryException
+                && $error === $admissionFailure && $error->getSql() === $admissionSql
+                && $error->getBindings() === $admissionBindings && self::isContention($error)
+                && $connection->transactionLevel() === 0 && $connection->getRawPdo() === $pdo
+                && ! $pdo->inTransaction()) {
+                throw new SqliteWriteAdmissionUnavailableException('SQLite writer admission is busy.', 0, $error);
+            }
+
+            throw $error;
+        }
+    }
+
     private static function connection(): Connection
     {
-        $connection = DB::connection();
-        $storageName = Config::get('workflows.storage.connection');
-        if (! is_string($storageName) || $storageName === '') {
-            return $connection;
-        }
-        $storage = DB::connection($storageName);
-
-        return $storage->getDriverName() === 'sqlite' ? $storage : $connection;
+        return ConfiguredV2Models::connection();
     }
 
     /**
@@ -172,12 +223,16 @@ final class SqliteTransaction
             ];
         } catch (Throwable $exception) {
             $bodyMustNotRepeat = $admission !== null && $entered;
+            $retry = $exception === $mutationError && $failedInRoot && ! $returned && ! $bodyMustNotRepeat
+                && self::isContention($exception) && $connection->transactionLevel() === 0
+                && $connection->getRawPdo() === $pdo && ! $pdo->inTransaction();
+            // Exception argument traces retain the callback's captured references.
+            // Break its self-reference so a handled retry does not pin the PDO.
+            $mutationError = null;
 
             return [
                 'error' => $exception,
-                'retry' => $exception === $mutationError && $failedInRoot && ! $returned && ! $bodyMustNotRepeat
-                    && self::isContention($exception) && $connection->transactionLevel() === 0
-                    && $connection->getRawPdo() === $pdo && ! $pdo->inTransaction(),
+                'retry' => $retry,
             ];
         }
     }

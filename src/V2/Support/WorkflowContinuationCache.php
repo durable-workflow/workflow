@@ -6,7 +6,6 @@ namespace Workflow\V2\Support;
 
 use Illuminate\Database\Connection;
 use Illuminate\Queue\Jobs\DatabaseJob;
-use Illuminate\Support\Facades\DB;
 use PDO;
 use WeakMap;
 use Workflow\V2\WorkflowStub;
@@ -55,8 +54,7 @@ final class WorkflowContinuationCache
             || config('workflows.v2.live_execution.workflows', []) === []) {
             return null;
         }
-        $name = config('workflows.storage.connection');
-        $database = DB::connection(is_string($name) ? $name : null);
+        $database = ConfiguredV2Models::connection();
         if ($database->transactionLevel() !== 0 || $database->getPdo()->inTransaction()) {
             return null;
         }

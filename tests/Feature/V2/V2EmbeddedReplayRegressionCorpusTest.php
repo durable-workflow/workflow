@@ -4,14 +4,21 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use DateTimeImmutable;
 use Illuminate\Queue\WorkerOptions;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Validation\ValidationException;
+use Mockery;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use Symfony\Component\Uid\Ulid;
+use Tests\Fixtures\V2\TestGreetingActivity;
+use Tests\Fixtures\V2\TestLocalActivityWorkflow;
 use Tests\Fixtures\V2\TestQueryReplayGuardActivity;
 use Tests\Fixtures\V2\TestRepeatedPatchClockWorkflow;
 use Tests\Fixtures\V2\TestSinglePatchReplayWorkflow;
@@ -23,21 +30,32 @@ use Tests\TestCase;
 use Throwable;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Activity;
+use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionRole;
+use Workflow\V2\Contracts\ProtocolAwareWorkflowTaskBridge;
+use Workflow\V2\Contracts\ServiceControlPlane;
+use Workflow\V2\Contracts\WorkflowControlPlane;
+use Workflow\V2\Contracts\WorkflowServiceOperationAuthorizer;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
+use Workflow\V2\Enums\CancellationPolicy;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Enums\ScheduleOverlapPolicy;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Events\WorkflowStarted;
 use Workflow\V2\Exceptions\ActivityRetryPolicyMismatchException;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
+use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Exceptions\VersionRangeMismatchException;
 use Workflow\V2\Exceptions\WorkflowEntryArgumentsMismatchException;
 use Workflow\V2\Jobs\RunActivityTask;
+use Workflow\V2\Jobs\RunServiceCall;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowChildCall;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -47,24 +65,41 @@ use Workflow\V2\Models\WorkflowMemo;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowSearchAttribute;
+use Workflow\V2\Models\WorkflowService;
+use Workflow\V2\Models\WorkflowServiceCall;
+use Workflow\V2\Models\WorkflowServiceCallDispatch;
+use Workflow\V2\Models\WorkflowServiceEndpoint;
+use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
+use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\StartOptions;
+use Workflow\V2\Support\ActivityCancellationAcknowledgement;
+use Workflow\V2\Support\BundleIntegrityVerifier;
 use Workflow\V2\Support\CancellationScopeDelivery;
 use Workflow\V2\Support\CancellationScopeHistory;
 use Workflow\V2\Support\CancellationScopeRequests;
+use Workflow\V2\Support\ChildRunHistory;
 use Workflow\V2\Support\ConditionWaits;
 use Workflow\V2\Support\DefaultHistoryProjectionRole;
+use Workflow\V2\Support\DefaultServiceControlPlane;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\EmbeddedV2HistoryImport;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\ReplayDiff;
 use Workflow\V2\Support\RunActivityView;
+use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunTimelineProjector;
+use Workflow\V2\Support\ScheduleManager;
+use Workflow\V2\Support\ServiceCallPrincipal;
+use Workflow\V2\Support\ServiceCallScheduler;
+use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Support\WorkflowReplayer;
+use Workflow\V2\Support\WorkflowRunRetentionCleanup;
 use Workflow\V2\Support\WorkflowStep;
 use Workflow\V2\Support\WorkflowStepHistory;
 use Workflow\V2\Support\WorkflowTaskPayload;
@@ -79,6 +114,729 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     private const FIXTURE_DIR = __DIR__ . '/../../Fixtures/V2/ReplayRegression';
 
     private int $workflowNumber = 0;
+
+    public function testImportedChildLineageCorpusDoesNotAttachAnUnrelatedLaterRun(): void
+    {
+        $path = self::FIXTURE_DIR . '/imported-child-lineage-requires-owned-edge.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The retained imported-lineage evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        self::stopWorkers();
+        Queue::fake();
+        config([
+            'queue.default' => 'database',
+        ]);
+        $this->clearWorkflowState();
+        $parent = $this->createRunFromFixture($fixture);
+        $bundle = HistoryExport::forRun($parent->fresh());
+        $this->assertCount(1, $bundle['links']['children']);
+        $this->clearWorkflowState();
+        $this->assertSame('imported', EmbeddedV2HistoryImport::import($bundle, [
+            'namespace' => 'lineage-import',
+        ])['status']);
+        $this->assertSame(0, WorkflowLink::query()->count());
+        $identity = $fixture['history'][2]['payload'];
+        WorkflowInstance::query()->create([
+            'id' => $identity['child_workflow_instance_id'],
+            'namespace' => 'lineage-import',
+            'workflow_type' => 'unrelated-later',
+            'workflow_class' => 'unrelated-later',
+            'current_run_id' => $identity['child_workflow_run_id'],
+            'run_count' => 1,
+        ]);
+        WorkflowRun::query()->create([
+            'id' => $identity['child_workflow_run_id'],
+            'workflow_instance_id' => $identity['child_workflow_instance_id'],
+            'namespace' => 'lineage-import',
+            'workflow_type' => 'unrelated-later',
+            'workflow_class' => 'unrelated-later',
+            'run_number' => 1,
+            'status' => RunStatus::Waiting,
+            'payload_codec' => $fixture['workflow']['payload_codec'],
+            'arguments' => Serializer::serialize([]),
+        ]);
+        $imported = WorkflowRun::query()->findOrFail($parent->id);
+        $this->assertNull(ChildRunHistory::childRunForSequence($imported, 1));
+        foreach ([RunDetailView::forRun($imported->fresh()), HistoryExport::forRun($imported->fresh())] as $view) {
+            $this->assertStringNotContainsString('unrelated-later', json_encode($view, JSON_THROW_ON_ERROR));
+        }
+    }
+
+    public function testRetentionPrunedRunExportCorpusIsNeverCompleteHistory(): void
+    {
+        $path = self::FIXTURE_DIR . '/retention-pruned-run-export.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The retention-pruned export evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['retention_pruned_export'];
+        self::stopWorkers();
+        Queue::fake();
+        config([
+            'queue.default' => 'database',
+        ]);
+
+        foreach ($scenario['terminal_statuses'] as $status) {
+            $this->clearWorkflowState();
+            $run = $this->createRunFromFixture($fixture);
+            $run->forceFill([
+                'status' => RunStatus::from($status),
+                'closed_at' => now(),
+            ])->save();
+
+            $full = HistoryExport::forRun($run->fresh());
+            $this->assertTrue($full['history_complete'], $status);
+            $this->assertNotSame([], $full['history_events'], $status);
+
+            WorkflowRunRetentionCleanup::pruneRun($run->id);
+            $pruned = HistoryExport::forRun(WorkflowRun::query()->findOrFail($run->id));
+
+            $this->assertFalse($pruned['history_complete'], $status);
+            $this->assertSame($status, $pruned['workflow']['status']);
+            $this->assertSame('pruned', $pruned['workflow']['details_state'] ?? null, $status);
+            $this->assertNotNull($pruned['workflow']['details_pruned_at'] ?? null, $status);
+            $this->assertSame([], $pruned['history_events'], $status);
+            $this->assertNotSame($full['dedupe_key'], $pruned['dedupe_key'], $status);
+            $this->assertStringStartsWith($full['dedupe_key'] . ':details-pruned:', $pruned['dedupe_key']);
+            $this->assertContains(
+                $scenario['pruned_verification_rule'],
+                array_column(BundleIntegrityVerifier::verify($pruned)['findings'], 'rule'),
+                $status,
+            );
+            $this->assertContains(
+                $scenario['pruned_import_rule'],
+                array_column(EmbeddedV2HistoryImport::import($pruned, [
+                    'dry_run' => true,
+                ])['eligibility']['errors'], 'rule'),
+                $status,
+            );
+        }
+    }
+
+    public function testRedriveStartVisibilityCorpusCarriesToTheSuccessor(): void
+    {
+        $path = self::FIXTURE_DIR . '/redrive-start-visibility-carryover.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The redrive start-visibility evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['redrive_start_visibility'];
+        self::stopWorkers();
+        config([
+            'queue.default' => 'sync',
+            'queue.connections.sync.driver' => 'sync',
+        ]);
+        Cache::forget('test:redrive:first-calls');
+        Cache::forget('test:redrive:second-calls');
+        $this->clearWorkflowState();
+        WorkflowStub::fake();
+
+        $stub = WorkflowStub::make($fixture['workflow']['type'], 'regression-corpus-redrive-visibility');
+        $stub->start(...[
+            ...$fixture['workflow']['arguments'],
+            StartOptions::rejectDuplicate()
+                ->withMemo($scenario['memo'])
+                ->withSearchAttributes($scenario['search_attributes']),
+        ]);
+        $this->assertTrue($stub->refresh()->failed());
+        $source = WorkflowRun::query()->findOrFail($stub->runId());
+
+        $result = app(WorkflowControlPlane::class)->redrive($source->workflow_instance_id, $source->id);
+
+        $this->assertSame($scenario['redrive'] === 'accepted', $result['accepted'], (string) $result['reason']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame($scenario['successor_status'], $successor->status->value);
+        $this->assertSame($source->typedMemos(), $successor->typedMemos());
+        $this->assertSame($source->typedSearchAttributes(), $successor->typedSearchAttributes());
+        $this->assertSame(
+            $scenario['search_attributes']['region'],
+            $successor->typedSearchAttributes()['region'] ?? null
+        );
+    }
+
+    public function testRedriveReusedMarkersCorpusKeepsTheirStepsAndTime(): void
+    {
+        $path = self::FIXTURE_DIR . '/redrive-reused-markers-clock.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The redrive reused-marker evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['redrive_reused_markers'];
+        self::stopWorkers();
+        config([
+            'queue.default' => 'sync',
+            'queue.connections.sync.driver' => 'sync',
+        ]);
+        foreach (['first-calls', 'second-calls', 'side-effect-calls'] as $counter) {
+            Cache::forget("test:redrive:{$counter}");
+        }
+        $this->clearWorkflowState();
+        WorkflowStub::fake();
+
+        $stub = WorkflowStub::make($fixture['workflow']['type'], 'regression-corpus-redrive-markers');
+        $stub->start(...$fixture['workflow']['arguments']);
+        $this->assertTrue($stub->refresh()->failed());
+        $sourceRunId = $stub->runId();
+        $sourceTimes = [];
+        foreach ($scenario['reused_steps'] as $step) {
+            $sourceTimes[$step['sequence']] = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $sourceRunId)
+                ->where('event_type', $step['event_type'])
+                ->firstOrFail()
+                ->recorded_at?->toIso8601String();
+        }
+
+        $this->travel($scenario['redrive_after_minutes'])
+            ->minutes();
+        $result = app(WorkflowControlPlane::class)->redrive('regression-corpus-redrive-markers', $sourceRunId);
+
+        $this->assertSame($scenario['redrive'] === 'accepted', $result['accepted'], (string) $result['reason']);
+        $this->assertSame($scenario['resume_step_sequence'], $result['resume_step_sequence']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame($scenario['successor_status'], $successor->status->value);
+        $this->assertSame($scenario['side_effect_calls'], (int) Cache::get('test:redrive:side-effect-calls'));
+        foreach ($scenario['reused_steps'] as $step) {
+            $reused = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $successor->id)
+                ->where('event_type', $step['event_type'])
+                ->firstOrFail();
+            $this->assertSame($step['sequence'], $reused->payload['sequence']);
+            $this->assertSame($sourceRunId, $reused->payload['reused_from_run_id'] ?? null);
+            $this->assertSame($sourceTimes[$step['sequence']], $reused->payload['reused_recorded_at'] ?? null);
+        }
+        $output = $successor->workflowOutput();
+        $this->assertSame($scenario['version'], $output['version']);
+        $this->assertSame([
+            'time_after_side_effect' => $sourceTimes[1],
+            'time_after_version' => $sourceTimes[2],
+        ], [
+            'time_after_side_effect' => $output['time_after_side_effect'],
+            'time_after_version' => $output['time_after_version'],
+        ]);
+    }
+
+    public function testRedriveReusedTimerCorpusDoesNotWaitAgain(): void
+    {
+        $path = self::FIXTURE_DIR . '/redrive-reused-timer-clock.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The redrive reused-timer evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['redrive_reused_timer'];
+        self::stopWorkers();
+        config([
+            'queue.default' => 'sync',
+            'queue.connections.sync.driver' => 'sync',
+        ]);
+        Cache::forget('test:redrive:first-calls');
+        Cache::forget('test:redrive:second-calls');
+        $this->clearWorkflowState();
+        WorkflowStub::fake();
+
+        $stub = WorkflowStub::make($fixture['workflow']['type'], 'regression-corpus-redrive-timer');
+        $stub->start(...$fixture['workflow']['arguments']);
+        $this->travel($scenario['timer_seconds'] + 1)
+            ->seconds();
+        $timerTask = WorkflowTask::query()
+            ->where('workflow_run_id', $stub->runId())
+            ->where('task_type', TaskType::Timer->value)
+            ->firstOrFail();
+        $this->app->call([new RunTimerTask($timerTask->id), 'handle']);
+        $this->assertTrue($stub->refresh()->failed());
+        $sourceRunId = $stub->runId();
+        $sourceFiredAt = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $sourceRunId)
+            ->where('event_type', HistoryEventType::TimerFired->value)
+            ->firstOrFail()
+            ->recorded_at?->toIso8601String();
+
+        $this->travel($scenario['redrive_after_minutes'])
+            ->minutes();
+        $result = app(WorkflowControlPlane::class)->redrive('regression-corpus-redrive-timer', $sourceRunId);
+
+        $this->assertSame($scenario['redrive'] === 'accepted', $result['accepted'], (string) $result['reason']);
+        $this->assertSame($scenario['resume_step_sequence'], $result['resume_step_sequence']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame($scenario['successor_status'], $successor->status->value);
+        $this->assertSame($scenario['successor_timer_tasks'], WorkflowTask::query()
+            ->where('workflow_run_id', $successor->id)
+            ->where('task_type', TaskType::Timer->value)
+            ->count());
+        $this->assertSame(
+            $scenario['successor_timer_rows'],
+            WorkflowTimer::query()->where('workflow_run_id', $successor->id)->count()
+        );
+        $this->assertSame($sourceFiredAt, $successor->workflowOutput()['time_after_timer']);
+    }
+
+    public function testRedriveEligibilityCorpusReportsWhatRedriveDoes(): void
+    {
+        $path = self::FIXTURE_DIR . '/redrive-eligibility-report.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The redrive eligibility report evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['redrive_eligibility_report'];
+        self::stopWorkers();
+        config([
+            'queue.default' => 'sync',
+            'queue.connections.sync.driver' => 'sync',
+        ]);
+        Cache::forget('test:redrive:first-calls');
+        Cache::forget('test:redrive:second-calls');
+        $this->clearWorkflowState();
+        WorkflowStub::fake();
+        $controlPlane = app(WorkflowControlPlane::class);
+
+        $redrivable = $scenario['redrivable'];
+        $stub = WorkflowStub::make($fixture['workflow']['type'], 'regression-corpus-redrive-report');
+        $stub->start(...$fixture['workflow']['arguments']);
+        $this->assertTrue($stub->refresh()->failed());
+        $sourceRunId = $stub->runId();
+        $this->assertRedriveReport($controlPlane, $sourceRunId, $redrivable['before']);
+
+        $result = $controlPlane->redrive('regression-corpus-redrive-report', $sourceRunId);
+
+        $this->assertSame($redrivable['redrive'] === 'accepted', $result['accepted'], (string) $result['reason']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame($redrivable['successor_status'], $successor->status->value);
+        $this->assertRedriveReport($controlPlane, $sourceRunId, $redrivable['source_after']);
+        $this->assertRedriveReport($controlPlane, $successor->id, $redrivable['successor']);
+
+        $refused = $scenario['refused'];
+        $refusedStub = WorkflowStub::make($refused['workflow'], 'regression-corpus-redrive-report-refused');
+        $refusedStub->start(...$refused['arguments']);
+        $this->assertTrue($refusedStub->refresh()->failed());
+        $this->assertRedriveReport($controlPlane, $refusedStub->runId(), $refused['report']);
+        $this->assertSame(
+            $refused['redrive_reason'],
+            $controlPlane->redrive('regression-corpus-redrive-report-refused', $refusedStub->runId())['reason'],
+        );
+    }
+
+    public function testRecordedWorkflowFailureCorpusReplaysAsTheRecordedFailure(): void
+    {
+        $path = self::FIXTURE_DIR . '/recorded-workflow-failure-replay.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The recorded workflow failure replay evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['recorded_workflow_failure'];
+        self::stopWorkers();
+        Queue::fake();
+        config([
+            'queue.default' => 'database',
+        ]);
+        $this->clearWorkflowState();
+
+        $stub = WorkflowStub::make($scenario['workflow'], 'regression-corpus-recorded-workflow-failure');
+        $stub->start();
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $this->runReadyWorkflowTask($run);
+        $this->assertSame(RunStatus::Failed, $run->fresh()->status);
+
+        $bundle = HistoryExport::forRun($run->fresh());
+        $report = (new ReplayDiff())->diffExport($bundle);
+
+        $this->assertSame($scenario['reproduced_status'], $report['status'], json_encode($report));
+        $this->assertSame([
+            'exception_class' => $scenario['exception_class'],
+            'message' => $scenario['message'],
+        ], $report['replay']['recorded_failure'] ?? null);
+
+        foreach ($bundle['history_events'] as &$event) {
+            if (($event['type'] ?? null) === HistoryEventType::WorkflowFailed->value) {
+                $event['payload']['message'] = $scenario['different_message'];
+            }
+        }
+        unset($event);
+        $different = (new ReplayDiff())->diffExport($bundle);
+
+        $this->assertSame($scenario['different_failure_status'], $different['status']);
+        $this->assertSame($scenario['different_failure_reason'], $different['reason']);
+        $this->assertSame($scenario['different_message'], $different['error']['recorded_failure']['message'] ?? null);
+    }
+
+    public function testLateChildResumeCorpusCreatesDeliveryAfterALeasedParentWaits(): void
+    {
+        $path = self::FIXTURE_DIR . '/late-child-resolution-during-parent-lease.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The retained late child delivery evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        self::stopWorkers();
+        Queue::fake();
+        config([
+            'queue.default' => 'database',
+            'workflows.v2.compatibility.current' => 'build-a',
+            'workflows.v2.compatibility.supported' => ['build-a'],
+        ]);
+        $this->executeColdReplayFixture($fixture);
+        $workflow = $fixture['workflow'];
+        $stub = WorkflowStub::make($workflow['type']);
+        $stub->start(...$workflow['arguments']);
+        $bridge = $this->app->make(WorkflowTaskBridge::class);
+        $parentTask = WorkflowTask::query()->where('workflow_run_id', $stub->runId())
+            ->where('task_type', TaskType::Workflow->value)->sole();
+        $this->assertTrue($bridge->claimStatus($parentTask->id, 'corpus-parent')['claimed']);
+        $scheduled = array_values(array_filter($fixture['history'], static fn (array $event): bool =>
+            $event['event_type'] === HistoryEventType::ChildWorkflowScheduled->value));
+        $this->assertCount(2, $scheduled);
+        $commands = [];
+        foreach ($scheduled as $index => $event) {
+            $commands[] = [
+                'type' => 'start_child_workflow',
+                'workflow_type' => $event['payload']['child_workflow_type'],
+                'arguments' => Serializer::serialize([$workflow['arguments'][$index]]),
+            ];
+        }
+        $this->assertTrue($bridge->complete($parentTask->id, $commands)['completed']);
+        $childTasks = WorkflowLink::query()->where('parent_workflow_run_id', $stub->runId())
+            ->where('link_type', 'child_workflow')
+            ->orderBy('sequence')
+            ->get()
+            ->map(static fn (WorkflowLink $link): WorkflowTask => WorkflowTask::query()
+                ->where('workflow_run_id', $link->child_workflow_run_id)
+                ->where('task_type', TaskType::Workflow->value)->sole());
+        $this->assertCount(2, $childTasks);
+        $outcomes = array_values(array_filter($fixture['history'], static fn (array $event): bool =>
+            $event['event_type'] === HistoryEventType::ChildRunCompleted->value));
+        $resumeTask = null;
+        foreach ($outcomes as $index => $event) {
+            $this->assertTrue($bridge->claimStatus($childTasks[$index]->id, 'corpus-child')['claimed']);
+            $this->assertTrue($bridge->complete($childTasks[$index]->id, [[
+                'type' => 'complete_workflow',
+                'result' => $event['payload']['output'],
+                'payload_codec' => $event['payload']['payload_codec'],
+            ]])['completed']);
+            if ($index === 0) {
+                $resumeTask = WorkflowTask::query()->where('workflow_run_id', $stub->runId())
+                    ->where('task_type', TaskType::Workflow->value)->where('status', TaskStatus::Ready->value)
+                    ->sole();
+                $this->assertTrue($bridge->claimStatus($resumeTask->id, 'corpus-parent')['claimed']);
+                $history = $bridge->historyPayload($resumeTask->id);
+                $this->assertCount(1, array_filter($history['history_events'], static fn (array $event): bool =>
+                    $event['event_type'] === HistoryEventType::ChildRunCompleted->value));
+            }
+        }
+        $this->assertInstanceOf(WorkflowTask::class, $resumeTask);
+        $timer = array_values(array_filter($fixture['history'], static fn (array $event): bool =>
+            $event['event_type'] === HistoryEventType::TimerScheduled->value))[0];
+        $waiting = $bridge->complete($resumeTask->id, [[
+            'type' => 'start_timer',
+            'delay_seconds' => $timer['payload']['delay_seconds'],
+        ]]);
+        $this->assertTrue($waiting['completed']);
+        $this->assertSame(RunStatus::Waiting->value, $waiting['run_status']);
+        $ready = WorkflowTask::query()->where('workflow_run_id', $stub->runId())
+            ->where('task_type', TaskType::Workflow->value)->where('status', TaskStatus::Ready->value)->get();
+        $this->assertCount(1, $ready, 'Late child history needs delivery before the unrelated timer fires.');
+        $followUp = $ready->sole();
+        $this->assertContains($followUp->id, $waiting['created_task_ids']);
+        $this->assertTrue($followUp->available_at->lessThanOrEqualTo(now()));
+        $this->assertTrue($bridge->claimStatus($followUp->id, 'corpus-parent-replay')['claimed']);
+        $history = $bridge->historyPayload($followUp->id);
+        $step = WorkflowFiberRunner::forClass(
+            $workflow['type'],
+            $stub->id(),
+            $stub->runId(),
+            $workflow['arguments'],
+            $workflow['payload_codec'],
+            $history['history_events'],
+        )->step();
+        $this->assertTrue($step->completed);
+        $this->assertSame($fixture['expected']['result']['children'], $step->result['children']);
+        $this->assertTrue($bridge->complete($followUp->id, $step->commands)['completed']);
+        $this->assertSame(RunStatus::Completed, WorkflowRun::query()->findOrFail($stub->runId())->status);
+    }
+
+    public function testSeparateStorageCorpusPublishesOnlyAfterItsTransactionCommits(): void
+    {
+        $this->assertStorageCorpusFixture('separate-storage-transaction-commit', false);
+        $this->assertStorageCorpusFixture('separate-storage-interleaved-callbacks', true);
+    }
+
+    public function testTerminalCloseCorpusRetainsEveryCancellationWithinItsHistoryReadBudget(): void
+    {
+        $path = self::FIXTURE_DIR . '/terminal-close-inventory-history-budget.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The terminal close inventory evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['terminal_close_inventory'];
+        self::stopWorkers();
+        Queue::fake();
+        config([
+            'queue.default' => 'database',
+            'workflows.v2.history_event_model' => TerminalCloseCorpusHistory::class,
+        ]);
+
+        foreach ($scenario['commands'] as $command) {
+            $this->clearWorkflowState();
+            $stub = WorkflowStub::make($fixture['workflow']['type']);
+            $stub->start(...$fixture['workflow']['arguments']);
+            $run = WorkflowRun::query()->findOrFail($stub->runId());
+            $bridge = app(DefaultWorkflowTaskBridge::class);
+            $task = $run->tasks()
+                ->where('task_type', TaskType::Workflow)->where('status', TaskStatus::Ready)->sole();
+            $this->assertNotNull($bridge->claim($task->id, 'terminal-corpus-worker'));
+            $commands = [
+                ...array_fill(0, $scenario['timers'], [
+                    'type' => 'start_timer',
+                    'delay_seconds' => 3600,
+                ]),
+                ...array_fill(0, $scenario['activities'], [
+                    'type' => 'schedule_activity',
+                    'activity_type' => 'terminal-corpus-activity',
+                ]),
+                [
+                    'type' => 'open_signal_wait',
+                    'signal_name' => 'terminal-corpus-wait',
+                ],
+            ];
+            $completed = $bridge->completeForProtocol($task->id, $commands, $fixture['protocol_version']);
+            $this->assertTrue($completed['completed'], json_encode($completed, JSON_THROW_ON_ERROR));
+            $before = $run->historyEvents()
+                ->count();
+            TerminalCloseCorpusHistory::$reads = 0;
+            TerminalCloseCorpusHistory::$watch = true;
+            try {
+                $closed = $command === 'cancel' ? $stub->attemptCancel($scenario['reason'])
+                    : $stub->attemptTerminate($scenario['reason']);
+            } finally {
+                TerminalCloseCorpusHistory::$watch = false;
+            }
+            $reads = TerminalCloseCorpusHistory::$reads;
+            $this->assertTrue($closed->accepted());
+            $this->assertSame(
+                $command === 'cancel' ? RunStatus::Cancelled : RunStatus::Terminated,
+                $run->fresh()
+->status
+            );
+            foreach ([
+                HistoryEventType::TimerCancelled->value => $scenario['timers'],
+                HistoryEventType::ActivityCancelled->value => $scenario['activities'],
+            ] as $type => $count) {
+                $this->assertSame($count, $run->historyEvents()->where('event_type', $type)->count());
+            }
+            $units = $before + 2 * ($scenario['timers'] + $scenario['activities']) + 64;
+            $this->assertLessThanOrEqual($scenario['maximum_history_reads_per_unit'] * $units, $reads);
+        }
+    }
+
+    public function testTerminalNotificationCorpusWaitsForCleanupAndTheStorageCommit(): void
+    {
+        $path = self::FIXTURE_DIR . '/cooperative-cleanup-terminal-notification.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The retained terminal lifecycle notification evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        self::stopWorkers();
+        Queue::fake();
+        config([
+            'queue.default' => 'database',
+            'workflows.v2.compatibility.current' => 'build-a',
+            'workflows.v2.compatibility.supported' => ['build-a'],
+        ]);
+        $events = [];
+        foreach (['WorkflowCancelled', 'WorkflowTerminated'] as $name) {
+            Event::listen('Workflow\\V2\\Events\\' . $name, static function ($event) use (&$events): void {
+                $events[] = $event;
+            });
+        }
+        $this->executeColdReplayFixture($fixture);
+        $this->assertCount(0, $events, 'Cold replay with pending cleanup cannot announce a terminal close.');
+        $scenario = $fixture['terminal_notification'];
+
+        foreach ($scenario['commands'] as $command) {
+            $this->clearWorkflowState();
+            $events = [];
+            $stub = WorkflowStub::make($fixture['workflow']['type']);
+            $stub->start(...$fixture['workflow']['arguments']);
+            $run = WorkflowRun::query()->findOrFail($stub->runId());
+            $this->runReadyWorkflowTask($run);
+
+            try {
+                if ($command === 'cooperative') {
+                    $this->assertTrue($stub->requestCancellation(
+                        $scenario['reason'],
+                        $scenario['cleanup_timeout_seconds']
+                    )->accepted());
+                    $this->assertCount(0, $events, 'Admission is not terminal cancellation.');
+                    $this->runReadyWorkflowTask($run);
+                    $runActivity = function () use ($run): void {
+                        $task = $run->tasks()
+                            ->where('task_type', TaskType::Activity)
+                            ->where('status', TaskStatus::Ready)->sole();
+                        $this->app->call([new RunActivityTask($task->id), 'handle']);
+                    };
+                    $runActivity();
+                    $this->assertSame(1, $run->historyEvents()
+                        ->where('event_type', HistoryEventType::ActivityRetryScheduled)->count());
+                    $this->assertCount(0, $events, 'Cleanup retry is not terminal cancellation.');
+                    Carbon::setTestNow(now()->addSeconds($scenario['cleanup_retry_delay_seconds']));
+                    $runActivity();
+                    $this->assertCount(0, $events);
+                }
+
+                DB::connection()->transaction(function () use ($command, $scenario, $stub, $run, &$events): void {
+                    if ($command === 'cooperative') {
+                        $this->runReadyWorkflowTask($run);
+                        $this->assertSame($scenario['cleanup_memo'], $stub->refresh()->memo());
+                    } else {
+                        $result = $command === 'cancel' ? $stub->cancel($scenario['reason']) : $stub->terminate(
+                            $scenario['reason']
+                        );
+                        $this->assertTrue($result->accepted());
+                    }
+                    $this->assertTrue($stub->refresh()->run()->status->isTerminal());
+                    $this->assertCount(0, $events, 'The storage transaction has not committed yet.');
+                });
+
+                $run->refresh();
+                $terminal = $command === 'terminate' ? 'WorkflowTerminated' : 'WorkflowCancelled';
+                $this->assertCount(1, $events, 'The committed close must notify the embedded application.');
+                $this->assertSame('Workflow\\V2\\Events\\' . $terminal, $events[0]::class);
+                $this->assertSame($stub->id(), $events[0]->instanceId);
+                $this->assertSame($run->id, $events[0]->runId);
+                $this->assertSame($scenario['reason'], $events[0]->reason);
+                $this->assertSame($run->closed_at->toISOString(), $events[0]->closedAt);
+                $this->assertSame(1, $run->historyEvents()->where('event_type', $terminal)->count());
+                $history = $run->historyEvents()
+                    ->get()
+                    ->toArray();
+                $lastWorkflowTask = $run->tasks()
+                    ->where('task_type', TaskType::Workflow)
+                    ->latest('created_at')
+                    ->firstOrFail()
+                    ->id;
+                $this->app->call([new RunWorkflowTask($lastWorkflowTask), 'handle']);
+                $this->assertCount(1, $events, 'A redelivered workflow job cannot announce another close.');
+                $this->assertSame($history, $run->historyEvents()->get()->toArray());
+            } finally {
+                Carbon::setTestNow();
+            }
+        }
+    }
+
+    public function testRetriedActivityCancellationCorpusKeepsTheCompletedTaskAndAcknowledgesTheLiveTask(): void
+    {
+        $path = self::FIXTURE_DIR . '/retried-activity-cancellation-live-task.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The retained retried-activity cancellation evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        self::stopWorkers();
+        Queue::fake();
+        config([
+            'queue.default' => 'database',
+            'workflows.v2.compatibility.current' => 'build-a',
+            'workflows.v2.compatibility.supported' => ['build-a'],
+        ]);
+        $this->executeColdReplayFixture($fixture);
+        $scenario = $fixture['retry_cancellation'];
+        $scheduled = collect($fixture['history'])->firstWhere('event_type', 'ActivityScheduled')['payload'];
+        $recordedCancellation = collect($fixture['history'])->firstWhere('event_type', 'ActivityCancelled')['payload'];
+        $bridge = $this->app->make(DefaultWorkflowTaskBridge::class);
+        $activities = $this->app->make(ActivityTaskBridge::class);
+        $lease = static function (WorkflowTask $task): WorkflowTask {
+            $task->forceFill([
+                'status' => TaskStatus::Leased,
+                'lease_owner' => 'portable-worker',
+                'lease_expires_at' => now()
+                    ->addMinutes(5),
+            ])->save();
+            return $task;
+        };
+        foreach ($scenario['policies'] as $policyValue) {
+            $this->clearWorkflowState();
+            $policy = CancellationPolicy::from($policyValue);
+            $stub = WorkflowStub::make(
+                $fixture['workflow']['type'],
+                'corpus-retried-cancellation-' . ++$this->workflowNumber
+            );
+            $stub->start(...$fixture['workflow']['arguments']);
+            $run = WorkflowRun::query()->findOrFail($stub->runId());
+            $initial = $lease($run->tasks()->where('task_type', TaskType::Workflow)->sole());
+            $commands = WorkflowCommandNormalizer::normalize([[
+                'type' => 'schedule_activity',
+                'activity_type' => $scheduled['activity_type'],
+                'arguments' => Serializer::serialize($scenario['activity_arguments']),
+                'cancellation_policy' => $policy->value,
+                'retry_policy' => $scenario['retry_policy'],
+            ]], $fixture['protocol_version']);
+            $this->assertTrue($bridge->complete($initial->id, $commands)['completed']);
+            $execution = $run->activityExecutions()
+                ->sole();
+            $firstTask = $run->tasks()
+                ->where('task_type', TaskType::Activity)->sole();
+            $this->assertTrue($activities->claimStatus($firstTask->id, 'first-owner')['claimed']);
+            $firstAttempt = $execution->attempts()
+                ->sole();
+            $retry = $activities->fail($firstAttempt->id, [
+                'class' => \RuntimeException::class,
+                'message' => 'temporary failure',
+            ]);
+            $this->assertTrue($retry['recorded']);
+            $liveTask = WorkflowTask::query()->findOrFail($retry['next_task_id']);
+            $this->assertTrue($activities->claimStatus($liveTask->id, 'replacement-owner')['claimed']);
+            $liveAttempt = $execution->attempts()
+                ->where('attempt_number', $recordedCancellation['attempt_number'])->sole();
+            $this->assertSame($scenario['completed_task_status'], $firstTask->refresh()->status->value);
+            $completedBefore = $firstTask->getRawOriginal();
+            $this->assertTrue(
+                $stub->requestCancellation('maintenance', $scenario['cleanup_timeout_seconds'])->accepted()
+            );
+            $run->refresh();
+            $deadline = $run->cancellation_deadline_at->toISOString();
+            $ready = static fn (): WorkflowTask => $run->tasks()
+                ->where('task_type', TaskType::Workflow)->where('status', TaskStatus::Ready)->sole();
+            $deliver = static fn (WorkflowTask $task): array => $bridge->deliverCancellation(
+                $task->id,
+                $run->cancellation_request_command_id,
+                $scheduled['sequence'],
+                'activity'
+            );
+            $delivery = $deliver($lease($ready()));
+            $this->assertSame($policy === CancellationPolicy::TryCancel, $delivery['delivered']);
+            if ($policy === CancellationPolicy::WaitCancellationCompleted) {
+                $this->assertTrue($delivery['claim_released']);
+                $this->assertSame('cancellation_waiting_for_activity', $delivery['reason']);
+            }
+            $this->assertSame($completedBefore, $firstTask->refresh()->getRawOriginal());
+            $this->assertSame($scenario['live_task_status'], $liveTask->refresh()->status->value);
+            $this->assertNull($liveTask->lease_expires_at);
+            $cancelled = $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityCancelled)->sole();
+            $this->assertSame($liveTask->id, $cancelled->payload['task']['id']);
+            $this->assertSame($liveAttempt->id, $cancelled->payload['activity_attempt']['id']);
+            $accepted = ActivityCancellationAcknowledgement::recordStopped(
+                $liveAttempt->id,
+                'replacement-owner',
+                $run->cancellation_request_command_id
+            );
+            $this->assertTrue($accepted['acknowledged']);
+            $this->assertFalse($accepted['duplicate']);
+            $duplicate = ActivityCancellationAcknowledgement::recordStopped(
+                $liveAttempt->id,
+                'replacement-owner',
+                $run->cancellation_request_command_id
+            );
+            $this->assertTrue($duplicate['acknowledged']);
+            $this->assertTrue($duplicate['duplicate']);
+            $this->assertSame($accepted['history_event_id'], $duplicate['history_event_id']);
+            $this->assertSame(
+                1,
+                $run->historyEvents()
+                    ->where('event_type', HistoryEventType::ActivityCancellationAcknowledged)->count()
+            );
+            if ($policy === CancellationPolicy::WaitCancellationCompleted) {
+                $this->assertTrue($deliver($lease($ready()))['delivered']);
+            }
+            $this->assertSame($deadline, $run->refresh()->cancellation_deadline_at->toISOString());
+        }
+    }
 
     #[RunInSeparateProcess]
     #[PreserveGlobalState(false)]
@@ -186,8 +944,28 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         foreach ($this->fixtures() as $fixture) {
             $this->executeColdReplayFixture($fixture);
 
+            if ($fixture['id'] === 'cooperative-cleanup-terminal-notification') {
+                // Its live cleanup, commit and notification proof runs in the dedicated corpus test.
+                continue;
+            }
+
+            if ($fixture['id'] === 'retried-activity-cancellation-live-task') {
+                // Its live retry/delivery proof is exercised by the dedicated corpus test.
+                continue;
+            }
+
             if ($fixture['id'] === 'embedded-committed-timer-continuation') {
                 // Its positive executor path runs in the isolated queue test above.
+                continue;
+            }
+
+            if ($fixture['id'] === 'external-worker-pending-count-limit-rollback') {
+                $this->assertExternalWorkerPendingCountLimitRollsBackCompletion($fixture);
+                continue;
+            }
+
+            if ($fixture['id'] === 'update-tail-checkpoint-cursor') {
+                $this->assertUpdateTailCheckpointRetainsItsCursor($fixture);
                 continue;
             }
 
@@ -199,6 +977,20 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             if ($fixture['id'] === 'nexus-sdk-caller-attribution') {
                 $this->clearWorkflowState();
                 $this->assertNexusCallerSdkAttribution($fixture);
+                continue;
+            }
+
+            if ($fixture['id'] === 'workflow-service-operation-host-authority') {
+                $this->clearWorkflowState();
+                $this->assertNexusWorkerCannotSupplyAuthority($fixture);
+                continue;
+            }
+
+            if (str_starts_with($fixture['id'], 'workflow-service-operation-protocol-')) {
+                $this->assertServiceOperationProtocolPersistence($fixture);
+                if ($fixture['protocol_version'] === '1.21') {
+                    $this->assertServiceOperationProtocolPersistence($fixture, embedded: true);
+                }
                 continue;
             }
 
@@ -225,6 +1017,11 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
             if ($fixture['id'] === 'manual-repair-blocked-replay-with-pending-activity') {
                 $this->assertRepairPrioritizesBlockedReplayAndPreservesAnOlderPendingActivity($fixture);
+                continue;
+            }
+
+            if ($fixture['id'] === 'datetime-search-projection-history-repair') {
+                $this->assertDatetimeSearchProjectionRepairPreservesItsOriginal($fixture);
                 continue;
             }
 
@@ -284,6 +1081,10 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 $this->assertPortableLocalActivityAttemptTimelineReplay($fixture);
             }
 
+            if (($fixture['id'] ?? null) === 'portable-local-activity-timing-caps-cold-replay') {
+                $this->assertLocalActivityTimingCapsBoundTheRecordedWalk($fixture);
+            }
+
             if (($fixture['id'] ?? null) === 'portable-local-activity-failure-avro-cold-replay') {
                 $this->assertPortableLocalActivityFailureUsesAvro($fixture);
             }
@@ -294,6 +1095,14 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
             if (($fixture['id'] ?? null) === 'run-inherited-scoped-cleanup-cold-reload') {
                 $this->assertRunInheritedScopedCleanupAfterColdReload($fixture);
+            }
+
+            if (($fixture['id'] ?? null) === 'continue-as-new-preserves-run-scheduling') {
+                $this->assertContinueAsNewPreservesRunScheduling($fixture);
+            }
+
+            if (($fixture['id'] ?? null) === 'schedule-namespace-instance-identity') {
+                $this->assertScheduleNamespaceInstanceIdentity($fixture);
             }
 
             if ($fixture['id'] === 'legacy-version-shared-step-position') {
@@ -418,6 +1227,455 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $fixture = json_decode((string) file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertDurableOnlyTimelineProjection($fixture);
+    }
+
+    private function assertStorageCorpusFixture(string $id, bool $interleaved): void
+    {
+        $fixturePath = self::FIXTURE_DIR . '/' . $id . '.json';
+        if (! is_file($fixturePath)) {
+            return;
+        }
+        $fixture = json_decode(file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
+        self::stopWorkers();
+        $this->executeColdReplayFixture($fixture);
+        $previous = config('workflows.storage.connection');
+        foreach ([true, false] as $commit) {
+            $path = tempnam(sys_get_temp_dir(), 'workflow-corpus-storage-');
+            config([
+                'database.connections.corpus_storage' => [
+                    'driver' => 'sqlite',
+                    'database' => $path,
+                    'prefix' => '',
+                    'foreign_key_constraints' => true,
+                ],
+                'workflows.storage.connection' => 'corpus_storage',
+                'queue.default' => 'database',
+            ]);
+            $storage = DB::connection('corpus_storage');
+            $application = DB::connection();
+            $applicationDepth = $application->transactionLevel();
+            try {
+                $this->artisan('migrate', [
+                    '--database' => 'corpus_storage',
+                    '--force' => true,
+                ])->assertExitCode(0);
+                Queue::fake();
+                Event::fake([WorkflowStarted::class]);
+                $storage->beginTransaction();
+                if ($interleaved) {
+                    $application->beginTransaction();
+                }
+                $workflow = WorkflowStub::make($fixture['workflow']['type']);
+                $workflow->start(...$fixture['workflow']['arguments']);
+                Queue::assertNothingPushed();
+                Event::assertNotDispatched(WorkflowStarted::class);
+                $commit ? $storage->commit() : $storage->rollBack();
+                $this->assertStorageCorpusPublication($commit);
+                if ($interleaved) {
+                    $commit ? $application->rollBack() : $application->commit();
+                    $this->assertStorageCorpusPublication($commit);
+                }
+            } finally {
+                if ($storage->transactionLevel() > 0) {
+                    $storage->rollBack();
+                }
+                if ($application->transactionLevel() > $applicationDepth) {
+                    $application->rollBack();
+                }
+                DB::purge('corpus_storage');
+                config()
+                    ->set('workflows.storage.connection', $previous);
+                foreach (['', '-wal', '-shm'] as $suffix) {
+                    if (is_file($path . $suffix)) {
+                        unlink($path . $suffix);
+                    }
+                }
+            }
+        }
+    }
+
+    private function assertStorageCorpusPublication(bool $committed): void
+    {
+        if ($committed) {
+            Queue::assertPushed(RunWorkflowTask::class, 1);
+            Event::assertDispatched(WorkflowStarted::class, 1);
+
+            return;
+        }
+
+        Queue::assertNothingPushed();
+        Event::assertNotDispatched(WorkflowStarted::class);
+        $this->assertSame(0, WorkflowRun::query()->count());
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function assertUpdateTailCheckpointRetainsItsCursor(array $fixture): void
+    {
+        $this->clearWorkflowState();
+        $initial = $fixture;
+        $initial['history'] = array_slice($fixture['history'], 0, 1);
+        $run = $this->createRunFromFixture($initial);
+        $case = $fixture['checkpoint_prefix'];
+        $task = $run->tasks()
+            ->where('task_type', TaskType::Workflow->value)->sole();
+        $task->forceFill([
+            'status' => TaskStatus::Leased->value,
+            'attempt_count' => 1,
+            'lease_owner' => 'regression-corpus-worker',
+            'lease_expires_at' => now()
+                ->addMinutes(5),
+        ])->save();
+        $command = WorkflowCommand::query()->create([
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'command_type' => 'update',
+            'status' => 'accepted',
+            'command_sequence' => 1,
+        ]);
+        $update = WorkflowUpdate::query()->create([
+            'id' => $case['update_id'],
+            'workflow_command_id' => $command->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'update_name' => $case['update_name'],
+            'status' => 'accepted',
+            'command_sequence' => 1,
+            'payload_codec' => 'avro',
+            'arguments' => Serializer::serializeWithCodec('avro', []),
+            'accepted_at' => now(),
+        ]);
+        WorkflowHistoryEvent::record($run, HistoryEventType::UpdateAccepted, [
+            'workflow_command_id' => $command->id,
+            'update_id' => $update->id,
+            'update_name' => $update->update_name,
+            'arguments' => $update->arguments,
+        ], $task, $command);
+        $commands = $case['commands'];
+        $commands[1]['result'] = Serializer::serializeWithCodec('avro', $commands[1]['result']);
+        $bridge = $this->app->make(DefaultWorkflowTaskBridge::class);
+        $reply = $bridge->checkpointCancellationScopePrefix(
+            $task->id,
+            'regression-corpus-worker',
+            1,
+            'before',
+            $case['sequence'],
+            $commands,
+            $fixture['protocol_version'],
+        );
+        $this->assertTrue($reply['checkpointed'], json_encode($reply));
+        $this->assertSame($case['next_sequence'], $reply['next_sequence']);
+        $next = $bridge->checkpointCancellationScopePrefix(
+            $task->id,
+            'regression-corpus-worker',
+            1,
+            'after',
+            $reply['next_sequence'],
+            $case['followup_commands'],
+            $fixture['protocol_version'],
+        );
+        $this->assertTrue($next['checkpointed'], json_encode($next));
+        $this->assertSame($case['followup_next_sequence'], $next['next_sequence']);
+        $replayed = WorkflowFiberRunner::forClass(
+            $fixture['workflow']['type'],
+            $run->workflow_instance_id,
+            $run->id,
+            $fixture['workflow']['arguments'],
+            $fixture['workflow']['payload_codec'],
+            $run->historyEvents()
+                ->orderBy('sequence')
+                ->get()
+                ->toArray(),
+        )->step();
+        $this->assertTrue($replayed->completed);
+        $this->assertSame($case['replay_result'], $replayed->result);
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function assertExternalWorkerPendingCountLimitRollsBackCompletion(array $fixture): void
+    {
+        $cases = $fixture['external_worker_pending_counts'];
+        $limitKeys = array_map(
+            static fn (array $case): string => "workflows.v2.structural_limits.{$case['limit']}",
+            $cases,
+        );
+        $previous = array_combine(
+            $limitKeys,
+            array_map(static fn (string $key): mixed => config($key), $limitKeys),
+        );
+        $bridge = $this->app->make(DefaultWorkflowTaskBridge::class);
+
+        try {
+            foreach ($cases as $case) {
+                $this->clearWorkflowState();
+                config($previous);
+                config([
+                    "workflows.v2.structural_limits.{$case['limit']}" => 1,
+                ]);
+                $run = $this->createRunFromFixture($fixture);
+                /** @var WorkflowTask $task */
+                $task = $run->tasks()
+                    ->where('task_type', TaskType::Workflow->value)
+                    ->sole();
+                $task->forceFill([
+                    'status' => TaskStatus::Leased->value,
+                    'lease_owner' => 'regression-corpus-worker',
+                    'lease_expires_at' => now()
+                        ->addMinutes(5),
+                ])->save();
+                $leasedTask = $task->fresh()
+                    ->getRawOriginal();
+                $before = self::pendingCountDurableState($run);
+
+                try {
+                    $bridge->complete($task->id, [$case['command'], $case['command']]);
+                    $this->fail("Two pending {$case['command']['type']} commands passed a limit of one.");
+                } catch (StructuralLimitExceededException $exception) {
+                    $this->assertSame($case['limit'], $exception->limitKind->value);
+                    $this->assertSame(1, $exception->currentValue);
+                    $this->assertSame(1, $exception->configuredLimit);
+                }
+
+                $this->assertSame($before, self::pendingCountDurableState($run));
+                $this->assertSame($leasedTask, $task->fresh()->getRawOriginal());
+                $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+            }
+        } finally {
+            config($previous);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function assertServiceOperationProtocolPersistence(array $fixture, bool $embedded = false): void
+    {
+        $this->clearWorkflowState();
+        Queue::fake();
+        $previousControlPlane = $this->app->make(ServiceControlPlane::class);
+        $previousAuthorizer = $this->installNexusServiceAuthority();
+        $scheduled = $fixture['protocol_version'] === '1.21';
+        $failed = str_ends_with($fixture['id'], '-failure');
+        $targetInstance = WorkflowInstance::query()->create([
+            'id' => 'protocol-target',
+            'namespace' => 'service',
+            'workflow_class' => 'protocol-service',
+            'workflow_type' => 'protocol-service',
+            'run_count' => 1,
+        ]);
+        $targetRun = WorkflowRun::query()->create([
+            'workflow_instance_id' => $targetInstance->id,
+            'namespace' => 'service',
+            'run_number' => 1,
+            'workflow_class' => 'protocol-service',
+            'workflow_type' => 'protocol-service',
+            'status' => $failed ? RunStatus::Failed->value : RunStatus::Completed->value,
+            'payload_codec' => 'avro',
+            'connection' => 'database',
+            'queue' => 'default',
+            'started_at' => now(),
+            'closed_at' => now(),
+        ]);
+        WorkflowHistoryEvent::record(
+            $targetRun,
+            $failed ? HistoryEventType::WorkflowFailed : HistoryEventType::WorkflowCompleted,
+            $failed ? [
+                'exception_type' => 'invoice_declined',
+                'message' => 'The invoice approval was denied.',
+            ] : [
+                'output' => Serializer::serializeWithCodec('avro', $fixture['terminal_result']),
+                'payload_codec' => 'avro',
+            ],
+        );
+        $handlerCalls = 0;
+        $handler = Mockery::mock(WorkflowControlPlane::class);
+        $handler->shouldReceive('start')
+            ->once()
+            ->withArgs(
+                function (string $workflowType, ?string $instanceId, array $options) use (&$handlerCalls): bool {
+                    ++$handlerCalls;
+                    $this->assertGreaterThan(0, DB::transactionLevel());
+                    return $workflowType === 'protocol-service';
+                },
+            )->andReturn([
+                'started' => true,
+                'workflow_instance_id' => $targetInstance->id,
+                'workflow_run_id' => $targetRun->id,
+            ]);
+        $this->app->instance(ServiceControlPlane::class, new DefaultServiceControlPlane($handler));
+
+        try {
+            $endpoint = WorkflowServiceEndpoint::query()->create([
+                'namespace' => 'service',
+                'endpoint_name' => 'php-service',
+            ]);
+            $service = WorkflowService::query()->create([
+                'namespace' => 'service',
+                'workflow_service_endpoint_id' => $endpoint->id,
+                'service_name' => 'greeter',
+            ]);
+            WorkflowServiceOperation::query()->create([
+                'namespace' => 'service',
+                'workflow_service_endpoint_id' => $endpoint->id,
+                'workflow_service_id' => $service->id,
+                'operation_name' => 'greet',
+                'operation_mode' => 'sync',
+                'handler_binding_kind' => 'workflow_run',
+                'handler_target_reference' => 'protocol-service',
+            ]);
+            $workflow = $fixture['workflow'];
+            $stub = WorkflowStub::make(
+                $workflow['type'],
+                sprintf('regression-corpus-protocol-%d', ++$this->workflowNumber),
+                'caller',
+            );
+            $stub->start(...$workflow['arguments']);
+            $run = WorkflowRun::query()->findOrFail($stub->runId());
+            $task = $run->tasks()
+                ->where('task_type', TaskType::Workflow->value)
+                ->where('status', TaskStatus::Ready->value)
+                ->sole();
+            $bridge = $this->app->make(WorkflowTaskBridge::class);
+            $claim = $bridge->claimStatus($task->id, 'regression-corpus-protocol-worker');
+            $this->assertTrue($claim['claimed'], json_encode($claim, JSON_THROW_ON_ERROR));
+            $history = $bridge->historyPayload($task->id);
+            $this->assertNotNull($history);
+            $authored = WorkflowFiberRunner::forClass(
+                $workflow['type'],
+                $run->workflow_instance_id,
+                $run->id,
+                $workflow['arguments'],
+                $workflow['payload_codec'],
+                $history['history_events'],
+            )->step();
+            $this->assertSame(['start_service_operation'], array_column($authored->commands, 'type'));
+            Queue::fake();
+
+            DB::transaction(function () use ($bridge, $task, $authored, $fixture, $embedded, $scheduled): void {
+                $result = $embedded
+                    ? $bridge->execute($task->id)
+                    : ($bridge instanceof ProtocolAwareWorkflowTaskBridge
+                        ? $bridge->completeForProtocol($task->id, $authored->commands, $fixture['protocol_version'])
+                        : $bridge->complete($task->id, $authored->commands));
+                $this->assertTrue(
+                    $result[$embedded ? 'executed' : 'completed'],
+                    json_encode($result, JSON_THROW_ON_ERROR)
+                );
+                $this->assertSame($scheduled ? 1 : 0, WorkflowServiceCallDispatch::query()->count());
+                Queue::assertNothingPushed();
+            });
+
+            $call = WorkflowServiceCall::query()->where('caller_workflow_run_id', $run->id)->sole();
+            $this->assertSame($scheduled ? 'accepted' : ($failed ? 'failed' : 'completed'), $call->status);
+            $event = $run->historyEvents()
+                ->whereIn(
+                    'event_type',
+                    ['ServiceCallCompleted', 'ServiceCallFailed', 'ServiceOperationScheduled']
+                )->sole();
+            $this->assertSame($fixture['history'][1]['event_type'], $event->event_type->value);
+            $this->assertSame(
+                $scheduled ? 1 : 0,
+                $run->historyEvents()
+                    ->where('event_type', 'ServiceOperationScheduled')
+                    ->count()
+            );
+            if ($scheduled) {
+                $this->assertFalse($event->payload['workflow_resume_on_admission']);
+                $dispatch = WorkflowServiceCallDispatch::query()->sole();
+                $this->assertSame($call->id, $dispatch->service_call_id);
+                $this->assertSame('scheduled', $dispatch->state);
+                $this->assertFalse(ServiceCallScheduler::hasAfterCommitAuthority($dispatch->dispatch_options));
+                Queue::assertPushed(RunServiceCall::class, 1);
+                Queue::assertPushed(
+                    RunServiceCall::class,
+                    static fn (RunServiceCall $job): bool => $job->serviceCallId === $call->id
+                );
+            } else {
+                Queue::assertNothingPushed();
+                if ($failed) {
+                    $this->assertSame('invoice_declined', $event->payload['exception_type']);
+                    $this->assertSame('The invoice approval was denied.', $event->payload['message']);
+                }
+            }
+            $cold = WorkflowFiberRunner::forClass(
+                $workflow['type'],
+                $run->workflow_instance_id,
+                $run->id,
+                $workflow['arguments'],
+                $workflow['payload_codec'],
+                HistoryExport::forRun($run->fresh())['history_events'],
+            )->step();
+            $this->assertStepMatches($fixture['expected'], $cold, $fixture['id'] . ' persisted history');
+            $this->assertSame(TaskStatus::Completed, $task->fresh()->status);
+            $this->assertSame($scheduled ? 0 : 1, $handlerCalls);
+            if ($scheduled) {
+                if ($embedded) {
+                    // Cold embedded replay of the retained scheduled history
+                    // must wait without dispatching its handler a second time.
+                    $replayRun = $this->createRunFromFixture($fixture);
+                    Queue::fake();
+                    $this->runReadyWorkflowTask($replayRun);
+                    $this->assertSame(RunStatus::Waiting, $replayRun->fresh()->status);
+                    $this->assertSame(
+                        1,
+                        $replayRun->historyEvents()
+                            ->where('event_type', 'ServiceOperationScheduled')
+                            ->count()
+                    );
+                    $this->assertSame(1, WorkflowServiceCallDispatch::query()->count());
+                    $this->assertSame(0, $handlerCalls);
+                    Queue::assertNothingPushed();
+                }
+
+                // The same 1.21 host must still execute a direct HTTP-style
+                // idempotent call inline, despite carrying the caller identity.
+                Queue::fake();
+                $direct = $this->app->make(ServiceControlPlane::class)->execute('php-service', 'greeter', 'greet', [
+                    'namespace' => 'service',
+                    'caller_namespace' => 'caller',
+                    'caller_workflow_instance_id' => $run->workflow_instance_id,
+                    'caller_workflow_run_id' => $run->id,
+                    'principal' => new ServiceCallPrincipal(subject: 'workflow:' . $run->id, method: 'workflow'),
+                    'idempotency_key' => 'direct-protocol-call',
+                    'wait_for' => 'completed',
+                ]);
+                $this->assertSame('completed', $direct['status']);
+                $this->assertSame($fixture['terminal_result'], Serializer::unserializeWithCodec(
+                    $direct['result_envelope']['codec'],
+                    $direct['result_envelope']['blob'],
+                ));
+                $this->assertSame(1, $handlerCalls);
+                $this->assertSame(1, WorkflowServiceCallDispatch::query()->count());
+                Queue::assertNothingPushed();
+            }
+        } finally {
+            $this->app->instance(ServiceControlPlane::class, $previousControlPlane);
+            if ($previousAuthorizer !== null) {
+                $this->app->instance(WorkflowServiceOperationAuthorizer::class, $previousAuthorizer);
+            }
+        }
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private static function pendingCountDurableState(WorkflowRun $run): array
+    {
+        return [
+            'history' => WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count(),
+            'activity_executions' => ActivityExecution::query()->where('workflow_run_id', $run->id)->count(),
+            'activity_attempts' => ActivityAttempt::query()->count(),
+            'timers' => WorkflowTimer::query()->where('workflow_run_id', $run->id)->count(),
+            'child_calls' => WorkflowChildCall::query()->where('parent_workflow_run_id', $run->id)->count(),
+            'links' => WorkflowLink::query()->where('parent_workflow_run_id', $run->id)->count(),
+            'commands' => WorkflowCommand::query()->where('workflow_run_id', $run->id)->count(),
+            'instances' => WorkflowInstance::query()->count(),
+            'runs' => WorkflowRun::query()->count(),
+            'tasks' => WorkflowTask::query()->where('workflow_run_id', $run->id)->count(),
+        ];
     }
 
     /**
@@ -1020,6 +2278,59 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     /**
      * @param array<string, mixed> $fixture
      */
+    private function assertDatetimeSearchProjectionRepairPreservesItsOriginal(array $fixture): void
+    {
+        $run = $this->createRunFromFixture($fixture);
+        $payload = $fixture['history'][1]['payload'];
+        $original = $payload['attributes']['SubmittedAt'];
+        $attribute = new WorkflowSearchAttribute([
+            'workflow_run_id' => $run->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'key' => 'SubmittedAt',
+            'upserted_at_sequence' => $payload['sequence'],
+        ]);
+        $attribute->setTypedValue($original, WorkflowSearchAttribute::TYPE_DATETIME);
+        $attribute->save();
+        $connection = $run->getConnection();
+        $connection->table('workflow_search_attributes')
+            ->where('id', $attribute->id)
+            ->update([
+                'value_datetime' => (new DateTimeImmutable($original))->format('Y-m-d H:i:s.u'),
+            ]);
+        $history = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->toArray();
+        $tasks = $connection->table('workflow_tasks')
+            ->where('workflow_run_id', $run->id)
+            ->get()
+            ->all();
+        $options = [
+            'run' => $run->id,
+            '--namespace' => $run->namespace,
+            '--json' => true,
+        ];
+
+        $this->assertSame(0, Artisan::call('workflow:v2:repair-search-datetimes', $options));
+        $preview = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
+        $this->assertSame(1, $preview['would_repair']);
+        $this->assertSame(0, $preview['repaired']);
+        $this->assertSame(0, Artisan::call('workflow:v2:repair-search-datetimes', [
+            ...$options,
+            '--apply' => true,
+        ]));
+        $this->assertSame('2026-10-08T10:34:56.123456Z', $attribute->fresh() ->getValue()?->toISOString());
+        $this->assertSame($history, $run->historyEvents()->orderBy('sequence')->get()->toArray());
+        $tasksAfter = $connection->table('workflow_tasks')
+            ->where('workflow_run_id', $run->id)
+            ->get()
+            ->all();
+        $this->assertEquals($tasks, $tasksAfter);
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
     private function assertHistoryImportMetadataRoundTrips(array $fixture): void
     {
         $metadata = $fixture['history_import_metadata'];
@@ -1286,6 +2597,136 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     }
 
     /**
+     * The longest local activity timings a worker may report record exactly
+     * the attempt walk this fixture replays, and one past any of them is
+     * refused before anything is written.
+     *
+     * @param array<string, mixed> $fixture
+     */
+    private function assertLocalActivityTimingCapsBoundTheRecordedWalk(array $fixture): void
+    {
+        $report = $fixture['local_activity_report'];
+        $expected = [];
+        foreach ($fixture['history'] as $event) {
+            $attempt = $event['payload']['activity_attempt'] ?? null;
+            if (is_array($attempt)) {
+                $expected[$attempt['attempt_number']] = [
+                    $attempt['started_at'] ?? null,
+                    $attempt['last_heartbeat_at'] ?? null,
+                    $attempt['closed_at'] ?? null,
+                ];
+            }
+        }
+        ksort($expected);
+        $command = static fn (array $attempts): array => [
+            'type' => 'record_local_activity',
+            'activity_type' => TestGreetingActivity::class,
+            'arguments' => Serializer::serializeWithCodec('avro', $fixture['workflow']['arguments']),
+            'result' => Serializer::serializeWithCodec('avro', 'Hello, Ada!'),
+            'payload_codec' => 'avro',
+            'outcome' => 'completed',
+            'attempts' => $attempts,
+            'retry_policy' => [
+                'max_attempts' => count($attempts),
+            ],
+            'execution_mode' => 'local',
+        ];
+        $bridge = $this->app->make(WorkflowTaskBridge::class);
+
+        Carbon::setTestNow($report['completed_at']);
+
+        try {
+            [$run, $task] = $this->leasedLocalActivityRun();
+            $accepted = $bridge->complete($task->id, [$command($report['attempts'])]);
+            $this->assertTrue($accepted['completed'] ?? false, json_encode($accepted, JSON_THROW_ON_ERROR));
+            $recorded = [];
+            $attempts = ActivityAttempt::query()
+                ->where('workflow_run_id', $run->id)
+                ->orderBy('attempt_number')
+                ->get();
+            foreach ($attempts as $attempt) {
+                $recorded[$attempt->attempt_number] = [
+                    $attempt->started_at?->toJSON(),
+                    $attempt->last_heartbeat_at?->toJSON(),
+                    $attempt->closed_at?->toJSON(),
+                ];
+            }
+            $this->assertSame($expected, $recorded);
+
+            foreach ($report['one_over'] as $case) {
+                $over = $command($report['attempts']);
+                data_set($over, $case['field'], $case['value']);
+                $errors = [];
+                try {
+                    WorkflowCommandNormalizer::normalize([$over]);
+                } catch (ValidationException $refusal) {
+                    $errors = $refusal->errors();
+                }
+                $this->assertSame(
+                    ["commands.0.{$case['field']}"],
+                    array_keys($errors),
+                    "{$case['field']} one past its cap must be refused by that field alone."
+                );
+
+                [$run, $task] = $this->leasedLocalActivityRun();
+                $refused = $bridge->complete($task->id, [$over]);
+
+                $this->assertFalse($refused['completed'] ?? true, "{$case['field']} one past its cap was accepted.");
+                $this->assertSame(0, ActivityAttempt::query()->where('workflow_run_id', $run->id)->count());
+                $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+            }
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    /**
+     * @return array{WorkflowRun, WorkflowTask}
+     */
+    private function leasedLocalActivityRun(): array
+    {
+        $instance = WorkflowInstance::query()->create([
+            'workflow_class' => TestLocalActivityWorkflow::class,
+            'workflow_type' => TestLocalActivityWorkflow::class,
+            'run_count' => 1,
+            'started_at' => now()
+                ->subMinute(),
+        ]);
+        $run = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => TestLocalActivityWorkflow::class,
+            'workflow_type' => TestLocalActivityWorkflow::class,
+            'status' => RunStatus::Waiting,
+            'arguments' => Serializer::serializeWithCodec('avro', ['Ada']),
+            'payload_codec' => 'avro',
+            'connection' => 'database',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'started_at' => now()
+                ->subMinute(),
+        ]);
+        $instance->forceFill([
+            'current_run_id' => $run->id,
+        ])->save();
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow,
+            'status' => TaskStatus::Leased,
+            'attempt_count' => 1,
+            'payload' => [],
+            'connection' => 'database',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'lease_owner' => 'timing-caps-worker',
+            'lease_expires_at' => now()
+                ->addMinutes(5),
+        ]);
+
+        return [$run, $task];
+    }
+
+    /**
      * @param array<string, string> $attemptsByActivity
      */
     private function assertPortableStoredActivityIdentities(
@@ -1485,6 +2926,7 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     private function clearWorkflowState(): void
     {
         foreach ([
+            'workflow_service_call_dispatches',
             'workflow_service_calls',
             'workflow_service_operations',
             'workflow_services',
@@ -1935,6 +3377,87 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     }
 
     /**
+     * The fixture's scheduled workflow, backfilled for one occurrence by the
+     * same schedule ID in two namespaces, starts one instance per namespace
+     * instead of colliding on the global instance key (#874).
+     *
+     * @param array<string, mixed> $fixture
+     */
+    private function assertScheduleNamespaceInstanceIdentity(array $fixture): void
+    {
+        $from = Carbon::parse('2026-10-20T12:00:00Z');
+        $to = Carbon::parse('2026-10-20T13:00:00Z');
+        $instances = [];
+
+        foreach (['default', 'corpus-tenant-b'] as $namespace) {
+            $schedule = ScheduleManager::create(
+                scheduleId: 'corpus-shared',
+                workflowClass: $fixture['workflow']['type'],
+                cronExpression: '0 * * * *',
+                arguments: $fixture['workflow']['arguments'],
+                overlapPolicy: ScheduleOverlapPolicy::AllowAll,
+                namespace: $namespace,
+            );
+            $results = ScheduleManager::backfill($schedule, $from, $to);
+
+            $this->assertCount(1, $results, "{$fixture['id']} {$namespace} occurrence count.");
+            $this->assertArrayNotHasKey('error', $results[0], "{$fixture['id']} {$namespace} start failed.");
+            $instanceId = $results[0]['instance_id'];
+            $this->assertIsString($instanceId, "{$fixture['id']} {$namespace} started no instance.");
+            $this->assertSame(
+                $namespace,
+                WorkflowInstance::query()->findOrFail($instanceId)->namespace,
+                "{$fixture['id']} {$namespace} instance namespace.",
+            );
+            $instances[] = $instanceId;
+        }
+
+        $this->assertNotSame($instances[0], $instances[1]);
+    }
+
+    /**
+     * The recorded history continues as new through WorkflowExecutor; the
+     * persisted successor run and its first task keep the run's priority and
+     * fairness (#971).
+     *
+     * @param array<string, mixed> $fixture
+     */
+    private function assertContinueAsNewPreservesRunScheduling(array $fixture): void
+    {
+        $run = $this->createRunFromFixture($fixture);
+        $run->forceFill([
+            'priority' => 1,
+            'fairness_key' => 'x',
+            'fairness_weight' => 3,
+        ])->save();
+
+        $this->runReadyWorkflowTask($run);
+
+        /** @var WorkflowRun $continuedRun */
+        $continuedRun = WorkflowRun::query()
+            ->where('workflow_instance_id', $run->workflow_instance_id)
+            ->where('run_number', $run->run_number + 1)
+            ->firstOrFail();
+
+        /** @var WorkflowTask $continuedTask */
+        $continuedTask = WorkflowTask::query()
+            ->where('workflow_run_id', $continuedRun->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->firstOrFail();
+
+        $this->assertSame(
+            [1, 'x', 3],
+            [$continuedRun->priority, $continuedRun->fairness_key, $continuedRun->fairness_weight],
+            "{$fixture['id']} successor run lost the run's scheduling.",
+        );
+        $this->assertSame(
+            [1, 'x', 3],
+            [$continuedTask->priority, $continuedTask->fairness_key, $continuedTask->fairness_weight],
+            "{$fixture['id']} successor task lost the run's scheduling.",
+        );
+    }
+
+    /**
      * @param array<string, mixed> $fixture
      */
     private function assertPortableCleanupDeadlineAfterColdReload(array $fixture): void
@@ -2168,5 +3691,50 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 return $this->projectRun($run);
             }
         });
+    }
+
+    /**
+     * @param array{can_redrive: bool, redrive_blocked_reason: string|null} $expected
+     */
+    private function assertRedriveReport(WorkflowControlPlane $controlPlane, string $runId, array $expected): void
+    {
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $detail = RunDetailView::forRun($run);
+        $describe = $controlPlane->describe($run->workflow_instance_id, [
+            'run_id' => $runId,
+        ]);
+
+        foreach ([
+            'run detail' => $detail,
+            'describe' => $describe['actions'] ?? [],
+        ] as $surface => $actions) {
+            $this->assertSame(
+                $expected['can_redrive'],
+                $actions['can_redrive'] ?? null,
+                "{$surface} can_redrive for {$runId}"
+            );
+            $this->assertArrayHasKey('redrive_blocked_reason', $actions, "{$surface} for {$runId}");
+            $this->assertSame(
+                $expected['redrive_blocked_reason'],
+                $actions['redrive_blocked_reason'],
+                "{$surface} redrive_blocked_reason for {$runId}",
+            );
+        }
+    }
+}
+
+final class TerminalCloseCorpusHistory extends WorkflowHistoryEvent
+{
+    public static bool $watch = false;
+
+    public static int $reads = 0;
+
+    protected function castAttribute($key, $value)
+    {
+        if (self::$watch && in_array($key, ['event_type', 'payload'], true)) {
+            ++self::$reads;
+        }
+
+        return parent::castAttribute($key, $value);
     }
 }

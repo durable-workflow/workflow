@@ -101,6 +101,7 @@ final class BundleIntegrityVerifier
         self::checkSchema($bundle, $findings);
         self::checkRequiredSections($bundle, $findings);
         self::checkRunReferences($bundle, $findings);
+        self::checkRetainedDetails($bundle, $findings);
         self::checkPayloadManifest($bundle, $findings);
         self::checkHistoryEvents($bundle, $findings);
         self::checkCommandHistoryConsistency($bundle, $findings);
@@ -276,6 +277,38 @@ final class BundleIntegrityVerifier
                 );
             }
         }
+    }
+
+    /**
+     * A run whose details were pruned by retention cleanup has no history to
+     * replay or import, whatever its other fields say.
+     *
+     * @param list<array{rule: string, severity: string, message: string, path: ?string, context: array<string, mixed>}> $findings
+     */
+    private static function checkRetainedDetails(array $bundle, array &$findings): void
+    {
+        $workflow = is_array($bundle['workflow'] ?? null) ? $bundle['workflow'] : [];
+
+        if (($workflow['details_state'] ?? null) !== 'pruned') {
+            return;
+        }
+
+        $prunedAt = self::stringValue($workflow['details_pruned_at'] ?? null);
+
+        self::addFinding(
+            $findings,
+            'history.details_pruned',
+            self::SEVERITY_ERROR,
+            sprintf(
+                'Retention cleanup pruned this run\'s details%s; the bundle has no history to replay or import.',
+                $prunedAt === null ? '' : ' at ' . $prunedAt,
+            ),
+            'workflow.details_state',
+            [
+                'details_pruned_at' => $prunedAt,
+                'history_complete' => $bundle['history_complete'] ?? null,
+            ],
+        );
     }
 
     /**

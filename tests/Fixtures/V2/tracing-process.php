@@ -919,7 +919,11 @@ try {
                 $from = $from->addMinute();
             }
             if ($mode === 'backfill-fail') {
-                $app['events']->listen(WorkflowStarted::class, static function (): never {
+                // Lifecycle listeners run after commit; this fault must roll back the write.
+                WorkflowTask::creating(static function (): never {
+                    if (DB::connection('tracing')->transactionLevel() === 0) {
+                        throw new \LogicException('The backfill fault must run before storage commit.');
+                    }
                     throw new \RuntimeException('deliberate backfill admission rollback');
                 });
             }
@@ -946,7 +950,11 @@ try {
             $schedule->save();
         } elseif ($scheduleProbe === 'buffered' && in_array($mode, ['drain', 'drain-fail'], true)) {
             if ($mode === 'drain-fail') {
-                $app['events']->listen(WorkflowStarted::class, static function (): never {
+                // Lifecycle listeners run after commit; this fault must roll back the write.
+                WorkflowTask::creating(static function (): never {
+                    if (DB::connection('tracing')->transactionLevel() === 0) {
+                        throw new \LogicException('The buffer drain fault must run before storage commit.');
+                    }
                     throw new \RuntimeException('deliberate buffered admission rollback');
                 });
             }

@@ -1,0 +1,34 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "workflow-service-operation-protocol-121-scheduled",
+  "protocol_version": "1.21",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner", "workflow-executor"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestNexusWaitingCallerWorkflow",
+    "arguments": ["world"],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {"sequence": 1, "event_type": "WorkflowStarted", "payload": {}},
+    {
+      "sequence": 2,
+      "event_type": "ServiceOperationScheduled",
+      "payload": {
+        "sequence": 1,
+        "service_call_id": "protocol-121-scheduled-call",
+        "endpoint_name": "php-service",
+        "service_name": "greeter",
+        "operation_name": "greet",
+        "operation_mode": "sync",
+        "wait_for": "accepted",
+        "workflow_resume_on_admission": false,
+        "status": "accepted",
+        "outcome": "accepted"
+      }
+    }
+  ],
+  "expected": {"completed": false, "result": null, "commands": []},
+  "terminal_result": {"greeting": "hello world"}
+}

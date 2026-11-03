@@ -667,6 +667,9 @@ final class CancellationScopeDelivery
                 );
             }
         } catch (LogicException $error) {
+            if ($error->getMessage() === 'cancellation_scope_child_target_mismatch') {
+                throw $error;
+            }
             throw new LogicException('cancellation_scope_delivery_history_invalid', previous: $error);
         }
         return $event;

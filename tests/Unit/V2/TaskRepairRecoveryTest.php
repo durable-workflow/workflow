@@ -47,6 +47,65 @@ final class TaskRepairRecoveryTest extends TestCase
         ];
     }
 
+    public static function fractionalRepairCutoffs(): array
+    {
+        $cases = [];
+        foreach (['lease', 'availability', 'dispatch backoff', 'claim backoff'] as $boundary) {
+            foreach ([
+                -1 => false,
+                0 => true,
+                150000 => true,
+            ] as $offset => $eligible) {
+                $cases[$boundary . ' offset ' . $offset] = [$boundary, $offset, $eligible];
+            }
+        }
+
+        return $cases;
+    }
+
+    #[DataProvider('fractionalRepairCutoffs')]
+    public function testRepairCandidateSelectionPreservesFractionalDeadlines(
+        string $boundary,
+        int $offset,
+        bool $eligible,
+    ): void {
+        $run = $this->createRun();
+        $deadline = now()
+            ->microsecond(114071);
+        $attributes = match ($boundary) {
+            'lease' => [
+                'status' => TaskStatus::Leased,
+                'lease_expires_at' => $deadline,
+            ],
+            'availability' => [
+                'available_at' => $deadline,
+                'last_claim_failed_at' => now()
+                    ->subMinute(),
+                'last_claim_error' => 'claim unavailable',
+            ],
+            'dispatch backoff' => [
+                'last_dispatch_attempt_at' => now()
+                    ->subMinute(),
+                'last_dispatched_at' => null,
+                'last_dispatch_error' => 'dispatch unavailable',
+                'repair_available_at' => $deadline,
+            ],
+            'claim backoff' => [
+                'last_claim_failed_at' => now()
+                    ->subMinute(),
+                'last_claim_error' => 'claim unavailable',
+                'repair_available_at' => $deadline,
+            ],
+        };
+        $task = $this->task($run, $attributes);
+        $before = $task->fresh()
+            ->getAttributes();
+        Carbon::setTestNow($deadline->copy()->addMicroseconds($offset));
+
+        $this->assertSame($eligible ? [$task->id] : [], TaskRepairCandidates::taskIds(runIds: [$run->id]));
+        $this->assertSame($before, $task->fresh()->getAttributes());
+    }
+
     #[DataProvider('delayedDispatches')]
     public function testRedispatchWaitsForTheOriginalAvailabilityAndLatestDispatch(
         ?int $dispatchOffset,

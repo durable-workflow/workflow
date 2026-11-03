@@ -7,6 +7,7 @@ namespace Workflow\V2\Models;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\ServiceCallOutcome;
 use Workflow\V2\Support\ConfiguredV2Models;
@@ -109,6 +110,14 @@ class WorkflowServiceCall extends Model
         return $this->belongsTo(
             ConfiguredV2Models::resolve('update_model', WorkflowUpdate::class),
             'linked_workflow_update_id',
+        );
+    }
+
+    public function dispatch(): HasOne
+    {
+        return $this->hasOne(
+            ConfiguredV2Models::resolve('service_call_dispatch_model', WorkflowServiceCallDispatch::class),
+            'service_call_id',
         );
     }
 }

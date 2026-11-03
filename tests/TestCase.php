@@ -16,6 +16,7 @@ use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 use Orchestra\Testbench\Concerns\WithLaravelMigrations;
+use function Orchestra\Testbench\default_skeleton_path;
 use Orchestra\Testbench\TestCase as BaseTestCase;
 use RuntimeException;
 use Symfony\Component\Process\Process;
@@ -32,6 +33,7 @@ use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub as V2WorkflowStub;
+
 use Workflow\WorkflowStub;
 
 abstract class TestCase extends BaseTestCase
@@ -197,6 +199,42 @@ abstract class TestCase extends BaseTestCase
         // migrations. Remove that per-command binding so application commands
         // invoked by a test can write to the output buffer supplied by Artisan.
         $this->app->offsetUnset(OutputStyle::class);
+    }
+
+    protected function useSqliteWalJournal(): void
+    {
+        $database = $this->app->make('db');
+        $connection = $database->connection();
+        $name = $connection->getName();
+        $journal = (string) $connection->scalar('PRAGMA journal_mode');
+
+        $this->beforeApplicationDestroyed(static function () use ($database, $name, $journal): void {
+            // Testbench may truncate this file after the next in-memory test.
+            // Close WAL connections before restoring its original journal so
+            // that reset never depends on collection of an earlier app.
+            $unfinished = [];
+            try {
+                foreach ($database->getConnections() as $connectionName => $open) {
+                    $level = $open->transactionLevel();
+                    if ($level !== 0) {
+                        $unfinished[$connectionName] = $level;
+                    }
+                    $database->purge($connectionName);
+                }
+            } finally {
+                try {
+                    $restoredJournal = $database->connection($name)
+                        ->scalar('PRAGMA journal_mode=' . $journal);
+                } finally {
+                    $database->purge($name);
+                }
+            }
+
+            self::assertSame($journal, $restoredJournal);
+            self::assertSame([], $unfinished, 'The WAL fixture must finish its transactions.');
+        });
+
+        $connection->statement('PRAGMA journal_mode=WAL');
     }
 
     protected function setUpWithLaravelMigrations(): void
@@ -679,6 +717,7 @@ abstract class TestCase extends BaseTestCase
             return;
         }
 
+        self::ensureSkeletonVendorLink();
         self::$workerResources = [];
 
         $environment = getenv();
@@ -711,6 +750,35 @@ abstract class TestCase extends BaseTestCase
 
             throw $exception;
         }
+    }
+
+    /**
+     * Testbench's console links the skeleton's vendor directory when the link
+     * is missing and removes it again on exit. Two workers booting together
+     * could then delete the link while the other read
+     * vendor/composer/installed.json, and that worker exited. Linking it once
+     * before the workers start means they find it and leave it alone.
+     */
+    private static function ensureSkeletonVendorLink(): void
+    {
+        $skeleton = default_skeleton_path();
+        $vendor = realpath(__DIR__ . '/../vendor');
+
+        if (! is_string($skeleton) || ! is_string($vendor)) {
+            return;
+        }
+
+        $link = $skeleton . DIRECTORY_SEPARATOR . 'vendor';
+
+        if (is_file($link . DIRECTORY_SEPARATOR . 'autoload.php')) {
+            return;
+        }
+
+        if (is_link($link)) {
+            @unlink($link);
+        }
+
+        @symlink($vendor, $link);
     }
 
     /**

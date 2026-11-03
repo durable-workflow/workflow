@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use JsonException;
 use Workflow\V2\Enums\ActivityAttemptStatus;
@@ -70,7 +69,7 @@ final class PortableLocalActivityPreparation
             ->where('sequence', $sequence)
             ->first();
 
-        return DB::transaction(static function () use (
+        return ConfiguredV2Models::connection()->transaction(static function () use (
             $snapshotTask,
             $snapshotExecution,
             $taskId,
@@ -238,7 +237,7 @@ final class PortableLocalActivityPreparation
         string $batchFingerprint
     ): ActivityExecution {
         $normalized = self::normalizeDescriptor($descriptor);
-        if (DB::transactionLevel() < 1 || ($normalized['parallel_group_path'] ?? []) === []) {
+        if (ConfiguredV2Models::connection()->transactionLevel() < 1 || ($normalized['parallel_group_path'] ?? []) === []) {
             throw ValidationException::withMessages([
                 'local_activity' => ['Expected an atomic group transaction.'],
             ]);
@@ -325,7 +324,7 @@ final class PortableLocalActivityPreparation
             || ! is_string($snapshotExecution->current_attempt_id)) {
             return $refused('local_activity_preparation_not_found');
         }
-        return DB::transaction(static function () use (
+        return ConfiguredV2Models::connection()->transaction(static function () use (
             $snapshotTask,
             $snapshotExecution,
             $taskId,

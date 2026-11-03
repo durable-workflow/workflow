@@ -14,10 +14,12 @@ use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
+use Workflow\V2\Support\BridgeCommandIdentity;
 use Workflow\V2\Support\CommandSequence;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\MessageStreamCursor;
+use Workflow\V2\Support\ServiceCallEffectIdentity;
 use Workflow\V2\Support\UpdateRequestIdentity;
 
 class WorkflowCommand extends Model
@@ -506,13 +508,42 @@ class WorkflowCommand extends Model
         $isUpdate = $commandType === CommandType::Update || $commandType === CommandType::Update->value;
         $usesRequestId = $commandType === CommandType::Redrive
             || $commandType === CommandType::Redrive->value;
+        $context = is_array($attributes['context'] ?? null) ? $attributes['context'] : [];
+        $serviceCallIdentity = ServiceCallEffectIdentity::fromContext($context);
+        if ($serviceCallIdentity instanceof ServiceCallEffectIdentity) {
+            $context = $serviceCallIdentity->persistentContext($context);
+            $attributes['context'] = $context;
+        }
+
+        $bridgeIdentity = BridgeCommandIdentity::fromContext($context);
+        if ($bridgeIdentity instanceof BridgeCommandIdentity) {
+            $context = $bridgeIdentity->persistentContext($context);
+            $attributes['context'] = $context;
+            if ($serviceCallIdentity === null && in_array($commandType, [
+                CommandType::Signal, CommandType::Signal->value, CommandType::Update, CommandType::Update->value,
+            ], true)) {
+                $attributes['request_id'] = $bridgeIdentity->storageToken();
+
+                return $attributes;
+            }
+        }
 
         if ($isUpdate) {
-            $context = is_array($attributes['context'] ?? null) ? $attributes['context'] : [];
-            $context['request'] = is_array($context['request'] ?? null) ? $context['request'] : [];
-            $context['request']['request_id'] = UpdateRequestIdentity::fromContext($context);
-            $attributes['context'] = $context;
-            $attributes['request_id'] = UpdateRequestIdentity::storageToken($instance, $context);
+            if ($serviceCallIdentity instanceof ServiceCallEffectIdentity) {
+                $attributes['request_id'] = $serviceCallIdentity->storageToken();
+            } else {
+                $context['request'] = is_array($context['request'] ?? null) ? $context['request'] : [];
+                $context['request']['request_id'] = UpdateRequestIdentity::fromContext($context);
+                $attributes['context'] = $context;
+                $attributes['request_id'] = UpdateRequestIdentity::storageToken($instance, $context);
+            }
+        } elseif ($serviceCallIdentity instanceof ServiceCallEffectIdentity && in_array($commandType, [
+            CommandType::Start,
+            CommandType::Start->value,
+            CommandType::Signal,
+            CommandType::Signal->value,
+        ], true)) {
+            $attributes['request_id'] = $serviceCallIdentity->storageToken();
         } elseif ($usesRequestId) {
             $request = is_array($attributes['context']['request'] ?? null)
                 ? $attributes['context']['request']
@@ -543,7 +574,12 @@ class WorkflowCommand extends Model
 
         $namespace = null;
 
-        if ($this->workflow_run_id !== null) {
+        // Inline bytes do not consult namespace storage policy. Timeline
+        // projection can read the same command for thousands of events.
+        // Configured models and payload casts retain their original read path.
+        if ($this->workflow_run_id !== null && (static::class !== self::class
+            || array_key_exists('payload', $this->getCasts())
+            || ExternalPayloads::isStoredReference($this->payload))) {
             $namespace = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                 ->whereKey($this->workflow_run_id)
                 ->value('namespace');

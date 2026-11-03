@@ -9,7 +9,6 @@ use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\App;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Illuminate\Support\Testing\Fakes\QueueFake;
@@ -52,6 +51,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\ActivityCancellation;
+use Workflow\V2\Support\BridgeCommandIdentity;
 use Workflow\V2\Support\CancellationScopeDescendants;
 use Workflow\V2\Support\CancellationScopeHistory;
 use Workflow\V2\Support\CancellationScopeRequests;
@@ -73,12 +73,16 @@ use Workflow\V2\Support\RunCommandContract;
 use Workflow\V2\Support\SearchAttributeUpsertService;
 use Workflow\V2\Support\SelectedRunLocator;
 use Workflow\V2\Support\ServiceCallCancellationOrigin;
+use Workflow\V2\Support\ServiceCallEffectIdentity;
 use Workflow\V2\Support\ServiceOperationCancellation;
 use Workflow\V2\Support\SignalWaits;
+use Workflow\V2\Support\SqliteSavepointRelease;
 use Workflow\V2\Support\SqliteTransaction;
 use Workflow\V2\Support\StructuralLimits;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
+use Workflow\V2\Support\TaskSchedulingFields;
+use Workflow\V2\Support\TerminalCancellationHistory;
 use Workflow\V2\Support\TimerCancellation;
 use Workflow\V2\Support\TraceCarrier;
 use Workflow\V2\Support\TypeRegistry;
@@ -1293,7 +1297,7 @@ final class WorkflowStub
         $command = null;
         $task = null;
 
-        DB::transaction(function () use (&$command, &$task): void {
+        ConfiguredV2Models::connection()->transaction(function () use (&$command, &$task): void {
             /** @var WorkflowInstance $instance */
             $instance = self::instanceQuery()
                 ->lockForUpdate()
@@ -1566,7 +1570,7 @@ final class WorkflowStub
         /** @var WorkflowCommand|null $command */
         $command = null;
 
-        DB::transaction(function () use (&$command, $reason): void {
+        ConfiguredV2Models::connection()->transaction(function () use (&$command, $reason): void {
             /** @var WorkflowInstance $instance */
             $instance = self::instanceQuery()
                 ->lockForUpdate()
@@ -1758,6 +1762,11 @@ final class WorkflowStub
                 'arguments' => $serializedArguments,
                 'connection' => $connection,
                 'queue' => $queue,
+                ...TaskSchedulingFields::nonDefault([
+                    'priority' => $startOptions->priority,
+                    'fairness_key' => $startOptions->fairnessKey,
+                    'fairness_weight' => $startOptions->fairnessWeight,
+                ]),
                 'started_at' => $startedAt,
                 'last_progress_at' => $startedAt,
                 'last_history_sequence' => 0,
@@ -2057,7 +2066,7 @@ final class WorkflowStub
         $command = null;
         $task = null;
 
-        DB::transaction(function () use (
+        ConfiguredV2Models::connection()->transaction(function () use (
             &$command,
             &$task,
             $reason,
@@ -2132,6 +2141,17 @@ final class WorkflowStub
                 }
                 $member = $scopePreparation === null ? null : collect($scopePreparation->childMembers)
                     ->firstWhere('child_call_id', $scopeTarget['child_call_id']);
+                if ((\Workflow\V2\Support\ImportedLineageReferences::imported($scopeParent)
+                    || \Workflow\V2\Support\ImportedLineageReferences::imported($run))
+                    && ($member === null || ! \Workflow\V2\Support\ImportedLineageReferences::allowsChild(
+                        $scopeParent,
+                        $run,
+                        $member['sequence'],
+                        $scopeTarget['child_call_id'],
+                        true
+                    ))) {
+                    throw new LogicException('cancellation_scope_child_target_mismatch');
+                }
                 if ($scopePreparation === null || $scopePreparation->historyEventId !== $scopeTarget['preparation_history_event_id']
                     || $member === null || $member['child_workflow_instance_id'] !== $instance->id
                     || $member['child_workflow_run_id'] !== $run->id || $member['cancellation_policy'] === 'abandon'
@@ -2426,7 +2446,7 @@ final class WorkflowStub
         /** @var WorkflowTask|null $resumeTask */
         $resumeTask = null;
 
-        DB::transaction(function () use (
+        ConfiguredV2Models::connection()->transaction(function () use (
             $method,
             $arguments,
             &$command,
@@ -2703,7 +2723,19 @@ final class WorkflowStub
     {
         $context = $this->resolvedCommandContext()
             ->attributes()['context'] ?? [];
-        $command = UpdateRequestIdentity::find($instance, $context);
+        $serviceCallIdentity = ServiceCallEffectIdentity::fromContext($context);
+        $bridgeIdentity = BridgeCommandIdentity::fromContext($context);
+        $command = $serviceCallIdentity !== null
+            ? ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+                ->where('workflow_instance_id', $instance->id)
+                ->where('command_type', CommandType::Update->value)
+                ->where('request_id', $serviceCallIdentity->storageToken())
+                ->lockForUpdate()
+                ->first()
+            : ($bridgeIdentity !== null ? $bridgeIdentity->find(
+                $instance,
+                CommandType::Update
+            ) : UpdateRequestIdentity::find($instance, $context));
 
         if (! $command instanceof WorkflowCommand) {
             return [null, null];
@@ -2879,6 +2911,25 @@ final class WorkflowStub
             $instance = self::instanceQuery()
                 ->lockForUpdate()
                 ->findOrFail($this->instance->id);
+
+            $context = $this->resolvedCommandContext()
+                ->attributes()['context'];
+            $identity = ServiceCallEffectIdentity::fromContext($context);
+            $bridgeIdentity = BridgeCommandIdentity::fromContext($context);
+            if ($identity !== null || $bridgeIdentity !== null) {
+                /** @var WorkflowCommand|null $existing */
+                $existing = $identity !== null ? ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+                    ->where('workflow_instance_id', $instance->id)
+                    ->where('command_type', CommandType::Signal->value)
+                    ->where('request_id', $identity->storageToken())
+                    ->lockForUpdate()
+                    ->first() : $bridgeIdentity->find($instance, CommandType::Signal);
+                if ($existing instanceof WorkflowCommand) {
+                    $command = $existing;
+
+                    return;
+                }
+            }
 
             $target = $this->signalRunOrRejection($instance, $name, $arguments, $payloadCodec);
             if ($target instanceof WorkflowCommand) {
@@ -3258,7 +3309,7 @@ final class WorkflowStub
         $task = null;
         $startedRun = null;
 
-        DB::transaction(function () use (
+        ConfiguredV2Models::connection()->transaction(function () use (
             $name,
             $signalArguments,
             $startArguments,
@@ -3422,6 +3473,11 @@ final class WorkflowStub
             'arguments' => $serializedArguments,
             'connection' => $connection,
             'queue' => $queue,
+            ...TaskSchedulingFields::nonDefault([
+                'priority' => $startOptions->priority,
+                'fairness_key' => $startOptions->fairnessKey,
+                'fairness_weight' => $startOptions->fairnessWeight,
+            ]),
             'started_at' => $startedAt,
             'last_progress_at' => $startedAt,
             'last_history_sequence' => 0,
@@ -3709,10 +3765,12 @@ final class WorkflowStub
         /** @var WorkflowCommand|null $command */
         $command = null;
         $parentTasks = [];
+        $closedRun = null;
 
-        DB::transaction(function () use (
+        SqliteSavepointRelease::transaction($this->instance->getConnection(), function () use (
             &$command,
             &$parentTasks,
+            &$closedRun,
             $commandType,
             $terminalStatus,
             $requestedEventType,
@@ -3722,6 +3780,7 @@ final class WorkflowStub
         ): void {
             $command = null;
             $parentTasks = [];
+            $closedRun = null;
             /** @var WorkflowInstance $instance */
             $instance = self::instanceQuery()
                 ->lockForUpdate()
@@ -3835,7 +3894,13 @@ final class WorkflowStub
                 $requestedHistoryPayload['reason'] = $reason;
             }
 
-            WorkflowHistoryEvent::record($run, $requestedEventType, $requestedHistoryPayload, null, $command);
+            $requestedHistoryEvent = WorkflowHistoryEvent::record(
+                $run,
+                $requestedEventType,
+                $requestedHistoryPayload,
+                null,
+                $command
+            );
 
             foreach ($openTasks as $task) {
                 $task->forceFill([
@@ -3851,6 +3916,10 @@ final class WorkflowStub
                 )
                 ->keyBy(static fn (WorkflowTask $task): string => $task->payload['activity_execution_id']);
 
+            $terminalHistory = $openActivityExecutions->isNotEmpty() || $openTimers->isNotEmpty()
+                ? TerminalCancellationHistory::forRun($run, $command, $requestedHistoryEvent)
+                : null;
+
             foreach ($openActivityExecutions as $execution) {
                 $execution->forceFill([
                     'status' => ActivityStatus::Cancelled,
@@ -3860,7 +3929,13 @@ final class WorkflowStub
                 /** @var WorkflowTask|null $activityTask */
                 $activityTask = $tasksByActivityExecutionId->get($execution->id);
 
-                ActivityCancellation::record($run, $execution, $activityTask, $command);
+                ActivityCancellation::record(
+                    $run,
+                    $execution,
+                    $activityTask,
+                    $command,
+                    terminalHistory: $terminalHistory
+                );
             }
 
             foreach ($openTimers as $timer) {
@@ -3868,8 +3943,20 @@ final class WorkflowStub
                     'status' => TimerStatus::Cancelled,
                 ])->save();
 
-                TimerCancellation::record($run, $timer, null, $command);
+                TimerCancellation::record($run, $timer, null, $command, terminalHistory: $terminalHistory);
             }
+            // The final projection hydrates the current run graph again.
+            unset(
+                $terminalHistory,
+                $openTasks,
+                $openActivityExecutions,
+                $openTimers,
+                $tasksByActivityExecutionId,
+                $task,
+                $execution,
+                $timer,
+                $activityTask
+            );
 
             $run->forceFill([
                 'status' => $terminalStatus,
@@ -3943,7 +4030,25 @@ final class WorkflowStub
             $parentTasks = $this->createParentResumeTasks($run);
 
             self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
-        }, self::mysqlCommandTransactionAttempts() ?? 1);
+            $closedRun = $run;
+        }, self::mysqlCommandTransactionAttempts(), admission: function (): void {
+            $instances = self::instanceQuery();
+            $key = $instances->getModel()
+                ->getKeyName();
+            $instances->whereKey($this->instance->id)
+                ->toBase()
+                ->update([
+                    $key => $this->instance->id,
+                ]);
+        });
+
+        if ($closedRun instanceof WorkflowRun) {
+            if ($commandType === CommandType::Cancel) {
+                LifecycleEventDispatcher::workflowCancelled($closedRun, $reason === '' ? null : $reason);
+            } else {
+                LifecycleEventDispatcher::workflowTerminated($closedRun, $reason === '' ? null : $reason);
+            }
+        }
 
         $this->refresh();
 
@@ -4990,14 +5095,8 @@ final class WorkflowStub
 
     private static function mysqlCommandTransactionAttempts(): ?int
     {
-        $connection = DB::connection();
+        $connection = ConfiguredV2Models::connection();
         if ($connection->getDriverName() !== 'mysql' || $connection->transactionLevel() !== 0) {
-            return null;
-        }
-
-        // Retry the owned command transaction, preserving other storage and caller transactions.
-        $storageName = config('workflows.storage.connection');
-        if (is_string($storageName) && $storageName !== '' && $storageName !== $connection->getName()) {
             return null;
         }
 
@@ -5187,7 +5286,7 @@ final class WorkflowStub
             ->lockForUpdate()
             ->get();
 
-        /** @var array<string, array{parent_workflow_run_id: string, parent_sequence: int|null}> $parentReferences */
+        /** @var array<string, array{parent_workflow_instance_id: string, parent_workflow_run_id: string, parent_sequence: int|null, child_call_id?: string|null}> $parentReferences */
         $parentReferences = [];
 
         foreach ($parentLinks as $parentLink) {
@@ -5196,6 +5295,7 @@ final class WorkflowStub
             }
 
             $parentReferences[$parentLink->parent_workflow_run_id] = [
+                'parent_workflow_instance_id' => $parentLink->parent_workflow_instance_id,
                 'parent_workflow_run_id' => $parentLink->parent_workflow_run_id,
                 'parent_sequence' => is_int($parentLink->sequence)
                     ? $parentLink->sequence
@@ -5203,7 +5303,7 @@ final class WorkflowStub
             ];
         }
 
-        if ($parentReferences === []) {
+        if ($parentReferences === [] && ! \Workflow\V2\Support\ImportedLineageReferences::imported($childRun)) {
             $parentReference = ChildRunHistory::parentReferenceForRun($childRun);
 
             if ($parentReference !== null) {
@@ -5214,15 +5314,24 @@ final class WorkflowStub
         foreach ($parentReferences as $parentReference) {
             /** @var WorkflowRun|null $parentRun */
             $parentRun = self::runQuery()
+                ->where('namespace', $childRun->namespace)
                 ->lockForUpdate()
                 ->find($parentReference['parent_workflow_run_id']);
 
-            if ($parentRun === null || in_array($parentRun->status, [
-                RunStatus::Completed,
-                RunStatus::Failed,
-                RunStatus::Cancelled,
-                RunStatus::Terminated,
-            ], true)) {
+            if ($parentRun === null || $parentRun->workflow_instance_id !== $parentReference['parent_workflow_instance_id']
+                || ! \Workflow\V2\Support\ImportedLineageReferences::allowsChild(
+                    $parentRun,
+                    $childRun,
+                    $parentReference['parent_sequence'],
+                    $parentReference['child_call_id'] ?? null,
+                    true
+                )
+                || in_array($parentRun->status, [
+                    RunStatus::Completed,
+                    RunStatus::Failed,
+                    RunStatus::Cancelled,
+                    RunStatus::Terminated,
+                ], true)) {
                 continue;
             }
 
@@ -5481,7 +5590,19 @@ final class WorkflowStub
      */
     private static function projectRun(WorkflowRun $run, array $with = []): WorkflowRunSummary
     {
-        if ($with !== []) {
+        if ($with !== [] && $run::class === WorkflowRun::class) {
+            // Fetch the root before discarding its old relation cache. A missing
+            // row keeps the complete fallback graph; an existing row loads its
+            // fresh relations only after the previous inventory is released.
+            $fresh = $run->fresh();
+            if ($fresh !== null) {
+                foreach ($with as $relation) {
+                    $run->unsetRelation(explode('.', $relation, 2)[0]);
+                }
+                $run = $fresh->load($with);
+            }
+        } elseif ($with !== []) {
+            // Configured models keep their fresh() override and hydration hooks.
             $run = $run->fresh($with) ?? $run;
         }
 

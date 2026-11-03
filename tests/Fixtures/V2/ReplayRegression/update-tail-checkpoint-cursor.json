@@ -1,0 +1,132 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "update-tail-checkpoint-cursor",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner",
+    "workflow-executor"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestUpdateTailCheckpointWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-10-27T00:00:01.000000Z"
+    },
+    {
+      "sequence": 2,
+      "event_type": "UpdateAccepted",
+      "payload": {
+        "workflow_command_id": "update-tail-command",
+        "update_id": "update-tail-update",
+        "update_name": "set",
+        "arguments": "wwHioz3/VYAiNwwA"
+      },
+      "recorded_at": "2026-10-27T00:00:02.000000Z"
+    },
+    {
+      "sequence": 3,
+      "event_type": "VersionMarkerRecorded",
+      "payload": {
+        "change_id": "before",
+        "min_supported": 1,
+        "max_supported": 1,
+        "version": 1,
+        "sequence": 1
+      },
+      "recorded_at": "2026-10-27T00:00:03.000000Z"
+    },
+    {
+      "sequence": 4,
+      "event_type": "UpdateApplied",
+      "payload": {
+        "workflow_command_id": "update-tail-command",
+        "update_id": "update-tail-update",
+        "update_name": "set",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "sequence": 2
+      },
+      "recorded_at": "2026-10-27T00:00:04.000000Z"
+    },
+    {
+      "sequence": 5,
+      "event_type": "UpdateCompleted",
+      "payload": {
+        "workflow_command_id": "update-tail-command",
+        "update_id": "update-tail-update",
+        "update_name": "set",
+        "sequence": 2,
+        "result": "wwHioz3/VYAiNwQC"
+      },
+      "recorded_at": "2026-10-27T00:00:05.000000Z"
+    },
+    {
+      "sequence": 6,
+      "event_type": "VersionMarkerRecorded",
+      "payload": {
+        "change_id": "after",
+        "min_supported": 1,
+        "max_supported": 1,
+        "version": 1,
+        "sequence": 2
+      },
+      "recorded_at": "2026-10-27T00:00:06.000000Z"
+    }
+  ],
+  "checkpoint_prefix": {
+    "sequence": 1,
+    "update_id": "update-tail-update",
+    "update_name": "set",
+    "commands": [
+      {
+        "type": "record_version_marker",
+        "change_id": "before",
+        "min_supported": 1,
+        "max_supported": 1,
+        "version": 1
+      },
+      {
+        "type": "complete_update",
+        "update_id": "update-tail-update",
+        "result": 1,
+        "payload_codec": "avro"
+      }
+    ],
+    "next_sequence": 2,
+    "followup_commands": [
+      {
+        "type": "record_version_marker",
+        "change_id": "after",
+        "min_supported": 1,
+        "max_supported": 1,
+        "version": 1
+      }
+    ],
+    "followup_next_sequence": 3,
+    "replay_result": {
+      "version": 1,
+      "updates": 1
+    }
+  },
+  "expected": {
+    "completed": true,
+    "result": {
+      "version": 1,
+      "updates": 1
+    },
+    "commands": [
+      {
+        "type": "complete_workflow"
+      }
+    ]
+  }
+}

@@ -11,6 +11,7 @@ use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\TaskSchedulingFields;
 
 class WorkflowTask extends Model
 {
@@ -53,5 +54,75 @@ class WorkflowTask extends Model
     public function run(): BelongsTo
     {
         return $this->belongsTo(ConfiguredV2Models::resolve('run_model', WorkflowRun::class), 'workflow_run_id');
+    }
+
+    /**
+     * Registered in boot() rather than booted() so a configured task model
+     * that defines its own booted() callbacks keeps run-scheduling inheritance.
+     */
+    protected static function boot(): void
+    {
+        parent::boot();
+
+        static::creating(static function (self $task): void {
+            $task->inheritRunScheduling();
+        });
+    }
+
+    /**
+     * Give a new task its run's priority and fairness when the creator did
+     * not set them, so resume, timer, retry and repair tasks keep the run's
+     * scheduling class. Activity tasks keep their per-call overrides.
+     */
+    private function inheritRunScheduling(): void
+    {
+        $missing = array_diff(TaskSchedulingFields::FIELDS, array_keys($this->getAttributes()));
+        $runId = $this->getAttribute('workflow_run_id');
+
+        if ($missing === [] || ! is_string($runId) || $runId === '') {
+            return;
+        }
+
+        // The relation resolves on this task's storage connection.
+        $run = $this->run()
+            ->first();
+
+        if (! $run instanceof WorkflowRun) {
+            return;
+        }
+
+        $fields = TaskSchedulingFields::nonDefault($this->task_type === TaskType::Activity
+            ? TaskSchedulingFields::forActivity($run, $this->activityExecution($run))
+            : TaskSchedulingFields::forRun($run));
+
+        foreach ($missing as $field) {
+            if (array_key_exists($field, $fields)) {
+                $this->setAttribute($field, $fields[$field]);
+            }
+        }
+    }
+
+    /**
+     * The activity execution named by the payload, only when it belongs to
+     * the same run; another run's per-call options never apply.
+     */
+    private function activityExecution(WorkflowRun $run): ?ActivityExecution
+    {
+        $payload = is_array($this->payload) ? $this->payload : [];
+        $executionId = $payload['activity_execution_id'] ?? null;
+
+        if (! is_string($executionId) || $executionId === '') {
+            return null;
+        }
+
+        $execution = $this->newRelatedInstance(
+            ConfiguredV2Models::resolve('activity_execution_model', ActivityExecution::class)
+        )
+            ->newQuery()
+            ->whereKey($executionId)
+            ->where('workflow_run_id', $run->getKey())
+            ->first();
+
+        return $execution instanceof ActivityExecution ? $execution : null;
     }
 }

@@ -11,8 +11,8 @@ namespace Workflow\V2\Support;
  * the audit row so accepted *and* rejected calls share the same
  * audit shape. This object is intentionally narrow — only the fields
  * that survive into the durable audit row — so it can be reconstructed
- * cleanly from server-side `Principal`, from worker-supplied identity
- * headers, or from a synthetic "system" caller.
+ * cleanly from a server-authenticated `Principal` or an explicitly
+ * authorized embedded workload. Worker command fields are not identity.
  *
  * Privacy boundary: this DTO carries identity fields (subject, method,
  * roles, tenant, optional opaque claims). Payload material — request

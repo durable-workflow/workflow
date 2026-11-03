@@ -46,6 +46,30 @@ final class V2RepairPassCommandTest extends TestCase
         parent::tearDown();
     }
 
+    public function testDeferredWorkIsVisibleWithoutBecomingAFailure(): void
+    {
+        $report = TaskWatchdog::runPass();
+        $report['deferred_existing_tasks'] = [[
+            'candidate_id' => 'deferred-task',
+            'phase' => 'dispatch',
+            'reason' => 'sqlite_writer_busy',
+        ]];
+        $role = $this->createMock(MatchingRole::class);
+        $role->expects($this->exactly(2))
+            ->method('runPass')
+            ->willReturn($report);
+        $this->app->instance(MatchingRole::class, $role);
+
+        $this->artisan('workflow:v2:repair-pass', [
+            '--json' => true,
+        ])
+            ->expectsOutput(json_encode($report, JSON_UNESCAPED_SLASHES))
+            ->assertSuccessful();
+        $this->artisan('workflow:v2:repair-pass')
+            ->expectsOutputToContain('deferred-task')
+            ->assertSuccessful();
+    }
+
     public function testItIgnoresTheLoopThrottleByDefaultAndRepairsMissingSignalTasks(): void
     {
         Queue::fake();
@@ -78,6 +102,12 @@ final class V2RepairPassCommandTest extends TestCase
             'service_call_timeout_candidates' => 0,
             'service_call_timeouts_enforced' => 0,
             'service_call_timeout_failures' => [],
+            'service_call_dispatch_candidates' => 0,
+            'service_call_dispatches_enqueued' => 0,
+            'service_call_dispatch_failures' => [],
+            'service_call_linked_candidates' => 0,
+            'service_call_links_reconciled' => 0,
+            'service_call_linked_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -147,6 +177,12 @@ final class V2RepairPassCommandTest extends TestCase
             'service_call_timeout_candidates' => 0,
             'service_call_timeouts_enforced' => 0,
             'service_call_timeout_failures' => [],
+            'service_call_dispatch_candidates' => 0,
+            'service_call_dispatches_enqueued' => 0,
+            'service_call_dispatch_failures' => [],
+            'service_call_linked_candidates' => 0,
+            'service_call_links_reconciled' => 0,
+            'service_call_linked_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -348,6 +384,12 @@ final class V2RepairPassCommandTest extends TestCase
             'service_call_timeout_candidates' => 0,
             'service_call_timeouts_enforced' => 0,
             'service_call_timeout_failures' => [],
+            'service_call_dispatch_candidates' => 0,
+            'service_call_dispatches_enqueued' => 0,
+            'service_call_dispatch_failures' => [],
+            'service_call_linked_candidates' => 0,
+            'service_call_links_reconciled' => 0,
+            'service_call_linked_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -407,6 +449,12 @@ final class V2RepairPassCommandTest extends TestCase
             'service_call_timeout_candidates' => 0,
             'service_call_timeouts_enforced' => 0,
             'service_call_timeout_failures' => [],
+            'service_call_dispatch_candidates' => 0,
+            'service_call_dispatches_enqueued' => 0,
+            'service_call_dispatch_failures' => [],
+            'service_call_linked_candidates' => 0,
+            'service_call_links_reconciled' => 0,
+            'service_call_linked_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -483,6 +531,12 @@ final class V2RepairPassCommandTest extends TestCase
             'service_call_timeout_candidates' => 0,
             'service_call_timeouts_enforced' => 0,
             'service_call_timeout_failures' => [],
+            'service_call_dispatch_candidates' => 0,
+            'service_call_dispatches_enqueued' => 0,
+            'service_call_dispatch_failures' => [],
+            'service_call_linked_candidates' => 0,
+            'service_call_links_reconciled' => 0,
+            'service_call_linked_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -585,6 +639,12 @@ final class V2RepairPassCommandTest extends TestCase
             'service_call_timeout_candidates' => 0,
             'service_call_timeouts_enforced' => 0,
             'service_call_timeout_failures' => [],
+            'service_call_dispatch_candidates' => 0,
+            'service_call_dispatches_enqueued' => 0,
+            'service_call_dispatch_failures' => [],
+            'service_call_linked_candidates' => 0,
+            'service_call_links_reconciled' => 0,
+            'service_call_linked_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -662,6 +722,12 @@ final class V2RepairPassCommandTest extends TestCase
             'service_call_timeout_candidates' => 0,
             'service_call_timeouts_enforced' => 0,
             'service_call_timeout_failures' => [],
+            'service_call_dispatch_candidates' => 0,
+            'service_call_dispatches_enqueued' => 0,
+            'service_call_dispatch_failures' => [],
+            'service_call_linked_candidates' => 0,
+            'service_call_links_reconciled' => 0,
+            'service_call_linked_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -772,6 +838,12 @@ final class V2RepairPassCommandTest extends TestCase
             'service_call_timeout_candidates' => 0,
             'service_call_timeouts_enforced' => 0,
             'service_call_timeout_failures' => [],
+            'service_call_dispatch_candidates' => 0,
+            'service_call_dispatches_enqueued' => 0,
+            'service_call_dispatch_failures' => [],
+            'service_call_linked_candidates' => 0,
+            'service_call_links_reconciled' => 0,
+            'service_call_linked_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -835,6 +907,12 @@ final class V2RepairPassCommandTest extends TestCase
             'service_call_timeout_candidates' => 0,
             'service_call_timeouts_enforced' => 0,
             'service_call_timeout_failures' => [],
+            'service_call_dispatch_candidates' => 0,
+            'service_call_dispatches_enqueued' => 0,
+            'service_call_dispatch_failures' => [],
+            'service_call_linked_candidates' => 0,
+            'service_call_links_reconciled' => 0,
+            'service_call_linked_failures' => [],
         ];
 
         $secondIteration = [
@@ -862,6 +940,12 @@ final class V2RepairPassCommandTest extends TestCase
             'service_call_timeout_candidates' => 0,
             'service_call_timeouts_enforced' => 0,
             'service_call_timeout_failures' => [],
+            'service_call_dispatch_candidates' => 0,
+            'service_call_dispatches_enqueued' => 0,
+            'service_call_dispatch_failures' => [],
+            'service_call_linked_candidates' => 0,
+            'service_call_links_reconciled' => 0,
+            'service_call_linked_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [

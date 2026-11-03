@@ -17,6 +17,10 @@ use Workflow\V2\Models\WorkflowTimer;
 
 final class HistoryTimeline
 {
+    private const MAX_SUMMARY_BYTES = 65_535;
+
+    private const SUMMARY_TRUNCATION_MARKER = ' [truncated]';
+
     /**
      * @return list<array<string, mixed>>
      */
@@ -147,6 +151,9 @@ final class HistoryTimeline
             throw new \LogicException('Rejection timeline requires an ActivityOutcomeRejected event.');
         }
         $payload = is_array($event->payload) ? $event->payload : [];
+        $activityId = self::stringValue($payload['activity_execution_id'] ?? null);
+        $attemptId = self::stringValue($payload['activity_attempt_id'] ?? null);
+        $attemptNumber = self::intValue($payload['attempt_number'] ?? null);
 
         return [
             'id' => $event->id,
@@ -155,24 +162,24 @@ final class HistoryTimeline
             'kind' => 'activity',
             'entry_kind' => 'point',
             'source_kind' => 'activity_execution',
-            'source_id' => $payload['activity_execution_id'] ?? null,
-            'summary' => sprintf(
+            'source_id' => $activityId,
+            'summary' => self::boundedSummary(sprintf(
                 'Rejected %s outcome from activity attempt %s: %s.',
-                $payload['outcome'] ?? 'unknown',
-                $payload['attempt_number'] ?? 'unknown',
-                $payload['reason'] ?? 'unknown',
-            ),
+                self::stringValue($payload['outcome'] ?? null) ?? 'unknown',
+                $attemptNumber ?? 'unknown',
+                self::stringValue($payload['reason'] ?? null) ?? 'unknown',
+            ), ''),
             'recorded_at' => self::timestamp($event->recorded_at),
             'command_id' => null,
             'command_sequence' => null,
             'task_id' => $event->workflow_task_id,
-            'activity_execution_id' => $payload['activity_execution_id'] ?? null,
+            'activity_execution_id' => $activityId,
             'timer_id' => null,
             'failure_id' => null,
             'activity' => [
-                'id' => $payload['activity_execution_id'] ?? null,
-                'attempt_id' => $payload['activity_attempt_id'] ?? null,
-                'attempt_count' => $payload['attempt_number'] ?? null,
+                'id' => $activityId,
+                'attempt_id' => $attemptId,
+                'attempt_count' => $attemptNumber,
             ],
         ];
     }
@@ -429,6 +436,7 @@ final class HistoryTimeline
             HistoryEventType::ChildCancellationRequested,
             HistoryEventType::ChildCancellationResolved,
             HistoryEventType::ChildRunTerminated => 'child',
+            HistoryEventType::ServiceOperationScheduled,
             HistoryEventType::ServiceCallStarted,
             HistoryEventType::ServiceCallCompleted,
             HistoryEventType::ServiceCallFailed,
@@ -529,6 +537,10 @@ final class HistoryTimeline
                 : sprintf('Child workflow %s failed: %s.', $childLabel, $message),
             HistoryEventType::ChildRunCancelled => sprintf('Child workflow %s cancelled.', $childLabel),
             HistoryEventType::ChildRunTerminated => sprintf('Child workflow %s terminated.', $childLabel),
+            HistoryEventType::ServiceOperationScheduled => sprintf(
+                'Service operation %s scheduled.',
+                self::stringValue($payload['operation_name'] ?? null) ?? 'unknown',
+            ),
             HistoryEventType::ServiceCallStarted => sprintf(
                 'Service operation %s started.',
                 self::stringValue($payload['operation_name'] ?? null) ?? 'unknown',
@@ -759,9 +771,27 @@ final class HistoryTimeline
             ),
         };
 
-        return ($payload['local_recovery']['callback_stop_state'] ?? null) === 'unknown'
-            ? $summary . ' The previous attempt lost authority. Callback stop is unknown.'
-            : $summary;
+        $recoveryNotice = ($payload['local_recovery']['callback_stop_state'] ?? null) === 'unknown'
+            ? ' The previous attempt lost authority. Callback stop is unknown.'
+            : '';
+
+        return self::boundedSummary($summary, $recoveryNotice);
+    }
+
+    private static function boundedSummary(string $summary, string $recoveryNotice): string
+    {
+        if (strlen($summary) + strlen($recoveryNotice) <= self::MAX_SUMMARY_BYTES) {
+            return $summary . $recoveryNotice;
+        }
+
+        // MySQL TEXT counts bytes. Bound only this derived display value,
+        // preserving full failure evidence and the callback-authority notice.
+        $prefixBytes = self::MAX_SUMMARY_BYTES
+            - strlen(self::SUMMARY_TRUNCATION_MARKER)
+            - strlen($recoveryNotice);
+
+        return mb_strcut($summary, 0, $prefixBytes, 'UTF-8')
+            . self::SUMMARY_TRUNCATION_MARKER . $recoveryNotice;
     }
 
     /**
@@ -1257,6 +1287,7 @@ final class HistoryTimeline
             HistoryEventType::ChildRunFailed,
             HistoryEventType::ChildRunCancelled,
             HistoryEventType::ChildRunTerminated => 'child_workflow_run',
+            HistoryEventType::ServiceOperationScheduled,
             HistoryEventType::ServiceCallStarted,
             HistoryEventType::ServiceCallCompleted,
             HistoryEventType::ServiceCallFailed,

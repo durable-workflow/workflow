@@ -11,7 +11,7 @@ use Workflow\WorkflowOptions;
 
 final class RoutingOptionsContractTest extends TestCase
 {
-    public function testWorkflowOptionsWireShapeIsLimitedToConnectionAndQueue(): void
+    public function testWorkflowOptionsSeparatesRoutingFromTheLegacyOverlapDelay(): void
     {
         $properties = array_map(
             static fn (ReflectionProperty $property): string => $property->getName(),
@@ -20,11 +20,12 @@ final class RoutingOptionsContractTest extends TestCase
 
         sort($properties);
 
-        $this->assertSame(['connection', 'queue'], $properties);
+        $this->assertSame(['connection', 'overlapReleaseAfter', 'queue'], $properties);
         $this->assertSame(
             [
                 'connection' => 'redis',
                 'queue' => 'billing',
+                'overlapReleaseAfter' => 0,
             ],
             get_object_vars(new WorkflowOptions(connection: 'redis', queue: 'billing')),
         );

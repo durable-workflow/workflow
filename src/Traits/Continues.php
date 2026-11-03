@@ -67,7 +67,7 @@ trait Continues
             if (! collect($arguments)->contains(static fn ($argument): bool => $argument instanceof WorkflowOptions)) {
                 $options = $context->storedWorkflow->workflowOptions();
 
-                if ($options->connection !== null || $options->queue !== null) {
+                if ($options->connection !== null || $options->queue !== null || $options->overlapReleaseAfter !== 0) {
                     $arguments[] = $options;
                 }
             }

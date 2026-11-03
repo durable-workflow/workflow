@@ -65,6 +65,8 @@
           "content_patterns": [
             "Replay",
             "replay",
+            "WorkflowFiberRunner::",
+            "WorkflowStepHistory::",
             "History::append",
             "WorkflowHistoryEvent::(?!class\\b)",
             "historyEvents\\(",

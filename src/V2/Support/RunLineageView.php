@@ -19,51 +19,16 @@ final class RunLineageView
      */
     public static function parentsForRun(WorkflowRun $run): array
     {
-        $run->loadMissing(['historyEvents', 'parentLinks.parentRun.summary', 'instance.runs.summary']);
+        $run->loadMissing(['historyEvents', 'parentLinks', 'instance.runs.summary']);
 
         $entries = [];
         $seen = [];
 
-        $continuedFromRunId = ChildRunHistory::continuedFromRunId($run);
-
-        if ($continuedFromRunId !== null) {
-            $entries[] = self::entry(
-                id: self::stringValue(self::workflowStartedEvent($run)?->payload['workflow_link_id'] ?? null)
-                    ?? sprintf('continue_as_new:%s', $continuedFromRunId),
-                linkType: 'continue_as_new',
-                sequence: self::intValue(self::workflowStartedEvent($run)?->payload['sequence'] ?? null),
-                isPrimaryParent: true,
-                relatedRun: self::resolveRun($run, $continuedFromRunId),
-                instanceId: $run->workflow_instance_id,
-                runId: $continuedFromRunId,
-                createdAt: self::workflowStartedEvent($run)?->recorded_at
-                    ?? self::workflowStartedEvent($run)?->created_at,
-                historyAuthority: ChildRunHistory::HISTORY_AUTHORITY_TYPED,
-            );
-
-            $seen[self::key('continue_as_new', $continuedFromRunId)] = true;
-        }
-
-        $parentReference = ChildRunHistory::parentReferenceForRun($run);
-
-        if ($parentReference !== null) {
-            $entries[] = self::entry(
-                id: $parentReference['child_call_id']
-                    ?? sprintf('child_workflow:%s:%s', $parentReference['parent_workflow_run_id'], $run->id),
-                linkType: 'child_workflow',
-                sequence: $parentReference['parent_sequence'],
-                isPrimaryParent: true,
-                relatedRun: self::resolveRun($run, $parentReference['parent_workflow_run_id']),
-                instanceId: $parentReference['parent_workflow_instance_id'],
-                runId: $parentReference['parent_workflow_run_id'],
-                relationPrefix: 'parent',
-                childCallId: $parentReference['child_call_id'],
-                createdAt: self::workflowStartedEvent($run)?->recorded_at
-                    ?? self::workflowStartedEvent($run)?->created_at,
-                historyAuthority: ChildRunHistory::HISTORY_AUTHORITY_TYPED,
-            );
-
-            $seen[self::key('child_workflow', $parentReference['parent_workflow_run_id'])] = true;
+        foreach ([self::continuedParentEntry($run), self::childParentEntry($run)] as $entry) {
+            if ($entry !== null) {
+                $entries[] = $entry;
+                $seen[self::key((string) $entry['link_type'], (string) $entry['workflow_run_id'])] = true;
+            }
         }
 
         foreach ($run->parentLinks as $link) {
@@ -76,6 +41,12 @@ final class RunLineageView
             if (isset($seen[$key])) {
                 continue;
             }
+            $related = self::resolveRun($run, $link->parent_workflow_run_id);
+            if (($related === null && ImportedLineageReferences::imported($run))
+                || ($related !== null && $related->workflow_instance_id !== $link->parent_workflow_instance_id)
+                || $link->child_workflow_instance_id !== $run->workflow_instance_id) {
+                continue;
+            }
 
             $entries[] = self::entry(
                 id: $link->link_type === 'child_workflow'
@@ -84,7 +55,7 @@ final class RunLineageView
                 linkType: $link->link_type,
                 sequence: $link->sequence,
                 isPrimaryParent: $link->is_primary_parent,
-                relatedRun: $link->parentRun,
+                relatedRun: $related,
                 instanceId: $link->parent_workflow_instance_id,
                 runId: $link->parent_workflow_run_id,
                 relationPrefix: 'parent',
@@ -107,12 +78,7 @@ final class RunLineageView
      */
     public static function continuedWorkflowsForRun(WorkflowRun $run): array
     {
-        $run->loadMissing([
-            'historyEvents',
-            'childLinks.childRun.summary',
-            'childLinks.childRun.instance.currentRun.summary',
-            'instance.runs.summary',
-        ]);
+        $run->loadMissing(['historyEvents', 'childLinks', 'instance.runs.summary']);
 
         $entries = [];
         $seen = [];
@@ -123,15 +89,16 @@ final class RunLineageView
 
         if ($continuedEvent instanceof WorkflowHistoryEvent) {
             $continuedRunId = self::stringValue($continuedEvent->payload['continued_to_run_id'] ?? null);
+            $continuedRun = $continuedRunId === null ? null : self::resolveRun($run, $continuedRunId);
 
-            if ($continuedRunId !== null) {
+            if ($continuedRunId !== null && (! ImportedLineageReferences::imported($run) || $continuedRun !== null)) {
                 $entries[] = self::entry(
                     id: self::stringValue($continuedEvent->payload['workflow_link_id'] ?? null)
                         ?? sprintf('continue_as_new:%s', $continuedRunId),
                     linkType: 'continue_as_new',
                     sequence: self::intValue($continuedEvent->payload['sequence'] ?? null),
                     isPrimaryParent: true,
-                    relatedRun: self::resolveRun($run, $continuedRunId),
+                    relatedRun: $continuedRun,
                     instanceId: $run->workflow_instance_id,
                     runId: $continuedRunId,
                     relationPrefix: 'child',
@@ -150,6 +117,9 @@ final class RunLineageView
 
         foreach (self::childSequences($run) as $sequence) {
             $childRun = ChildRunHistory::childRunForSequence($run, $sequence);
+            if ($childRun === null && ImportedLineageReferences::imported($run)) {
+                continue;
+            }
             $link = ChildRunHistory::latestLinkForSequence($run, $sequence);
             $startedEvent = ChildRunHistory::startedEventForSequence($run, $sequence);
             $scheduledEvent = ChildRunHistory::scheduledEventForSequence($run, $sequence);
@@ -217,6 +187,12 @@ final class RunLineageView
             if (! $link instanceof WorkflowLink) {
                 continue;
             }
+            $related = self::resolveRun($run, $link->child_workflow_run_id);
+            if (($related === null && ImportedLineageReferences::imported($run))
+                || ($related !== null && $related->workflow_instance_id !== $link->child_workflow_instance_id)
+                || $link->parent_workflow_instance_id !== $run->workflow_instance_id) {
+                continue;
+            }
 
             $childCallId = $link->link_type === 'child_workflow' && $link->sequence !== null
                 ? ChildRunHistory::childCallIdForSequence($run, (int) $link->sequence)
@@ -244,7 +220,7 @@ final class RunLineageView
                 linkType: $link->link_type,
                 sequence: $link->sequence,
                 isPrimaryParent: $link->is_primary_parent,
-                relatedRun: $link->childRun,
+                relatedRun: $related,
                 instanceId: $link->child_workflow_instance_id,
                 runId: $link->child_workflow_run_id,
                 relationPrefix: 'child',
@@ -272,6 +248,65 @@ final class RunLineageView
         });
 
         return array_values($entries);
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private static function continuedParentEntry(WorkflowRun $run): ?array
+    {
+        $continuedFromRunId = ChildRunHistory::continuedFromRunId($run);
+
+        $continuedFrom = $continuedFromRunId === null ? null : self::resolveRun($run, $continuedFromRunId);
+        if ($continuedFromRunId !== null && (! ImportedLineageReferences::imported($run) || $continuedFrom !== null)) {
+            return self::entry(
+                id: self::stringValue(self::workflowStartedEvent($run)?->payload['workflow_link_id'] ?? null)
+                    ?? sprintf('continue_as_new:%s', $continuedFromRunId),
+                linkType: 'continue_as_new',
+                sequence: self::intValue(self::workflowStartedEvent($run)?->payload['sequence'] ?? null),
+                isPrimaryParent: true,
+                relatedRun: $continuedFrom,
+                instanceId: $run->workflow_instance_id,
+                runId: $continuedFromRunId,
+                createdAt: self::workflowStartedEvent($run)?->recorded_at
+                    ?? self::workflowStartedEvent($run)?->created_at,
+                historyAuthority: ChildRunHistory::HISTORY_AUTHORITY_TYPED,
+            );
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private static function childParentEntry(WorkflowRun $run): ?array
+    {
+        $parentReference = ChildRunHistory::parentReferenceForRun($run);
+        $parentRun = $parentReference === null ? null : self::resolveRun(
+            $run,
+            $parentReference['parent_workflow_run_id']
+        );
+
+        if ($parentReference !== null && (! ImportedLineageReferences::imported($run) || $parentRun !== null)) {
+            return self::entry(
+                id: $parentReference['child_call_id']
+                    ?? sprintf('child_workflow:%s:%s', $parentReference['parent_workflow_run_id'], $run->id),
+                linkType: 'child_workflow',
+                sequence: $parentReference['parent_sequence'],
+                isPrimaryParent: true,
+                relatedRun: $parentRun,
+                instanceId: $parentReference['parent_workflow_instance_id'],
+                runId: $parentReference['parent_workflow_run_id'],
+                relationPrefix: 'parent',
+                childCallId: $parentReference['child_call_id'],
+                createdAt: self::workflowStartedEvent($run)?->recorded_at
+                    ?? self::workflowStartedEvent($run)?->created_at,
+                historyAuthority: ChildRunHistory::HISTORY_AUTHORITY_TYPED,
+            );
+        }
+
+        return null;
     }
 
     private static function workflowStartedEvent(WorkflowRun $run): ?WorkflowHistoryEvent
@@ -325,18 +360,16 @@ final class RunLineageView
 
         $sameInstanceRun = $selectedRun->instance?->runs?->firstWhere('id', $runId);
 
-        if ($sameInstanceRun instanceof WorkflowRun) {
+        if ($sameInstanceRun instanceof WorkflowRun && ImportedLineageReferences::allows(
+            $selectedRun,
+            $sameInstanceRun
+        )) {
             $sameInstanceRun->loadMissing('summary');
 
             return $sameInstanceRun;
         }
 
-        /** @var WorkflowRun|null $run */
-        $run = ConfiguredV2Models::query('run_model', \Workflow\V2\Models\WorkflowRun::class)
-            ->with('summary')
-            ->find($runId);
-
-        return $run;
+        return ImportedLineageReferences::resolve($selectedRun, $runId, ['summary']);
     }
 
     /**

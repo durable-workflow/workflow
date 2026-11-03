@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -133,6 +134,52 @@ final class EmbeddedActivityLeaseMaintenanceTest extends TestCase
         self::assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $stub->runId())
             ->where('event_type', HistoryEventType::ActivityCompleted)->count());
         self::assertSame(0, DB::table('failed_jobs')->count());
+    }
+
+    public function testApplicationHeartbeatRetriesAConcurrentMetadataWriteWithoutRepeatingTheActivity(): void
+    {
+        if (DB::connection()->getDriverName() !== 'sqlite') {
+            self::markTestSkipped('This control forces a SQLite WAL snapshot upgrade conflict.');
+        }
+        [$stub, $task, $execution] = $this->pendingActivity('embedded-progress-snapshot-conflict');
+        $execution->forceFill([
+            'retry_policy' => [
+                'maximum_attempts' => 1,
+                'heartbeat_timeout' => 2,
+            ],
+        ])->save();
+        $writer = new \PDO('sqlite:' . $this->path);
+        $writer->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+        $conflicts = 0;
+        LeaseBlockingActivity::$recordProgress = true;
+        LeaseBlockingActivity::$beforeWait = static function () use (&$writer, &$conflicts, $task): void {
+            DB::listen(static function (QueryExecuted $query) use (&$writer, &$conflicts, $task): void {
+                if ($conflicts !== 0 || $query->connection->transactionLevel() !== 1
+                    || ! str_starts_with($query->sql, 'select') || ! str_contains($query->sql, 'activity_executions')) {
+                    return;
+                }
+                $statement = $writer->prepare('UPDATE workflow_tasks SET updated_at = ? WHERE id = ?');
+                $statement->execute(['2000-01-01 00:00:00', $task->id]);
+                $conflicts++;
+            });
+        };
+
+        try {
+            $this->workOnce();
+            $this->workOnce();
+
+            self::assertSame(1, $conflicts);
+            self::assertSame(1, LeaseBlockingActivity::$invocations);
+            self::assertSame(TaskStatus::Completed, $task->fresh()->status);
+            self::assertSame('completed', $stub->refresh()->status());
+            $events = WorkflowHistoryEvent::query()->where('workflow_run_id', $stub->runId())->get();
+            self::assertSame(0, $events->where('event_type', HistoryEventType::ActivityFailed)->count());
+            self::assertSame(4, $events->where('event_type', HistoryEventType::ActivityHeartbeatRecorded)->count());
+            self::assertSame(1, $events->where('event_type', HistoryEventType::ActivityCompleted)->count());
+            self::assertSame(0, DB::table('failed_jobs')->count());
+        } finally {
+            $writer = null;
+        }
     }
 
     public function testAStoppedMetadataProcessCannotAuthorizeTheInlineResult(): void

@@ -13,11 +13,11 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\Jobs\SyncJob;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Workflow\Models\StoredWorkflow;
 use Workflow\States\WorkflowPendingStatus;
+use Workflow\Support\AfterCommit;
 use Workflow\Support\CacheThrottle;
 
 class Watchdog implements ShouldBeEncrypted, ShouldQueue
@@ -58,7 +58,12 @@ class Watchdog implements ShouldBeEncrypted, ShouldQueue
 
         $queue = self::normalizeQueue($queue);
 
-        DB::afterCommit(static function () use ($connection, $queue, $timeout): void {
+        $model = config('workflows.stored_workflow_model', StoredWorkflow::class);
+        AfterCommit::on($model::query()->getModel()->getConnection(), static function () use (
+            $connection,
+            $queue,
+            $timeout
+        ): void {
             $generation = self::newGeneration();
 
             if (! CacheThrottle::acquire(

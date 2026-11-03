@@ -16,6 +16,25 @@ use Workflow\V2\Support\WorkflowStepHistory;
 
 final class WorkflowStepHistoryTest extends TestCase
 {
+    public function testRejectedOutcomeDoesNotResolveAnActivityOrConsumeACommandPosition(): void
+    {
+        $run = $this->runWithHistoryEvents([
+            $this->historyEvent(HistoryEventType::ActivityScheduled, [
+                'sequence' => 1,
+            ]),
+            $this->historyEvent(HistoryEventType::from('ActivityOutcomeRejected'), [
+                'activity_execution_id' => 'activity-one',
+                'outcome' => 'completed',
+                'reason' => 'lease_expired',
+                'sequence' => 999,
+            ]),
+        ]);
+
+        $this->assertSame(2, WorkflowStepHistory::nextDurableCommandSequence($run));
+        WorkflowStepHistory::assertCompatible($run, 1, WorkflowStepHistory::ACTIVITY);
+        WorkflowStepHistory::assertCompatible($run, 2, WorkflowStepHistory::NO_TYPED_HISTORY);
+    }
+
     public function testScopeOpeningReservesItsOwnDurableCommandPosition(): void
     {
         $run = $this->runWithHistoryEvents([

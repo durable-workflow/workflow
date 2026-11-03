@@ -39,11 +39,7 @@ final class PhpClassScheduleStarter implements ScheduleWorkflowStarter
             : (string) now()
                 ->getTimestampMs();
 
-        $stub = WorkflowStub::make(
-            $workflowClass,
-            sprintf('schedule:%s:%s', $schedule->schedule_id, $suffix),
-            $schedule->namespace,
-        );
+        $stub = WorkflowStub::make($workflowClass, self::instanceId($schedule, $suffix), $schedule->namespace);
 
         $startOptions = new StartOptions(
             labels: is_array($schedule->visibility_labels) ? $schedule->visibility_labels : [],
@@ -67,5 +63,33 @@ final class PhpClassScheduleStarter implements ScheduleWorkflowStarter
         $result = $stub->start(...$arguments);
 
         return new ScheduleStartResult(instanceId: $result->instanceId(), runId: $result->runId());
+    }
+
+    /**
+     * Workflow instance IDs are global, but schedule IDs are unique only per
+     * namespace (#874). Every new scheduled start uses
+     *
+     *   schedule.ns:{namespace sha256, 32 hex}:{byte length}:{schedule_id}:{suffix}
+     *
+     * independent of the configured default namespace, so changing that
+     * default cannot make two namespaces share an ID. Instances started under
+     * the original `schedule:{schedule_id}:{suffix}` form stay readable; the
+     * `schedule.` prefix can never equal one of them. The length prefix makes
+     * the schedule ID boundary unambiguous. A schedule ID that would exceed
+     * the instance key bound or use characters outside the instance ID
+     * alphabet is replaced by `h:{sha256}`; `h` cannot be a length.
+     */
+    public static function instanceId(WorkflowSchedule $schedule, string $suffix): string
+    {
+        $namespace = is_string($schedule->namespace) ? $schedule->namespace : '';
+        $scheduleId = (string) $schedule->schedule_id;
+        $prefix = sprintf('schedule.ns:%s:', substr(hash('sha256', $namespace), 0, 32));
+        $instanceId = sprintf('%s%d:%s:%s', $prefix, strlen($scheduleId), $scheduleId, $suffix);
+
+        if (! WorkflowInstanceId::isValid($instanceId)) {
+            $instanceId = sprintf('%sh:%s:%s', $prefix, hash('sha256', $scheduleId), $suffix);
+        }
+
+        return $instanceId;
     }
 }

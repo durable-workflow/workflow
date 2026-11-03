@@ -63,6 +63,12 @@ final class StructuralLimits
 
     public const DEFAULT_HISTORY_TRANSACTION_SIZE = 5000;
 
+    public const DEFAULT_HISTORY_TRANSACTION_BYTES = 16777216; // 16 MiB
+
+    public const DEFAULT_HISTORY_TRANSACTION_ROWS = 20000;
+
+    public const DEFAULT_EXTERNAL_PAYLOAD_TRANSACTION_BYTES = 16777216; // 16 MiB
+
     public const DEFAULT_WARNING_THRESHOLD_PERCENT = 80;
 
     // ── Config readers ──────────────────────────────────────────────
@@ -115,6 +121,39 @@ final class StructuralLimits
     public static function historyTransactionSizeLimit(): int
     {
         return self::intConfig('history_transaction_size', self::DEFAULT_HISTORY_TRANSACTION_SIZE);
+    }
+
+    /**
+     * History bytes one workflow task completion may write, measured as
+     * {@see HistoryBudget} measures an event. 0 disables the check.
+     */
+    public static function historyTransactionBytesLimit(): int
+    {
+        return self::intConfig('history_transaction_bytes', self::DEFAULT_HISTORY_TRANSACTION_BYTES);
+    }
+
+    /**
+     * Metered rows one workflow task completion may write: each history event
+     * and the run position it advances, and each local activity execution,
+     * attempt and failure row. Other command writes are not counted yet. 0
+     * disables the check.
+     */
+    public static function historyTransactionRowsLimit(): int
+    {
+        return self::intConfig('history_transaction_rows', self::DEFAULT_HISTORY_TRANSACTION_ROWS);
+    }
+
+    /**
+     * Raw payload bytes one workflow task completion may externalize, each
+     * occurrence counted even when objects deduplicate. 0 disables the
+     * check; the per-payload size limit still applies.
+     */
+    public static function externalPayloadTransactionBytesLimit(): int
+    {
+        return self::intConfig(
+            'external_payload_transaction_bytes',
+            self::DEFAULT_EXTERNAL_PAYLOAD_TRANSACTION_BYTES,
+        );
     }
 
     public static function warningThresholdPercent(): int
@@ -493,6 +532,9 @@ final class StructuralLimits
             StructuralLimitKind::MemoSize => self::memoSizeLimit(),
             StructuralLimitKind::SearchAttributeSize => self::searchAttributeSizeLimit(),
             StructuralLimitKind::HistoryTransactionSize => self::historyTransactionSizeLimit(),
+            StructuralLimitKind::HistoryTransactionBytes => self::historyTransactionBytesLimit(),
+            StructuralLimitKind::HistoryTransactionRows => self::historyTransactionRowsLimit(),
+            StructuralLimitKind::ExternalPayloadTransactionBytes => self::externalPayloadTransactionBytesLimit(),
         };
     }
 
@@ -515,6 +557,9 @@ final class StructuralLimits
             'memo_size_bytes' => self::memoSizeLimit(),
             'search_attribute_size_bytes' => self::searchAttributeSizeLimit(),
             'history_transaction_size' => self::historyTransactionSizeLimit(),
+            'history_transaction_bytes' => self::historyTransactionBytesLimit(),
+            'history_transaction_rows' => self::historyTransactionRowsLimit(),
+            'external_payload_transaction_bytes' => self::externalPayloadTransactionBytesLimit(),
             'warning_threshold_percent' => self::warningThresholdPercent(),
         ];
     }

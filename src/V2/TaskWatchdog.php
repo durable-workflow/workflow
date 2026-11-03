@@ -6,7 +6,6 @@ namespace Workflow\V2;
 
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Throwable;
 use Workflow\Queue\DatabaseTaskDelivery;
@@ -16,16 +15,22 @@ use Workflow\V2\Contracts\WorkflowTaskRepairProjectionRole;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\SqliteWriteAdmissionUnavailableException;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowServiceCall;
+use Workflow\V2\Models\WorkflowServiceCallDispatch;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\LinkedServiceCallCloser;
 use Workflow\V2\Support\RequestedTaskScope;
 use Workflow\V2\Support\ServiceCallDeadline;
+use Workflow\V2\Support\ServiceCallScheduler;
+use Workflow\V2\Support\SqliteMaintenanceYield;
+use Workflow\V2\Support\SqliteTransaction;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
@@ -86,6 +91,12 @@ final class TaskWatchdog
      *     service_call_timeout_candidates: int,
      *     service_call_timeouts_enforced: int,
      *     service_call_timeout_failures: list<array{call_id: string, message: string}>
+     *     service_call_dispatch_candidates: int,
+     *     service_call_dispatches_enqueued: int,
+     *     service_call_dispatch_failures: list<array{call_id: string, message: string}>,
+     *     service_call_linked_candidates: int,
+     *     service_call_links_reconciled: int,
+     *     service_call_linked_failures: list<array{call_id: string, message: string}>
      * }
      */
     public static function runPass(
@@ -147,6 +158,14 @@ final class TaskWatchdog
                     'message' => $result['error'],
                 ];
             }
+            if (isset($result['deferred'])) {
+                $report['deferred_existing_tasks'][] = [
+                    'candidate_id' => $candidateId,
+                    'phase' => $result['deferred'],
+                    'reason' => 'sqlite_writer_busy',
+                ];
+            }
+            SqliteMaintenanceYield::pause((new WorkflowTask())->getConnection());
         }
 
         foreach ($missingRunIds as $runId) {
@@ -163,6 +182,7 @@ final class TaskWatchdog
                     'message' => $result['error'],
                 ];
             }
+            SqliteMaintenanceYield::pause((new WorkflowRun())->getConnection());
         }
 
         $deadlineExpiredRunIds = self::deadlineExpiredRunIds($runIds, $instanceId, $connection, $queue);
@@ -186,6 +206,7 @@ final class TaskWatchdog
                     'message' => $result['error'],
                 ];
             }
+            SqliteMaintenanceYield::pause((new WorkflowRun())->getConnection());
         }
 
         $serviceCallIds = ServiceCallDeadline::expiredCallIds(
@@ -212,7 +233,32 @@ final class TaskWatchdog
                     'message' => $failure->getMessage(),
                 ];
             }
+            SqliteMaintenanceYield::pause(
+                ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)->getModel()->getConnection()
+            );
         }
+
+        $serviceCallDispatch = ServiceCallScheduler::repairDue(
+            TaskRepairPolicy::scanLimit(),
+            $runIds,
+            $instanceId,
+            $connection,
+            $queue,
+        );
+        $report['service_call_dispatch_candidates'] = $serviceCallDispatch['candidates'];
+        $report['service_call_dispatches_enqueued'] = $serviceCallDispatch['enqueued'];
+        $report['service_call_dispatch_failures'] = $serviceCallDispatch['failures'];
+
+        $linkedCalls = LinkedServiceCallCloser::repairDue(
+            TaskRepairPolicy::scanLimit(),
+            $runIds,
+            $instanceId,
+            $connection,
+            $queue
+        );
+        $report['service_call_linked_candidates'] = $linkedCalls['candidates'];
+        $report['service_call_links_reconciled'] = $linkedCalls['reconciled'];
+        $report['service_call_linked_failures'] = $linkedCalls['failures'];
 
         $activityTimeoutIds = ActivityTimeoutEnforcer::expiredExecutionIds(
             TaskRepairPolicy::scanLimit(),
@@ -248,17 +294,19 @@ final class TaskWatchdog
                     'message' => $throwable->getMessage(),
                 ];
             }
+            SqliteMaintenanceYield::pause((new ActivityExecution())->getConnection());
         }
 
         return $report;
     }
 
     /**
-     * @return array{task: WorkflowTask|null, error: string|null}
+     * @return array{task: WorkflowTask|null, error: string|null, deferred?: string}
      */
     private static function recoverExistingTask(string $candidateId): array
     {
         $acquiringTask = false;
+        $pollDispatchHandled = false;
         try {
             $snapshot = WorkflowTask::query()->useWritePdo()->find($candidateId);
             if (! $snapshot instanceof WorkflowTask || DatabaseTaskDelivery::hasUnreservedDelivery($snapshot)) {
@@ -268,7 +316,16 @@ final class TaskWatchdog
                 ];
             }
             $runId = $snapshot->workflow_run_id;
-            $task = DB::transaction(static function () use ($candidateId, $runId, &$acquiringTask): ?WorkflowTask {
+            $storage = $snapshot->getConnection();
+            $atomicPollRepair = $storage->getDriverName() === 'sqlite'
+                && config('workflows.v2.task_dispatch_mode') === 'poll' && ! WorkflowStub::faked();
+            $repair = static function () use (
+                $candidateId,
+                $runId,
+                $atomicPollRepair,
+                &$acquiringTask,
+                &$pollDispatchHandled,
+            ): ?WorkflowTask {
                 // Repair and Server mutations acquire the run before its tasks.
                 // Recheck the association after waiting for that run lock.
                 /** @var WorkflowRun $run */
@@ -314,15 +371,32 @@ final class TaskWatchdog
                     );
                 }
 
-                return $task;
-            });
+                if ($task instanceof WorkflowTask && $atomicPollRepair) {
+                    TaskDispatcher::dispatchRepairedPollTask(
+                        $task,
+                        boundedWorkflowTaskProjection: $task->task_type === TaskType::Workflow,
+                    );
+                    $pollDispatchHandled = true;
+                }
 
-            if ($task instanceof WorkflowTask) {
+                return $task;
+            };
+            $task = $atomicPollRepair
+                ? SqliteTransaction::forTaskOnce($snapshot, $repair)
+                : ConfiguredV2Models::connection()->transaction($repair);
+
+            if ($task instanceof WorkflowTask && ! $pollDispatchHandled) {
                 TaskDispatcher::dispatch(
                     $task,
                     boundedWorkflowTaskProjection: $task->task_type === TaskType::Workflow,
                 );
             }
+        } catch (SqliteWriteAdmissionUnavailableException) {
+            return [
+                'task' => null,
+                'error' => null,
+                'deferred' => 'repair',
+            ];
         } catch (Throwable $throwable) {
             return self::failedExistingTask($candidateId, $throwable, $acquiringTask);
         }
@@ -363,7 +437,7 @@ final class TaskWatchdog
     private static function recoverMissingTask(string $runId): array
     {
         try {
-            $task = DB::transaction(static function () use ($runId): ?WorkflowTask {
+            $task = ConfiguredV2Models::connection()->transaction(static function () use ($runId): ?WorkflowTask {
                 /** @var WorkflowRun $run */
                 $run = WorkflowRun::query()
                     ->with(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
@@ -419,6 +493,7 @@ final class TaskWatchdog
      *     repaired_missing_tasks: int,
      *     dispatched_tasks: int,
      *     existing_task_failures: list<array{candidate_id: string, message: string}>,
+     *     deferred_existing_tasks?: list<array{candidate_id: string, phase: string, reason: string}>,
      *     missing_run_failures: list<array{run_id: string, message: string}>,
      *     deadline_expired_candidates: int,
      *     deadline_expired_tasks_created: int,
@@ -430,6 +505,12 @@ final class TaskWatchdog
      *     service_call_timeout_candidates: int,
      *     service_call_timeouts_enforced: int,
      *     service_call_timeout_failures: list<array{call_id: string, message: string}>
+     *     service_call_dispatch_candidates: int,
+     *     service_call_dispatches_enqueued: int,
+     *     service_call_dispatch_failures: list<array{call_id: string, message: string}>,
+     *     service_call_linked_candidates: int,
+     *     service_call_links_reconciled: int,
+     *     service_call_linked_failures: list<array{call_id: string, message: string}>
      * }
      */
     private static function emptyReport(
@@ -465,6 +546,12 @@ final class TaskWatchdog
             'service_call_timeout_candidates' => 0,
             'service_call_timeouts_enforced' => 0,
             'service_call_timeout_failures' => [],
+            'service_call_dispatch_candidates' => 0,
+            'service_call_dispatches_enqueued' => 0,
+            'service_call_dispatch_failures' => [],
+            'service_call_linked_candidates' => 0,
+            'service_call_links_reconciled' => 0,
+            'service_call_linked_failures' => [],
         ];
     }
 
@@ -531,6 +618,8 @@ final class TaskWatchdog
                 new WorkflowRun(),
                 new WorkflowRunSummary(),
                 new ActivityExecution(),
+                new WorkflowServiceCall(),
+                new WorkflowServiceCallDispatch(),
             ] as $model) {
                 // The models honour workflows.storage.connection; ask that connection,
                 // not the application default, whether their tables exist.
@@ -554,7 +643,7 @@ final class TaskWatchdog
         $acquiringTask = false;
 
         try {
-            $task = DB::transaction(static function () use (
+            $task = ConfiguredV2Models::connection()->transaction(static function () use (
                 $runId,
                 &$cancellationEnforced,
                 &$acquiringTask,

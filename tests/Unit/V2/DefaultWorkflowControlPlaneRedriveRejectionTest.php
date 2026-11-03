@@ -60,25 +60,36 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
         string $reason,
         int $status
     ): void {
-        $startOptions = match ($case) {
-            'memo rows' => [
+        $source = $this->failedSource(match ($case) {
+            'memo upserted by workflow code' => [
                 'memo' => [
                     'order' => [0, false, ''],
                 ],
             ],
-            'search attribute rows' => [
+            'search attribute upserted by workflow code' => [
                 'search_attributes' => [
                     'attempt' => 0,
                 ],
             ],
             default => [],
-        };
-        $source = $this->failedSource($startOptions);
+        });
         $instanceId = $source->workflow_instance_id;
         $runId = $source->id;
         $options = $this->redriveOptions();
 
         switch ($case) {
+            case 'memo upserted by workflow code':
+                $source->memos()
+                    ->update([
+                        'upserted_at_sequence' => 2,
+                    ]);
+                break;
+            case 'search attribute upserted by workflow code':
+                $source->searchAttributes()
+                    ->update([
+                        'upserted_at_sequence' => 2,
+                    ]);
+                break;
             case 'long ASCII request':
                 $options['request_id'] = str_repeat('r', 192);
                 break;
@@ -126,20 +137,11 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
                     'is_primary_parent' => true,
                 ]);
                 break;
-            case 'recorded memo':
-            case 'recorded search attributes':
             case 'recorded parent':
                 $event = $this->event($source, HistoryEventType::WorkflowStarted);
-                $field = match ($case) {
-                    'recorded memo' => 'memo',
-                    'recorded search attributes' => 'search_attributes',
-                    default => 'parent_workflow_run_id',
-                };
                 $event->forceFill([
                     'payload' => array_merge($event->payload, [
-                        $field => $field === 'parent_workflow_run_id' ? 'parent-run' : [
-                            'order' => '42',
-                        ],
+                        'parent_workflow_run_id' => 'parent-run',
                     ]),
                 ])->save();
                 break;
@@ -171,20 +173,64 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
             yield $case => [$case, 'run_not_found', 404];
         }
         yield 'historical run' => ['historical run', 'source_run_not_current', 409];
-        foreach (['memo rows', 'search attribute rows'] as $case) {
+        foreach (['memo upserted by workflow code', 'search attribute upserted by workflow code'] as $case) {
             yield $case => [$case, 'unsupported_visibility_metadata', 409];
         }
         foreach (['stored arguments', 'child workflow link'] as $case) {
             yield $case => [$case, 'unsupported_source_link_or_payload', 409];
         }
-        foreach (['recorded memo', 'recorded search attributes', 'recorded parent'] as $case) {
-            yield $case => [$case, 'unsupported_source_metadata', 409];
-        }
+        yield 'recorded parent' => ['recorded parent', 'unsupported_source_metadata', 409];
         yield 'reused request on failed successor' => [
             'reused request on failed successor',
             'request_id_already_used',
             409,
         ];
+    }
+
+    public function testServiceRunMemoAndSearchAttributeRowsCarryToTheRedriveSuccessor(): void
+    {
+        $source = $this->failedSource([
+            'memo' => [
+                'order' => [0, false, ''],
+            ],
+            'search_attributes' => [
+                'attempt' => 0,
+            ],
+        ]);
+        $sourceMemos = $source->typedMemos();
+        $sourceAttributes = $source->typedSearchAttributes();
+        $this->assertNotSame([], $sourceMemos);
+        $this->assertNotSame([], $sourceAttributes);
+
+        $result = $this->controlPlane->redrive($source->workflow_instance_id, $source->id, $this->redriveOptions());
+
+        $this->assertTrue($result['accepted'], (string) $result['reason']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame($sourceMemos, $successor->typedMemos());
+        $this->assertSame($sourceAttributes, $successor->typedSearchAttributes());
+        $this->assertSame($sourceMemos, $source->fresh()->typedMemos());
+        $this->assertSame($sourceAttributes, $source->fresh()->typedSearchAttributes());
+    }
+
+    public function testDescribeReportsAServiceRunAsRedrivableWhenItsFingerprintIsRecorded(): void
+    {
+        $source = $this->failedSource();
+
+        $describe = $this->controlPlane->describe($source->workflow_instance_id, [
+            'run_id' => $source->id,
+            'namespace' => 'tenant-redrive',
+        ]);
+
+        $this->assertTrue($describe['actions']['can_redrive'] ?? null);
+        $this->assertArrayHasKey('redrive_blocked_reason', $describe['actions']);
+        $this->assertNull($describe['actions']['redrive_blocked_reason']);
+
+        $wrongWorker = $this->redriveOptions();
+        $wrongWorker['external_workflow_definition_fingerprint'] = 'worker-definition-2';
+        $this->assertSame(
+            'workflow_definition_unavailable_or_changed',
+            $this->controlPlane->redrive($source->workflow_instance_id, $source->id, $wrongWorker)['reason'],
+        );
     }
 
     #[DataProvider('unsafeHistories')]
@@ -223,8 +269,34 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
                 $failure->delete();
                 break;
             case 'unsupported timer':
+            case 'timer in a cancellation scope':
                 $scheduled->forceFill([
                     'event_type' => HistoryEventType::TimerScheduled,
+                    'payload' => array_merge([
+                        'timer_id' => 'source-timer',
+                        'sequence' => 1,
+                        'delay_seconds' => 5,
+                    ], $case === 'unsupported timer' ? [
+                        'timer_kind' => 'condition_timeout',
+                    ] : [
+                        'cancellation_scope_id' => 'scope-1',
+                    ]),
+                ])->save();
+                break;
+            case 'unfired timer':
+                $scheduled->forceFill([
+                    'event_type' => HistoryEventType::TimerScheduled,
+                    'payload' => [
+                        'timer_id' => 'source-timer',
+                        'sequence' => 1,
+                        'delay_seconds' => 5,
+                    ],
+                ])->save();
+                $completion->delete();
+                break;
+            case 'cancelled timer':
+                $scheduled->forceFill([
+                    'event_type' => HistoryEventType::TimerCancelled,
                 ])->save();
                 break;
             case 'local execution mode':
@@ -292,6 +364,55 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
                     'payload' => $payload,
                 ])->save();
                 break;
+            case 'side effect sharing an activity step':
+            case 'duplicate side effect step':
+                $sideEffect = [
+                    'event_type' => HistoryEventType::SideEffectRecorded,
+                    'payload' => [
+                        'sequence' => 1,
+                        'result' => Serializer::serializeWithCodec('avro', 'token'),
+                    ],
+                ];
+                $scheduled->forceFill($sideEffect)
+                    ->save();
+                if ($case === 'duplicate side effect step') {
+                    $completion->forceFill($sideEffect)
+                        ->save();
+                }
+                break;
+            case 'side effect without sequence':
+            case 'stored side effect result':
+                $completion->forceFill([
+                    'event_type' => HistoryEventType::SideEffectRecorded,
+                    'payload' => $case === 'stored side effect result'
+                        ? [
+                            'sequence' => 1,
+                            'result' => $this->storedPayload(),
+                        ]
+                        : [
+                            'result' => Serializer::serializeWithCodec('avro', 'token'),
+                        ],
+                ])->save();
+                break;
+            case 'version marker at failed step':
+                foreach ($source->historyEvents()->where(
+                    'event_type',
+                    HistoryEventType::ActivityScheduled->value
+                )->get() as $event) {
+                    if (($event->payload['sequence'] ?? null) === 2) {
+                        $event->forceFill([
+                            'event_type' => HistoryEventType::VersionMarkerRecorded,
+                            'payload' => [
+                                'sequence' => 2,
+                                'change_id' => 'late-marker',
+                                'version' => 1,
+                                'min_supported' => -1,
+                                'max_supported' => 1,
+                            ],
+                        ])->save();
+                    }
+                }
+                break;
             case 'stored completed result':
             case 'null completed result':
                 $completion->forceFill([
@@ -308,6 +429,7 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
             'reason' => $reason,
             'resume_step_sequence' => null,
             'completed' => [],
+            'reused_steps' => [],
         ], $plan);
         $this->assertRefusedWithoutMutation(
             $source->workflow_instance_id,
@@ -328,7 +450,11 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
         yield 'start acceptance after workflow start' => ['start acceptance after workflow start', 'unexpected_start'];
         yield 'failure without start' => ['failure without start', 'missing_start'];
         yield 'missing terminal event' => ['missing terminal event', 'missing_terminal_history'];
-        yield 'unsupported timer' => ['unsupported timer', 'unsupported_history'];
+        foreach (['unsupported timer', 'timer in a cancellation scope'] as $case) {
+            yield $case => [$case, 'unsupported_timer'];
+        }
+        yield 'unfired timer' => ['unfired timer', 'incomplete_timer_step'];
+        yield 'cancelled timer' => ['cancelled timer', 'unsupported_history'];
         foreach (['local execution mode', 'local activity flag'] as $case) {
             yield $case => [$case, 'unsupported_local_activity'];
         }
@@ -344,6 +470,12 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
             yield $case => [$case, 'missing_activity_result'];
         }
         yield 'stored completed result' => ['stored completed result', 'external_activity_result_not_supported'];
+        foreach (['side effect sharing an activity step', 'duplicate side effect step'] as $case) {
+            yield $case => [$case, 'duplicate_step_sequence'];
+        }
+        yield 'side effect without sequence' => ['side effect without sequence', 'invalid_step_sequence'];
+        yield 'stored side effect result' => ['stored side effect result', 'external_side_effect_result_not_supported'];
+        yield 'version marker at failed step' => ['version marker at failed step', 'invalid_failed_step'];
     }
 
     public function testRecordedLocalClassStillRedrivesAfterItsAliasIsRemoved(): void

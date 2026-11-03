@@ -7,7 +7,6 @@ namespace Workflow\V2\Support;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Throwable;
@@ -340,12 +339,12 @@ final class WorkerCompatibilityFleet
                 })
                 ->all();
 
-            DB::transaction(static function () use ($workerId, $rows): void {
+            ConfiguredV2Models::connection()->transaction(static function () use ($workerId, $rows): void {
                 WorkerCompatibilityHeartbeat::query()
                     ->where('worker_id', $workerId)
                     ->delete();
 
-                if (DB::connection()->getDriverName() !== 'pgsql') {
+                if (ConfiguredV2Models::connection()->getDriverName() !== 'pgsql') {
                     WorkerCompatibilityHeartbeat::query()
                         ->insert(array_map(static fn (array $row): array => [
                             ...$row,

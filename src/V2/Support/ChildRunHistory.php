@@ -4,10 +4,10 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
-use Illuminate\Support\Facades\DB;
 use RuntimeException;
 use Throwable;
 use Workflow\Serializers\Serializer;
+use Workflow\Support\AfterCommit;
 use Workflow\V2\Enums\ChildCallStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\ParentClosePolicy;
@@ -313,14 +313,18 @@ final class ChildRunHistory
 
         $childRun = $childRunId === null
             ? $link?->childRun
-            : self::loadRun($childRunId);
+            : self::loadRun($childRunId, $run);
+
+        if ($childRun instanceof WorkflowRun && ! ImportedLineageReferences::allows($run, $childRun)) {
+            $childRun = null;
+        }
 
         if ($childRun instanceof WorkflowRun && ($startedEvent !== null || $resolutionEvent !== null)) {
             return $childRun;
         }
 
         if (! $childRun instanceof WorkflowRun && $childInstanceId !== null) {
-            $childRun = self::loadCurrentRunForInstance($childInstanceId);
+            $childRun = self::loadCurrentRunForInstance($childInstanceId, $run);
         }
 
         return self::followContinuedRun($childRun);
@@ -478,18 +482,9 @@ final class ChildRunHistory
     public static function childCallIdForRun(WorkflowRun $run): ?string
     {
         $startedEvent = self::workflowStartedEvent($run);
-        $payload = is_array($startedEvent?->payload) ? $startedEvent->payload : null;
-        $parentRunId = self::stringValue($payload['parent_workflow_run_id'] ?? null);
-        $parentSequence = self::intValue($payload['parent_sequence'] ?? null);
-        $parentRun = $parentRunId === null ? null : self::loadRun($parentRunId);
+        $payload = $startedEvent?->payload;
 
-        return self::childCallIdFromPayload($payload)
-            ?? self::legacyChildCallIdFromStartedWorkflowPayload($payload)
-            ?? (
-                $parentRun instanceof WorkflowRun && $parentSequence !== null
-                    ? self::childCallIdForSequence($parentRun, $parentSequence)
-                    : null
-            );
+        return self::childCallIdFromStartedPayload(is_array($payload) ? $payload : null, $run);
     }
 
     /**
@@ -503,7 +498,9 @@ final class ChildRunHistory
     public static function parentReferenceForRun(WorkflowRun $run): ?array
     {
         $startedEvent = self::workflowStartedEvent($run);
-        $parentRunId = self::stringValue($startedEvent?->payload['parent_workflow_run_id'] ?? null);
+        $payload = $startedEvent?->payload;
+        $payload = is_array($payload) ? $payload : null;
+        $parentRunId = self::stringValue($payload['parent_workflow_run_id'] ?? null);
 
         if ($parentRunId === null) {
             return null;
@@ -511,11 +508,11 @@ final class ChildRunHistory
 
         return [
             'parent_workflow_instance_id' => self::stringValue(
-                $startedEvent?->payload['parent_workflow_instance_id'] ?? null
+                $payload['parent_workflow_instance_id'] ?? null
             ) ?? $run->workflow_instance_id,
             'parent_workflow_run_id' => $parentRunId,
-            'parent_sequence' => self::intValue($startedEvent?->payload['parent_sequence'] ?? null),
-            'child_call_id' => self::childCallIdForRun($run),
+            'parent_sequence' => self::intValue($payload['parent_sequence'] ?? null),
+            'child_call_id' => self::childCallIdFromStartedPayload($payload, $run),
         ];
     }
 
@@ -581,7 +578,10 @@ final class ChildRunHistory
         WorkflowHistoryEvent $resolutionEvent,
         ?WorkflowRun $childRun = null,
     ): mixed {
-        $childRun ??= self::loadRun(self::stringValue($resolutionEvent->payload['child_workflow_run_id'] ?? null));
+        $relatedId = self::stringValue($resolutionEvent->payload['child_workflow_run_id'] ?? null);
+        if ($childRun === null && $relatedId !== null) {
+            $childRun = self::loadRun($relatedId, $resolutionEvent->run);
+        }
         ExecutionTracing::linkChildOutcome($resolutionEvent, $childRun);
         $payload = $resolutionEvent->payload['output'] ?? null;
 
@@ -702,8 +702,8 @@ final class ChildRunHistory
             }
         };
 
-        if (DB::transactionLevel() > 0) {
-            DB::afterCommit($callback);
+        if (ConfiguredV2Models::connection()->transactionLevel() > 0) {
+            AfterCommit::on(ConfiguredV2Models::connection(), $callback);
 
             return;
         }
@@ -742,8 +742,37 @@ final class ChildRunHistory
         return sprintf('Child workflow %s closed as %s.', $childIdentity, $statusLabel);
     }
 
+    /**
+     * @param array<string, mixed>|null $payload
+     */
+    private static function childCallIdFromStartedPayload(?array $payload, WorkflowRun $origin): ?string
+    {
+        $parentRunId = self::stringValue($payload['parent_workflow_run_id'] ?? null);
+        $parentSequence = self::intValue($payload['parent_sequence'] ?? null);
+        $parentRun = $parentRunId === null ? null : self::loadRun($parentRunId, $origin);
+
+        return self::childCallIdFromPayload($payload)
+            ?? self::legacyChildCallIdFromStartedWorkflowPayload($payload)
+            ?? (
+                $parentRun instanceof WorkflowRun && $parentSequence !== null
+                    ? self::childCallIdForSequence($parentRun, $parentSequence)
+                    : null
+            );
+    }
+
     private static function workflowStartedEvent(WorkflowRun $run): ?WorkflowHistoryEvent
     {
+        if (! $run->relationLoaded('historyEvents')
+            && $run->historyEvents()
+                ->getRelated()::class === WorkflowHistoryEvent::class) {
+            // Parent lookup needs the start event, not another hydrated copy of
+            // an entire completed history. Loaded/custom models keep their hooks.
+            /** @var WorkflowHistoryEvent|null $event */
+            $event = $run->historyEvents()
+                ->where('event_type', HistoryEventType::WorkflowStarted)->first();
+
+            return $event;
+        }
         $run->loadMissing('historyEvents');
 
         /** @var WorkflowHistoryEvent|null $event */
@@ -907,31 +936,33 @@ final class ChildRunHistory
         return $childCall;
     }
 
-    private static function loadRun(?string $runId): ?WorkflowRun
+    private static function loadRun(?string $runId, ?WorkflowRun $origin): ?WorkflowRun
     {
-        if ($runId === null) {
+        if ($runId === null || $origin === null) {
             return null;
         }
 
-        /** @var WorkflowRun|null $run */
-        $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
-            ->with(['summary', 'instance', 'failures', 'historyEvents'])
-            ->find($runId);
-
-        return $run;
+        return ImportedLineageReferences::resolve(
+            $origin,
+            $runId,
+            ['summary', 'instance', 'failures', 'historyEvents']
+        );
     }
 
-    private static function loadCurrentRunForInstance(string $instanceId): ?WorkflowRun
+    private static function loadCurrentRunForInstance(string $instanceId, WorkflowRun $origin): ?WorkflowRun
     {
         /** @var \Workflow\V2\Models\WorkflowInstance|null $instance */
         $instance = ConfiguredV2Models::query('instance_model', \Workflow\V2\Models\WorkflowInstance::class)
+            ->where('namespace', $origin->namespace)
             ->find($instanceId);
 
         if ($instance === null) {
             return null;
         }
 
-        return CurrentRunResolver::forInstance($instance, ['summary', 'failures', 'historyEvents']);
+        $run = CurrentRunResolver::forInstance($instance, ['summary', 'failures', 'historyEvents']);
+
+        return $run instanceof WorkflowRun && ImportedLineageReferences::allows($origin, $run) ? $run : null;
     }
 
     private static function followContinuedRun(?WorkflowRun $childRun): ?WorkflowRun
@@ -948,6 +979,10 @@ final class ChildRunHistory
             $currentRun = CurrentRunResolver::forRun($childRun, ['summary', 'failures', 'historyEvents']);
 
             if (! $currentRun instanceof WorkflowRun || $currentRun->id === $childRun->id || isset($visited[$childRun->id])) {
+                return $childRun;
+            }
+            if ($currentRun->namespace !== $childRun->namespace
+                || $currentRun->workflow_instance_id !== $childRun->workflow_instance_id) {
                 return $childRun;
             }
 

@@ -44,6 +44,7 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Enums\UpdateStatus;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
+use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Exceptions\WorkflowOutputCodecUnavailableException;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Models\ActivityAttempt;
@@ -5188,6 +5189,95 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         }
     }
 
+    /**
+     * External workers meet the embedded executor's pending-count limits
+     * (#933): a command past the limit refuses the whole completion, and
+     * nothing of it is written.
+     */
+    #[DataProvider('pendingCountCommands')]
+    public function testCompleteRefusesAPendingCountPastItsLimitWithoutWriting(string $limit, array $command): void
+    {
+        config([
+            "workflows.v2.structural_limits.{$limit}" => 1,
+        ]);
+        $run = $this->createWaitingRun();
+        $first = $this->createLeasedTask($run);
+        $this->assertTrue($this->bridge->complete($first->id, [$command])['completed']);
+
+        $task = $this->createLeasedTask($run->fresh());
+        $leasedTask = $task->fresh()
+            ->getRawOriginal();
+        $before = self::pendingCountDurableState($run);
+
+        try {
+            $this->bridge->complete($task->id, [$command]);
+            $this->fail("A second pending {$command['type']} passed a limit of one.");
+        } catch (StructuralLimitExceededException $exception) {
+            $this->assertSame($limit, $exception->limitKind->value);
+            $this->assertSame(1, $exception->currentValue);
+            $this->assertSame(1, $exception->configuredLimit);
+        }
+
+        $this->assertSame($before, self::pendingCountDurableState($run));
+        $this->assertSame($leasedTask, $task->fresh()->getRawOriginal());
+        $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+
+        // At a limit of two, the same command is admitted.
+        config([
+            "workflows.v2.structural_limits.{$limit}" => 2,
+        ]);
+        $this->assertTrue($this->bridge->complete($task->id, [$command])['completed']);
+    }
+
+    /**
+     * A limit refusal on the second command rolls back the first command too,
+     * including every child row created before its sibling reaches the guard.
+     */
+    #[DataProvider('pendingCountCommands')]
+    public function testCompleteRollsBackTheWholeBatchPastAPendingCountLimit(string $limit, array $command): void
+    {
+        config([
+            "workflows.v2.structural_limits.{$limit}" => 1,
+        ]);
+        $run = $this->createWaitingRun();
+        $task = $this->createLeasedTask($run);
+        $leasedTask = $task->fresh()
+            ->getRawOriginal();
+        $before = self::pendingCountDurableState($run);
+
+        try {
+            $this->bridge->complete($task->id, [$command, $command]);
+            $this->fail("Two pending {$command['type']} commands passed a limit of one.");
+        } catch (StructuralLimitExceededException $exception) {
+            $this->assertSame($limit, $exception->limitKind->value);
+            $this->assertSame(1, $exception->currentValue);
+            $this->assertSame(1, $exception->configuredLimit);
+        }
+
+        $this->assertSame($before, self::pendingCountDurableState($run));
+        $this->assertSame($leasedTask, $task->fresh()->getRawOriginal());
+        $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+    }
+
+    public static function pendingCountCommands(): iterable
+    {
+        yield 'activity' => [
+            'pending_activity_count', [
+                'type' => 'schedule_activity',
+                'activity_type' => 'bridge-activity',
+            ]];
+        yield 'timer' => [
+            'pending_timer_count', [
+                'type' => 'start_timer',
+                'delay_seconds' => 60,
+            ]];
+        yield 'child workflow' => [
+            'pending_child_count', [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'bridge-child',
+            ]];
+    }
+
     public function testCompleteRejectsNonLeasedTask(): void
     {
         $run = $this->createWaitingRun();
@@ -10267,6 +10357,112 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame(0, $parentReadyTasks);
     }
 
+    public function testChildRetryAndContinueAsNewRunsKeepThePredecessorScheduling(): void
+    {
+        $run = $this->createWaitingRun();
+
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $this->bridge->complete($task->id, [
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'test-greeting-workflow',
+                'arguments' => Serializer::serialize(['child-arg']),
+                'retry_policy' => [
+                    'max_attempts' => 2,
+                    'backoff_seconds' => [0],
+                ],
+            ],
+        ]);
+
+        /** @var WorkflowLink $initialLink */
+        $initialLink = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'child_workflow')
+            ->firstOrFail();
+
+        // The child run's own scheduling is the predecessor value to keep.
+        WorkflowRun::query()
+            ->whereKey($initialLink->child_workflow_run_id)
+            ->update([
+                'priority' => 2,
+                'fairness_key' => 'child',
+                'fairness_weight' => 4,
+            ]);
+
+        /** @var WorkflowTask $initialChildTask */
+        $initialChildTask = WorkflowTask::query()
+            ->where('workflow_run_id', $initialLink->child_workflow_run_id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->firstOrFail();
+
+        $this->bridge->claimStatus($initialChildTask->id, 'external-child-worker');
+        $this->bridge->complete($initialChildTask->id, [
+            [
+                'type' => 'fail_workflow',
+                'message' => 'retryable child failure',
+                'exception_class' => RuntimeException::class,
+            ],
+        ]);
+
+        /** @var WorkflowLink $retryLink */
+        $retryLink = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'child_workflow')
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->get()
+            ->last();
+
+        /** @var WorkflowRun $retryRun */
+        $retryRun = WorkflowRun::query()->findOrFail($retryLink->child_workflow_run_id);
+
+        /** @var WorkflowTask $retryTask */
+        $retryTask = WorkflowTask::query()
+            ->where('workflow_run_id', $retryRun->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->firstOrFail();
+
+        $this->assertSame(
+            [2, 'child', 4],
+            [$retryRun->priority, $retryRun->fairness_key, $retryRun->fairness_weight],
+        );
+        $this->assertSame(
+            [2, 'child', 4],
+            [$retryTask->priority, $retryTask->fairness_key, $retryTask->fairness_weight],
+        );
+
+        $this->bridge->claimStatus($retryTask->id, 'external-child-worker');
+        $this->bridge->complete($retryTask->id, [
+            [
+                'type' => 'continue_as_new',
+                'arguments' => Serializer::serialize(['continued-child-arg']),
+            ],
+        ]);
+
+        /** @var WorkflowRun $continuedRun */
+        $continuedRun = WorkflowRun::query()
+            ->where('workflow_instance_id', $retryRun->workflow_instance_id)
+            ->where('run_number', $retryRun->run_number + 1)
+            ->firstOrFail();
+
+        /** @var WorkflowTask $continuedTask */
+        $continuedTask = WorkflowTask::query()
+            ->where('workflow_run_id', $continuedRun->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->firstOrFail();
+
+        $this->assertSame(
+            [2, 'child', 4],
+            [$continuedRun->priority, $continuedRun->fairness_key, $continuedRun->fairness_weight],
+        );
+        $this->assertSame(
+            [2, 'child', 4],
+            [$continuedTask->priority, $continuedTask->fairness_key, $continuedTask->fairness_weight],
+        );
+    }
+
     public function testChildWorkflowCompletionCreatesParentResumeTaskWithChildContext(): void
     {
         $run = $this->createWaitingRun();
@@ -12344,6 +12540,25 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             [['projectRun', $run->id], ['projectRun', $link->child_workflow_run_id]],
             $customRole->calls,
         );
+    }
+
+    /**
+     * @return array<string, int>
+     */
+    private static function pendingCountDurableState(WorkflowRun $run): array
+    {
+        return [
+            'history' => WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count(),
+            'activity_executions' => ActivityExecution::query()->where('workflow_run_id', $run->id)->count(),
+            'activity_attempts' => ActivityAttempt::query()->count(),
+            'timers' => WorkflowTimer::query()->where('workflow_run_id', $run->id)->count(),
+            'child_calls' => WorkflowChildCall::query()->where('parent_workflow_run_id', $run->id)->count(),
+            'links' => WorkflowLink::query()->where('parent_workflow_run_id', $run->id)->count(),
+            'commands' => WorkflowCommand::query()->where('workflow_run_id', $run->id)->count(),
+            'instances' => WorkflowInstance::query()->count(),
+            'runs' => WorkflowRun::query()->count(),
+            'tasks' => WorkflowTask::query()->where('workflow_run_id', $run->id)->count(),
+        ];
     }
 
     /**

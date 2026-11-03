@@ -7,6 +7,7 @@ namespace Tests\Unit\V2;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Str;
 use PDOException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
@@ -15,6 +16,86 @@ use Workflow\V2\Support\IdempotentProjectionUpsert;
 
 final class IdempotentProjectionUpsertTest extends TestCase
 {
+    public static function creatingVetoModes(): iterable
+    {
+        yield 'always veto' => [false];
+        yield 'allow native retry' => [true];
+    }
+
+    #[DataProvider('creatingVetoModes')]
+    public function testObservedMissingCreateKeepsTheNativeVetoAndRetrySemantics(bool $allowRetry): void
+    {
+        $run = $this->seedRun();
+        $creating = 0;
+        WorkflowTimelineEntry::creating(static function () use (&$creating, $allowRetry): bool {
+            ++$creating;
+
+            return $allowRetry && $creating > 1;
+        });
+        try {
+            $expected = WorkflowTimelineEntry::query()->updateOrCreate(
+                [
+                    'id' => hash('sha256', $run->id . '|native-veto'),
+                ],
+                $this->timelineAttributes($run, 'native-veto', 'input value'),
+            );
+            $expectedCreating = $creating;
+            $creating = 0;
+            $id = hash('sha256', $run->id . '|observed-missing-veto');
+            $actual = IdempotentProjectionUpsert::upsert(
+                WorkflowTimelineEntry::class,
+                [
+                    'id' => $id,
+                ],
+                $this->timelineAttributes($run, 'observed-missing-veto', 'input value'),
+                knownMissing: true,
+            );
+        } finally {
+            WorkflowTimelineEntry::flushEventListeners();
+        }
+
+        $this->assertSame($expectedCreating, $creating);
+        $this->assertSame($expected->exists, $actual->exists);
+        $this->assertSame($expected->wasRecentlyCreated, $actual->wasRecentlyCreated);
+        $this->assertSame($expected->summary, $actual->summary);
+        $this->assertSame((int) $expected->exists, WorkflowTimelineEntry::query()->where('id', $id)->count());
+    }
+
+    public function testObservedMissingRowStillRecoversAConcurrentInsertInsideTheOuterTransaction(): void
+    {
+        $run = $this->seedRun();
+        $id = hash('sha256', $run->id . '|observed-missing-race');
+        IdempotentProjectionUpsert::upsert(
+            WorkflowTimelineEntry::class,
+            [
+                'id' => $id,
+            ],
+            $this->timelineAttributes($run, 'observed-missing-race', 'concurrent winner'),
+        );
+
+        $run->getConnection()
+            ->transaction(function () use ($run, $id): void {
+                $row = IdempotentProjectionUpsert::upsert(
+                    WorkflowTimelineEntry::class,
+                    [
+                        'id' => $id,
+                    ],
+                    $this->timelineAttributes($run, 'observed-missing-race', 'after recovery'),
+                    knownMissing: true,
+                );
+                $this->assertSame('after recovery', $row->summary);
+                $this->assertSame(1, WorkflowTimelineEntry::query()->where('id', $id)->count());
+                $this->assertTrue($row->forceFill([
+                    'summary' => 'outer transaction remains writable',
+                ])->save());
+            });
+
+        $this->assertSame(
+            'outer transaction remains writable',
+            WorkflowTimelineEntry::query()->findOrFail($id)->summary,
+        );
+    }
+
     public function testPrefetchedRowRetainsModelHooksWithoutAnotherSelect(): void
     {
         $run = $this->seedRun();

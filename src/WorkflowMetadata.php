@@ -18,7 +18,7 @@ final class WorkflowMetadata
     /**
      * @return array{
      *     arguments: array<int, mixed>,
-     *     options: array{connection: ?string, queue: ?string}
+     *     options: array{connection: ?string, queue: ?string, overlapReleaseAfter?: int}
      * }
      */
     public function toArray(): array
@@ -28,6 +28,9 @@ final class WorkflowMetadata
             'options' => [
                 'connection' => $this->options->connection,
                 'queue' => $this->options->queue,
+                ...($this->options->overlapReleaseAfter === 0 ? [] : [
+                    'overlapReleaseAfter' => $this->options->overlapReleaseAfter,
+                ]),
             ],
         ];
     }

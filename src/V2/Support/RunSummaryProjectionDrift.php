@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Query\JoinClause;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
@@ -97,9 +98,14 @@ final class RunSummaryProjectionDrift
             ->join($runTable, sprintf('%s.id', $runTable), '=', sprintf('%s.id', $summaryTable))
             ->leftJoin(
                 $instanceTable,
-                sprintf('%s.id', $instanceTable),
-                '=',
-                sprintf('%s.workflow_instance_id', $runTable),
+                static function (JoinClause $join) use ($instanceTable, $runTable): void {
+                    $join->on(sprintf('%s.id', $instanceTable), '=', sprintf('%s.workflow_instance_id', $runTable))
+                        ->whereRaw(NamespaceIdentity::columnsEqual(
+                            $join,
+                            sprintf('%s.namespace', $instanceTable),
+                            sprintf('%s.namespace', $runTable),
+                        ));
+                },
             );
 
         if ($runIds !== []) {

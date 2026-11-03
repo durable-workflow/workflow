@@ -70,6 +70,14 @@ final class ServiceOperationOptions
         if ($this->waitTimeoutSeconds !== null && $this->waitTimeoutSeconds < 0) {
             throw new InvalidArgumentException('Service operation wait timeout must be zero or greater.');
         }
+
+        if ($this->waitTimeoutSeconds !== null
+            && $this->waitTimeoutSeconds > UpdateWaitPolicy::MAX_COMPLETION_TIMEOUT_SECONDS) {
+            throw new InvalidArgumentException(sprintf(
+                'Service operation wait timeout must not exceed %d seconds.',
+                UpdateWaitPolicy::MAX_COMPLETION_TIMEOUT_SECONDS,
+            ));
+        }
     }
 
     public static function asyncAccepted(?string $idempotencyKey = null): self

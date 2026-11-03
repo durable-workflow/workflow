@@ -1054,7 +1054,7 @@ final class WorkflowExecutor
             $this->syncWorkflowCursor($workflow, $sequence + 1);
             $current = $workflowExecution->send(
                 $this->sideEffectResult($sideEffectEvent, $run),
-                $sideEffectEvent->recorded_at,
+                RedriveReplayClock::recordedAt($sideEffectEvent),
                 advanceCancellationTime: false
             );
         } catch (Throwable $throwable) {
@@ -1118,7 +1118,7 @@ final class WorkflowExecutor
             $this->syncWorkflowCursor($workflow, $sequence + ($resolution->advancesSequence ? 1 : 0));
             $current = $workflowExecution->send(
                 $current->resolveValue($version),
-                $versionMarkerEvent?->recorded_at,
+                RedriveReplayClock::recordedAt($versionMarkerEvent),
                 advanceCancellationTime: false
             );
         } catch (Throwable $throwable) {
@@ -1287,7 +1287,7 @@ final class WorkflowExecutor
             $this->syncWorkflowCursor($workflow, $sequence + 1);
             $current = $workflowExecution->send(
                 true,
-                $timer instanceof WorkflowHistoryEvent ? $timer->recorded_at : $timer->fired_at,
+                $timer instanceof WorkflowHistoryEvent ? RedriveReplayClock::recordedAt($timer) : $timer->fired_at,
             );
         } catch (Throwable $throwable) {
             $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
@@ -1487,7 +1487,10 @@ final class WorkflowExecutor
                 $task,
                 $sequence,
                 'service_operation',
-                $serviceEvent?->event_type === HistoryEventType::ServiceCallStarted ? null : $serviceEvent,
+                in_array($serviceEvent?->event_type, [
+                    HistoryEventType::ServiceOperationScheduled,
+                    HistoryEventType::ServiceCallStarted,
+                ], true) ? null : $serviceEvent,
                 $workflowExecution
             );
             if ($cancellationDelivery === CancellationDeliveryState::Waiting) {
@@ -1505,10 +1508,10 @@ final class WorkflowExecutor
                 return null;
             }
         }
-        if ($serviceEvent->event_type === HistoryEventType::ServiceCallStarted && ! self::serviceOperationStartedEventIsVisible(
-            $serviceEvent,
-            $current
-        )) {
+        if (in_array($serviceEvent->event_type, [
+            HistoryEventType::ServiceOperationScheduled,
+            HistoryEventType::ServiceCallStarted,
+        ], true) && ! self::serviceOperationStartedEventIsVisible($serviceEvent, $current)) {
             $this->syncWorkflowCursor($workflow, $sequence + 1);
             return $this->waitForNextResumeSource($run, $task);
         }
@@ -3719,6 +3722,7 @@ final class WorkflowExecutor
             'arguments' => $storedContinueAsNewArguments,
             'connection' => $run->connection,
             'queue' => $run->queue,
+            ...TaskSchedulingFields::nonDefault(TaskSchedulingFields::forRun($run)),
             'started_at' => $now,
             'last_progress_at' => $now,
             'last_history_sequence' => 0,
@@ -3763,8 +3767,30 @@ final class WorkflowExecutor
             ->get();
 
         $parentRunsToProject = [];
+        $trustedParentReference = null;
 
         foreach ($parentChildLinks as $parentChildLink) {
+            /** @var WorkflowRun|null $parentRun */
+            $parentRun = is_string($parentChildLink->parent_workflow_run_id)
+                && $parentChildLink->parent_workflow_run_id !== ''
+                ? WorkflowRun::query()
+                    ->lockForUpdate()
+                    ->find($parentChildLink->parent_workflow_run_id)
+                : null;
+            $requiresImportedEdge = ImportedLineageReferences::imported($run)
+                || ($parentRun instanceof WorkflowRun && ImportedLineageReferences::imported($parentRun));
+            if ($requiresImportedEdge && (! $parentRun instanceof WorkflowRun
+                || ! is_int($parentChildLink->sequence)
+                || ! ImportedLineageReferences::allowsChild(
+                    $parentRun,
+                    $run,
+                    $parentChildLink->sequence,
+                    $childCallId,
+                    true,
+                ))) {
+                continue;
+            }
+
             $continuedChildLink = WorkflowLink::query()->create([
                 'link_type' => 'child_workflow',
                 'sequence' => $parentChildLink->sequence,
@@ -3777,20 +3803,18 @@ final class WorkflowExecutor
                 'parent_close_policy' => $parentChildLink->parent_close_policy,
             ]);
 
-            if (
-                ! is_string($parentChildLink->parent_workflow_run_id)
-                || $parentChildLink->parent_workflow_run_id === ''
-            ) {
-                continue;
+            if (ImportedLineageReferences::imported($run) && $parentRun instanceof WorkflowRun
+                && is_int($parentChildLink->sequence) && $trustedParentReference === null) {
+                $trustedParentReference = [
+                    'parent_workflow_instance_id' => $parentRun->workflow_instance_id,
+                    'parent_workflow_run_id' => $parentRun->id,
+                    'parent_sequence' => $parentChildLink->sequence,
+                ];
             }
-
-            /** @var WorkflowRun|null $parentRun */
-            $parentRun = WorkflowRun::query()
-                ->lockForUpdate()
-                ->find($parentChildLink->parent_workflow_run_id);
 
             if (
                 ! $parentRun instanceof WorkflowRun
+                || ! is_int($parentChildLink->sequence)
                 || in_array($parentRun->status, [
                     RunStatus::Completed,
                     RunStatus::Failed,
@@ -3840,7 +3864,9 @@ final class WorkflowExecutor
             ], $parallelMetadata), static fn ($value): bool => $value !== null));
         }
 
-        $parentReference = ChildRunHistory::parentReferenceForRun($run);
+        $parentReference = ImportedLineageReferences::imported($run)
+            ? $trustedParentReference
+            : ChildRunHistory::parentReferenceForRun($run);
 
         $continuedMemo = AvroValueJsonProjection::project($continuedRun->typedMemos());
         $continuedSearchAttributes = $continuedRun->typedSearchAttributes();
@@ -4063,6 +4089,7 @@ final class WorkflowExecutor
         $this->projectRun(
             $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
         );
+        LifecycleEventDispatcher::workflowCancelled($run, CooperativeCancellationDelivery::context($run)?->reason);
     }
 
     private function completeRun(WorkflowRun $run, WorkflowTask $task, mixed $result): void
@@ -4888,6 +4915,7 @@ final class WorkflowExecutor
             'run_deadline_at' => $runDeadlineAt,
             'connection' => $failedChildRun->connection,
             'queue' => $failedChildRun->queue,
+            ...TaskSchedulingFields::nonDefault(TaskSchedulingFields::forRun($failedChildRun)),
             'started_at' => $now,
             'last_progress_at' => $now,
             'last_history_sequence' => 0,
@@ -5003,7 +5031,7 @@ final class WorkflowExecutor
             ->lockForUpdate()
             ->get();
 
-        /** @var array<string, array{parent_workflow_run_id: string, parent_sequence: int|null}> $parentReferences */
+        /** @var array<string, array{parent_workflow_instance_id: string, parent_workflow_run_id: string, parent_sequence: int|null, child_call_id?: string|null}> $parentReferences */
         $parentReferences = [];
 
         foreach ($parentLinks as $parentLink) {
@@ -5014,13 +5042,14 @@ final class WorkflowExecutor
             $parentSequence = self::intValue($parentLink->sequence);
 
             $parentReferences[$parentLink->parent_workflow_run_id] = [
+                'parent_workflow_instance_id' => $parentLink->parent_workflow_instance_id,
                 'parent_workflow_run_id' => $parentLink->parent_workflow_run_id,
                 'parent_sequence' => $parentSequence
                     ?? ($parentReferences[$parentLink->parent_workflow_run_id]['parent_sequence'] ?? null),
             ];
         }
 
-        if ($parentReferences === []) {
+        if ($parentReferences === [] && ! ImportedLineageReferences::imported($childRun)) {
             $parentReference = ChildRunHistory::parentReferenceForRun($childRun);
 
             if ($parentReference !== null) {
@@ -5031,15 +5060,24 @@ final class WorkflowExecutor
         foreach ($parentReferences as $parentReference) {
             /** @var WorkflowRun|null $parentRun */
             $parentRun = WorkflowRun::query()
+                ->where('namespace', $childRun->namespace)
                 ->lockForUpdate()
                 ->find($parentReference['parent_workflow_run_id']);
 
-            if ($parentRun === null || in_array($parentRun->status, [
-                RunStatus::Completed,
-                RunStatus::Failed,
-                RunStatus::Cancelled,
-                RunStatus::Terminated,
-            ], true)) {
+            if ($parentRun === null || $parentRun->workflow_instance_id !== $parentReference['parent_workflow_instance_id']
+                || ! ImportedLineageReferences::allowsChild(
+                    $parentRun,
+                    $childRun,
+                    $parentReference['parent_sequence'],
+                    $parentReference['child_call_id'] ?? null,
+                    true
+                )
+                || in_array($parentRun->status, [
+                    RunStatus::Completed,
+                    RunStatus::Failed,
+                    RunStatus::Cancelled,
+                    RunStatus::Terminated,
+                ], true)) {
                 continue;
             }
 
@@ -5831,7 +5869,8 @@ final class WorkflowExecutor
                 /** @var WorkflowTask|null $activityTask */
                 $activityTask = $run->tasks->first(
                     static fn (WorkflowTask $candidate): bool => $candidate->task_type === TaskType::Activity
-                        && ($candidate->payload['activity_execution_id'] ?? null) === $execution->id,
+                        && ($candidate->payload['activity_execution_id'] ?? null) === $execution->id
+                        && in_array($candidate->status, [TaskStatus::Ready, TaskStatus::Leased], true),
                 );
                 ActivityCancellation::record(
                     $run,
@@ -5930,6 +5969,7 @@ final class WorkflowExecutor
             static fn (WorkflowHistoryEvent $event): bool => in_array(
                 $event->event_type,
                 [
+                    HistoryEventType::ServiceOperationScheduled,
                     HistoryEventType::ServiceCallStarted,
                     HistoryEventType::ServiceCallCompleted,
                     HistoryEventType::ServiceCallFailed,
@@ -5968,20 +6008,30 @@ final class WorkflowExecutor
                 : CodecRegistry::defaultCodec());
         $namespace = is_string($run->namespace) ? $run->namespace : null;
         $serializedRequest = Serializer::serializeWithCodec($payloadCodec, $call->requestPayload);
+        $options = $this->serviceOperationControlPlaneOptions(
+            $run,
+            $sequence,
+            $call,
+            $payloadCodec,
+            $serializedRequest
+        );
         $storedRequest = ExternalPayloads::externalizeForNamespace($serializedRequest, $payloadCodec, $namespace);
         $surface = $this->serviceControlPlane()
-            ->execute(
-                $call->endpointName,
-                $call->serviceName,
-                $call->operationName,
-                $this->serviceOperationControlPlaneOptions($run, $sequence, $call, $payloadCodec, $serializedRequest),
-            );
+            ->execute($call->endpointName, $call->serviceName, $call->operationName, $options);
         $eventType = self::serviceOperationEventTypeForSurface($surface);
 
         $event = WorkflowHistoryEvent::record(
             $run,
             $eventType,
-            $this->serviceOperationEventPayload($run, $sequence, $call, $surface, $storedRequest, $payloadCodec),
+            $this->serviceOperationEventPayload(
+                $run,
+                $sequence,
+                $call,
+                $surface,
+                $eventType,
+                $storedRequest,
+                $payloadCodec,
+            ),
             $task,
         );
         $run->historyEvents->push($event);
@@ -6000,6 +6050,9 @@ final class WorkflowExecutor
         string $serializedRequest,
     ): array {
         $options = $call->options?->toCommandOptions() ?? [];
+        if (! isset($options['service_call_id'])) {
+            $options['idempotency_key'] ??= $this->defaultServiceOperationIdempotencyKey($run, $sequence);
+        }
         $metadata = is_array($options['metadata'] ?? null) ? $options['metadata'] : [];
         $metadata = [
             'caller_sdk_language' => 'workflow-php',
@@ -6008,20 +6061,21 @@ final class WorkflowExecutor
             'workflow_sequence' => $sequence,
         ] + $metadata;
 
-        return array_filter([
-            'namespace' => self::nonEmptyString($options['namespace'] ?? null) ?? $run->namespace,
+        $options = WorkflowServiceOperationAuthority::options($run, $options + [
+            'endpoint_name' => $call->endpointName,
+            'service_name' => $call->serviceName,
+            'operation_name' => $call->operationName,
+        ]) + array_filter([
             'arguments' => $call->requestPayload,
             'payload_blob' => $serializedRequest,
             'payload_codec' => $payloadCodec,
             'service_call_id' => self::nonEmptyString($options['service_call_id'] ?? null),
-            'idempotency_key' => self::nonEmptyString($options['idempotency_key'] ?? null)
-                ?? $this->defaultServiceOperationIdempotencyKey($run, $sequence),
+            'idempotency_key' => self::nonEmptyString($options['idempotency_key'] ?? null),
             'mode_override' => self::nonEmptyString($options['mode_override'] ?? null),
             'wait_for' => self::nonEmptyString($options['wait_for'] ?? null),
             'wait_timeout_seconds' => is_int($options['wait_timeout_seconds'] ?? null)
                 ? $options['wait_timeout_seconds']
                 : null,
-            'caller_namespace' => self::nonEmptyString($options['caller_namespace'] ?? null) ?? $run->namespace,
             'caller_workflow_instance_id' => $run->workflow_instance_id,
             'caller_workflow_run_id' => $run->id,
             'target_workflow_instance_id' => self::nonEmptyString($options['target_workflow_instance_id'] ?? null),
@@ -6037,12 +6091,11 @@ final class WorkflowExecutor
             'duplicate_start_policy' => self::nonEmptyString($options['duplicate_start_policy'] ?? null),
             'metadata' => $metadata,
             'request_payload_reference' => self::nonEmptyString($options['request_payload_reference'] ?? null),
-            'principal_subject' => self::nonEmptyString($options['principal_subject'] ?? null),
-            'principal_method' => self::nonEmptyString($options['principal_method'] ?? null),
-            'principal_roles' => is_array($options['principal_roles'] ?? null) ? $options['principal_roles'] : null,
-            'principal_tenant' => self::nonEmptyString($options['principal_tenant'] ?? null),
-            'principal_claims' => is_array($options['principal_claims'] ?? null) ? $options['principal_claims'] : null,
         ], static fn (mixed $value): bool => $value !== null);
+
+        return WorkerProtocolVersion::supportsDurableServiceOperationScheduler(WorkerProtocolVersion::VERSION)
+            ? ServiceCallScheduler::withAfterCommitAuthority($options)
+            : $options;
     }
 
     private function defaultServiceOperationIdempotencyKey(WorkflowRun $run, int $sequence): string
@@ -6060,6 +6113,10 @@ final class WorkflowExecutor
      */
     private static function serviceOperationEventTypeForSurface(array $surface): HistoryEventType
     {
+        if (($surface['retry_scheduled'] ?? false) === true) {
+            return HistoryEventType::ServiceOperationScheduled;
+        }
+
         $status = self::nonEmptyString($surface['status'] ?? null);
 
         return match ($status) {
@@ -6076,13 +6133,23 @@ final class WorkflowExecutor
         WorkflowHistoryEvent $event,
         ServiceOperationCall $call,
     ): bool {
-        if ($event->event_type !== HistoryEventType::ServiceCallStarted) {
+        if (! in_array($event->event_type, [
+            HistoryEventType::ServiceOperationScheduled,
+            HistoryEventType::ServiceCallStarted,
+        ], true)) {
             return true;
         }
 
         $surface = is_array($event->payload['service_call'] ?? null)
             ? $event->payload['service_call']
             : [];
+
+        if ($event->event_type === HistoryEventType::ServiceOperationScheduled) {
+            return ($event->payload['workflow_resume_on_admission'] ?? null) === true
+                || self::serviceOperationResumesOnAdmission($call)
+                || self::nonEmptyString($event->payload['operation_mode'] ?? null) === 'async'
+                || self::nonEmptyString($surface['operation_mode'] ?? null) === 'async';
+        }
 
         return self::serviceOperationResumesOnAdmission($call)
             || self::nonEmptyString($event->payload['wait_for'] ?? null) === 'accepted'
@@ -6105,11 +6172,12 @@ final class WorkflowExecutor
         int $sequence,
         ServiceOperationCall $call,
         array $surface,
+        HistoryEventType $eventType,
         ?string $storedRequest,
         string $payloadCodec,
     ): array {
         $metadata = $call->options?->metadata ?? [];
-        $responsePayload = $surface['response_payload'] ?? $surface['result'] ?? null;
+        $responsePayload = $surface['response_payload'] ?? $surface['result_envelope'] ?? $surface['result'] ?? null;
         $payload = [
             'sequence' => $sequence,
             'service_call_id' => self::nonEmptyString($surface['service_call_id'] ?? null)
@@ -6135,6 +6203,10 @@ final class WorkflowExecutor
                 ?? $call->options?->modeOverride,
             'wait_for' => self::nonEmptyString($surface['wait_for'] ?? null)
                 ?? $call->options?->waitFor,
+            'workflow_resume_on_admission' => $eventType === HistoryEventType::ServiceOperationScheduled
+                ? (self::serviceOperationResumesOnAdmission($call)
+                    || self::nonEmptyString($surface['operation_mode'] ?? null) === 'async')
+                : null,
             'status' => self::nonEmptyString($surface['status'] ?? null),
             'outcome' => self::nonEmptyString($surface['outcome'] ?? null),
             'resolved_binding_kind' => self::nonEmptyString($surface['resolved_binding_kind'] ?? null),

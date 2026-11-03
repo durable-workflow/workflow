@@ -255,43 +255,65 @@ class WorkflowSchedule extends Model
      *
      * Uses dragonmantank/cron-expression when available, otherwise falls back
      * to a minute-resolution scanner for standard 5-field cron expressions.
+     *
+     * Daylight saving rules for a schedule timezone:
+     *   - A wall-clock time that happens twice when clocks go back fires once,
+     *     at its first (pre-transition) instant, when the hour field names
+     *     specific hours. An hour field that selects every hour (`*`, `0-23`,
+     *     a step of one) runs on elapsed time instead, so hourly and sub-hourly
+     *     schedules keep firing through both passes of the repeated hour.
+     *   - A wall-clock time skipped when clocks go forward fires once, moved
+     *     forward by the length of the gap (02:30 becomes 03:30 for a one-hour
+     *     gap).
      */
     public static function nextCronOccurrence(
         string $expression,
         DateTimeInterface $after,
         string $timezone = 'UTC'
     ): ?DateTimeInterface {
-        if (class_exists(\Cron\CronExpression::class)) {
-            $cron = new \Cron\CronExpression($expression);
+        $tz = new DateTimeZone($timezone);
+        $next = self::rawNextCronOccurrence($expression, $after, $tz);
 
-            return Carbon::instance($cron->getNextRunDate($after, 0, false, $timezone));
+        if ($next === null || self::cronHourFieldIsWildcard($expression)) {
+            return $next;
         }
 
-        $tz = new DateTimeZone($timezone);
-        $candidate = Carbon::instance($after)->setTimezone($tz)->addMinute()->startOfMinute();
-        $limit = (clone $candidate)->addHours(48);
+        $repeatedWindowEnd = self::repeatedWallClockWindowEnd($next->getTimestamp(), $tz);
 
-        $parts = preg_split('/\s+/', trim($expression));
-        if (count($parts) !== 5) {
+        if ($repeatedWindowEnd === null) {
+            return $next;
+        }
+
+        // This wall-clock time already fired before clocks went back. Every
+        // match after the repeated range is a first pass, so one retry is enough.
+        return self::rawNextCronOccurrence(
+            $expression,
+            Carbon::createFromTimestamp($repeatedWindowEnd - 1, 'UTC'),
+            $tz
+        );
+    }
+
+    /**
+     * When $timestamp falls in the second pass of a wall-clock range repeated
+     * because clocks went back, return the first instant after that range.
+     */
+    public static function repeatedWallClockWindowEnd(int $timestamp, DateTimeZone $timezone): ?int
+    {
+        // The end bound is exclusive; include a transition at $timestamp itself.
+        $transitions = $timezone->getTransitions($timestamp - 86400, $timestamp + 1);
+
+        if (! is_array($transitions) || count($transitions) < 2) {
             return null;
         }
 
-        [$minSpec, $hourSpec, $domSpec, $monSpec, $dowSpec] = $parts;
+        // Every listed transition is at or before $timestamp; the first entry
+        // only states the offset in effect at the start of the range.
+        $last = count($transitions) - 1;
 
-        while ($candidate <= $limit) {
-            if (
-                self::cronFieldMatches($minSpec, $candidate->minute, 0, 59)
-                && self::cronFieldMatches($hourSpec, $candidate->hour, 0, 23)
-                && self::cronFieldMatches($domSpec, $candidate->day, 1, 31)
-                && self::cronFieldMatches($monSpec, $candidate->month, 1, 12)
-                && self::cronFieldMatches($dowSpec, $candidate->dayOfWeekIso % 7, 0, 6)
-            ) {
-                return $candidate->setTimezone('UTC');
-            }
-            $candidate->addMinute();
-        }
+        $repeatedSeconds = $transitions[$last - 1]['offset'] - $transitions[$last]['offset'];
+        $windowEnd = $transitions[$last]['ts'] + $repeatedSeconds;
 
-        return null;
+        return $repeatedSeconds > 0 && $timestamp < $windowEnd ? $windowEnd : null;
     }
 
     /**
@@ -492,6 +514,108 @@ class WorkflowSchedule extends Model
         ];
     }
 
+    /**
+     * Whether the hour field selects every hour, however it is spelled:
+     * `*`, `0-23`, a step of one, or a full list.
+     */
+    private static function cronHourFieldIsWildcard(string $expression): bool
+    {
+        $expression = strtolower(trim($expression));
+
+        // Of the supported macros, only @hourly leaves the hour unrestricted.
+        if (str_starts_with($expression, '@')) {
+            return $expression === '@hourly';
+        }
+
+        $parts = preg_split('/\s+/', $expression) ?: [];
+        $hourField = $parts[1] ?? '';
+
+        for ($hour = 0; $hour <= 23; $hour++) {
+            if (! self::cronFieldMatches($hourField, $hour, 0, 23)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static function rawNextCronOccurrence(
+        string $expression,
+        DateTimeInterface $after,
+        DateTimeZone $tz
+    ): ?DateTimeInterface {
+        if (class_exists(\Cron\CronExpression::class)) {
+            $cron = new \Cron\CronExpression($expression);
+
+            return Carbon::instance($cron->getNextRunDate($after, 0, false, $tz->getName()));
+        }
+
+        return self::scanNextCronOccurrence($expression, $after, $tz);
+    }
+
+    /**
+     * Minute-resolution scanner for standard 5-field cron expressions, used
+     * when dragonmantank/cron-expression is not installed.
+     */
+    private static function scanNextCronOccurrence(
+        string $expression,
+        DateTimeInterface $after,
+        DateTimeZone $tz
+    ): ?DateTimeInterface {
+        $parts = preg_split('/\s+/', trim($expression));
+        if (! is_array($parts) || count($parts) !== 5) {
+            return null;
+        }
+
+        [$minSpec, $hourSpec, $domSpec, $monSpec, $dowSpec] = $parts;
+
+        // Scan absolute minutes so a repeated local hour is visited twice and
+        // a skipped local hour is not visited at all.
+        $candidate = (intdiv($after->getTimestamp(), 60) + 1) * 60;
+        $limit = $candidate + 48 * 3600;
+        $transitions = $tz->getTransitions($candidate - 86400, $limit);
+        $transitions = is_array($transitions) ? $transitions : [];
+        // Fixed-offset zones such as "+02:00" report no transitions.
+        $fixedOffset = $tz->getOffset(new \DateTimeImmutable('@' . $candidate));
+
+        for (; $candidate <= $limit; $candidate += 60) {
+            $offsets = [];
+            $previousOffset = null;
+
+            foreach ($transitions as $transition) {
+                if ($transition['ts'] > $candidate) {
+                    break;
+                }
+
+                $gap = $previousOffset === null ? 0 : $transition['offset'] - $previousOffset;
+                $offsets = [$transition['offset']];
+
+                // A skipped wall-clock time runs this far after the transition.
+                if ($gap > 0 && $candidate < $transition['ts'] + $gap) {
+                    $offsets[] = $previousOffset;
+                }
+
+                $previousOffset = $transition['offset'];
+            }
+
+            foreach ($offsets === [] ? [$fixedOffset] : $offsets as $offset) {
+                $wallClock = $candidate + $offset;
+
+                if (
+                    self::cronFieldMatches($minSpec, (int) gmdate('i', $wallClock), 0, 59)
+                    && self::cronFieldMatches($hourSpec, (int) gmdate('G', $wallClock), 0, 23)
+                    && self::cronFieldMatches($domSpec, (int) gmdate('j', $wallClock), 1, 31)
+                    && self::cronFieldMatches($monSpec, (int) gmdate('n', $wallClock), 1, 12)
+                    && self::cronFieldMatches($dowSpec, (int) gmdate('w', $wallClock), 0, 6)
+                ) {
+                    return Carbon::createFromTimestamp($candidate, 'UTC');
+                }
+            }
+        }
+
+        return null;
+    }
+
     private static function cronFieldMatches(string $field, int $value, int $min, int $max): bool
     {
         if ($field === '*') {
@@ -511,6 +635,9 @@ class WorkflowSchedule extends Model
                     $rangeEnd = $max;
                 } elseif (str_contains($range, '-')) {
                     [$rangeStart, $rangeEnd] = array_map('intval', explode('-', $range, 2));
+                } elseif (ctype_digit($range)) {
+                    $rangeStart = (int) $range;
+                    $rangeEnd = $max;
                 } else {
                     continue;
                 }

@@ -45,6 +45,8 @@ final class RunDetailView
 
         $run->loadMissing($relations);
 
+        RunInstanceMetadata::detachForeign($run);
+
         $summary = $run->summary;
         $selectedRun = SelectedRunSnapshot::forRun($run, $timelineLimit);
         $currentRunResolution = $selectedRun['current_run'];
@@ -66,6 +68,7 @@ final class RunDetailView
             self::hasReplayBlockedTask($tasks),
         );
         $archiveBlockedReason = self::archiveBlockedReason($run);
+        $redriveBlockedReason = FailedRunRedriveEligibility::blockedReason($run, $currentRun);
         $canCancel = $cancelBlockedReason === null;
         $canTerminate = $terminateBlockedReason === null;
         $canIssueTerminalCommands = $canCancel && $canTerminate;
@@ -263,10 +266,13 @@ final class RunDetailView
             'repair_blocked' => RepairBlockedReason::metadata($repairBlockedReason),
             'can_archive' => $canArchive,
             'archive_blocked_reason' => $archiveBlockedReason,
+            'can_redrive' => $redriveBlockedReason === null,
+            'redrive_blocked_reason' => $redriveBlockedReason,
             'read_only_reason' => self::readOnlyReason($run, $isCurrentRun),
             'created_at' => $summary?->started_at ?? $run->started_at ?? $run->created_at,
             'updated_at' => $summary?->closed_at ?? $run->last_progress_at ?? $run->updated_at,
             'run_navigation' => ($run->instance?->runs ?? collect())
+                ->filter(static fn (WorkflowRun $instanceRun): bool => $instanceRun->namespace === $run->namespace)
                 ->sortBy('run_number')
                 ->map(static function (WorkflowRun $instanceRun) use ($run, $currentRun): array {
                     $instanceRunSummary = $instanceRun->summary;

@@ -31,7 +31,7 @@ def workflow_job_source(source: str, name: str) -> str:
 
 def workflow_job_needs(source: str, name: str) -> list[str]:
     job = workflow_job_source(source, name)
-    needs = re.search(r"(?m)^    needs:\s*(.*)$", job)
+    needs = re.search(r"(?m)^ {4}needs:[ \t]*(.*)$", job)
 
     if needs is None:
         return []
@@ -49,7 +49,7 @@ def workflow_job_needs(source: str, name: str) -> list[str]:
 
     dependencies = []
     for line in job[needs.end() :].splitlines():
-        dependency = re.match(r"^      -\s+(['\"]?)([a-z0-9-]+)\1\s*$", line)
+        dependency = re.match(r"^ {4}(?: {2})?-\s+(['\"]?)([a-z0-9-]+)\1\s*$", line)
         if dependency:
             dependencies.append(dependency.group(2))
             continue
@@ -383,16 +383,42 @@ class BuildWorkflowTrustTest(unittest.TestCase):
             "feature-mysql",
             "feature-mariadb",
             "feature-postgresql",
+            "coverage-unit",
             "coverage",
         ):
             source = self.job_source(job)
             self.assertIn("github.event_name != 'pull_request'", source)
+
+    def test_unit_and_mysql_coverage_collect_without_waiting_for_each_other(self) -> None:
+        for producer in ("coverage-unit", "feature-mysql"):
+            with self.subTest(producer=producer):
+                self.assertEqual({"preflight"}, workflow_job_ancestors(self.build, producer))
+
+        unit = self.job_source("coverage-unit")
+        self.assertIn("--coverage-clover=coverage.xml --testsuite unit", unit)
+        self.assertIn("if-no-files-found: error", unit)
+
+    def test_combined_coverage_waits_for_both_producers_and_requires_every_report(self) -> None:
+        self.assertEqual(
+            {"preflight", "feature-mysql", "coverage-unit"},
+            set(workflow_job_needs(self.build, "coverage")),
+        )
+        aggregate = self.job_source("coverage")
+        self.assertIn("artifact-ids: ${{ needs.coverage-unit.outputs.unit_artifact_id }}", aggregate)
+        self.assertIn("digest-mismatch: error", aggregate)
+        for report in ["coverage.xml"] + [
+            f"build/feature-coverage/mysql-shard-{shard}-coverage.xml" for shard in range(4)
+        ]:
+            with self.subTest(report=report):
+                self.assertIn(f"--clover={report}", aggregate)
 
     def test_required_check_has_explicit_pull_request_and_target_contracts(self) -> None:
         build_job = self.job_source("build")
         self.assertIn("Check pull-request gate", build_job)
         self.assertIn("Check target-branch matrix", build_job)
         self.assertIn("needs.regression-corpus.result", build_job)
+        self.assertIn('test "${{ needs.coverage-unit.result }}" = "skipped"', build_job)
+        self.assertIn('test "${{ needs.coverage-unit.result }}" = "success"', build_job)
 
     def job_source(self, name: str) -> str:
         return workflow_job_source(self.build, name)

@@ -26,6 +26,11 @@ final class ActivityAttemptNormalizer
         }
 
         $attempt = self::findAttempt($execution, $attemptNumber);
+        if ($attempt instanceof ActivityAttempt
+            && ($attempt->workflow_run_id !== $execution->workflow_run_id
+                || $attempt->activity_execution_id !== $execution->id)) {
+            return null;
+        }
 
         if (! $attempt instanceof ActivityAttempt) {
             $attemptId = self::stringValue($execution->current_attempt_id) ?? (string) Str::ulid();

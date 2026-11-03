@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use JsonException;
@@ -66,7 +65,7 @@ final class LocalActivityExecutor
             return $refused('invalid_local_activity_outcome');
         }
 
-        return DB::transaction(function () use (
+        return ConfiguredV2Models::connection()->transaction(function () use (
             $attemptId,
             $leaseOwner,
             $workflowTaskAttempt,
@@ -389,16 +388,20 @@ final class LocalActivityExecutor
         $activity = RuntimeObjectFactory::activity($activityClass, $execution, $run, $task->id);
         $entryMethod = EntryMethod::forActivity($activity);
         $activityArguments = $execution->activityArguments();
-        $arguments = $activity->resolveMethodDependencies($activityArguments, $entryMethod);
-
         $result = null;
         $throwable = null;
+        try {
+            $arguments = ActivityEntryArguments::resolve($activity, $activityArguments, $entryMethod);
+        } catch (Throwable $error) {
+            $arguments = [];
+            $throwable = $error;
+        }
 
         if (WorkflowStub::faked()) {
             WorkflowStub::recordDispatched($execution->activity_class, $activityArguments);
         }
 
-        if (WorkflowStub::hasMock($execution->activity_class)) {
+        if ($throwable === null && WorkflowStub::hasMock($execution->activity_class)) {
             $mocked = WorkflowStub::mockedResult(
                 $execution->activity_class,
                 new ActivityFakeContext(
@@ -413,7 +416,7 @@ final class LocalActivityExecutor
 
             $result = $mocked['result'];
             $throwable = $mocked['throwable'];
-        } else {
+        } elseif ($throwable === null) {
             try {
                 $result = $activity->{$entryMethod->getName()}(...$arguments);
             } catch (Throwable $error) {
@@ -513,7 +516,12 @@ final class LocalActivityExecutor
         int $sequence,
         LocalActivityCall $activityCall,
     ): array {
-        return DB::transaction(function () use ($run, $task, $sequence, $activityCall): array {
+        return ConfiguredV2Models::connection()->transaction(function () use (
+            $run,
+            $task,
+            $sequence,
+            $activityCall
+        ): array {
             /** @var WorkflowRun $lockedRun */
             $lockedRun = WorkflowRun::query()
                 ->lockForUpdate()
@@ -755,7 +763,13 @@ final class LocalActivityExecutor
         mixed $result,
         ?Throwable $throwable,
     ): array {
-        return DB::transaction(function () use ($task, $execution, $attempt, $result, $throwable): array {
+        return ConfiguredV2Models::connection()->transaction(function () use (
+            $task,
+            $execution,
+            $attempt,
+            $result,
+            $throwable
+        ): array {
             /** @var WorkflowTask $lockedTask */
             $lockedTask = WorkflowTask::query()
                 ->lockForUpdate()

@@ -672,7 +672,10 @@ final class TaskRepair
             ->lockForUpdate()
             ->find($executionId);
 
-        return $execution;
+        return $execution instanceof ActivityExecution
+            && $execution->workflow_run_id === $task->workflow_run_id
+            ? $execution
+            : null;
     }
 
     private static function closeActivityAttempt(string $attemptId, ActivityAttemptStatus $status): void

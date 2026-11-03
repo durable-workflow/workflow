@@ -31,6 +31,7 @@ interface MatchingRole
      *     repaired_missing_tasks: int,
      *     dispatched_tasks: int,
      *     existing_task_failures: list<array{candidate_id: string, message: string}>,
+     *     deferred_existing_tasks?: list<array{candidate_id: string, phase: string, reason: string}>,
      *     missing_run_failures: list<array{run_id: string, message: string}>,
      *     deadline_expired_candidates: int,
      *     deadline_expired_tasks_created: int,
@@ -41,6 +42,9 @@ interface MatchingRole
      *     service_call_timeout_candidates?: int,
      *     service_call_timeouts_enforced?: int,
      *     service_call_timeout_failures?: list<array{call_id: string, message: string}>
+     *     service_call_dispatch_candidates?: int,
+     *     service_call_dispatches_enqueued?: int,
+     *     service_call_dispatch_failures?: list<array{call_id: string, message: string}>
      * }
      */
     public function runPass(

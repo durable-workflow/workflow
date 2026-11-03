@@ -206,6 +206,34 @@ final class WorkflowHistoryPayloadCastTest extends TestCase
         ]];
     }
 
+    public function testManyIndividuallySmallPayloadsHaveABoundedRetainedCache(): void
+    {
+        $payload = [
+            'values' => array_fill(0, 63, ['x']),
+        ];
+        $raw = json_encode($payload, JSON_THROW_ON_ERROR);
+        $models = [];
+        for ($index = 0; $index < 768; ++$index) {
+            $model = new WorkflowHistoryEvent();
+            $model->setRawAttributes([
+                'payload' => $raw,
+            ], true);
+            $models[] = $model;
+        }
+        gc_collect_cycles();
+        $before = memory_get_usage();
+        foreach ($models as $model) {
+            $this->assertSame($payload, $model->payload);
+        }
+        gc_collect_cycles();
+        $this->assertLessThan(6 * 1024 * 1024, memory_get_usage() - $before);
+        $decoded = HistoryPayloadDecodeCounter::$decodes;
+        $this->assertSame($payload, $models[767]->payload);
+        $this->assertSame($decoded, HistoryPayloadDecodeCounter::$decodes, 'A current entry still decodes once.');
+        $this->assertSame($payload, $models[0]->payload);
+        $this->assertSame($decoded + 1, HistoryPayloadDecodeCounter::$decodes, 'An evicted entry decodes normally.');
+    }
+
     public function testConfiguredSubclassKeepsItsCustomCastPath(): void
     {
         $event = new ConfiguredPayloadHistoryEvent();

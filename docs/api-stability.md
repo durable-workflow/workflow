@@ -117,6 +117,7 @@ is either promoted to a `Contracts\*` interface or removed:
 - `Workflow\V2\Support\EmbeddedV2HistoryImport`
 - `Workflow\V2\Support\EmbeddedV2ImportContract`
 - `Workflow\V2\Support\HistoryPayloadCompression`
+- `Workflow\V2\Support\NamespaceIdentity`
 - `Workflow\V2\Support\OperatorQueueVisibility`
 - `Workflow\V2\Support\PayloadEnvelopeResolver`
 - `Workflow\V2\Support\PlatformProtocolSpecs`
@@ -186,11 +187,48 @@ Confirm older cleanup from an authoritative retention record before choosing
 remediation. Do not use a projection rebuild to recover deleted history; restore
 an appropriate backup if that history is required.
 
+`HistoryExport::forRun()` reads the same marker. Every bundle's `workflow`
+object carries `details_state` (`retained` or `pruned`) and
+`details_pruned_at` (the marker as a UTC timestamp, or null). For a pruned run
+the bundle sets `history_complete` to `false` even though the run is terminal,
+keeps the run's terminal `status`, and has an empty `history_events` list.
+Pruning does not change the run's history sequence or progress time, so a
+pruned run's `dedupe_key` appends `:details-pruned:{details_pruned_at}` to the
+key its full export used; a post-prune export never shares a dedupe key or
+checksum with the export taken before cleanup. A run that was never pruned
+keeps its existing key and `history_complete` value. These fields are additive:
+readers that ignore unknown keys are unaffected.
+
+`BundleIntegrityVerifier` reports a pruned bundle as a `history.details_pruned`
+error, so `workflow:v2:replay-verify` fails it without attempting replay.
+History import rejects it as `workflow.terminal_history_incomplete`, because a
+terminal run import requires `history_complete: true`. An export taken before
+this change marked a pruned run complete and carried no marker; it cannot be
+told apart from the bundle alone, so compare it with an export recorded before
+cleanup.
+
 The package migration adds the nullable column to `workflow_runs`. Hosts that
 replace the configured run model's table must add the same column in their
 own migration before invoking retention cleanup. The run and its configured
 detail models must use the same workflow storage connection for the deletion
 and marker to be atomic.
+
+### Replay of a failed run
+
+A run that failed because workflow code threw replays to that exception.
+`ReplayDiff` compares it with the run's recorded `WorkflowFailed` failure. When
+the exception class and message match, the report is `status: replayed` and
+`reason: none`. `replay.recorded_failure` names the class and message, and
+`replay.sequence` is null because the workflow ended by throwing.
+`workflow:v2:replay-verify` then reports `ok`. Only the class is compared when
+the bundle's `redaction.applied` is true, because a redactor may rewrite the
+recorded message.
+
+Any other exception is still `status: failed` and `reason: replay_error`. When
+the run recorded a failure, `error.recorded_failure` names it so the report
+shows both exceptions. A run whose history did not fail reports the exception
+as before. These fields are additive, and the replay-diff reason set is
+unchanged.
 
 ### Workflow command grammar ownership
 
@@ -202,6 +240,52 @@ canonicalize their semantics. Hosts must not maintain their own parallel field
 list, command-kind map, generated identity prefixes, path rules, or structural
 size checks; compatible grammar evolution belongs in the Workflow package and
 is consumed through those methods.
+
+### Durable service-operation scheduling
+
+Worker protocol `1.21` adds the `ServiceOperationScheduled` history event for a
+workflow-authored service call whose effect will run after the completion
+transaction commits. Its payload uses the same service-call identity, address,
+codec and result-surface fields as `ServiceCallStarted`, plus the required
+boolean `workflow_resume_on_admission`. A `false` value is durable evidence that
+the workflow remains blocked for a terminal service-call event even though the
+scheduler's internal handler wait is `accepted`.
+
+Hosts must not synthesize `ServiceCallStarted` before a handler attempt is
+claimed. They must version-gate the new scheduled-event behavior at
+`WorkerProtocolVersion::DURABLE_SERVICE_OPERATION_SCHEDULER_MINIMUM_PROTOCOL_VERSION`
+and keep workers below that floor away from histories that require the event.
+The original `start_service_operation` command remains available from its 1.13
+floor; the scheduled execution semantics require 1.21.
+
+The stable two-argument `WorkflowTaskBridge::complete()` method remains
+unchanged. External hosts that offer workflow-task completion must require an
+authenticated, supported worker protocol and use the optional
+`ProtocolAwareWorkflowTaskBridge::completeForProtocol()` role. They must check
+that the configured bridge implements that role before advertising completion
+support. Missing, malformed, noncanonical, different-major, and future-minor versions fail
+closed. Supported protocols below 1.21 retain the pre-1.21 inline
+service-operation path and therefore cannot create `ServiceOperationScheduled`.
+The built-in `WorkflowExecutor` runs at the package's current protocol and
+supplies scheduler authority explicitly.
+
+Terminal service-call result envelopes remain intact in workflow history so
+inline results replay through the same Avro payload contract as scheduled results.
+
+Caller workflow identity on a direct `ServiceControlPlane::execute()` request
+does not activate the workflow-task scheduler. In particular, an idempotency
+transaction plus `caller_workflow_run_id` must continue to honor the requested
+HTTP wait surface: `wait_for=completed` returns the terminal result or typed
+failure. Scheduling requires private evidence supplied by the version-gated
+workflow-task completion path.
+
+`WorkflowServiceCallDispatch` is a documented persisted model. Its table and
+state/attempt/claim/revision/repair fields are additive schema and observability
+surface. `ServiceCallScheduler`, `ServiceCallAttemptClaim`, and the
+`RunServiceCall` job are internal execution helpers: their PHP method and
+constructor signatures are not covered by the public semver guarantee. The
+machine-readable durable-record and scheduling rules are published by
+`ServiceExecutionContract`.
 
 ## Activity attempt authority
 
@@ -637,7 +721,7 @@ class, source file path, or stack trace to replay or handle a failure.
 | `ActivityCancelled` | `workflow_command_id`, `activity_execution_id`, `activity_attempt_id`, `worker_attempt_id`, `activity_class`, `activity_type`, `sequence`, `attempt_number`, `cancelled_at`, `execution_mode`, `local_activity`, `workflow_task_id`, `activity`, `activity_attempt`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `ActivitySnapshot`, `ActivityAttemptSnapshots`, `HistoryTimeline`, cancellation repair projections |
 | `ActivityTimedOut` | `activity_execution_id`, `activity_attempt_id`, `activity_class`, `activity_type`, `sequence`, `attempt_number`, `failure_id`, `failure_category`, `timeout_kind`, `message`, `exception_class`, `schedule_deadline_at`, `close_deadline_at`, `schedule_to_close_deadline_at`, `heartbeat_deadline_at`, `execution_mode`, `local_activity`, `workflow_task_id`, `activity`, `activity_attempt`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `ActivitySnapshot`, `FailureSnapshots`, `HistoryTimeline`, `ParallelChildGroup`, timeout repair projections |
 | `TimerScheduled` | `timer_id`, `sequence`, `delay_seconds`, `fire_at`, `timer_kind`, `condition_wait_id`, `condition_key`, `condition_definition_fingerprint`, `signal_wait_id`, `signal_name` | `WorkflowStepHistory`, `QueryStateReplayer`, `RunTimerView`, `ConditionWaits`, `SignalWaits` |
-| `TimerFired` | `timer_id`, `sequence`, `delay_seconds`, `fire_at`, `fired_at`, `timer_kind`, `condition_wait_id`, `condition_key`, `condition_definition_fingerprint`, `signal_wait_id`, `signal_name`, `cancellation_scope_id` (candidate 1.20) | `WorkflowStepHistory`, `QueryStateReplayer`, `RunTimerView`, `ConditionWaits`, `SignalWaits` |
+| `TimerFired` | `timer_id`, `sequence`, `delay_seconds`, `fire_at`, `fired_at`, `timer_kind`, `condition_wait_id`, `condition_key`, `condition_definition_fingerprint`, `signal_wait_id`, `signal_name`, `cancellation_scope_id` (candidate 1.20), `reused_from_run_id`, `reused_recorded_at` | `WorkflowStepHistory`, `QueryStateReplayer`, `WorkflowFiberRunner`, `RunTimerView`, `ConditionWaits`, `SignalWaits`, `RedriveReplayClock` |
 | `TimerCancelled` | `timer_id`, `sequence`, `delay_seconds`, `fire_at`, `timer_kind`, `condition_wait_id`, `condition_key`, `condition_definition_fingerprint`, `signal_wait_id`, `signal_name`, `cancelled_at` | `WorkflowStepHistory`, `RunTimerView`, `ConditionWaits`, `SignalWaits`, `HistoryTimeline` |
 | `SignalReceived` | `workflow_command_id`, `signal_id`, `workflow_instance_id`, `workflow_run_id`, `signal_name`, `signal_wait_id`, `arguments`, `payload_codec` | `SignalWaits`, `RunSignalView`, public and worker history payload consumers |
 | `SignalApplied` | `workflow_command_id`, `signal_id`, `signal_name`, `signal_wait_id`, `sequence`, `value` | `WorkflowStepHistory`, `SignalWaits`, `RunSignalView`, `QueryStateReplayer` |
@@ -652,8 +736,8 @@ class, source file path, or stack trace to replay or handle a failure.
 | `ConditionWaitSatisfied` | `condition_wait_id`, `condition_key`, `condition_definition_fingerprint`, `sequence`, `timer_id`, `timeout_seconds`, `workflow_signal_id`, `signal_name`, `signal_wait_id` | `WorkflowStepHistory`, `ConditionWaits`, `QueryStateReplayer`, `HistoryTimeline` |
 | `ConditionWaitTimedOut` | `condition_wait_id`, `condition_key`, `condition_definition_fingerprint`, `sequence`, `timer_id`, `timeout_seconds` | `WorkflowStepHistory`, `ConditionWaits`, `QueryStateReplayer`, `HistoryTimeline` |
 | `ConditionWaitCancelled` (candidate 1.20) | `condition_wait_id`, `condition_wait_occurrence_id`, `condition_key`, `condition_definition_fingerprint`, `sequence`, `timer_id`, `timeout_seconds`, `cancelled_at`, `cancellation_scope` | `ScopedWaitCancellation`, `ConditionWaits`, `HistoryTimeline`, scope delivery and worker history consumers |
-| `SideEffectRecorded` | `sequence`, `result` | `WorkflowStepHistory`, `WorkflowExecutor`, `QueryStateReplayer` |
-| `VersionMarkerRecorded` | `sequence`, `change_id`, `version`, `min_supported`, `max_supported` | `WorkflowStepHistory`, `WorkflowExecutor`, `QueryStateReplayer` |
+| `SideEffectRecorded` | `sequence`, `result`, `reused_from_run_id`, `reused_recorded_at` | `WorkflowStepHistory`, `WorkflowExecutor`, `QueryStateReplayer`, `WorkflowFiberRunner`, `RedriveReplayClock` |
+| `VersionMarkerRecorded` | `sequence`, `change_id`, `version`, `min_supported`, `max_supported`, `reused_from_run_id`, `reused_recorded_at` | `WorkflowStepHistory`, `WorkflowExecutor`, `QueryStateReplayer`, `WorkflowFiberRunner`, `RedriveReplayClock` |
 | `ChildWorkflowScheduled` | `sequence`, `workflow_link_id`, `child_call_id`, `child_workflow_instance_id`, `child_workflow_run_id`, `child_workflow_class`, `child_workflow_type`, `child_run_number`, `parent_close_policy`, `retry_policy`, `timeout_policy`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `WorkflowStepHistory`, `WorkflowExecutor`, `QueryStateReplayer`, `ChildRunHistory`, `ParallelChildGroup`, `RunLineageView` |
 | `ChildRunStarted` | `sequence`, `workflow_link_id`, `child_call_id`, `child_workflow_instance_id`, `child_workflow_run_id`, `child_workflow_class`, `child_workflow_type`, `child_run_number`, `child_status`, `parent_close_policy`, `retry_policy`, `timeout_policy`, `execution_timeout_seconds`, `run_timeout_seconds`, `execution_deadline_at`, `run_deadline_at`, `retry_attempt`, `retry_of_child_workflow_run_id`, `retry_backoff_seconds`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `ChildRunHistory`, `ParallelChildGroup`, `RunLineageView`, worker history payload consumers |
 | `ChildRunCompleted` | `sequence`, `workflow_link_id`, `child_call_id`, `child_workflow_instance_id`, `child_workflow_run_id`, `child_workflow_class`, `child_workflow_type`, `child_run_number`, `child_status`, `closed_reason`, `closed_at`, `output`, `result`, `payload_codec`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `WorkflowExecutor`, `QueryStateReplayer`, `ChildRunHistory`, `ParallelChildGroup`, `RunLineageView` |

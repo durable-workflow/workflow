@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
-use Illuminate\Support\Facades\DB;
 use Throwable;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\ActivityAttemptStatus;
@@ -150,7 +149,11 @@ final class ActivityTimeoutEnforcer
         ?array $revocation = null,
     ): array {
         try {
-            return DB::transaction(static function () use ($executionId, $expiredTaskId, $revocation): array {
+            return ConfiguredV2Models::connection()->transaction(static function () use (
+                $executionId,
+                $expiredTaskId,
+                $revocation
+            ): array {
                 // Repair can already retain the run/task. Refuse contested
                 // attempt rows rather than wait against a worker needing that run.
                 $lockedRows = ActivityRowLockOrder::lockForExecution(

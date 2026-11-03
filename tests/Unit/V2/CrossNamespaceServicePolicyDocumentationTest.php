@@ -10,6 +10,7 @@ use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
 use Workflow\V2\Enums\ServiceCallOutcome;
 use Workflow\V2\Models\WorkflowService;
 use Workflow\V2\Models\WorkflowServiceCall;
+use Workflow\V2\Models\WorkflowServiceCallDispatch;
 use Workflow\V2\Models\WorkflowServiceEndpoint;
 use Workflow\V2\Models\WorkflowServiceOperation;
 use Workflow\V2\Support\PayloadEnvelopeResolver;
@@ -63,6 +64,7 @@ final class CrossNamespaceServicePolicyDocumentationTest extends TestCase
         $this->assertSame('workflow_services', (new WorkflowService())->getTable());
         $this->assertSame('workflow_service_operations', (new WorkflowServiceOperation())->getTable());
         $this->assertSame('workflow_service_calls', (new WorkflowServiceCall())->getTable());
+        $this->assertSame('workflow_service_call_dispatches', (new WorkflowServiceCallDispatch())->getTable());
     }
 
     public function testServiceCallModelCastsPolicySnapshotColumns(): void

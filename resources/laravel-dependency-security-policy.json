@@ -10,16 +10,12 @@
     "reason": "The host application owns the installed Laravel version and lockfile; GitHub dependency alerts remain visible while the per-major Composer audit owns resolution and accepted-risk tracking for this library constraint."
   },
   "supported_majors": {
-    "9": {
-      "minimum": "9.52.17",
-      "disposition": "accepted-risk"
-    },
     "10": {
-      "minimum": "10.48.29",
+      "minimum": "10.50.4",
       "disposition": "accepted-risk"
     },
     "11": {
-      "minimum": "11.44.1",
+      "minimum": "11.56.1",
       "disposition": "accepted-risk"
     },
     "12": {
@@ -31,11 +27,16 @@
       "disposition": "secure"
     }
   },
+  "removed_majors": {
+    "9": {
+      "last_workflow_minor": "2.16",
+      "reason": "Laravel 9 has no fix for GHSA-f9x3-7vq9-cph6 (TokenGuard). Workflow 2.17.0 removes it from the supported constraint; Composer keeps Laravel 9 applications on Workflow 2.16.x until they upgrade the framework."
+    }
+  },
   "accepted_advisories": {
     "PKSA-d5tc-s1qs-h781": {
       "github_advisory": "GHSA-jh5r-qr3c-85q8",
       "affected_supported_majors": [
-        "9",
         "10",
         "11"
       ],
@@ -45,7 +46,6 @@
     "PKSA-m5cs-t1y6-qpcs": {
       "github_advisory": "GHSA-crmm-hgp2-wgrp",
       "affected_supported_majors": [
-        "9",
         "10",
         "11"
       ],
@@ -55,7 +55,6 @@
     "PKSA-3r5d-mb8f-1qw9": {
       "github_advisory": "GHSA-5vg9-5847-vvmq",
       "affected_supported_majors": [
-        "9",
         "10",
         "11"
       ],
@@ -65,20 +64,20 @@
     "PKSA-mdq4-51ck-6kdq": {
       "github_advisory": "GHSA-5vg9-5847-vvmq",
       "affected_supported_majors": [
-        "9",
         "10",
         "11"
       ],
       "review_by": "2026-11-24",
       "reason": "The FriendsOfPHP record describes the same GitHub advisory, and Laravel has not published a patched release on these majors."
     },
-    "PKSA-8qx3-n5y5-vvnd": {
-      "github_advisory": "GHSA-78fx-h6xr-vch4",
+    "PKSA-b41t-wbzk-9q51": {
+      "github_advisory": "GHSA-f9x3-7vq9-cph6",
       "affected_supported_majors": [
-        "9"
+        "10",
+        "11"
       ],
-      "review_by": "2026-11-24",
-      "reason": "Laravel 9 has no patched release; compatibility is retained only for embedded upgrade and drain paths."
+      "review_by": "2026-11-07",
+      "reason": "Laravel 10.50.4 and 11.56.1, the supported minimums, contain the strict string TokenGuard checks (upstream 47781ee0 and 5056ca53), but the advisory feed still classifies every release below 12.68.0 as affected. Laravel 9, which has no fix, was removed from the supported constraint in Workflow 2.17.0; Laravel 9 applications stay on 2.16.x. A GitHub advisory-database correction adding 10.50.4 and 11.56.1 as patched is under Security review (#922). Other declared legacy risks, dependency alerts and exact per-major audits remain."
     }
   }
 }

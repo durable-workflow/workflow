@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
+use Illuminate\Database\Eloquent\Model;
+use LogicException;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
@@ -55,7 +58,7 @@ final class CurrentRunResolver
 
         if (! $run instanceof WorkflowRun) {
             $run = $lockForUpdate
-                ? self::queryForInstance($instance->id, $relations, true)->first()
+                ? self::queryForInstance($instance, $relations, true)->first()
                 : self::loadedOrQueriedRun($instance, $relations);
             $source = $run instanceof WorkflowRun
                 ? self::SOURCE_RUN_ORDER_FALLBACK
@@ -80,7 +83,7 @@ final class CurrentRunResolver
     ): ?WorkflowRun {
         $run->loadMissing('instance');
 
-        if (! $run->instance instanceof WorkflowInstance) {
+        if (! $run->instance instanceof WorkflowInstance || ! self::ownsRun($run->instance, $run)) {
             return null;
         }
 
@@ -98,7 +101,7 @@ final class CurrentRunResolver
     ): array {
         $run->loadMissing('instance');
 
-        if (! $run->instance instanceof WorkflowInstance) {
+        if (! $run->instance instanceof WorkflowInstance || ! self::ownsRun($run->instance, $run)) {
             return [
                 'run' => null,
                 'source' => null,
@@ -110,6 +113,10 @@ final class CurrentRunResolver
 
     public static function syncPointer(WorkflowInstance $instance, ?WorkflowRun $run): void
     {
+        if ($run instanceof WorkflowRun && ! self::ownsRun($instance, $run)) {
+            throw new LogicException('workflow_instance_current_run_mismatch');
+        }
+
         $resolvedRunId = $run?->id;
         $resolvedRunCount = $run?->run_number ?? 0;
         $currentRunCount = (int) ($instance->run_count ?? 0);
@@ -139,15 +146,15 @@ final class CurrentRunResolver
     ): ?WorkflowRun {
         if (! $lockForUpdate && $instance->relationLoaded('runs')) {
             /** @var WorkflowRun|null $loaded */
-            $loaded = $instance->runs->first(static fn (WorkflowRun $candidate): bool => $candidate->id === $runId);
+            $loaded = $instance->runs->first(static fn (WorkflowRun $candidate): bool =>
+                $candidate->id === $runId && self::ownsRun($instance, $candidate));
 
             $loaded?->loadMissing($relations);
 
             return $loaded;
         }
 
-        $query = ConfiguredV2Models::query('run_model', WorkflowRun::class)
-            ->where('workflow_instance_id', $instance->id)
+        $query = self::ownedRunsQuery($instance)
             ->whereKey($runId);
 
         if ($relations !== []) {
@@ -172,7 +179,8 @@ final class CurrentRunResolver
         if ($instance->relationLoaded('runs')) {
             /** @var WorkflowRun|null $run */
             $run = self::orderedRuns(
-                $instance->runs->filter(static fn (mixed $candidate): bool => $candidate instanceof WorkflowRun)
+                $instance->runs->filter(static fn (mixed $candidate): bool =>
+                    $candidate instanceof WorkflowRun && self::ownsRun($instance, $candidate))
             )
                 ->first();
 
@@ -181,13 +189,18 @@ final class CurrentRunResolver
             return $run;
         }
 
-        return self::queryForInstance($instance->id, $relations)->first();
+        return self::queryForInstance($instance, $relations)->first();
     }
 
     private static function instanceHasNoRuns(WorkflowInstance $instance): bool
     {
         return ($instance->current_run_id ?? null) === null
             && (int) ($instance->run_count ?? 0) === 0;
+    }
+
+    private static function ownsRun(WorkflowInstance $instance, WorkflowRun $run): bool
+    {
+        return $run->workflow_instance_id === $instance->id && $run->namespace === $instance->namespace;
     }
 
     private static function attachResolvedRun(WorkflowInstance $instance, ?WorkflowRun $run): void
@@ -264,16 +277,16 @@ final class CurrentRunResolver
         if (! $lockForUpdate && $instance->relationLoaded('runs')) {
             /** @var EloquentCollection<int, WorkflowRun> $runs */
             $runs = $instance->runs
-                ->filter(static fn (mixed $candidate): bool => $candidate instanceof WorkflowRun)
+                ->filter(static fn (mixed $candidate): bool =>
+                    $candidate instanceof WorkflowRun && self::ownsRun($instance, $candidate))
                 ->values();
 
             return $runs;
         }
 
         /** @var EloquentCollection<int, WorkflowRun> $runs */
-        $runs = ConfiguredV2Models::query('run_model', WorkflowRun::class)
-            ->select(['id', 'workflow_instance_id', 'run_number', 'started_at', 'created_at'])
-            ->where('workflow_instance_id', $instance->id)
+        $runs = self::ownedRunsQuery($instance)
+            ->select(['id', 'workflow_instance_id', 'namespace', 'run_number', 'started_at', 'created_at'])
             ->when($lockForUpdate, static fn ($query) => $query->lockForUpdate())
             ->get();
 
@@ -329,12 +342,11 @@ final class CurrentRunResolver
      * @param list<string> $relations
      */
     private static function queryForInstance(
-        string $instanceId,
+        WorkflowInstance $instance,
         array $relations = [],
         bool $lockForUpdate = false,
     ) {
-        $query = ConfiguredV2Models::query('run_model', WorkflowRun::class)
-            ->where('workflow_instance_id', $instanceId)
+        $query = self::ownedRunsQuery($instance)
             ->orderByDesc('run_number')
             ->orderByDesc('started_at')
             ->orderByDesc('created_at')
@@ -349,5 +361,17 @@ final class CurrentRunResolver
         }
 
         return $query;
+    }
+
+    /**
+     * @return Builder<Model>
+     */
+    private static function ownedRunsQuery(WorkflowInstance $instance): Builder
+    {
+        return NamespaceIdentity::constrain(
+            ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->where('workflow_instance_id', $instance->id),
+            $instance->namespace,
+        );
     }
 }

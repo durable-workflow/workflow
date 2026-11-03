@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -172,6 +173,7 @@ OFFICIAL_BINDING_CONSUMER_SUPPORT = {
         "tests/Fixtures/V2/TestSignalResumedParallelWorkflow.php",
         "tests/Fixtures/V2/TestCancellationContextWorkflow.php",
         "tests/Fixtures/V2/TestVersionPendingRangeRepairWorkflow.php",
+        "tests/Fixtures/V2/TestUpdateTailCheckpointWorkflow.php",
         "tests/Fixtures/V2/TestNexusWaitingCallerWorkflow.php",
         "tests/Fixtures/V2/TestNexusCancellationCleanupCallerWorkflow.php",
         "tests/Fixtures/V2/TestNexusDeadlineCallerWorkflow.php",
@@ -1816,19 +1818,27 @@ def _consumer_result(
     files: Mapping[str, bytes],
     command: Sequence[str],
 ) -> subprocess.CompletedProcess[str]:
+    started = time.monotonic()
     with tempfile.TemporaryDirectory(
         prefix=".regression-corpus-consumer-",
         dir=source_root,
     ) as temporary:
         consumer_root = Path(temporary)
         _materialize_consumer_tree(source_root, consumer_root, files)
-        return subprocess.run(
+        materialized = time.monotonic()
+        result = subprocess.run(
             command,
             cwd=consumer_root,
             check=False,
             capture_output=True,
             text=True,
         )
+        print(
+            f"official consumer run: tree {materialized - started:.1f}s, "
+            f"consumer {time.monotonic() - materialized:.1f}s, exit {result.returncode}",
+            file=sys.stderr,
+        )
+        return result
 
 
 def _consumer_failure_detail(result: subprocess.CompletedProcess[str]) -> str:
@@ -2018,8 +2028,9 @@ def _guard_matches(
         return False
     bridge_path = "src/V2/Support/DefaultWorkflowTaskBridge.php"
     if guard["glob"] == bridge_path and matching == [bridge_path]:
-        # This private helper is used only by typed task discovery. Keep every
-        # other bridge edit guarded, including its signature and replay methods.
+        # These private bodies discover tasks or schedule post-completion work.
+        # Keep signatures and every other bridge edit guarded. The support-file
+        # content guard still covers history writes inside these methods.
         classifier = Path(__file__).with_name("classify-discovery-helper-change.php")
         base = _run(["git", "show", f"{base_ref}:{bridge_path}"], root)
         current = (root / bridge_path).read_text(encoding="utf-8")

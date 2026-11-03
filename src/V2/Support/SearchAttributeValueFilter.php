@@ -30,7 +30,7 @@ final class SearchAttributeValueFilter
         }
 
         if ($value instanceof \DateTimeInterface) {
-            return $query->where('value_datetime', $value);
+            return $query->where('value_datetime', UtcScheduleTimestamp::databaseValue($value));
         }
 
         if (is_string($value) && mb_strlen($value) <= 255) {

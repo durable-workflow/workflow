@@ -85,6 +85,7 @@ return [
         'service_model' => Workflow\V2\Models\WorkflowService::class,
         'service_operation_model' => Workflow\V2\Models\WorkflowServiceOperation::class,
         'service_call_model' => Workflow\V2\Models\WorkflowServiceCall::class,
+        'service_call_dispatch_model' => Workflow\V2\Models\WorkflowServiceCallDispatch::class,
         'types' => [
             'workflows' => [
                 // 'billing.invoice-sync' => App\Workflows\InvoiceSyncWorkflow::class,
@@ -221,6 +222,23 @@ return [
                 50
             ),
         ],
+        'service_call_dispatch' => [
+            'claim_lease_seconds' => (int) Env::dw(
+                'DW_V2_SERVICE_CALL_CLAIM_LEASE_SECONDS',
+                'WORKFLOW_V2_SERVICE_CALL_CLAIM_LEASE_SECONDS',
+                60
+            ),
+            'repair_after_seconds' => (int) Env::dw(
+                'DW_V2_SERVICE_CALL_REPAIR_AFTER_SECONDS',
+                'WORKFLOW_V2_SERVICE_CALL_REPAIR_AFTER_SECONDS',
+                5
+            ),
+            'orphan_grace_seconds' => (int) Env::dw(
+                'DW_V2_SERVICE_CALL_ORPHAN_GRACE_SECONDS',
+                'WORKFLOW_V2_SERVICE_CALL_ORPHAN_GRACE_SECONDS',
+                3600
+            ),
+        ],
         'guardrails' => [
             'boot' => env('DW_V2_GUARDRAILS_BOOT', 'warn'),
         ],
@@ -274,6 +292,25 @@ return [
                 'DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE',
                 'WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_SIZE',
                 5000
+            ),
+            // Hard ceilings for one workflow task completion; 0 disables a
+            // dimension. history_transaction_rows counts the rows history
+            // events and local activity records write; other command writes
+            // are not counted yet.
+            'history_transaction_bytes' => (int) Env::dw(
+                'DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES',
+                'WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_BYTES',
+                16777216
+            ),
+            'history_transaction_rows' => (int) Env::dw(
+                'DW_V2_LIMIT_HISTORY_TRANSACTION_ROWS',
+                'WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_ROWS',
+                20000
+            ),
+            'external_payload_transaction_bytes' => (int) Env::dw(
+                'DW_V2_LIMIT_EXTERNAL_PAYLOAD_TRANSACTION_BYTES',
+                'WORKFLOW_V2_LIMIT_EXTERNAL_PAYLOAD_TRANSACTION_BYTES',
+                16777216
             ),
             'warning_threshold_percent' => (int) Env::dw(
                 'DW_V2_LIMIT_WARNING_THRESHOLD_PERCENT',
@@ -342,6 +379,17 @@ return [
                 'WORKFLOW_V2_STICKY_EXECUTION_TTL_SECONDS',
                 Workflow\V2\Support\StickyExecution::DEFAULT_TTL_SECONDS
             ),
+        ],
+
+        'schedules' => [
+            // Pass size for `workflow:v2:schedule-tick`. Each pass starts at
+            // most this many due schedules, plus at most this many buffered
+            // actions, shared round-robin across namespaces (oldest first).
+            // Due schedules beyond it fire on a later pass. Set it at or above
+            // the largest number of schedules that can fall due together. The
+            // command's --limit option overrides it; a value that is not a
+            // positive integer makes the command refuse the pass.
+            'tick_limit' => env('DW_V2_SCHEDULE_TICK_LIMIT', Workflow\Commands\V2ScheduleTickCommand::DEFAULT_LIMIT),
         ],
 
         'task_repair' => [

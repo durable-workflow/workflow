@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Mockery;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\V2\TestAliasedUpdateWorkflow;
 use Tests\Fixtures\V2\TestConfiguredGreetingWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
@@ -17,6 +20,8 @@ use Tests\Fixtures\V2\TestUpdateWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\ProtocolAwareWorkflowTaskBridge;
+use Workflow\V2\Contracts\WorkflowTaskBridge as WorkflowTaskBridgeContract;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -38,6 +43,7 @@ use Workflow\V2\Support\ExternalPayloadStorage;
 use Workflow\V2\Support\LocalFilesystemExternalPayloadStorage;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\WorkerProtocolVersion;
 use Workflow\V2\Support\WorkflowInstanceId;
 use Workflow\V2\Webhooks;
 use Workflow\V2\WorkflowStub;
@@ -3062,7 +3068,10 @@ final class V2WebhookWorkflowTest extends TestCase
             'lease_owner' => 'server-complete-worker',
         ])->assertOk();
 
-        $response = $this->postJson("/webhooks/workflow-tasks/{$task->id}/complete", [
+        $response = $this->withHeader(
+            'X-Durable-Workflow-Protocol-Version',
+            WorkerProtocolVersion::VERSION,
+        )->postJson("/webhooks/workflow-tasks/{$task->id}/complete", [
             'commands' => [
                 [
                     'type' => 'schedule_activity',
@@ -3114,7 +3123,10 @@ final class V2WebhookWorkflowTest extends TestCase
             'lease_owner' => 'server-metadata-worker',
         ])->assertOk();
 
-        $response = $this->postJson("/webhooks/workflow-tasks/{$task->id}/complete", [
+        $response = $this->withHeader(
+            'X-Durable-Workflow-Protocol-Version',
+            WorkerProtocolVersion::VERSION,
+        )->postJson("/webhooks/workflow-tasks/{$task->id}/complete", [
             'commands' => [
                 [
                     'type' => 'record_side_effect',
@@ -3196,7 +3208,10 @@ final class V2WebhookWorkflowTest extends TestCase
             'lease_owner' => 'server-terminal-worker',
         ])->assertOk();
 
-        $response = $this->postJson("/webhooks/workflow-tasks/{$task->id}/complete", [
+        $response = $this->withHeader(
+            'X-Durable-Workflow-Protocol-Version',
+            WorkerProtocolVersion::VERSION,
+        )->postJson("/webhooks/workflow-tasks/{$task->id}/complete", [
             'commands' => [
                 [
                     'type' => 'complete_workflow',
@@ -3227,11 +3242,110 @@ final class V2WebhookWorkflowTest extends TestCase
     {
         $response = $this->postJson('/webhooks/workflow-tasks/some-task/complete', [
             'commands' => [],
+        ], [
+            'X-Durable-Workflow-Protocol-Version' => WorkerProtocolVersion::VERSION,
         ]);
 
         $response
             ->assertStatus(422)
             ->assertJsonValidationErrors(['commands']);
+    }
+
+    #[DataProvider('supportedWorkflowTaskCompletionProtocols')]
+    public function testWorkflowTaskCompleteWebhookForwardsTheWorkerProtocolHeader(string $protocolVersion): void
+    {
+        $commands = [[
+            'type' => 'complete_workflow',
+        ]];
+        $bridge = Mockery::mock(ProtocolAwareWorkflowTaskBridge::class);
+        $bridge->shouldReceive('completeForProtocol')
+            ->once()
+            ->with('protocol-task', $commands, $protocolVersion)
+            ->andReturn([
+                'completed' => true,
+                'task_id' => 'protocol-task',
+                'workflow_run_id' => 'protocol-run',
+                'run_status' => 'completed',
+                'created_task_ids' => [],
+                'reason' => null,
+            ]);
+        $this->app->instance(WorkflowTaskBridgeContract::class, $bridge);
+
+        $this->withHeader('X-Durable-Workflow-Protocol-Version', $protocolVersion)
+            ->postJson('/webhooks/workflow-tasks/protocol-task/complete', [
+                'commands' => $commands,
+            ])
+            ->assertOk()
+            ->assertJsonPath('completed', true);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function supportedWorkflowTaskCompletionProtocols(): iterable
+    {
+        yield 'inline protocol' => ['1.20'];
+        yield 'scheduler protocol' => ['1.21'];
+    }
+
+    #[DataProvider('unsupportedWorkflowTaskCompletionProtocols')]
+    public function testWorkflowTaskCompleteWebhookRejectsUnsupportedWorkerProtocols(
+        ?string $protocolVersion,
+        string $reason,
+    ): void {
+        $bridge = Mockery::mock(ProtocolAwareWorkflowTaskBridge::class);
+        $bridge->shouldNotReceive('completeForProtocol');
+        $this->app->instance(WorkflowTaskBridgeContract::class, $bridge);
+        if ($protocolVersion !== null) {
+            $this->withHeader('X-Durable-Workflow-Protocol-Version', $protocolVersion);
+        }
+        $writes = [];
+        DB::listen(static function ($query) use (&$writes): void {
+            if (preg_match('/\A\s*(insert|update|delete|replace|create|alter|drop)\b/i', $query->sql) === 1) {
+                $writes[] = $query->sql;
+            }
+        });
+
+        $this->postJson('/webhooks/workflow-tasks/protocol-task/complete', [
+            // Protocol refusal must precede command parsing as well as writes.
+            'commands' => 'invalid-command-document',
+        ])
+            ->assertStatus(400)
+            ->assertJsonPath('completed', false)
+            ->assertJsonPath('task_id', 'protocol-task')
+            ->assertJsonPath('reason', $reason);
+        $this->assertSame([], $writes);
+        Queue::assertNothingPushed();
+    }
+
+    /**
+     * @return iterable<string, array{?string, string}>
+     */
+    public static function unsupportedWorkflowTaskCompletionProtocols(): iterable
+    {
+        yield 'missing' => [null, 'invalid_protocol_version'];
+        yield 'empty' => ['', 'invalid_protocol_version'];
+        yield 'malformed patch version' => ['1.21.0', 'invalid_protocol_version'];
+        yield 'future minor' => ['1.22', 'unsupported_protocol_version'];
+        yield 'different major' => ['2.0', 'unsupported_protocol_version'];
+        yield 'leading zero major' => ['01.21', 'invalid_protocol_version'];
+        yield 'leading zero minor' => ['1.020', 'invalid_protocol_version'];
+    }
+
+    public function testWorkflowTaskCompleteWebhookFailsClosedWithoutTheOptionalProtocolRole(): void
+    {
+        $this->app->instance(WorkflowTaskBridgeContract::class, Mockery::mock(WorkflowTaskBridgeContract::class));
+
+        $this->withHeader('X-Durable-Workflow-Protocol-Version', WorkerProtocolVersion::VERSION)
+            ->postJson('/webhooks/workflow-tasks/protocol-task/complete', [
+                'commands' => [[
+                    'type' => 'complete_workflow',
+                ]],
+            ])
+            ->assertStatus(501)
+            ->assertJsonPath('completed', false)
+            ->assertJsonPath('task_id', 'protocol-task')
+            ->assertJsonPath('reason', 'protocol_aware_completion_unavailable');
     }
 
     public function testWorkflowTaskCompleteWebhookReturns422ForInvalidOpenWaitTimeouts(): void
@@ -3249,7 +3363,10 @@ final class V2WebhookWorkflowTest extends TestCase
         ];
 
         foreach ($cases as $label => $command) {
-            $response = $this->postJson("/webhooks/workflow-tasks/invalid-timeout-{$label}/complete", [
+            $response = $this->withHeader(
+                'X-Durable-Workflow-Protocol-Version',
+                WorkerProtocolVersion::VERSION,
+            )->postJson("/webhooks/workflow-tasks/invalid-timeout-{$label}/complete", [
                 'commands' => [$command],
             ]);
 
@@ -3262,7 +3379,9 @@ final class V2WebhookWorkflowTest extends TestCase
 
     public function testWorkflowTaskCompleteWebhookReturns422ForMissingCommands(): void
     {
-        $response = $this->postJson('/webhooks/workflow-tasks/some-task/complete', []);
+        $response = $this->postJson('/webhooks/workflow-tasks/some-task/complete', [], [
+            'X-Durable-Workflow-Protocol-Version' => WorkerProtocolVersion::VERSION,
+        ]);
 
         $response
             ->assertStatus(422)
