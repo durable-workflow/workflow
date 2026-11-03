@@ -6,7 +6,12 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Queue;
+use PHPUnit\Framework\Attributes\DataProvider;
+use RuntimeException;
+use Tests\Fixtures\V2\TestFailingWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
+use Tests\Fixtures\V2\TestHandleFailureThenThrowWorkflow;
+use Tests\Fixtures\V2\TestImmediateFailureWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -184,6 +189,184 @@ final class V2ReplayDiffTest extends TestCase
         $this->assertSame(ReplayDiff::REASON_BUNDLE_INVALID, $report['reason']);
         $this->assertNull($report['replay']);
         $this->assertIsArray($report['error']);
+    }
+
+    /**
+     * @return iterable<string, array{class-string, string}>
+     */
+    public static function failedWorkflowProvider(): iterable
+    {
+        yield 'thrown by workflow code' => [TestImmediateFailureWorkflow::class, 'The workflow refused the order.'];
+        yield 'activity failure propagated' => [TestFailingWorkflow::class, 'boom'];
+        yield 'activity failure rethrown as a new exception' => [
+            TestHandleFailureThenThrowWorkflow::class,
+            'The workflow rejected the failed activity.',
+        ];
+    }
+
+    /**
+     * @param class-string $workflowClass
+     */
+    #[DataProvider('failedWorkflowProvider')]
+    public function testReplayDiffReplaysTheFailureRecordedInHistory(string $workflowClass, string $message): void
+    {
+        $runId = $this->failedRun($workflowClass, 'replay-diff-recorded-failure');
+        $bundle = HistoryExport::forRun(WorkflowRun::query()->findOrFail($runId));
+
+        $report = (new ReplayDiff())->diffExport($bundle);
+
+        $this->assertSame(ReplayDiff::STATUS_REPLAYED, $report['status'], json_encode($report));
+        $this->assertSame(ReplayDiff::REASON_NONE, $report['reason']);
+        $this->assertNull($report['divergence']);
+        $this->assertNull($report['error']);
+        $this->assertSame([
+            'exception_class' => RuntimeException::class,
+            'message' => $message,
+        ], $report['replay']['recorded_failure'] ?? null);
+
+        $runReport = (new ReplayDiff())->diffRun(WorkflowRun::query()->findOrFail($runId));
+        $this->assertSame(ReplayDiff::STATUS_REPLAYED, $runReport['status'], json_encode($runReport));
+
+        $path = $this->writeBundle($bundle);
+        $exitCode = Artisan::call('workflow:v2:replay-verify', [
+            'bundle' => $path,
+        ]);
+        $output = Artisan::output();
+
+        $this->assertSame(0, $exitCode, $output);
+        $this->assertStringContainsString('Replay verification: OK', $output);
+    }
+
+    public function testReplayDiffReportsADifferentFailureAsAReplayError(): void
+    {
+        $runId = $this->failedRun(TestImmediateFailureWorkflow::class, 'replay-diff-failure-mismatch');
+        $bundle = HistoryExport::forRun(WorkflowRun::query()->findOrFail($runId));
+
+        foreach ([
+            'message' => ['message', 'The workflow refused an older order.'],
+            'class' => ['exception_class', 'LogicException'],
+        ] as $label => [$field, $recorded]) {
+            $changed = $bundle;
+            foreach ($changed['history_events'] as &$event) {
+                if (($event['type'] ?? null) === 'WorkflowFailed') {
+                    $event['payload'][$field] = $recorded;
+                }
+            }
+            unset($event);
+
+            $report = (new ReplayDiff())->diffExport($changed);
+
+            // The replayed exception is not the one the run recorded, so it
+            // stays an unexpected replay error and names the recorded failure.
+            $this->assertSame(ReplayDiff::STATUS_FAILED, $report['status'], $label);
+            $this->assertSame(ReplayDiff::REASON_REPLAY_ERROR, $report['reason'], $label);
+            $this->assertSame(RuntimeException::class, $report['error']['class'], $label);
+            $this->assertSame('The workflow refused the order.', $report['error']['message'], $label);
+            $this->assertSame($recorded, $report['error']['recorded_failure'][$field] ?? null, $label);
+            $this->assertNull($report['replay'], $label);
+        }
+    }
+
+    public function testReplayDiffComparesOnlyTheClassWhenTheBundleIsRedacted(): void
+    {
+        $runId = $this->failedRun(TestImmediateFailureWorkflow::class, 'replay-diff-redacted-failure');
+        $bundle = HistoryExport::forRun(WorkflowRun::query()->findOrFail($runId));
+        $bundle['redaction']['applied'] = true;
+        foreach ($bundle['history_events'] as &$event) {
+            if (($event['type'] ?? null) === 'WorkflowFailed') {
+                $event['payload']['message'] = '[redacted]';
+            }
+        }
+        unset($event);
+
+        $report = (new ReplayDiff())->diffExport($bundle);
+
+        $this->assertSame(ReplayDiff::STATUS_REPLAYED, $report['status'], json_encode($report));
+        $this->assertSame(RuntimeException::class, $report['replay']['recorded_failure']['exception_class'] ?? null);
+    }
+
+    public function testReplayDiffKeepsReplayErrorWhenTheHistoryDidNotFail(): void
+    {
+        $runId = $this->failedRun(TestImmediateFailureWorkflow::class, 'replay-diff-unrecorded-failure');
+        $bundle = HistoryExport::forRun(WorkflowRun::query()->findOrFail($runId));
+        $bundle['workflow']['status'] = 'completed';
+        foreach ($bundle['history_events'] as &$event) {
+            if (($event['type'] ?? null) === 'WorkflowFailed') {
+                $event['type'] = 'WorkflowCompleted';
+            }
+        }
+        unset($event);
+
+        $report = (new ReplayDiff())->diffExport($bundle);
+
+        $this->assertSame(ReplayDiff::STATUS_FAILED, $report['status'], json_encode($report));
+        $this->assertSame(ReplayDiff::REASON_REPLAY_ERROR, $report['reason']);
+        $this->assertSame(RuntimeException::class, $report['error']['class']);
+        $this->assertNull($report['replay']);
+    }
+
+    /**
+     * @param class-string $workflowClass
+     */
+    private function failedRun(string $workflowClass, string $instanceId): string
+    {
+        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+
+        $workflow = WorkflowStub::make($workflowClass, $instanceId);
+        $workflow->start();
+        $runId = $workflow->runId();
+        $this->assertNotNull($runId);
+        $this->drainReadyTasks();
+        $this->assertTrue($workflow->refresh()->failed());
+
+        return $runId;
+    }
+
+    /**
+     * @param array<string, mixed> $bundle
+     */
+    private function writeBundle(array $bundle): string
+    {
+        $path = tempnam(sys_get_temp_dir(), 'replay-verify-command-');
+        $this->assertIsString($path);
+        file_put_contents($path, json_encode($bundle, JSON_THROW_ON_ERROR));
+        $this->beforeApplicationDestroyed(static function () use ($path): void {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        });
+
+        return $path;
+    }
+
+    private function drainReadyTasks(): void
+    {
+        $deadline = microtime(true) + 10;
+
+        while (microtime(true) < $deadline) {
+            /** @var WorkflowTask|null $task */
+            $task = WorkflowTask::query()
+                ->where('status', TaskStatus::Ready->value)
+                ->orderBy('created_at')
+                ->first();
+
+            if ($task === null) {
+                return;
+            }
+
+            $job = match ($task->task_type) {
+                TaskType::Workflow => new RunWorkflowTask($task->id),
+                TaskType::Activity => new RunActivityTask($task->id),
+                TaskType::Timer => new RunTimerTask($task->id),
+            };
+
+            $this->app->call([$job, 'handle']);
+        }
+
+        $this->fail('Timed out draining ready workflow tasks.');
     }
 
     private function runReadyTaskForRun(string $runId, TaskType $taskType): void

@@ -5,7 +5,10 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Throwable;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
+use Workflow\V2\Models\WorkflowFailure;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 
 /**
@@ -74,7 +77,11 @@ final class ReplayDiff
             );
         }
 
-        return $this->diffRun($run, $context);
+        // A redactor may rewrite the recorded failure message, so a redacted
+        // bundle can only confirm the recorded exception class.
+        $redaction = is_array($bundle['redaction'] ?? null) ? $bundle['redaction'] : [];
+
+        return $this->diff($run, $context, compareFailureMessage: ($redaction['applied'] ?? false) !== true);
     }
 
     /**
@@ -87,8 +94,16 @@ final class ReplayDiff
      */
     public function diffRun(WorkflowRun $run, ?array $context = null): array
     {
-        $context ??= self::summarizeRun($run);
+        return $this->diff($run, $context ?? self::summarizeRun($run), compareFailureMessage: true);
+    }
 
+    /**
+     * @param array<string, mixed> $context
+     *
+     * @return array<string, mixed>
+     */
+    private function diff(WorkflowRun $run, array $context, bool $compareFailureMessage): array
+    {
         try {
             $state = $this->replayer->replay($run);
         } catch (HistoryEventShapeMismatchException $mismatch) {
@@ -104,12 +119,7 @@ final class ReplayDiff
                 ],
             );
         } catch (Throwable $exception) {
-            return $this->report(
-                status: self::STATUS_FAILED,
-                reason: self::REASON_REPLAY_ERROR,
-                context: $context,
-                error: self::describeException($exception),
-            );
+            return $this->thrownReport($run, $context, $exception, $compareFailureMessage);
         }
 
         return $this->report(
@@ -197,6 +207,117 @@ final class ReplayDiff
             'class' => $exception::class,
             'message' => $exception->getMessage(),
         ];
+    }
+
+    /**
+     * A run that failed because workflow code threw replays to that same
+     * exception. Reproducing the recorded failure is a faithful replay; any
+     * other exception is still an unexpected error.
+     *
+     * @param array<string, mixed> $context
+     *
+     * @return array<string, mixed>
+     */
+    private function thrownReport(
+        WorkflowRun $run,
+        array $context,
+        Throwable $exception,
+        bool $compareFailureMessage,
+    ): array {
+        $recorded = self::recordedFailure($run);
+
+        if ($recorded !== null && self::reproducesFailure($recorded, $exception, $compareFailureMessage)) {
+            return $this->report(
+                status: self::STATUS_REPLAYED,
+                reason: self::REASON_NONE,
+                context: $context,
+                replay: [
+                    'sequence' => null,
+                    'current_call' => null,
+                    'recorded_failure' => $recorded,
+                ],
+            );
+        }
+
+        $error = self::describeException($exception);
+
+        if ($recorded !== null) {
+            $error['recorded_failure'] = $recorded;
+        }
+
+        return $this->report(
+            status: self::STATUS_FAILED,
+            reason: self::REASON_REPLAY_ERROR,
+            context: $context,
+            error: $error,
+        );
+    }
+
+    /**
+     * The failure the run recorded when workflow code ended it, if any.
+     *
+     * @return array{exception_class: string, message: ?string}|null
+     */
+    private static function recordedFailure(WorkflowRun $run): ?array
+    {
+        $events = $run->relationLoaded('historyEvents')
+            ? $run->historyEvents
+            : $run->historyEvents()
+                ->get();
+
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $events
+            ->filter(
+                static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::WorkflowFailed
+            )
+            ->sortBy('sequence')
+            ->last();
+
+        if ($event === null) {
+            return null;
+        }
+
+        $payload = is_array($event->payload) ? $event->payload : [];
+        $exception = is_array($payload['exception'] ?? null) ? $payload['exception'] : [];
+        $failure = null;
+        $failureId = self::stringValue($payload['failure_id'] ?? null);
+
+        if ($failureId !== null && $run->relationLoaded('failures')) {
+            $failure = $run->failures->first(
+                static fn (WorkflowFailure $failure): bool => (string) $failure->getKey() === $failureId,
+            );
+        }
+
+        $class = self::stringValue($payload['exception_class'] ?? null)
+            ?? self::stringValue($exception['class'] ?? null)
+            ?? self::stringValue($failure?->exception_class);
+
+        if ($class === null) {
+            return null;
+        }
+
+        $message = $payload['message'] ?? $exception['message'] ?? $failure?->message;
+
+        return [
+            'exception_class' => $class,
+            'message' => is_string($message) ? $message : null,
+        ];
+    }
+
+    /**
+     * @param array{exception_class: string, message: ?string} $recorded
+     */
+    private static function reproducesFailure(array $recorded, Throwable $exception, bool $compareMessage): bool
+    {
+        $replayed = FailureFactory::make($exception);
+
+        if ($replayed['exception_class'] !== $recorded['exception_class']) {
+            return false;
+        }
+
+        return ! $compareMessage
+            || $recorded['message'] === null
+            || $replayed['message'] === $recorded['message'];
     }
 
     private static function stringValue(mixed $value): ?string
