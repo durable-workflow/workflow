@@ -8,12 +8,21 @@
   ran before, and replay runs the update handler again from its recorded
   arguments so the workflow state matches. The update is not delivered again.
   A rejected update, and one the failure closed before it ran, are not reused.
-  An update the source accepted but never resolved is refused with
-  `unsupported_pending_update`, an externally stored update payload with
-  `external_update_payload_not_supported`, and malformed update history with
-  `incomplete_update_step` or `mismatched_update_history`. A run a service
-  worker started that applied an update is refused with
-  `service_redrive_history_not_qualified` (#864).
+  Only three update shapes are accepted, in history order: a rejection, an
+  acceptance closed by the failure, or an acceptance, application and
+  successful completion with identical arguments. An update the source
+  accepted but never resolved is refused with `unsupported_pending_update`,
+  any other shape or binding with `mismatched_update_history` or
+  `incomplete_update_step`, an externally stored update payload with
+  `external_update_payload_not_supported`, and an inline payload that can't be
+  decoded with `unavailable_update_payload`. A run a service worker started
+  that applied an update is refused with `service_redrive_history_not_qualified`
+  (#864).
+- Redrive a successor that itself reused signal waits or updates. A reused
+  payload keeps the run that first recorded it, and `reused_from_run_id` names
+  the immediate source, so a chain of redrives reuses each step once. Before,
+  redriving such a successor was refused with `mismatched_signal_receipt`
+  (#864).
 
 ## 2.19.0 - 2026-11-03
 
