@@ -10,7 +10,10 @@
   A rejected update, and one the failure closed before it ran, are not reused.
   Only three update shapes are accepted, in history order: a rejection, an
   acceptance closed by the failure, or an acceptance, application and
-  successful completion with identical arguments. An update the source
+  successful completion with identical arguments. Every event in each shape
+  must name the same update, command and handler and belong to the source run.
+  An acceptance closed by the failure must record a terminal reason and a
+  failure, with no result and no step. An update the source
   accepted but never resolved is refused with `unsupported_pending_update`,
   any other shape or binding with `mismatched_update_history` or
   `incomplete_update_step`, an externally stored update payload with
@@ -20,7 +23,12 @@
   (#864).
 - Redrive a successor that itself reused signal waits or updates. A reused
   payload keeps the run that first recorded it, and `reused_from_run_id` names
-  the immediate source, so a chain of redrives reuses each step once. Before,
+  the immediate source, so a chain of redrives reuses each step once.
+  `reused_from_run_id` and `reused_recorded_at` come as a pair on every reused
+  update and signal event. A reused event keeps its original time, and a
+  history where one key is missing, blank or names another source is refused.
+  Any `external_storage` key on a signal payload counts as external, even a
+  null one. Before,
   redriving such a successor was refused with `mismatched_signal_receipt`
   (#864).
 
