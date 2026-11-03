@@ -292,6 +292,88 @@ final class ActivityOutcomeRetentionTest extends TestCase
         );
     }
 
+    public function testLeaseRenewalAndLateOutcomeAuditCannotDeadlock(): void
+    {
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            $this->markTestSkipped('This deterministic row-lock interleaving requires PostgreSQL or MySQL.');
+        }
+        $deadline = hrtime(true) + 30_000_000_000;
+        [, $claim, $run] = $this->claimedOriginal();
+        $this->travel(301)
+            ->seconds();
+        $directory = sys_get_temp_dir() . '/workflow-renewal-audit-' . bin2hex(random_bytes(8));
+        mkdir($directory, 0700);
+        $workers = [];
+        try {
+            $input = static fn (int $index, array $extra): array => array_merge([
+                'database' => DB::connection($run->getConnectionName())->getConfig(),
+                'run_id' => $run->id,
+                'attempt_id' => $claim['activity_attempt_id'],
+                'task_id' => $claim['task_id'],
+                'attempt_number' => $claim['attempt_number'],
+                'lease_owner' => $claim['lease_owner'],
+                'direct' => false,
+                'observed_at' => now()
+                    ->toISOString(),
+                'deadline' => $deadline,
+                'ready' => $directory . '/ready-' . $index,
+                'continue' => $directory . '/continue-' . $index,
+                'waiting' => $directory . '/waiting-' . $index,
+                'report' => $directory . '/report-' . $index . '.json',
+            ], $extra);
+
+            // Renewal locks the attempt first and holds it.
+            $workers[] = $this->startProcessWorker($directory, 0, $input(0, [
+                'outcome' => 'renew',
+            ]));
+            $this->awaitFile($directory . '/ready-0', $workers, $deadline);
+            // The late completion takes the run lock and holds it before its audit.
+            $workers[] = $this->startProcessWorker($directory, 1, $input(1, [
+                'outcome' => 'completed',
+                'pause_after_run_lock' => true,
+            ]));
+            $this->awaitFile($directory . '/ready-1', $workers, $deadline);
+            // Renewal now waits for the run lock while holding the attempt.
+            file_put_contents($directory . '/continue-0', 'continue');
+            $this->awaitFile($directory . '/waiting-0', $workers, $deadline);
+            usleep(100_000);
+            // The audit append must not wait for the attempt the renewal holds.
+            file_put_contents($directory . '/continue-1', 'continue');
+            while ($workers[0]->isRunning() || $workers[1]->isRunning()) {
+                if (hrtime(true) >= $deadline) {
+                    self::fail('The original renewal interleaving budget expired.');
+                }
+                usleep(1_000);
+            }
+            foreach ($workers as $worker) {
+                self::assertSame(
+                    0,
+                    $worker->getExitCode(),
+                    substr($worker->getErrorOutput() . $worker->getOutput(), -8_192)
+                );
+            }
+            $renewal = json_decode(file_get_contents($directory . '/report-0.json'), true, flags: JSON_THROW_ON_ERROR);
+            $outcome = json_decode(file_get_contents($directory . '/report-1.json'), true, flags: JSON_THROW_ON_ERROR);
+        } finally {
+            foreach ($workers as $worker) {
+                $worker->stop(2);
+            }
+            foreach (glob($directory . '/*') ?: [] as $path) {
+                unlink($path);
+            }
+            rmdir($directory);
+        }
+
+        self::assertFalse($renewal['recorded']);
+        self::assertFalse($outcome['recorded']);
+        self::assertSame('lease_expired', $outcome['reason']);
+        $audits = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityOutcomeRejected)
+            ->get();
+        self::assertCount(1, $audits);
+        self::assertSame('lease_expired', $audits->sole()->payload['reason']);
+    }
+
     private function claimedOriginal(): array
     {
         $workflow = WorkflowStub::make(TestRetryWorkflow::class, 'outcome-retention');
@@ -307,6 +389,26 @@ final class ActivityOutcomeRetentionTest extends TestCase
         self::assertTrue($claim['claimed']);
 
         return [$bridge, $claim, WorkflowRun::query()->findOrFail($workflow->runId())];
+    }
+
+    private function startProcessWorker(string $directory, int $index, array $input): Process
+    {
+        $path = $directory . '/input-' . $index . '.json';
+        file_put_contents($path, json_encode($input, JSON_THROW_ON_ERROR));
+        $worker = new Process([
+            PHP_BINARY,
+            dirname(__DIR__, 3) . '/vendor/bin/phpunit',
+            dirname(__DIR__, 2) . '/Support/ActivityOutcomeRetentionProcessTest.php',
+            '--do-not-cache-result',
+        ], dirname(__DIR__, 3), [
+            'DWF_RETENTION_PROCESS_INPUT' => $path,
+            'APP_SERVICES_CACHE' => $directory . '/services-' . $index . '.php',
+            'APP_PACKAGES_CACHE' => $directory . '/packages-' . $index . '.php',
+            'XDEBUG_MODE' => 'off',
+        ], timeout: 30);
+        $worker->start();
+
+        return $worker;
     }
 
     private function interleavePruning(

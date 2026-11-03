@@ -15,7 +15,13 @@ use Workflow\V2\Models\WorkflowTask;
 final class ActivityOutcomeRejection
 {
     /**
-     * Record only under the original task/execution/run mutation locks.
+     * Record only while holding the run lock. Every caller holds it, so audit
+     * appends and their duplicate check are serialized per run.
+     *
+     * The attempt row is read without a lock. Lease renewal locks the attempt
+     * before the run, so asking for the attempt lock here, after the run lock,
+     * could deadlock with a renewal. A renewal that has not committed cannot
+     * change what this refusal observed.
      */
     public static function record(
         WorkflowRun $run,
@@ -29,7 +35,7 @@ final class ActivityOutcomeRejection
         if ($run->details_pruned_at !== null || ! in_array($outcome, ['completed', 'failed'], true)) {
             return null;
         }
-        $attempt = ActivityAttempt::query()->lockForUpdate()->find($attemptId);
+        $attempt = ActivityAttempt::query()->find($attemptId);
         if (! $attempt instanceof ActivityAttempt
             || $attempt->id !== $attemptId
             || ! is_string($attempt->lease_owner)

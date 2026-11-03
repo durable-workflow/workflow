@@ -651,8 +651,8 @@ final class ActivityOutcomeRecorder
             return null;
         }
 
-        // The attempt row lock taken here follows the run lock, the same order
-        // retention uses, so the audit append adds no reverse lock dependency.
+        // The audit append reads the attempt without a lock, so it adds no lock
+        // after this run lock (renewal locks the attempt before the run).
         ActivityOutcomeRejection::record(
             $run,
             $execution,
