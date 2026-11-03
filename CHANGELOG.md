@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.18.0 - 2026-11-03
+
 - Redrive a failed run that has start-time memos or search attributes. Before,
   any memo or search attribute row refused redrive with
   `unsupported_visibility_metadata`. The successor now inherits the start
@@ -38,6 +40,21 @@
   Apply the nullable `intent_digest` migration, drain and upgrade all embedded
   database writers together, and allocate new keys for different operations.
   Native Server and published SDK/CLI qualification remain separate.
+
+- V2 payloads reject an Eloquent model, `ModelIdentifier` or Eloquent
+  collection with an `unsupported_value_type` message that names the model
+  class and says to pass the key and load the model inside the activity.
+  Before, the message named Laravel's internal `ModelIdentifier` type. The
+  Avro argument path no longer runs `serializeModels`, and failure and
+  throwable normalization are unchanged (#997).
+- Record a bounded diagnostic when a late activity outcome is refused. The
+  first refused completion or failure from an expired or superseded attempt
+  appends one `ActivityOutcomeRejected` event with the attempt identity, lease
+  owner, attempted outcome, refusal reason and observation time. It is
+  payload-free: the result, failure, stack and request snapshot are never
+  stored. It grants no business outcome, renews no lease and changes no retry.
+  Readers have understood this event since 2.13.0, so after an upgraded
+  release writes one, do not roll back below 2.13.0 (#878, #901).
 
 ## 2.17.1 - 2026-11-03
 
