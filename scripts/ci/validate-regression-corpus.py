@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -1817,19 +1818,27 @@ def _consumer_result(
     files: Mapping[str, bytes],
     command: Sequence[str],
 ) -> subprocess.CompletedProcess[str]:
+    started = time.monotonic()
     with tempfile.TemporaryDirectory(
         prefix=".regression-corpus-consumer-",
         dir=source_root,
     ) as temporary:
         consumer_root = Path(temporary)
         _materialize_consumer_tree(source_root, consumer_root, files)
-        return subprocess.run(
+        materialized = time.monotonic()
+        result = subprocess.run(
             command,
             cwd=consumer_root,
             check=False,
             capture_output=True,
             text=True,
         )
+        print(
+            f"official consumer run: tree {materialized - started:.1f}s, "
+            f"consumer {time.monotonic() - materialized:.1f}s, exit {result.returncode}",
+            file=sys.stderr,
+        )
+        return result
 
 
 def _consumer_failure_detail(result: subprocess.CompletedProcess[str]) -> str:
