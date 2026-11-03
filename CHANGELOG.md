@@ -26,6 +26,24 @@
   and an externally stored signal payload with
   `external_signal_payload_not_supported`. Updates in the completed prefix
   are still refused (#864).
+- Redrive a run that failed in workflow code or on a structural limit.
+  `WorkflowFailed` now records `failed_step_sequence` with `failed_step_kind`
+  `workflow_code` or `structural_limit`, the step the code never took. The
+  successor reuses every earlier step and resumes there. A workflow-code
+  failure on the same definition is refused with
+  `workflow_code_failure_requires_corrected_definition`, because the same code
+  would throw again. Pass `allow_definition_change: true` to redrive onto a
+  corrected definition: inside the redrive transaction, the new code replays
+  the reused prefix in memory, and redrive refuses with
+  `definition_incompatible_with_prefix` when it can't, or with
+  `definition_check_over_budget` when the prefix exceeds the history budget,
+  before writing anything. An accepted change records
+  `definition_changed_from` on the successor's `WorkflowStarted`, and run
+  detail (`workflow_definition_changed_from`) and describe
+  (`run.definition_changed_from`) show it. A service-mode run whose definition
+  changed is refused with `definition_change_requires_replay_check`. Failures
+  recorded by earlier releases have no boundary and still refuse with
+  `unrecorded_failure_boundary` (#864).
 
 ## 2.18.0 - 2026-11-03
 

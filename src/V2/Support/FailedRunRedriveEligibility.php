@@ -40,7 +40,8 @@ final class FailedRunRedriveEligibility
      *         completed: list<array<string, mixed>>,
      *         reused_steps: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null, scheduled_payload?: array<string, mixed>, signal_events?: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null}>}>
      *     }|null,
-     *     started_payload: array<string, mixed>
+     *     started_payload: array<string, mixed>,
+     *     definition_change?: array{workflow_class: class-string<Workflow>, from: string, to: string}|null
      * }
      */
     public static function evaluate(
@@ -48,6 +49,7 @@ final class FailedRunRedriveEligibility
         ?WorkflowRun $currentRun,
         ?string $externalFingerprint = null,
         bool $fingerprintPresentedAtRedrive = false,
+        bool $allowDefinitionChange = false,
     ): array {
         if ($currentRun?->id !== $source->id) {
             return self::refuse('source_run_not_current');
@@ -104,19 +106,48 @@ final class FailedRunRedriveEligibility
             return self::refuse('unsupported_source_metadata');
         }
 
+        $sourceFingerprint = $startedPayload['workflow_definition_fingerprint'] ?? null;
+        $definitionChange = null;
+
         if (! self::definitionMatches(
             $source,
-            $startedPayload['workflow_definition_fingerprint'] ?? null,
+            $sourceFingerprint,
             $externalFingerprint,
             $fingerprintPresentedAtRedrive,
         )) {
-            return self::refuse('workflow_definition_unavailable_or_changed');
+            $workflowClass = self::localWorkflowClass($source);
+            $currentFingerprint = $workflowClass === null ? null : WorkflowDefinition::fingerprint($workflowClass);
+
+            if (! $allowDefinitionChange || ! is_string($sourceFingerprint) || $sourceFingerprint === '') {
+                return self::refuse('workflow_definition_unavailable_or_changed');
+            }
+
+            // The server can't replay a service worker's code before accepting.
+            if ($workflowClass === null || $currentFingerprint === null) {
+                return self::refuse('definition_change_requires_replay_check');
+            }
+
+            $definitionReason = FailedRunRedriveDefinitionCheck::check($source, $workflowClass, $startedPayload, $plan);
+
+            if ($definitionReason !== null) {
+                return self::refuse($definitionReason);
+            }
+
+            $definitionChange = [
+                'workflow_class' => $workflowClass,
+                'from' => $sourceFingerprint,
+                'to' => $currentFingerprint,
+            ];
+        } elseif (($plan['failed_step_kind'] ?? null) === 'workflow_code') {
+            // The same code would throw at the same step again.
+            return self::refuse('workflow_code_failure_requires_corrected_definition');
         }
 
         return [
             'reason' => null,
             'plan' => $plan,
             'started_payload' => $startedPayload,
+            'definition_change' => $definitionChange,
         ];
     }
 

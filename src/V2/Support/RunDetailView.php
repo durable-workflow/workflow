@@ -163,6 +163,7 @@ final class RunDetailView
             'memo' => AvroValueJsonProjection::project($run->typedMemos()),
             'search_attributes' => self::resolveSearchAttributes($run, $summary),
             'workflow_definition_fingerprint' => $recordedDefinitionFingerprint,
+            'workflow_definition_changed_from' => WorkflowDefinitionFingerprint::changedFromForRun($run),
             'workflow_definition_current_fingerprint' => $currentDefinitionFingerprint,
             'workflow_definition_matches_current' => $definitionMatchesCurrent,
             'workflow_determinism_status' => $determinismDiagnostics['status'],
