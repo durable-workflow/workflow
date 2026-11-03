@@ -26,7 +26,8 @@ final class FailedRunRedrivePlan
      *         event_type: HistoryEventType,
      *         payload: array<string, mixed>,
      *         recorded_at: string|null,
-     *         scheduled_payload?: array<string, mixed>
+     *         scheduled_payload?: array<string, mixed>,
+     *         signal_events?: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null}>
      *     }>
      * }
      */
@@ -45,6 +46,7 @@ final class FailedRunRedrivePlan
         $activityEvents = [];
         $markerEvents = [];
         $timerEvents = [];
+        $signalEvents = [];
         $lastActivityEvent = null;
 
         foreach ($events as $event) {
@@ -113,6 +115,26 @@ final class FailedRunRedrivePlan
                 continue;
             }
 
+            if ($event->event_type === HistoryEventType::MessageCursorAdvanced) {
+                // Message stream bookkeeping, not a step. Redrive carries the
+                // source's cursor position to the successor instead.
+                continue;
+            }
+
+            if (in_array($event->event_type, [
+                HistoryEventType::SignalWaitOpened,
+                HistoryEventType::SignalReceived,
+                HistoryEventType::SignalApplied,
+            ], true)) {
+                if ($started === null) {
+                    return self::reject('invalid_step_sequence');
+                }
+
+                $signalEvents[] = $event;
+
+                continue;
+            }
+
             if (in_array($event->event_type, [HistoryEventType::TimerScheduled, HistoryEventType::TimerFired], true)) {
                 $payload = $event->payload;
                 $sequence = is_array($payload) ? ($payload['sequence'] ?? null) : null;
@@ -173,7 +195,17 @@ final class FailedRunRedrivePlan
             return self::reject('unrecorded_failure_boundary');
         }
 
-        foreach ([...array_keys($markerEvents), ...array_keys($timerEvents)] as $sequence) {
+        $signalSteps = self::signalSteps($signalEvents);
+
+        if (is_string($signalSteps)) {
+            return self::reject($signalSteps);
+        }
+
+        foreach ([
+            ...array_keys($markerEvents),
+            ...array_keys($timerEvents),
+            ...array_keys($signalSteps),
+        ] as $sequence) {
             if ($sequence >= $boundary) {
                 return self::reject('invalid_failed_step');
             }
@@ -191,7 +223,13 @@ final class FailedRunRedrivePlan
             }
         }
 
-        if (count($activityEvents) + count($markerEvents) + count($timerEvents) !== $boundary) {
+        foreach (array_keys($signalSteps) as $sequence) {
+            if (isset($activityEvents[$sequence]) || isset($markerEvents[$sequence]) || isset($timerEvents[$sequence])) {
+                return self::reject('duplicate_step_sequence');
+            }
+        }
+
+        if (count($activityEvents) + count($markerEvents) + count($timerEvents) + count($signalSteps) !== $boundary) {
             return self::reject('activity_sequence_gap');
         }
 
@@ -211,6 +249,14 @@ final class FailedRunRedrivePlan
                     'payload' => $markerPayload,
                     'recorded_at' => $marker->recorded_at?->toIso8601String(),
                 ];
+
+                continue;
+            }
+
+            $signalStep = $signalSteps[$sequence] ?? null;
+
+            if (is_array($signalStep)) {
+                $reusedSteps[] = $signalStep;
 
                 continue;
             }
@@ -398,6 +444,124 @@ final class FailedRunRedrivePlan
             'recorded_at' => $fired->recorded_at?->toIso8601String(),
             'scheduled_payload' => $scheduledPayload,
         ];
+    }
+
+    /**
+     * Group signal events into completed signal-wait steps keyed by step
+     * sequence. Only a plain wait (no timeout, cancellation scope or parallel
+     * group) whose received signal was applied is reusable. A received signal
+     * the source never applied is refused, because the successor would lose it.
+     *
+     * @param list<WorkflowHistoryEvent> $events
+     *
+     * @return array<int, array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null, signal_events: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null}>}>|string
+     */
+    private static function signalSteps(array $events): array|string
+    {
+        $opened = [];
+        $applied = [];
+        $received = [];
+
+        foreach ($events as $event) {
+            $payload = is_array($event->payload) ? $event->payload : [];
+            $waitId = $payload['signal_wait_id'] ?? null;
+            $name = $payload['signal_name'] ?? null;
+
+            if ($event->event_type === HistoryEventType::SignalReceived) {
+                $signalId = $payload['signal_id'] ?? null;
+
+                if (! is_string($signalId) || $signalId === '' || isset($received[$signalId])) {
+                    return 'unsupported_signal_wait';
+                }
+
+                $received[$signalId] = $event;
+
+                continue;
+            }
+
+            $sequence = $payload['sequence'] ?? null;
+
+            if (! is_int($sequence) || $sequence < 1 || ! is_string($waitId) || $waitId === '' || ! is_string($name)) {
+                return 'invalid_step_sequence';
+            }
+
+            if (
+                ($payload['timeout_seconds'] ?? null) !== null
+                || ($payload['cancellation_scope_id'] ?? null) !== null
+                || ($payload['parallel_group_id'] ?? null) !== null
+            ) {
+                return 'unsupported_signal_wait';
+            }
+
+            if ($event->event_type === HistoryEventType::SignalWaitOpened) {
+                if (isset($opened[$sequence])) {
+                    return 'duplicate_step_sequence';
+                }
+
+                $opened[$sequence] = $event;
+
+                continue;
+            }
+
+            if (isset($applied[$sequence])) {
+                return 'duplicate_step_sequence';
+            }
+
+            $applied[$sequence] = $event;
+        }
+
+        $steps = [];
+        $appliedSignalIds = [];
+
+        foreach ($opened as $sequence => $wait) {
+            $application = $applied[$sequence] ?? null;
+            $applicationPayload = $application?->payload;
+            $signalId = is_array($applicationPayload) ? ($applicationPayload['signal_id'] ?? null) : null;
+            $receipt = is_string($signalId) ? ($received[$signalId] ?? null) : null;
+
+            if (
+                ! $application instanceof WorkflowHistoryEvent
+                || ! $receipt instanceof WorkflowHistoryEvent
+                || $applicationPayload['signal_wait_id'] !== $wait->payload['signal_wait_id']
+                || $applicationPayload['signal_name'] !== $wait->payload['signal_name']
+                || ($receipt->payload['signal_name'] ?? null) !== $wait->payload['signal_name']
+            ) {
+                return 'incomplete_signal_step';
+            }
+
+            $appliedSignalIds[$signalId] = true;
+            $signalEvents = [];
+
+            foreach ([$wait, $receipt, $application] as $event) {
+                $eventPayload = $event->payload;
+                // The task and command are the source run's recording context.
+                unset($eventPayload['task'], $eventPayload['command']);
+                $signalEvents[] = [
+                    'event_type' => $event->event_type,
+                    'payload' => $eventPayload,
+                    'recorded_at' => $event->recorded_at?->toIso8601String(),
+                ];
+            }
+
+            $steps[$sequence] = [
+                'event_type' => HistoryEventType::SignalApplied,
+                'payload' => $signalEvents[2]['payload'],
+                'recorded_at' => $signalEvents[2]['recorded_at'],
+                'signal_events' => $signalEvents,
+            ];
+        }
+
+        if (count($applied) !== count($opened)) {
+            return 'incomplete_signal_step';
+        }
+
+        foreach (array_keys($received) as $signalId) {
+            if (! isset($appliedSignalIds[$signalId])) {
+                return 'unsupported_pending_signal';
+            }
+        }
+
+        return $steps;
     }
 
     private static function isExternalResult(mixed $result): bool

@@ -240,6 +240,9 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 ],
             ), null, $command);
 
+            // Messages the source consumed stay consumed for the successor.
+            MessageStreamCursor::transferCursor($source, $continuedRun);
+
             app(MemoUpsertService::class)->copyForRedrive($source, $continuedRun);
             app(SearchAttributeUpsertService::class)->copyForRedrive($source, $continuedRun);
 
@@ -249,6 +252,26 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 $reusedRecordedAt = is_string($reused['reused_recorded_at'] ?? null)
                     ? $reused['reused_recorded_at']
                     : $step['recorded_at'];
+
+                if (isset($step['signal_events'])) {
+                    // A completed signal wait: the successor records the
+                    // wait, the receipt and the application without a signal
+                    // row or command to deliver again.
+                    foreach ($step['signal_events'] as $signalEvent) {
+                        $signalPayload = $signalEvent['payload'];
+                        WorkflowHistoryEvent::record($continuedRun, $signalEvent['event_type'], array_merge(
+                            $signalPayload,
+                            [
+                                'reused_from_run_id' => $source->id,
+                                'reused_recorded_at' => is_string($signalPayload['reused_recorded_at'] ?? null)
+                                    ? $signalPayload['reused_recorded_at']
+                                    : $signalEvent['recorded_at'],
+                            ],
+                        ));
+                    }
+
+                    continue;
+                }
 
                 if ($step['event_type'] === HistoryEventType::TimerFired) {
                     // The timer already fired, so the successor records it

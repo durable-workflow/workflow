@@ -11,6 +11,7 @@ use Symfony\Component\Process\Process;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestRedriveMarkersWorkflow;
 use Tests\Fixtures\V2\TestRedrivePatchedWorkflow;
+use Tests\Fixtures\V2\TestRedriveSignalWorkflow;
 use Tests\Fixtures\V2\TestRedriveTimerWorkflow;
 use Tests\Fixtures\V2\TestRedriveVisibilityWorkflow;
 use Tests\Fixtures\V2\TestRedriveWorkflow;
@@ -29,6 +30,7 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\StartOptions;
@@ -625,6 +627,155 @@ final class V2FailedRunRedriveTest extends TestCase
         $this->assertSame($secondRun->id, $reusedMemo->payload['reused_from_run_id']);
         $this->assertSame($memoRecordedAt, $reusedMemo->payload['reused_recorded_at']);
         $this->assertSame($memoRecordedAt, $thirdRun->workflowOutput()['time_after_memo']);
+    }
+
+    public function testRedriveReusesAnAppliedSignalWaitAtItsRecordedTime(): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestRedriveSignalWorkflow::class, 'redrive-signal-1');
+        $workflow->start('Taylor');
+        $workflow->signal('approve', 'Grace');
+        $this->assertTrue($workflow->refresh()->failed());
+        $sourceRunId = $workflow->runId();
+        $sourceEvents = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $sourceRunId)
+            ->whereIn('event_type', [
+                HistoryEventType::SignalWaitOpened,
+                HistoryEventType::SignalReceived,
+                HistoryEventType::SignalApplied,
+            ])
+            ->orderBy('sequence')
+            ->get();
+        $this->assertCount(3, $sourceEvents);
+        $sourceApplied = $sourceEvents->firstWhere('event_type', HistoryEventType::SignalApplied);
+
+        $this->travel(5)
+            ->minutes();
+        $result = app(WorkflowControlPlane::class)->redrive('redrive-signal-1', $sourceRunId);
+
+        $this->assertTrue($result['accepted'], (string) $result['reason']);
+        $this->assertSame(3, $result['resume_step_sequence']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame(RunStatus::Completed, $successor->status);
+        $this->assertSame(1, (int) Cache::get('test:redrive:first-calls'));
+
+        $reused = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $successor->id)
+            ->whereIn('event_type', [
+                HistoryEventType::SignalWaitOpened,
+                HistoryEventType::SignalReceived,
+                HistoryEventType::SignalApplied,
+            ])
+            ->orderBy('sequence')
+            ->get();
+        $this->assertSame(
+            ['SignalWaitOpened', 'SignalReceived', 'SignalApplied'],
+            $reused->map(static fn (WorkflowHistoryEvent $event): string => $event->event_type->value)
+                ->all(),
+        );
+        foreach ($reused as $event) {
+            $original = $sourceEvents->firstWhere('event_type', $event->event_type);
+            $this->assertSame($sourceRunId, $event->payload['reused_from_run_id'] ?? null);
+            $this->assertSame(
+                $original->recorded_at?->toIso8601String(),
+                $event->payload['reused_recorded_at'] ?? null,
+            );
+        }
+        $this->assertSame(0, WorkflowSignal::query()->where('workflow_run_id', $successor->id)->count());
+        // The consumed message stays consumed for the successor.
+        $this->assertGreaterThan(0, (int) WorkflowRun::query()->findOrFail($sourceRunId)->message_cursor_position);
+        $this->assertSame(
+            (int) WorkflowRun::query()->findOrFail($sourceRunId)->message_cursor_position,
+            (int) $successor->message_cursor_position,
+        );
+
+        $expectedTime = $sourceApplied->recorded_at?->toIso8601String();
+        $output = $successor->workflowOutput();
+        $this->assertSame('Hello, Taylor! Redrive completed.', $output['result']);
+        $this->assertSame('Grace', $output['approved_by']);
+        $this->assertSame($expectedTime, $output['time_after_signal']);
+        $export = json_decode(
+            json_encode(HistoryExport::forRun($successor->fresh()), JSON_THROW_ON_ERROR),
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+        $this->assertSame($expectedTime, (new WorkflowReplayer())->replayExport($export)->workflow->timeAfterSignal());
+        $this->assertSame(
+            $expectedTime,
+            (new WorkflowReplayer())->replay($successor->fresh())
+                ->workflow->timeAfterSignal(),
+        );
+    }
+
+    public function testRedriveRefusesASignalTheSourceReceivedButNeverApplied(): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestRedriveSignalWorkflow::class, 'redrive-signal-pending');
+        $workflow->start('Taylor');
+        $workflow->signal('approve', 'Grace');
+        $this->assertTrue($workflow->refresh()->failed());
+        $source = WorkflowRun::query()->findOrFail($workflow->runId());
+        $applied = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $source->id)
+            ->where('event_type', HistoryEventType::SignalReceived)
+            ->sole();
+        // A second receipt the workflow never consumed.
+        $receipt = $applied->payload;
+        unset($receipt['task'], $receipt['command']);
+        WorkflowHistoryEvent::record($source, HistoryEventType::SignalReceived, array_merge($receipt, [
+            'signal_id' => 'never-applied-signal',
+        ]));
+        // Place the receipt before the terminal failure, as a buffered signal.
+        $failure = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $source->id)
+            ->where('event_type', HistoryEventType::WorkflowFailed)
+            ->sole();
+        $failureSequence = $failure->sequence;
+        $pending = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $source->id)
+            ->where('event_type', HistoryEventType::SignalReceived)
+            ->orderByDesc('sequence')
+            ->first();
+        $failure->forceFill([
+            'sequence' => $pending->sequence + 1,
+        ])->save();
+        $pending->forceFill([
+            'sequence' => $failureSequence,
+        ])->save();
+
+        $result = app(WorkflowControlPlane::class)->redrive('redrive-signal-pending', $source->id);
+
+        $this->assertFalse($result['accepted']);
+        $this->assertSame('unsupported_pending_signal', $result['reason']);
+        $this->assertSame(1, WorkflowRun::query()->where('workflow_instance_id', 'redrive-signal-pending')->count());
+    }
+
+    public function testRedriveRefusesASignalWaitWithATimeout(): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestRedriveSignalWorkflow::class, 'redrive-signal-timeout');
+        $workflow->start('Taylor');
+        $workflow->signal('approve', 'Grace');
+        $this->assertTrue($workflow->refresh()->failed());
+        $wait = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::SignalWaitOpened)
+            ->sole();
+        // Its timeout timer and race are not reused yet.
+        $wait->forceFill([
+            'payload' => array_merge($wait->payload, [
+                'timeout_seconds' => 60,
+            ]),
+        ])->save();
+
+        $result = app(WorkflowControlPlane::class)->redrive('redrive-signal-timeout', $workflow->runId());
+
+        $this->assertFalse($result['accepted']);
+        $this->assertSame('unsupported_signal_wait', $result['reason']);
     }
 
     public function testRedriveReusesOneMarkerForARepeatedPatchCall(): void

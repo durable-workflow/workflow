@@ -471,6 +471,8 @@ final class HistoryEventPayloadContract
             'signal_wait_id',
             'arguments',
             'payload_codec',
+            'reused_from_run_id',
+            'reused_recorded_at',
         ],
         'SignalRejected' => [
             'workflow_command_id',
@@ -494,6 +496,8 @@ final class HistoryEventPayloadContract
             'parallel_group_size',
             'parallel_group_index',
             'parallel_group_path',
+            'reused_from_run_id',
+            'reused_recorded_at',
         ],
         'SignalWaitOpened' => [
             'signal_name',
@@ -507,6 +511,8 @@ final class HistoryEventPayloadContract
             'parallel_group_size',
             'parallel_group_index',
             'parallel_group_path',
+            'reused_from_run_id',
+            'reused_recorded_at',
         ],
         'UpdateAccepted' => [
             'workflow_command_id',
