@@ -56,7 +56,10 @@
   scope or parallel group is refused with `unsupported_signal_wait`, a signal
   the source received but never applied with `unsupported_pending_signal`, and
   a wait without its receipt and application with `incomplete_signal_step`.
-  Updates in the completed prefix are still refused (#864).
+  A receipt that names another run, instance, command or wait is refused with
+  `mismatched_signal_receipt`, and an externally stored signal payload with
+  `external_signal_payload_not_supported`. Updates in the completed prefix are
+  still refused (#864).
 
 ## 2.17.1 - 2026-11-03
 

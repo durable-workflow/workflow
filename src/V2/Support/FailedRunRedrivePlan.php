@@ -195,7 +195,7 @@ final class FailedRunRedrivePlan
             return self::reject('unrecorded_failure_boundary');
         }
 
-        $signalSteps = self::signalSteps($signalEvents);
+        $signalSteps = self::signalSteps($signalEvents, $run);
 
         if (is_string($signalSteps)) {
             return self::reject($signalSteps);
@@ -452,11 +452,17 @@ final class FailedRunRedrivePlan
      * group) whose received signal was applied is reusable. A received signal
      * the source never applied is refused, because the successor would lose it.
      *
+     * The receipt must belong to the source run and instance, carry the same
+     * command as the application, and name the same wait. A receipt recorded
+     * before its wait opened has no wait id yet, which is the only allowed
+     * difference. External signal payloads are refused, because the successor
+     * gets no signal row or command that owns the stored reference.
+     *
      * @param list<WorkflowHistoryEvent> $events
      *
      * @return array<int, array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null, signal_events: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null}>}>|string
      */
-    private static function signalSteps(array $events): array|string
+    private static function signalSteps(array $events, WorkflowRun $run): array|string
     {
         $opened = [];
         $applied = [];
@@ -524,9 +530,31 @@ final class FailedRunRedrivePlan
                 || ! $receipt instanceof WorkflowHistoryEvent
                 || $applicationPayload['signal_wait_id'] !== $wait->payload['signal_wait_id']
                 || $applicationPayload['signal_name'] !== $wait->payload['signal_name']
-                || ($receipt->payload['signal_name'] ?? null) !== $wait->payload['signal_name']
             ) {
                 return 'incomplete_signal_step';
+            }
+
+            $receiptPayload = is_array($receipt->payload) ? $receipt->payload : [];
+            $receiptWaitId = $receiptPayload['signal_wait_id'] ?? null;
+            $commandId = $applicationPayload['workflow_command_id'] ?? null;
+
+            if (
+                ($receiptPayload['signal_name'] ?? null) !== $wait->payload['signal_name']
+                || ($receiptWaitId !== null && $receiptWaitId !== $wait->payload['signal_wait_id'])
+                || ! is_string($commandId)
+                || $commandId === ''
+                || ($receiptPayload['workflow_command_id'] ?? null) !== $commandId
+                || ($receiptPayload['workflow_run_id'] ?? null) !== $run->id
+                || ($receiptPayload['workflow_instance_id'] ?? null) !== $run->workflow_instance_id
+            ) {
+                return 'mismatched_signal_receipt';
+            }
+
+            if (
+                self::isExternalResult($receiptPayload['arguments'] ?? null)
+                || self::isExternalResult($applicationPayload['value'] ?? null)
+            ) {
+                return 'external_signal_payload_not_supported';
             }
 
             $appliedSignalIds[$signalId] = true;

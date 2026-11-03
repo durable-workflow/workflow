@@ -753,6 +753,106 @@ final class V2FailedRunRedriveTest extends TestCase
         $this->assertSame(1, WorkflowRun::query()->where('workflow_instance_id', 'redrive-signal-pending')->count());
     }
 
+    /**
+     * @return iterable<string, array{HistoryEventType, string, mixed, string}>
+     */
+    public static function signalStepMutations(): iterable
+    {
+        $external = [
+            'codec' => 'avro',
+            'external_storage' => [
+                'uri' => 's3://bucket/signal-payload',
+                'sha256' => str_repeat('a', 64),
+                'size_bytes' => 4096,
+                'codec' => 'avro',
+            ],
+        ];
+
+        yield 'receipt for another wait' => [
+            HistoryEventType::SignalReceived, 'signal_wait_id', 'another-wait', 'mismatched_signal_receipt',
+        ];
+        yield 'receipt for another command' => [
+            HistoryEventType::SignalReceived, 'workflow_command_id', 'another-command', 'mismatched_signal_receipt',
+        ];
+        yield 'receipt for another run' => [
+            HistoryEventType::SignalReceived, 'workflow_run_id', 'another-run', 'mismatched_signal_receipt',
+        ];
+        yield 'receipt for another instance' => [
+            HistoryEventType::SignalReceived, 'workflow_instance_id', 'another-instance', 'mismatched_signal_receipt',
+        ];
+        yield 'external receipt arguments' => [
+            HistoryEventType::SignalReceived, 'arguments', $external, 'external_signal_payload_not_supported',
+        ];
+        yield 'external applied value' => [
+            HistoryEventType::SignalApplied, 'value', $external, 'external_signal_payload_not_supported',
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('signalStepMutations')]
+    public function testRedriveRefusesAMismatchedOrExternalSignalStepWithoutMutation(
+        HistoryEventType $type,
+        string $key,
+        mixed $value,
+        string $reason,
+    ): void {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestRedriveSignalWorkflow::class, 'redrive-signal-mutation');
+        $workflow->start('Taylor');
+        $workflow->signal('approve', 'Grace');
+        $this->assertTrue($workflow->refresh()->failed());
+        $source = WorkflowRun::query()->findOrFail($workflow->runId());
+        $event = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $source->id)
+            ->where('event_type', $type)
+            ->sole();
+        $event->forceFill([
+            'payload' => array_merge($event->payload, [
+                $key => $value,
+            ]),
+        ])->save();
+        $cursor = (int) $source->fresh()
+->message_cursor_position;
+        $events = WorkflowHistoryEvent::query()->count();
+
+        $result = app(WorkflowControlPlane::class)->redrive('redrive-signal-mutation', $source->id);
+
+        $this->assertFalse($result['accepted']);
+        $this->assertSame($reason, $result['reason']);
+        $this->assertSame(1, WorkflowRun::query()->where('workflow_instance_id', 'redrive-signal-mutation')->count());
+        $this->assertSame($cursor, (int) $source->fresh()->message_cursor_position);
+        $this->assertSame($events, WorkflowHistoryEvent::query()->count());
+        $this->assertSame($source->id, $source->instance->fresh()->current_run_id);
+    }
+
+    public function testRedriveAcceptsASignalReceivedBeforeItsWaitOpened(): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestRedriveSignalWorkflow::class, 'redrive-signal-buffered');
+        $workflow->start('Taylor');
+        $workflow->signal('approve', 'Grace');
+        $this->assertTrue($workflow->refresh()->failed());
+        $receipt = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::SignalReceived)
+            ->sole();
+        // A signal that arrived before the wait opened has no wait id yet.
+        $receipt->forceFill([
+            'payload' => array_merge($receipt->payload, [
+                'signal_wait_id' => null,
+            ]),
+        ])->save();
+
+        $result = app(WorkflowControlPlane::class)->redrive('redrive-signal-buffered', $workflow->runId());
+
+        $this->assertTrue($result['accepted'], (string) $result['reason']);
+        $this->assertSame(
+            'Grace',
+            WorkflowRun::query()->findOrFail($result['workflow_run_id'])->workflowOutput()['approved_by']
+        );
+    }
+
     public function testRedriveRefusesASignalWaitWithATimeout(): void
     {
         WorkflowStub::fake();
