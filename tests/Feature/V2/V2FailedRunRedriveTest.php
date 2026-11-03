@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Queue;
 use Symfony\Component\Process\Process;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestRedriveMarkersWorkflow;
+use Tests\Fixtures\V2\TestRedrivePatchedWorkflow;
 use Tests\Fixtures\V2\TestRedriveTimerWorkflow;
 use Tests\Fixtures\V2\TestRedriveWorkflow;
 use Tests\Fixtures\V2\TestThrowAfterGreetingWorkflow;
@@ -479,6 +480,40 @@ final class V2FailedRunRedriveTest extends TestCase
         )->step();
         $this->assertTrue($fiber->completed);
         $this->assertSame($output, $fiber->result);
+    }
+
+    public function testRedriveReusesOneMarkerForARepeatedPatchCall(): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestRedrivePatchedWorkflow::class, 'redrive-patched-1');
+        $workflow->start('Taylor');
+        $this->assertTrue($workflow->refresh()->failed());
+        $sourceRunId = $workflow->runId();
+        $sourceMarkers = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $sourceRunId)
+            ->where('event_type', HistoryEventType::VersionMarkerRecorded)
+            ->get();
+        // Only the first call records a marker, at its own step. The repeated
+        // call takes no step, so no marker shares a step with an activity.
+        $this->assertCount(1, $sourceMarkers);
+        $this->assertSame(1, $sourceMarkers[0]->payload['sequence']);
+
+        $result = app(WorkflowControlPlane::class)->redrive('redrive-patched-1', $sourceRunId);
+
+        $this->assertTrue($result['accepted'], (string) $result['reason']);
+        $this->assertSame(3, $result['resume_step_sequence']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame(RunStatus::Completed, $successor->status);
+        $this->assertSame([
+            'result' => 'Hello, Taylor! Redrive completed.',
+            'patched' => true,
+            'patched_again' => true,
+        ], $successor->workflowOutput());
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $successor->id)
+            ->where('event_type', HistoryEventType::VersionMarkerRecorded)
+            ->count());
     }
 
     public function testRedriveReusesAFiredTimerAtItsRecordedTime(): void
