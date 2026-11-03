@@ -12,6 +12,20 @@
   can be redriven again. A row written by workflow code with no matching
   reused upsert step is still refused with `unsupported_visibility_metadata`
   (#864).
+- Redrive a failed run whose completed steps include a signal wait
+  (`await('name')`) that received and applied its signal. The successor
+  records the wait, receipt and application with `reused_from_run_id` and
+  `reused_recorded_at`, and replay uses the original time, so the workflow
+  gets the same value without a new signal. Redrive also carries the source's
+  message cursor, so a consumed message is not delivered again. A wait with a
+  timeout, cancellation scope or parallel group is refused with
+  `unsupported_signal_wait`, a signal the source received but never applied
+  with `unsupported_pending_signal`, and a wait without its receipt and
+  application with `incomplete_signal_step`. A receipt that names another
+  run, instance, command or wait is refused with `mismatched_signal_receipt`,
+  and an externally stored signal payload with
+  `external_signal_payload_not_supported`. Updates in the completed prefix
+  are still refused (#864).
 
 ## 2.18.0 - 2026-11-03
 

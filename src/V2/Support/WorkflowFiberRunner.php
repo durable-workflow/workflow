@@ -2093,7 +2093,8 @@ final class WorkflowFiberRunner
             $outcomes[$sequence] = [
                 'signal_name' => $signalName,
                 'result' => $result,
-                'recorded_at' => self::eventRecordedAt($event, $payload),
+                'recorded_at' => self::eventTime($payload['reused_recorded_at'] ?? null)
+                    ?? self::eventRecordedAt($event, $payload),
             ];
             $resolvedKinds[$sequence] = $type === 'SignalApplied'
                 ? 'signal_applied'

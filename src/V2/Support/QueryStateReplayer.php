@@ -449,7 +449,7 @@ final class QueryStateReplayer
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
                     $current = $workflowExecution->send(
                         $this->signalValue($signalEvent, $run),
-                        $signalEvent->recorded_at,
+                        RedriveReplayClock::recordedAt($signalEvent),
                     );
 
                     ++$sequence;

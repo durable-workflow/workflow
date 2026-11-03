@@ -1,0 +1,92 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "redrive-reused-signal-wait-clock",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestRedriveSignalWorkflow",
+    "arguments": [
+      "Taylor"
+    ],
+    "payload_codec": "avro"
+  },
+  "redrive_reused_signal_wait": {
+    "signal_name": "approve",
+    "signal_value": "Grace",
+    "redrive_after_minutes": 5,
+    "redrive": "accepted",
+    "resume_step_sequence": 3,
+    "successor_status": "completed",
+    "reused_events": [
+      "SignalWaitOpened",
+      "SignalReceived",
+      "SignalApplied"
+    ]
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {}
+    },
+    {
+      "sequence": 2,
+      "event_type": "SignalWaitOpened",
+      "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "signal_name": "approve",
+        "signal_wait_id": "01M6H8VWAMNSM12WCT4KJ4EQN3",
+        "sequence": 1,
+        "reused_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "reused_recorded_at": "2026-11-03T00:00:00+00:00"
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "SignalReceived",
+      "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "workflow_command_id": "01m6h8vwbfwstfzz0nn2gy924h",
+        "signal_id": "01m6h8vwbfwstfzz0nn2gy924j",
+        "workflow_instance_id": "regression-corpus-redrive-signal",
+        "workflow_run_id": "01JBREDRIVESOURCERUN000000",
+        "signal_name": "approve",
+        "signal_wait_id": "01M6H8VWAMNSM12WCT4KJ4EQN3",
+        "arguments": "wwHioz3/VYAiNwwCCgpHcmFjZQA=",
+        "payload_codec": "avro",
+        "reused_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "reused_recorded_at": "2026-11-03T00:00:00+00:00"
+      }
+    },
+    {
+      "sequence": 4,
+      "event_type": "SignalApplied",
+      "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "workflow_command_id": "01m6h8vwbfwstfzz0nn2gy924h",
+        "signal_id": "01m6h8vwbfwstfzz0nn2gy924j",
+        "signal_name": "approve",
+        "signal_wait_id": "01M6H8VWAMNSM12WCT4KJ4EQN3",
+        "sequence": 1,
+        "value": "wwHioz3/VYAiNwoKR3JhY2U=",
+        "reused_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "reused_recorded_at": "2026-11-03T00:00:00+00:00"
+      }
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "schedule_activity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+        "payload_codec": "avro"
+      }
+    ]
+  }
+}

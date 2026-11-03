@@ -38,7 +38,7 @@ final class FailedRunRedriveEligibility
      *         reason: string|null,
      *         resume_step_sequence: int|null,
      *         completed: list<array<string, mixed>>,
-     *         reused_steps: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null, scheduled_payload?: array<string, mixed>}>
+     *         reused_steps: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null, scheduled_payload?: array<string, mixed>, signal_events?: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null}>}>
      *     }|null,
      *     started_payload: array<string, mixed>
      * }
