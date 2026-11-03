@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 2.20.0 - 2026-11-03
+
+- Rollback, embedded Workflow package:
+  - The 2.19.0 floor still applies. Releases before 2.19.0 ignore
+    `reused_recorded_at` on reused signal, memo and search-attribute events,
+    so a redrive successor with those events can replay with a different
+    workflow time and deadlines there. Keep 2.19.0 or later workers, or
+    confirm no such history can replay, before rolling back below 2.19.0.
+  - From 2.20.0 to 2.19.0: 2.20.0 changes no replay code. 2.19.0 replays,
+    imports and resumes a 2.20.0 successor that reused an applied update or a
+    chained signal wait with the same workflow state, output and next
+    command.
+  - 2.19.0 refuses to redrive a failed run that 2.20.0 redrove with a reused
+    update (`unsupported_history`) or a reused signal wait
+    (`mismatched_signal_receipt`) before any write. A request for a run that
+    already has its successor returns that successor.
+  - On 2.19.0, run detail shows redrive links as diagnostic fallbacks.
+  - Service-mode SDK workers stay behind the
+    `service_redrive_history_not_qualified` fence.
 - Redrive a failed run whose workflow applied an update before the failure.
   The successor records the update's acceptance, application and completion
   with `reused_from_run_id` and `reused_recorded_at`, ahead of the step it
