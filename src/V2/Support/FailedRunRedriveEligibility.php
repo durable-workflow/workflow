@@ -59,16 +59,22 @@ final class FailedRunRedriveEligibility
             return self::refuse((string) $plan['reason']);
         }
 
-        // Start-time memos and search attributes carry to the successor.
-        // Values upserted by workflow code belong to the replayed prefix,
-        // which redrive does not copy yet.
+        // Memo and search attribute rows carry to the successor as they are.
+        // A value written by workflow code must come from an upsert step the
+        // successor reuses, or its replay would not explain the row.
         if (
-            $source->memos()
-                ->where('upserted_at_sequence', '>', 0)
-                ->exists()
-            || $source->searchAttributes()
-                ->where('upserted_at_sequence', '>', 0)
-                ->exists()
+            ! self::rowsMatchReusedUpserts(
+                $source->memos()
+                    ->get(),
+                $plan['reused_steps'],
+                HistoryEventType::MemoUpserted,
+            )
+            || ! self::rowsMatchReusedUpserts(
+                $source->searchAttributes()
+                    ->get(),
+                $plan['reused_steps'],
+                HistoryEventType::SearchAttributesUpserted,
+            )
         ) {
             return self::refuse('unsupported_visibility_metadata');
         }
@@ -132,6 +138,32 @@ final class FailedRunRedriveEligibility
         }
 
         return self::evaluate($run, $currentRun, fingerprintPresentedAtRedrive: true)['reason'];
+    }
+
+    /**
+     * @param iterable<\Workflow\V2\Models\WorkflowMemo|\Workflow\V2\Models\WorkflowSearchAttribute> $rows
+     * @param list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null}> $reusedSteps
+     */
+    private static function rowsMatchReusedUpserts(iterable $rows, array $reusedSteps, HistoryEventType $type): bool
+    {
+        $upsertSequences = [];
+        foreach ($reusedSteps as $step) {
+            $sequence = $step['payload']['sequence'] ?? null;
+            if ($step['event_type'] === $type && is_int($sequence)) {
+                $upsertSequences[$sequence] = true;
+            }
+        }
+
+        foreach ($rows as $row) {
+            $sequence = (int) $row->upserted_at_sequence;
+            // Start-time values (step 0) and values inherited from an earlier
+            // run in the chain are not written by this run's workflow code.
+            if ($sequence > 0 && ! $row->inherited_from_parent && ! isset($upsertSequences[$sequence])) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static function definitionMatches(

@@ -2428,7 +2428,8 @@ final class WorkflowFiberRunner
 
             $upserts[$sequence] = [
                 'payload' => $payload,
-                'recorded_at' => self::eventRecordedAt($event, $payload),
+                'recorded_at' => self::eventTime($payload['reused_recorded_at'] ?? null)
+                    ?? self::eventRecordedAt($event, $payload),
             ];
         }
 
@@ -2457,7 +2458,8 @@ final class WorkflowFiberRunner
 
             $upserts[$sequence] = [
                 'entries' => $payload['entries'] ?? null,
-                'recorded_at' => self::eventRecordedAt($event, $payload),
+                'recorded_at' => self::eventTime($payload['reused_recorded_at'] ?? null)
+                    ?? self::eventRecordedAt($event, $payload),
             ];
         }
 

@@ -87,6 +87,8 @@ final class FailedRunRedrivePlan
             if (in_array($event->event_type, [
                 HistoryEventType::SideEffectRecorded,
                 HistoryEventType::VersionMarkerRecorded,
+                HistoryEventType::MemoUpserted,
+                HistoryEventType::SearchAttributesUpserted,
             ], true)) {
                 $payload = $event->payload;
                 $sequence = is_array($payload) ? ($payload['sequence'] ?? null) : null;

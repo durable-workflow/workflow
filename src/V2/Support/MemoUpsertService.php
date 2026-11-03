@@ -103,6 +103,37 @@ class MemoUpsertService
     }
 
     /**
+     * Copy memos to a redrive successor as they are. The successor reuses the
+     * source's history, so each row keeps the step that wrote it and whether
+     * it was inherited.
+     */
+    public function copyForRedrive(WorkflowRun $source, WorkflowRun $successor): void
+    {
+        $sourceMemos = WorkflowMemo::where('workflow_run_id', $source->id)->get();
+
+        ConfiguredV2Models::connection()->transaction(static function () use ($sourceMemos, $successor): void {
+            foreach ($sourceMemos as $sourceMemo) {
+                $memo = new WorkflowMemo([
+                    'workflow_run_id' => $successor->id,
+                    'workflow_instance_id' => $successor->workflow_instance_id,
+                    'key' => $sourceMemo->key,
+                    'upserted_at_sequence' => $sourceMemo->upserted_at_sequence,
+                    'inherited_from_parent' => $sourceMemo->inherited_from_parent,
+                ]);
+
+                $memo->setValue($sourceMemo->getValue());
+
+                $memo->save();
+            }
+
+            if ($sourceMemos->isNotEmpty()) {
+                WorkflowMemo::validateTotalSize($successor->id);
+                WorkflowMemo::validateCount($successor->id);
+            }
+        });
+    }
+
+    /**
      * Get memos as a key-value array.
      *
      * @param WorkflowRun $run The workflow run

@@ -908,8 +908,15 @@ final class HistoryEventPayloadContract
             'code',
             'exception',
         ],
-        'SearchAttributesUpserted' => ['sequence', 'attributes', 'attribute_types', 'merged'],
-        'MemoUpserted' => ['sequence', 'entries', 'merged'],
+        'SearchAttributesUpserted' => [
+            'sequence',
+            'attributes',
+            'attribute_types',
+            'merged',
+            'reused_from_run_id',
+            'reused_recorded_at',
+        ],
+        'MemoUpserted' => ['sequence', 'entries', 'merged', 'reused_from_run_id', 'reused_recorded_at'],
         'RepairRequested' => [
             'workflow_command_id',
             'workflow_instance_id',

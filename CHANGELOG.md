@@ -5,8 +5,7 @@
 - Redrive a failed run that has start-time memos or search attributes. Before,
   any memo or search attribute row refused redrive with
   `unsupported_visibility_metadata`. The successor now inherits the start
-  values, as continue-as-new does. A value upserted by workflow code is still
-  refused until redrive replays that part of the history (#864).
+  values, as continue-as-new does (#864).
 - Run detail and describe report whether redrive would accept a run.
   `can_redrive` and `redrive_blocked_reason` come from the same decision
   `redrive()` applies, so the action an operator sees matches what redrive
@@ -29,6 +28,16 @@
   timers in a cancellation scope or parallel group are refused with
   `unsupported_timer`. A timer step without both its scheduled and fired events
   is refused with `incomplete_timer_step` (#864).
+- Redrive a failed run whose workflow code upserted memos or search
+  attributes. Before, any `MemoUpserted` or `SearchAttributesUpserted` event
+  refused redrive with `unsupported_history`. The successor reuses those
+  events in step order, carrying `reused_from_run_id` and
+  `reused_recorded_at`, and replay uses the original time. Memo and search
+  attribute rows now carry to the successor unchanged, keeping the step that
+  wrote them and whether they were inherited, so a successor that fails again
+  can be redriven again. A row written by workflow
+  code with no matching reused upsert step is still refused with
+  `unsupported_visibility_metadata` (#864).
 
 ## 2.17.1 - 2026-11-03
 

@@ -12,6 +12,7 @@ use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestRedriveMarkersWorkflow;
 use Tests\Fixtures\V2\TestRedrivePatchedWorkflow;
 use Tests\Fixtures\V2\TestRedriveTimerWorkflow;
+use Tests\Fixtures\V2\TestRedriveVisibilityWorkflow;
 use Tests\Fixtures\V2\TestRedriveWorkflow;
 use Tests\Fixtures\V2\TestThrowAfterGreetingWorkflow;
 use Tests\TestCase;
@@ -480,6 +481,150 @@ final class V2FailedRunRedriveTest extends TestCase
         )->step();
         $this->assertTrue($fiber->completed);
         $this->assertSame($output, $fiber->result);
+    }
+
+    public function testRedriveReusesWorkflowCodeMemoAndSearchAttributeUpserts(): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestRedriveVisibilityWorkflow::class, 'redrive-upserts-1');
+        $workflow->start('Taylor');
+        $this->assertTrue($workflow->refresh()->failed());
+        $sourceRunId = $workflow->runId();
+        $source = WorkflowRun::query()->findOrFail($sourceRunId);
+        $sourceEvent = static fn (HistoryEventType $type): WorkflowHistoryEvent => WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $sourceRunId)
+            ->where('event_type', $type)
+            ->firstOrFail();
+        $sourceMemoEvent = $sourceEvent(HistoryEventType::MemoUpserted);
+        $sourceAttributesEvent = $sourceEvent(HistoryEventType::SearchAttributesUpserted);
+        $rows = static fn (WorkflowRun $run): array => [
+            'memos' => $run->memos()
+                ->orderBy('key')
+                ->get()
+                ->map(static fn ($memo): array => [
+                    $memo->key,
+                    $memo->getValue(),
+                    $memo->upserted_at_sequence,
+                    (bool) $memo->inherited_from_parent,
+                ])
+                ->all(),
+            'search_attributes' => $run->searchAttributes()
+                ->orderBy('key')
+                ->get()
+                ->map(static fn ($attribute): array => [
+                    $attribute->key,
+                    $attribute->type,
+                    $attribute->upserted_at_sequence,
+                    (bool) $attribute->inherited_from_parent,
+                ])
+                ->all(),
+        ];
+        $sourceRows = $rows($source);
+        $this->assertSame([
+            ['customer', 'Taylor', 1, false],
+            ['stage', 'greeting', 1, false],
+        ], $sourceRows['memos']);
+        $this->assertSame([['Stage', 'keyword', 2, false]], $sourceRows['search_attributes']);
+
+        $this->travel(5)
+            ->minutes();
+        $result = app(WorkflowControlPlane::class)->redrive('redrive-upserts-1', $sourceRunId);
+
+        $this->assertTrue($result['accepted'], (string) $result['reason']);
+        $this->assertSame(4, $result['resume_step_sequence']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame(RunStatus::Completed, $successor->status);
+        $this->assertSame(1, (int) Cache::get('test:redrive:first-calls'));
+        $this->assertSame($sourceRows, $rows($successor->fresh()));
+        $this->assertSame($source->typedMemos(), $successor->typedMemos());
+        $this->assertSame($source->typedSearchAttributes(), $successor->typedSearchAttributes());
+
+        foreach ([
+            [$sourceMemoEvent, HistoryEventType::MemoUpserted],
+            [$sourceAttributesEvent, HistoryEventType::SearchAttributesUpserted],
+        ] as [$original, $type]) {
+            $reused = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $successor->id)
+                ->where('event_type', $type)
+                ->sole();
+            $payload = $reused->payload;
+            $this->assertSame($sourceRunId, $payload['reused_from_run_id'] ?? null);
+            $this->assertSame($original->recorded_at?->toIso8601String(), $payload['reused_recorded_at'] ?? null);
+            unset($payload['reused_from_run_id'], $payload['reused_recorded_at']);
+            // The source's task and command are its recording context, not the step.
+            $expected = $original->payload;
+            unset($expected['task'], $expected['command']);
+            $this->assertSame($expected, $payload);
+        }
+
+        $expectedTimes = [
+            'time_after_memo' => $sourceMemoEvent->recorded_at?->toIso8601String(),
+            'time_after_search_attributes' => $sourceAttributesEvent->recorded_at?->toIso8601String(),
+        ];
+        $output = $successor->workflowOutput();
+        $this->assertSame('Hello, Taylor! Redrive completed.', $output['result']);
+        $this->assertSame($expectedTimes, [
+            'time_after_memo' => $output['time_after_memo'],
+            'time_after_search_attributes' => $output['time_after_search_attributes'],
+        ]);
+        $export = json_decode(
+            json_encode(HistoryExport::forRun($successor->fresh()), JSON_THROW_ON_ERROR),
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+        $this->assertSame($expectedTimes, (new WorkflowReplayer())->replayExport($export)->workflow->replayTimes());
+        $this->assertSame(
+            $expectedTimes,
+            (new WorkflowReplayer())->replay($successor->fresh())
+                ->workflow->replayTimes(),
+        );
+    }
+
+    public function testARedriveSuccessorWithUpsertsCanBeRedrivenAgain(): void
+    {
+        WorkflowStub::fake();
+        config([
+            'workflows.v2.testing.redrive_failures_before_success' => 2,
+        ]);
+
+        $workflow = WorkflowStub::make(TestRedriveVisibilityWorkflow::class, 'redrive-upserts-chain');
+        $workflow->start('Taylor');
+        $this->assertTrue($workflow->refresh()->failed());
+        $firstRunId = $workflow->runId();
+        $memoRecordedAt = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $firstRunId)
+            ->where('event_type', HistoryEventType::MemoUpserted)
+            ->sole()
+            ->recorded_at?->toIso8601String();
+
+        $second = app(WorkflowControlPlane::class)->redrive('redrive-upserts-chain', $firstRunId);
+        $this->assertTrue($second['accepted'], (string) $second['reason']);
+        $secondRun = WorkflowRun::query()->findOrFail($second['workflow_run_id']);
+        $this->assertSame(RunStatus::Failed, $secondRun->status);
+
+        $this->travel(5)
+            ->minutes();
+        $third = app(WorkflowControlPlane::class)->redrive('redrive-upserts-chain', $secondRun->id);
+
+        $this->assertTrue($third['accepted'], (string) $third['reason']);
+        $thirdRun = WorkflowRun::query()->findOrFail($third['workflow_run_id']);
+        $this->assertSame(RunStatus::Completed, $thirdRun->status);
+        $this->assertSame(1, (int) Cache::get('test:redrive:first-calls'));
+        $this->assertSame(WorkflowRun::query()->findOrFail($firstRunId)->typedMemos(), $thirdRun->typedMemos());
+        $this->assertSame(
+            WorkflowRun::query()->findOrFail($firstRunId)->typedSearchAttributes(),
+            $thirdRun->typedSearchAttributes(),
+        );
+        $reusedMemo = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $thirdRun->id)
+            ->where('event_type', HistoryEventType::MemoUpserted)
+            ->sole();
+        // A step reused twice keeps the run it came from and its first time.
+        $this->assertSame($secondRun->id, $reusedMemo->payload['reused_from_run_id']);
+        $this->assertSame($memoRecordedAt, $reusedMemo->payload['reused_recorded_at']);
+        $this->assertSame($memoRecordedAt, $thirdRun->workflowOutput()['time_after_memo']);
     }
 
     public function testRedriveReusesOneMarkerForARepeatedPatchCall(): void

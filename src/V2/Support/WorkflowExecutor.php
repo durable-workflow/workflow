@@ -1162,7 +1162,11 @@ final class WorkflowExecutor
                 SearchAttributeReplayIdentity::assertCompatible($sequence, $upsertEvent->payload, $current);
             }
             $this->syncWorkflowCursor($workflow, $sequence + 1);
-            $current = $workflowExecution->send(null, $upsertEvent?->recorded_at, advanceCancellationTime: false);
+            $current = $workflowExecution->send(
+                null,
+                RedriveReplayClock::recordedAt($upsertEvent),
+                advanceCancellationTime: false,
+            );
         } catch (Throwable $throwable) {
             $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
             return null;
@@ -1201,7 +1205,11 @@ final class WorkflowExecutor
                 );
             }
             $this->syncWorkflowCursor($workflow, $sequence + 1);
-            $current = $workflowExecution->send(null, $memoEvent?->recorded_at, advanceCancellationTime: false);
+            $current = $workflowExecution->send(
+                null,
+                RedriveReplayClock::recordedAt($memoEvent),
+                advanceCancellationTime: false,
+            );
         } catch (Throwable $throwable) {
             $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
             return null;
