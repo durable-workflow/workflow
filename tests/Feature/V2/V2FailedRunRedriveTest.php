@@ -22,7 +22,9 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\StartOptions;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\EmbeddedV2HistoryImport;
 use Workflow\V2\Support\HistoryExport;
@@ -156,6 +158,62 @@ final class V2FailedRunRedriveTest extends TestCase
             (new WorkflowReplayer())->replay($reloadedRun)
                 ->workflow->replayTimes()
         );
+    }
+
+    public function testRedriveCarriesStartMemoAndSearchAttributesToTheSuccessor(): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestRedriveWorkflow::class, 'redrive-visibility-1');
+        $workflow->start(
+            'Taylor',
+            StartOptions::rejectDuplicate()
+                ->withMemo([
+                    'customer' => 'Taylor',
+                    'attempt_note' => 'first deploy',
+                ])
+                ->withSearchAttributes([
+                    'region' => 'us-east',
+                ]),
+        );
+
+        $this->assertTrue($workflow->refresh()->failed());
+        $failedRunId = $workflow->runId();
+        $source = WorkflowRun::query()->findOrFail($failedRunId);
+        $sourceMemos = $source->typedMemos();
+        $sourceAttributes = $source->typedSearchAttributes();
+        $this->assertNotSame([], $sourceMemos);
+        $this->assertSame('us-east', $sourceAttributes['region'] ?? null);
+
+        $result = app(WorkflowControlPlane::class)->redrive('redrive-visibility-1', $failedRunId);
+
+        $this->assertTrue($result['accepted'], (string) $result['reason']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame('completed', $successor->status->value);
+        $this->assertSame($sourceMemos, $successor->typedMemos());
+        $this->assertSame($sourceAttributes, $successor->typedSearchAttributes());
+        $this->assertSame($sourceMemos, WorkflowRun::query()->findOrFail($failedRunId)->typedMemos());
+        $this->assertSame(
+            'us-east',
+            WorkflowRunSummary::query()->findOrFail($successor->id)->getTypedSearchAttributes()['region'] ?? null,
+        );
+
+        $sourceStarted = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $failedRunId)
+            ->where('event_type', HistoryEventType::WorkflowStarted)
+            ->firstOrFail();
+        $successorStarted = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $successor->id)
+            ->where('event_type', HistoryEventType::WorkflowStarted)
+            ->firstOrFail();
+        $this->assertSame($sourceStarted->payload['memo'] ?? null, $successorStarted->payload['memo'] ?? null);
+        $this->assertSame(
+            $sourceStarted->payload['search_attributes'] ?? null,
+            $successorStarted->payload['search_attributes'] ?? null,
+        );
+
+        $this->assertSame(1, (int) Cache::get('test:redrive:first-calls'));
+        $this->assertSame(2, (int) Cache::get('test:redrive:second-calls'));
     }
 
     public function testCompletedRunIsNotEligibleForRedrive(): void

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Redrive a failed run that has start-time memos or search attributes. Before,
+  any memo or search attribute row refused redrive with
+  `unsupported_visibility_metadata`. The successor now inherits the start
+  values, as continue-as-new does. A value upserted by workflow code is still
+  refused until redrive replays that part of the history (#864).
+
 ## 2.17.1 - 2026-11-03
 
 - Replay verification accepts a failed run that replays to its recorded
