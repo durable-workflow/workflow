@@ -107,6 +107,17 @@ final class FailedRunRedriveEligibility
             return self::refuse('unsupported_source_metadata');
         }
 
+        // Service-mode SDK workers are qualified to replay reused activities,
+        // side effects, version markers and timers. Reused signal, memo and
+        // search-attribute steps are not qualified yet, so a run a service
+        // worker started refuses them before anything is written.
+        if (
+            ($startedPayload['workflow_definition_fingerprint_source'] ?? null) === 'worker'
+            && self::reusesServiceUnqualifiedSteps($plan['reused_steps'])
+        ) {
+            return self::refuse('service_redrive_history_not_qualified');
+        }
+
         $sourceFingerprint = $startedPayload['workflow_definition_fingerprint'] ?? null;
         $definitionChange = null;
 
@@ -188,6 +199,27 @@ final class FailedRunRedriveEligibility
         }
 
         return self::evaluate($run, $currentRun, fingerprintPresentedAtRedrive: true)['reason'];
+    }
+
+    /**
+     * @param list<array{event_type: HistoryEventType, signal_events?: list<mixed>}> $reusedSteps
+     */
+    private static function reusesServiceUnqualifiedSteps(array $reusedSteps): bool
+    {
+        foreach ($reusedSteps as $step) {
+            if (
+                isset($step['signal_events'])
+                || in_array($step['event_type'], [
+                    HistoryEventType::MemoUpserted,
+                    HistoryEventType::SearchAttributesUpserted,
+                    HistoryEventType::SignalApplied,
+                ], true)
+            ) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

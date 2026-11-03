@@ -27,12 +27,15 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowMemo;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\ExternalPayloadReference;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\FailedRunRedrivePlan;
+use Workflow\V2\Support\MemoPayload;
 use Workflow\V2\WorkflowStub;
 
 final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
@@ -208,6 +211,98 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
         $this->assertFalse($result['accepted']);
         $this->assertSame('definition_change_requires_replay_check', $result['reason']);
         $this->assertSame($before, $this->records());
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function serviceUnqualifiedSteps(): iterable
+    {
+        yield 'memo upsert' => ['memo'];
+        yield 'search attribute upsert' => ['search_attributes'];
+        yield 'signal wait' => ['signal'];
+    }
+
+    #[DataProvider('serviceUnqualifiedSteps')]
+    public function testAServiceRunRefusesReusedStepsItsSdksAreNotQualifiedToReplay(string $step): void
+    {
+        $start = $this->controlPlane->start('remote.redrive', 'redrive-service-fence', [
+            'namespace' => 'tenant-redrive',
+            'queue' => 'service-workflows',
+            'arguments' => Serializer::serializeWithCodec('avro', ['Taylor']),
+            'external_workflow_definition_fingerprint' => 'worker-definition-1',
+        ]);
+        $this->assertTrue($start['started']);
+        $source = WorkflowRun::query()->findOrFail($start['workflow_run_id']);
+        // Step 1 is the reused step; step 2 is the failed activity.
+        match ($step) {
+            'memo' => WorkflowHistoryEvent::record($source, HistoryEventType::MemoUpserted, [
+                'sequence' => 1,
+                'entries' => MemoPayload::mapEnvelope([
+                    'stage' => 'review',
+                ]),
+                'merged' => MemoPayload::mapEnvelope([
+                    'stage' => 'review',
+                ]),
+            ]),
+            'search_attributes' => WorkflowHistoryEvent::record($source, HistoryEventType::SearchAttributesUpserted, [
+                'sequence' => 1,
+                'attributes' => [
+                    'Stage' => 'review',
+                ],
+                'attribute_types' => [
+                    'Stage' => 'keyword',
+                ],
+                'merged' => [
+                    'Stage' => 'review',
+                ],
+            ]),
+            'signal' => $this->recordAppliedSignal($source),
+        };
+        $this->recordFailure($source, includeCompletedPrefix: false);
+        $source = $source->fresh();
+        $before = $this->records();
+        $projections = $this->projections();
+
+        $result = $this->controlPlane->redrive($source->workflow_instance_id, $source->id, $this->redriveOptions());
+
+        $this->assertFalse($result['accepted']);
+        $this->assertSame('service_redrive_history_not_qualified', $result['reason']);
+        $this->assertSame($before, $this->records());
+        $this->assertSame($projections, $this->projections());
+        $this->assertSame(
+            'service_redrive_history_not_qualified',
+            $this->controlPlane->describe($source->workflow_instance_id, [
+                'run_id' => $source->id,
+                'namespace' => 'tenant-redrive',
+            ])['actions']['redrive_blocked_reason'] ?? null,
+        );
+    }
+
+    public function testAServiceRunStillRedrivesAQualifiedReusedSideEffect(): void
+    {
+        $start = $this->controlPlane->start('remote.redrive', 'redrive-service-side-effect', [
+            'namespace' => 'tenant-redrive',
+            'queue' => 'service-workflows',
+            'arguments' => Serializer::serializeWithCodec('avro', ['Taylor']),
+            'external_workflow_definition_fingerprint' => 'worker-definition-1',
+        ]);
+        $source = WorkflowRun::query()->findOrFail($start['workflow_run_id']);
+        WorkflowHistoryEvent::record($source, HistoryEventType::SideEffectRecorded, [
+            'sequence' => 1,
+            'result' => Serializer::serializeWithCodec('avro', 'token'),
+        ]);
+        $this->recordFailure($source, includeCompletedPrefix: false);
+
+        $result = $this->controlPlane->redrive($source->workflow_instance_id, $source->id, $this->redriveOptions());
+
+        $this->assertTrue($result['accepted'], (string) $result['reason']);
+        $this->assertSame(2, $result['resume_step_sequence']);
+        $reused = $this->event(
+            WorkflowRun::query()->findOrFail($result['workflow_run_id']),
+            HistoryEventType::SideEffectRecorded,
+        );
+        $this->assertSame($source->id, $reused->payload['reused_from_run_id'] ?? null);
     }
 
     public function testServiceRunMemoAndSearchAttributeRowsCarryToTheRedriveSuccessor(): void
@@ -623,6 +718,52 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
         ]]);
         $this->assertTrue($result['completed']);
         $this->assertSame(RunStatus::Failed, $source->fresh()->status);
+    }
+
+    private function recordAppliedSignal(WorkflowRun $source): WorkflowHistoryEvent
+    {
+        $waitId = (string) Str::ulid();
+        $signalId = (string) Str::ulid();
+        $commandId = (string) Str::ulid();
+        WorkflowHistoryEvent::record($source, HistoryEventType::SignalWaitOpened, [
+            'signal_name' => 'approve',
+            'signal_wait_id' => $waitId,
+            'sequence' => 1,
+        ]);
+        WorkflowHistoryEvent::record($source, HistoryEventType::SignalReceived, [
+            'workflow_command_id' => $commandId,
+            'signal_id' => $signalId,
+            'workflow_instance_id' => $source->workflow_instance_id,
+            'workflow_run_id' => $source->id,
+            'signal_name' => 'approve',
+            'signal_wait_id' => $waitId,
+            'arguments' => Serializer::serializeWithCodec('avro', ['Grace']),
+            'payload_codec' => 'avro',
+        ]);
+
+        return WorkflowHistoryEvent::record($source, HistoryEventType::SignalApplied, [
+            'workflow_command_id' => $commandId,
+            'signal_id' => $signalId,
+            'signal_name' => 'approve',
+            'signal_wait_id' => $waitId,
+            'sequence' => 1,
+            'value' => Serializer::serializeWithCodec('avro', 'Grace'),
+        ]);
+    }
+
+    /**
+     * @return array<string, list<array<string, mixed>>>
+     */
+    private function projections(): array
+    {
+        $projections = [];
+        foreach ([WorkflowRunSummary::class, WorkflowTimelineEntry::class] as $model) {
+            $projections[$model] = $model::query()->orderBy('id')->get()->map(
+                static fn (Model $row): array => $row->getRawOriginal(),
+            )->all();
+        }
+
+        return $projections;
     }
 
     private function event(WorkflowRun $run, HistoryEventType $type): WorkflowHistoryEvent
