@@ -1829,7 +1829,8 @@ final class WorkflowFiberRunner
             if ($sequence !== null) {
                 $outcomes[$sequence] = [
                     'result' => true,
-                    'recorded_at' => self::eventRecordedAt($event, $payload, ['fired_at']),
+                    'recorded_at' => self::eventTime($payload['reused_recorded_at'] ?? null)
+                        ?? self::eventRecordedAt($event, $payload, ['fired_at']),
                 ];
             }
         }

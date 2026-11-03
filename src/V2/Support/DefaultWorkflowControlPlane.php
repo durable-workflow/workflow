@@ -249,6 +249,25 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                     ? $reused['reused_recorded_at']
                     : $step['recorded_at'];
 
+                if ($step['event_type'] === HistoryEventType::TimerFired) {
+                    // The timer already fired, so the successor records it
+                    // fired with no timer row or task to wait on.
+                    $timerId = (string) Str::ulid();
+                    WorkflowHistoryEvent::record($continuedRun, HistoryEventType::TimerScheduled, array_merge(
+                        $step['scheduled_payload'] ?? [],
+                        [
+                            'timer_id' => $timerId,
+                        ],
+                    ));
+                    WorkflowHistoryEvent::record($continuedRun, HistoryEventType::TimerFired, array_merge($reused, [
+                        'timer_id' => $timerId,
+                        'reused_from_run_id' => $source->id,
+                        'reused_recorded_at' => $reusedRecordedAt,
+                    ]));
+
+                    continue;
+                }
+
                 if ($step['event_type'] !== HistoryEventType::ActivityCompleted) {
                     WorkflowHistoryEvent::record($continuedRun, $step['event_type'], array_merge($reused, [
                         'reused_from_run_id' => $source->id,

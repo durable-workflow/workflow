@@ -269,8 +269,34 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
                 $failure->delete();
                 break;
             case 'unsupported timer':
+            case 'timer in a cancellation scope':
                 $scheduled->forceFill([
                     'event_type' => HistoryEventType::TimerScheduled,
+                    'payload' => array_merge([
+                        'timer_id' => 'source-timer',
+                        'sequence' => 1,
+                        'delay_seconds' => 5,
+                    ], $case === 'unsupported timer' ? [
+                        'timer_kind' => 'condition_timeout',
+                    ] : [
+                        'cancellation_scope_id' => 'scope-1',
+                    ]),
+                ])->save();
+                break;
+            case 'unfired timer':
+                $scheduled->forceFill([
+                    'event_type' => HistoryEventType::TimerScheduled,
+                    'payload' => [
+                        'timer_id' => 'source-timer',
+                        'sequence' => 1,
+                        'delay_seconds' => 5,
+                    ],
+                ])->save();
+                $completion->delete();
+                break;
+            case 'cancelled timer':
+                $scheduled->forceFill([
+                    'event_type' => HistoryEventType::TimerCancelled,
                 ])->save();
                 break;
             case 'local execution mode':
@@ -424,7 +450,11 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
         yield 'start acceptance after workflow start' => ['start acceptance after workflow start', 'unexpected_start'];
         yield 'failure without start' => ['failure without start', 'missing_start'];
         yield 'missing terminal event' => ['missing terminal event', 'missing_terminal_history'];
-        yield 'unsupported timer' => ['unsupported timer', 'unsupported_history'];
+        foreach (['unsupported timer', 'timer in a cancellation scope'] as $case) {
+            yield $case => [$case, 'unsupported_timer'];
+        }
+        yield 'unfired timer' => ['unfired timer', 'incomplete_timer_step'];
+        yield 'cancelled timer' => ['cancelled timer', 'unsupported_history'];
         foreach (['local execution mode', 'local activity flag'] as $case) {
             yield $case => [$case, 'unsupported_local_activity'];
         }

@@ -21,6 +21,14 @@
   source run. New refusal reasons: `invalid_step_sequence`,
   `duplicate_step_sequence` and `external_side_effect_result_not_supported`
   (#864).
+- Redrive a failed run whose completed steps include a fired `timer()`. The
+  successor records the timer as already fired, under a new timer id, with no
+  timer row or task, so it does not wait again. `TimerFired` carries
+  `reused_from_run_id` and `reused_recorded_at`, and replay uses the original
+  fire time. Condition and signal timeouts, cancellation cleanup timers and
+  timers in a cancellation scope or parallel group are refused with
+  `unsupported_timer`. A timer step without both its scheduled and fired events
+  is refused with `incomplete_timer_step` (#864).
 
 ## 2.17.1 - 2026-11-03
 
