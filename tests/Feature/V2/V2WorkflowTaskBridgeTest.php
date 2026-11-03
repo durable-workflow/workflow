@@ -6577,11 +6577,11 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         );
     }
 
-    public function testRequestIdIdempotencyColumnIsReservedForUpdateCommands(): void
+    public function testRequestIdIdempotencyColumnIsReservedForSignalAndUpdateCommands(): void
     {
         $run = $this->createWaitingRun();
         $instance = WorkflowInstance::query()->findOrFail($run->workflow_instance_id);
-        $commandTypes = ['start', 'signal', 'repair', 'cancel', 'terminate', 'archive'];
+        $commandTypes = ['start', 'signal', 'update', 'repair', 'cancel', 'terminate', 'archive'];
 
         foreach ($commandTypes as $commandType) {
             for ($attempt = 0; $attempt < 2; $attempt++) {
@@ -6597,12 +6597,16 @@ final class V2WorkflowTaskBridgeTest extends TestCase
                     'accepted_at' => now(),
                 ]);
 
-                $this->assertNull($command->getAttribute('request_id'));
+                if (in_array($commandType, ['signal', 'update'], true)) {
+                    $this->assertStringStartsWith($commandType . '-v1:', $command->getAttribute('request_id'));
+                } else {
+                    $this->assertNull($command->getAttribute('request_id'));
+                }
                 $this->assertSame('shared-' . $commandType . '-request', $command->requestId());
             }
         }
 
-        $this->assertSame(12, WorkflowCommand::query()
+        $this->assertSame(14, WorkflowCommand::query()
             ->where('workflow_instance_id', $instance->id)
             ->whereIn('command_type', $commandTypes)
             ->count());

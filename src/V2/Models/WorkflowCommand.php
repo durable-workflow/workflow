@@ -15,12 +15,12 @@ use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Support\BridgeCommandIdentity;
+use Workflow\V2\Support\CommandRequestIdentity;
 use Workflow\V2\Support\CommandSequence;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\MessageStreamCursor;
 use Workflow\V2\Support\ServiceCallEffectIdentity;
-use Workflow\V2\Support\UpdateRequestIdentity;
 
 class WorkflowCommand extends Model
 {
@@ -371,8 +371,8 @@ class WorkflowCommand extends Model
 
     public function requestId(): ?string
     {
-        if ($this->command_type === CommandType::Update) {
-            return UpdateRequestIdentity::fromCommand($this);
+        if (CommandRequestIdentity::supports($this->command_type)) {
+            return CommandRequestIdentity::fromCommand($this);
         }
 
         if (is_string($this->request_id ?? null) && $this->request_id !== '') {
@@ -384,6 +384,17 @@ class WorkflowCommand extends Model
         return is_array($request) && is_string($request['request_id'] ?? null)
             ? $request['request_id']
             : null;
+    }
+
+    /**
+     * Canonical intent recorded at admission for keyed signals and updates.
+     * Receipts recorded before intent digests existed return null.
+     */
+    public function intentDigest(): ?string
+    {
+        $digest = $this->intent_digest ?? null;
+
+        return is_string($digest) && $digest !== '' ? $digest : null;
     }
 
     public function requestedRunId(): ?string
@@ -505,7 +516,10 @@ class WorkflowCommand extends Model
     private static function withRequestIdentity(WorkflowInstance $instance, array $attributes): array
     {
         $commandType = $attributes['command_type'] ?? null;
-        $isUpdate = $commandType === CommandType::Update || $commandType === CommandType::Update->value;
+        $keyedType = $commandType;
+        if (! $keyedType instanceof CommandType) {
+            $keyedType = is_string($commandType) ? CommandType::tryFrom($commandType) : null;
+        }
         $usesRequestId = $commandType === CommandType::Redrive
             || $commandType === CommandType::Redrive->value;
         $context = is_array($attributes['context'] ?? null) ? $attributes['context'] : [];
@@ -528,22 +542,18 @@ class WorkflowCommand extends Model
             }
         }
 
-        if ($isUpdate) {
-            if ($serviceCallIdentity instanceof ServiceCallEffectIdentity) {
-                $attributes['request_id'] = $serviceCallIdentity->storageToken();
-            } else {
-                $context['request'] = is_array($context['request'] ?? null) ? $context['request'] : [];
-                $context['request']['request_id'] = UpdateRequestIdentity::fromContext($context);
-                $attributes['context'] = $context;
-                $attributes['request_id'] = UpdateRequestIdentity::storageToken($instance, $context);
-            }
-        } elseif ($serviceCallIdentity instanceof ServiceCallEffectIdentity && in_array($commandType, [
-            CommandType::Start,
-            CommandType::Start->value,
-            CommandType::Signal,
-            CommandType::Signal->value,
+        if ($serviceCallIdentity instanceof ServiceCallEffectIdentity && in_array($commandType, [
+            CommandType::Start, CommandType::Start->value,
+            CommandType::Signal, CommandType::Signal->value,
+            CommandType::Update, CommandType::Update->value,
         ], true)) {
             $attributes['request_id'] = $serviceCallIdentity->storageToken();
+        } elseif ($keyedType instanceof CommandType && CommandRequestIdentity::supports($keyedType)) {
+            // Caller keys remain independent of bridge/service-call identities.
+            $context['request'] = is_array($context['request'] ?? null) ? $context['request'] : [];
+            $context['request']['request_id'] = CommandRequestIdentity::fromContext($context, $keyedType);
+            $attributes['context'] = $context;
+            $attributes['request_id'] = CommandRequestIdentity::storageToken($instance, $keyedType, $context);
         } elseif ($usesRequestId) {
             $request = is_array($attributes['context']['request'] ?? null)
                 ? $attributes['context']['request']
