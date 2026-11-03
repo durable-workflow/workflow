@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Message stream calls in workflow code act once instead of on every replay
+  (#1010). Workflow code runs again on each later workflow task and on every
+  query.
+  - `outbox()->sendReference()` used to write a new outbound and inbound
+    message each time. A replay now returns the row the original send wrote.
+  - `inbox()->receive()` and `receiveOne()` now return the messages that call
+    consumed at that step. Before, a replay could return different messages
+    or none, and could consume a newer message under the earlier step.
+  - A query, a replay check or a redrive definition check never writes or
+    consumes a message.
+  - Rows that earlier releases duplicated are not removed. Reads don't
+    deduplicate them, and no migration can tell a replay duplicate from an
+    intended identical send. A consumer that read the stream on an affected
+    release should deduplicate by `idempotency_key`. A run with such rows
+    matches its sends to the earliest rows and writes only new sends.
+  - A replayed receive whose original call found no message still reads the
+    stream again, because nothing records an empty receive. Receive only after
+    a signal or condition says a message is there.
+
 ## 2.20.0 - 2026-11-03
 
 - Rollback, embedded Workflow package:

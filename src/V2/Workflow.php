@@ -11,6 +11,7 @@ use Workflow\Traits\ResolvesMethodDependencies;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\ChildWorkflowHandles;
 use Workflow\V2\Support\HistoryBudget;
+use Workflow\V2\Support\MessageReplayLedger;
 use Workflow\V2\Support\MessageService;
 use Workflow\V2\Support\ServiceOperationOptions;
 use Workflow\V2\Support\WorkerSession;
@@ -59,6 +60,8 @@ abstract class Workflow
     private int $visibleSequence = 1;
 
     private bool $commandDispatchEnabled = true;
+
+    private ?MessageReplayLedger $messageReplayLedger = null;
 
     /**
      * @var list<callable>
@@ -181,7 +184,16 @@ abstract class Workflow
      */
     public function messages(?string $streamKey = null, ?MessageService $messages = null): MessageStream
     {
-        return MessageStream::forRun($this->run, $streamKey, $messages, $this->visibleSequence);
+        $this->messageReplayLedger ??= new MessageReplayLedger();
+
+        return MessageStream::forWorkflowCode(
+            $this->run,
+            $streamKey,
+            $messages,
+            $this->visibleSequence,
+            $this->messageReplayLedger,
+            readOnly: ! $this->commandDispatchEnabled,
+        );
     }
 
     /**

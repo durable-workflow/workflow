@@ -639,6 +639,48 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         }
     }
 
+    public function testMessageStreamSendCorpusWritesEachSendOnceAcrossReplaysAndQueries(): void
+    {
+        $path = self::FIXTURE_DIR . '/message-stream-send-once.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The message stream send-once evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['message_stream_send_once'];
+        self::stopWorkers();
+        config([
+            'queue.default' => 'sync',
+            'queue.connections.sync.driver' => 'sync',
+        ]);
+        $this->clearWorkflowState();
+        WorkflowStub::fake();
+
+        $instanceId = 'regression-corpus-message-send-once';
+        $stub = WorkflowStub::make($fixture['workflow']['type'], $instanceId);
+        $stub->start(...$fixture['workflow']['arguments']);
+        $rows = static fn (string $direction): int => \Workflow\V2\Models\WorkflowMessage::query()
+            ->where('workflow_instance_id', $instanceId)
+            ->where('stream_key', $scenario['stream'])
+            ->where('direction', $direction)
+            ->count();
+
+        foreach ($scenario['steps'] as $index => $step) {
+            if ($step['action'] === 'signal') {
+                $stub->signal($scenario['signal'], $step['argument']);
+            } else {
+                $this->assertSame($step['result'], $stub->refresh()->query($scenario['query']), "step {$index}");
+            }
+            $this->assertSame(
+                [$step['outbound'], $step['inbound']],
+                [$rows('outbound'), $rows('inbound')],
+                "step {$index} ({$step['action']})",
+            );
+        }
+
+        $this->assertTrue($stub->refresh()->completed());
+        $this->assertSame($scenario['output'], $stub->output());
+    }
+
     public function testRedriveTypedLineageCorpusLinksBothRunsFromHistory(): void
     {
         $path = self::FIXTURE_DIR . '/redrive-typed-lineage.json';

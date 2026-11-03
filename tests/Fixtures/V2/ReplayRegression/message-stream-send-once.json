@@ -1,0 +1,44 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "message-stream-send-once",
+  "protocol_version": "1.0",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestMessageStreamTurnsWorkflow",
+    "arguments": [3],
+    "payload_codec": "avro"
+  },
+  "message_stream_send_once": {
+    "issue": "durable-workflow/workflow#1010",
+    "stream": "conversation.replies",
+    "signal": "message",
+    "query": "status",
+    "steps": [
+      {"action": "signal", "argument": "one", "outbound": 1, "inbound": 1},
+      {"action": "signal", "argument": "two", "outbound": 2, "inbound": 2},
+      {"action": "query", "result": 2, "outbound": 2, "inbound": 2},
+      {"action": "query", "result": 2, "outbound": 2, "inbound": 2},
+      {"action": "signal", "argument": "three", "outbound": 3, "inbound": 3}
+    ],
+    "output": {
+      "turns": 3,
+      "sent": ["ref:1", "ref:2", "ref:3"]
+    }
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-03T00:00:00+00:00",
+      "payload": {}
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {"type": "open_signal_wait", "signal_name": "message"}
+    ]
+  }
+}

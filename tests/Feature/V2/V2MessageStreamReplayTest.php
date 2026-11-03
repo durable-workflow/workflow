@@ -1,0 +1,272 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tests\Feature\V2;
+
+use Illuminate\Support\Facades\Queue;
+use Tests\Fixtures\V2\TestInboxTurnsWorkflow;
+use Tests\Fixtures\V2\TestMessageStreamTurnsWorkflow;
+use Tests\TestCase;
+use Workflow\V2\Enums\MessageChannel;
+use Workflow\V2\Enums\MessageConsumeState;
+use Workflow\V2\Enums\MessageDirection;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Jobs\RunActivityTask;
+use Workflow\V2\Jobs\RunTimerTask;
+use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\WorkflowMessage;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\MessageService;
+use Workflow\V2\WorkflowStub;
+
+/**
+ * Message stream calls in workflow code run again on every replay: on each
+ * later workflow task and on every query. They must act once (#1010).
+ */
+final class V2MessageStreamReplayTest extends TestCase
+{
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        Queue::fake();
+        config()
+            ->set('workflows.v2.task_dispatch_mode', 'poll');
+    }
+
+    public function testAWorkflowCodeSendIsWrittenOncePerTurnAcrossReplaysAndQueries(): void
+    {
+        $workflow = WorkflowStub::make(TestMessageStreamTurnsWorkflow::class, 'message-stream-turns');
+        $workflow->start(3);
+        $this->drainReadyTasks();
+
+        $counts = [];
+        $workflow->signal('message', 'one');
+        $this->drainReadyTasks();
+        $counts['after turn 1'] = $this->replyRows('message-stream-turns');
+
+        $workflow->signal('message', 'two');
+        $this->drainReadyTasks();
+        $counts['after turn 2'] = $this->replyRows('message-stream-turns');
+
+        $before = $this->messageRows();
+        $this->assertSame(2, $workflow->refresh()->query('status'));
+        $counts['after a query'] = $this->replyRows('message-stream-turns');
+        $this->assertSame(2, $workflow->refresh()->query('status'));
+        $counts['after a second query'] = $this->replyRows('message-stream-turns');
+        // A query writes nothing at all.
+        $this->assertSame($before, $this->messageRows());
+
+        $workflow->signal('message', 'three');
+        $this->drainReadyTasks();
+        $counts['after turn 3'] = $this->replyRows('message-stream-turns');
+
+        $this->assertSame([
+            'after turn 1' => [1, 1],
+            'after turn 2' => [2, 2],
+            'after a query' => [2, 2],
+            'after a second query' => [2, 2],
+            'after turn 3' => [3, 3],
+        ], $counts);
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([
+            'turns' => 3,
+            'sent' => ['ref:1', 'ref:2', 'ref:3'],
+        ], $workflow->output());
+        $this->assertSame(
+            ['ref:1', 'ref:2', 'ref:3'],
+            WorkflowMessage::query()
+                ->where('workflow_instance_id', 'message-stream-turns')
+                ->where('stream_key', 'conversation.replies')
+                ->where('direction', MessageDirection::Outbound->value)
+                ->orderBy('sequence')
+                ->pluck('payload_reference')
+                ->all(),
+        );
+    }
+
+    public function testIdenticalSendsInOneTurnStaySeparateAcrossReplays(): void
+    {
+        $workflow = WorkflowStub::make(TestMessageStreamTurnsWorkflow::class, 'message-stream-copies');
+        $workflow->start(2, 2);
+        $this->drainReadyTasks();
+
+        $workflow->signal('message', 'one');
+        $this->drainReadyTasks();
+        $this->assertSame([2, 2], $this->replyRows('message-stream-copies'));
+        $this->assertSame(1, $workflow->refresh()->query('status'));
+        $this->assertSame([2, 2], $this->replyRows('message-stream-copies'));
+
+        $workflow->signal('message', 'two');
+        $this->drainReadyTasks();
+
+        $this->assertSame([4, 4], $this->replyRows('message-stream-copies'));
+        $this->assertSame([
+            'turns' => 2,
+            'sent' => ['ref:1', 'ref:1', 'ref:2', 'ref:2'],
+        ], $workflow->refresh()
+            ->output());
+    }
+
+    /**
+     * Releases through 2.20.0 wrote a duplicate on every replay. A run that
+     * already has such rows matches its sends to them and writes only new
+     * sends from now on; the old duplicates are left as they are.
+     */
+    public function testARunWithDuplicatesFromAnEarlierReleaseWritesOnlyNewSends(): void
+    {
+        $workflow = WorkflowStub::make(TestMessageStreamTurnsWorkflow::class, 'message-stream-legacy');
+        $workflow->start(3);
+        $this->drainReadyTasks();
+        $workflow->signal('message', 'one');
+        $this->drainReadyTasks();
+        $run = WorkflowRun::query()->where('workflow_instance_id', 'message-stream-legacy')->sole();
+
+        // The extra rows a replay wrote before this fix.
+        foreach (range(1, 2) as $ignored) {
+            (new MessageService())->sendMessage(
+                $run,
+                MessageChannel::WorkflowMessage,
+                'message-stream-legacy',
+                'ref:1',
+                'conversation.replies',
+                idempotencyKey: 'ref:1',
+            );
+        }
+        $this->assertSame([3, 3], $this->replyRows('message-stream-legacy'));
+
+        $workflow->signal('message', 'two');
+        $this->drainReadyTasks();
+        $this->assertSame([4, 4], $this->replyRows('message-stream-legacy'));
+        $this->assertSame(2, $workflow->refresh()->query('status'));
+        $this->assertSame([4, 4], $this->replyRows('message-stream-legacy'));
+
+        $workflow->signal('message', 'three');
+        $this->drainReadyTasks();
+        $this->assertSame([5, 5], $this->replyRows('message-stream-legacy'));
+        $this->assertSame(['ref:1', 'ref:2', 'ref:3'], $workflow->refresh()->output()['sent']);
+    }
+
+    public function testAWorkflowCodeReceiveReplaysTheMessageItConsumedAndQueriesConsumeNothing(): void
+    {
+        $workflow = WorkflowStub::make(TestInboxTurnsWorkflow::class, 'inbox-turns');
+        $workflow->start(2);
+        $this->drainReadyTasks();
+        $run = WorkflowRun::query()->where('workflow_instance_id', 'inbox-turns')->sole();
+
+        // Each turn's ping is sent before its messages: a signal advances the
+        // run's shared message cursor past anything older.
+        $workflow->signal('ping');
+        $this->sendToInbox($run, 'm1');
+        $this->drainReadyTasks();
+
+        $before = $this->messageRows();
+        $this->assertSame(['m1'], $workflow->refresh()->query('received'));
+        // A query replays the message turn 1 consumed and consumes nothing.
+        $this->assertSame($before, $this->messageRows());
+
+        $workflow->signal('ping');
+        // Two more messages arrive before the next turn runs.
+        $this->sendToInbox($run, 'm2');
+        $this->sendToInbox($run, 'm3');
+
+        $before = $this->messageRows();
+        $this->assertSame(['m1'], $workflow->refresh()->query('received'));
+        $this->assertSame($before, $this->messageRows());
+
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed());
+        // Turn 1 replays the message it consumed; turn 2 takes the next one.
+        $this->assertSame(['m1', 'm2'], $workflow->output());
+        $this->assertSame(
+            [
+                'm1' => MessageConsumeState::Consumed->value,
+                'm2' => MessageConsumeState::Consumed->value,
+                'm3' => MessageConsumeState::Pending->value,
+            ],
+            WorkflowMessage::query()
+                ->where('workflow_instance_id', 'inbox-turns')
+                ->where('stream_key', 'chat')
+                ->where('direction', MessageDirection::Inbound->value)
+                ->orderBy('sequence')
+                ->get()
+                ->mapWithKeys(static fn (WorkflowMessage $message): array => [
+                    (string) $message->payload_reference => $message->consume_state->value,
+                ])
+                ->all(),
+        );
+    }
+
+    /**
+     * @return array{int, int} Outbound and inbound reply rows.
+     */
+    private function replyRows(string $instanceId): array
+    {
+        $rows = WorkflowMessage::query()
+            ->where('workflow_instance_id', $instanceId)
+            ->where('stream_key', 'conversation.replies');
+
+        return [
+            (clone $rows)->where('direction', MessageDirection::Outbound->value)->count(),
+            (clone $rows)->where('direction', MessageDirection::Inbound->value)->count(),
+        ];
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function messageRows(): array
+    {
+        return WorkflowMessage::query()
+            ->orderBy('id')
+            ->get()
+            ->map(static fn (WorkflowMessage $message): array => $message->getRawOriginal())
+            ->all();
+    }
+
+    private function sendToInbox(WorkflowRun $run, string $reference): void
+    {
+        (new MessageService())->sendMessage(
+            $run,
+            MessageChannel::WorkflowMessage,
+            $run->workflow_instance_id,
+            $reference,
+            'chat',
+        );
+    }
+
+    private function drainReadyTasks(): void
+    {
+        $deadline = microtime(true) + 10;
+
+        while (microtime(true) < $deadline) {
+            /** @var WorkflowTask|null $task */
+            $task = WorkflowTask::query()
+                ->where('status', TaskStatus::Ready->value)
+                ->orderBy('created_at')
+                ->first();
+
+            if ($task === null) {
+                return;
+            }
+
+            if ($task->available_at !== null && $task->available_at->isFuture()) {
+                return;
+            }
+
+            $job = match ($task->task_type) {
+                TaskType::Workflow => new RunWorkflowTask($task->id),
+                TaskType::Activity => new RunActivityTask($task->id),
+                TaskType::Timer => new RunTimerTask($task->id),
+            };
+
+            $this->app->call([$job, 'handle']);
+        }
+
+        $this->fail('Timed out draining ready workflow tasks.');
+    }
+}
