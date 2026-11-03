@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Serializers;
 
+use Illuminate\Contracts\Database\ModelIdentifier;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use InvalidArgumentException;
 use Laravel\SerializableClosure\SerializableClosure;
 use Tests\Fixtures\TestEnum;
 use Tests\TestCase;
 use Throwable;
+use Workbench\App\Models\User;
 use Workflow\Serializers\AvroBinaryValue;
 use Workflow\Serializers\AvroMapValue;
 use Workflow\Serializers\Base64;
@@ -147,6 +150,65 @@ final class SerializeTest extends TestCase
         $this->expectExceptionMessage('unsupported_value_type');
 
         Serializer::serializeWithCodec('avro', [new SerializableClosure(static fn (): string => 'php-only')]);
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('eloquentValues')]
+    public function testV2AvroNamesEloquentModelsInsteadOfModelIdentifier(callable $value, string $expected): void
+    {
+        try {
+            Serializer::serializeWithCodec('avro', $value());
+            $this->fail('Eloquent values must not encode as V2 payloads.');
+        } catch (InvalidArgumentException $exception) {
+            $this->assertSame($expected, $exception->getMessage());
+        }
+    }
+
+    /**
+     * @return iterable<string, array{callable, string}>
+     */
+    public static function eloquentValues(): iterable
+    {
+        $model = 'unsupported_value_type: Eloquent model ' . User::class
+            . ' cannot cross a V2 payload boundary. Pass its key and load the model inside the activity.';
+
+        yield 'top-level model' => [
+            static fn (): User => new User(),
+            $model,
+        ];
+        yield 'model in argument list' => [
+            static fn (): array => ['first', new User()],
+            $model,
+        ];
+        yield 'model in map' => [
+            static fn (): array => [
+                'user' => new User(),
+            ],
+            $model,
+        ];
+        yield 'model identifier' => [
+            static fn (): array => [new ModelIdentifier(User::class, 7, [], null)],
+            $model,
+        ];
+        yield 'model collection' => [
+            static fn (): array => [new EloquentCollection([new User()])],
+            'unsupported_value_type: Eloquent collection of ' . User::class
+                . ' cannot cross a V2 payload boundary. Pass its keys and load the models inside the activity.',
+        ];
+        yield 'empty model collection' => [
+            static fn (): array => [new EloquentCollection()],
+            'unsupported_value_type: Eloquent collection cannot cross a V2 payload boundary.'
+                . ' Pass its keys and load the models inside the activity.',
+        ];
+    }
+
+    public function testV2AvroStillNormalizesTopLevelThrowable(): void
+    {
+        $blob = Serializer::serializeWithCodec('avro', new InvalidArgumentException('boom', 3));
+        $decoded = Serializer::unserializeWithCodec('avro', $blob);
+
+        $this->assertSame(InvalidArgumentException::class, $decoded['class']);
+        $this->assertSame('boom', $decoded['message']);
+        $this->assertSame(3, $decoded['code']);
     }
 
     private function testSerializeUnserialize($data, $serializer, $unserializer): void

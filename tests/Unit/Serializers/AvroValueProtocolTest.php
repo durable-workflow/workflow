@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\Serializers;
 
+use Illuminate\Contracts\Database\ModelIdentifier;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 use Workflow\Serializers\Avro;
@@ -364,6 +365,16 @@ final class AvroValueProtocolTest extends TestCase
      */
     private static function observedCodecValue(array $fixture, mixed $expected): mixed
     {
+        if (($fixture['id'] ?? null) === 'avro-eloquent-model-identifier-named') {
+            // #997: a V2 argument holding a model reached the codec as Laravel's
+            // ModelIdentifier. The PHP binding encodes that value and must name
+            // the user's model class instead of the internal identifier type.
+            self::assertInstanceOf(AvroMapValue::class, $expected);
+            $model = array_column($expected->pairs, 1, 0);
+
+            return [new ModelIdentifier($model['model_class'], $model['model_key'], [], null)];
+        }
+
         if (($fixture['id'] ?? null) !== 'avro-throwable-trace-object-argument') {
             return $expected;
         }

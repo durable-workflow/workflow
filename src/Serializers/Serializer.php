@@ -212,14 +212,19 @@ final class Serializer
     }
 
     /**
-     * Pre-normalize $data before handing it to a codec that does not itself
-     * apply model/Throwable normalization. Legacy codecs that extend
-     * {@see AbstractSerializer} already call serializeModels internally and
-     * must not be double-normalized here.
+     * Pre-normalize $data before handing it to the portable Avro codec. Only
+     * a top-level Throwable is converted. Eloquent models are left in place
+     * so the codec can reject them by model class; their ModelIdentifier form
+     * is never encodable. Legacy codecs that extend {@see AbstractSerializer}
+     * normalize models themselves and are not passed through here.
      */
     private static function normalizeForCodec(mixed $data): mixed
     {
-        return self::serializeModels($data);
+        if ($data instanceof Throwable) {
+            return self::throwableToArray($data);
+        }
+
+        return $data;
     }
 
     private static function containsPhpOnlyValue(mixed $data): bool

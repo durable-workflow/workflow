@@ -96,6 +96,9 @@ encoder raises:
   before scheduling the activity or workflow)
 - PHP closures and resources (rejected unconditionally)
 - PHP `BackedEnum` values (convert to `->value` before scheduling)
+- PHP Eloquent models, `ModelIdentifier` values and Eloquent collections
+  (pass the model key and load the model inside the activity; the
+  `unsupported_value_type` message names the model class)
 
 A producer that does not adapt one of these values gets a synchronous
 `TypeError` (Python) or `InvalidArgumentException` with an

@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace Tests\Fixtures\V2;
 
 /**
- * PHP-only value object used to verify that activity argument serialization
- * round-trips typed objects even when the run's declared codec is Avro.
- * See #429 (TD-066).
+ * PHP-only value object used to verify that V2 Avro activity arguments reject
+ * unregistered objects before an activity is scheduled. V2 payloads never fall
+ * back to PHP object serialization.
  */
 final class TestActivityArgumentObject
 {
