@@ -5,12 +5,16 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Queue;
+use InvalidArgumentException;
 use Tests\Fixtures\V2\TestActivityArgumentObjectActivity;
 use Tests\Fixtures\V2\TestActivityArgumentObjectWorkflow;
+use Tests\Fixtures\V2\TestEloquentModelArgumentWorkflow;
 use Tests\TestCase;
+use Workbench\App\Models\User;
 use Workflow\Serializers\CodecDecodeException;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\WorkflowStub;
 
@@ -46,6 +50,44 @@ final class V2ActivityArgumentCodecTest extends TestCase
         ]);
     }
 
+    public function testEloquentModelActivityArgumentFailsWithModelGuidance(): void
+    {
+        $user = $this->createUser();
+        $workflow = WorkflowStub::make(TestEloquentModelArgumentWorkflow::class, 'activity-arg-eloquent-model');
+        $workflow->start($user->id);
+
+        $this->drainReadyTasks();
+
+        /** @var WorkflowRun $run */
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+
+        $this->assertTrue($workflow->refresh()->failed());
+        $this->assertDatabaseMissing('activity_executions', [
+            'workflow_run_id' => $run->id,
+        ]);
+
+        $failure = WorkflowFailure::query()->where('workflow_run_id', $run->id)->firstOrFail();
+        $this->assertSame(self::modelMessage(), $failure->message);
+        $this->assertStringNotContainsString('ModelIdentifier', $failure->message);
+    }
+
+    public function testEloquentModelStartArgumentThrowsWithModelGuidance(): void
+    {
+        $user = $this->createUser();
+        $workflow = WorkflowStub::make(TestEloquentModelArgumentWorkflow::class, 'start-arg-eloquent-model');
+
+        try {
+            $workflow->start($user);
+            $this->fail('Starting a V2 workflow with an Eloquent model argument must fail.');
+        } catch (InvalidArgumentException $exception) {
+            $this->assertSame(self::modelMessage(), $exception->getMessage());
+        }
+
+        $this->assertDatabaseMissing('workflow_runs', [
+            'workflow_instance_id' => 'start-arg-eloquent-model',
+        ]);
+    }
+
     public function testActivityArgumentsUseStoredCodecInsteadOfSniffFallback(): void
     {
         $workflow = WorkflowStub::make(TestActivityArgumentObjectWorkflow::class, 'activity-arg-stored-codec');
@@ -69,6 +111,21 @@ final class V2ActivityArgumentCodecTest extends TestCase
         $this->expectException(CodecDecodeException::class);
 
         $execution->activityArguments();
+    }
+
+    private static function modelMessage(): string
+    {
+        return 'unsupported_value_type: Eloquent model ' . User::class
+            . ' cannot cross a V2 payload boundary. Pass its key and load the model inside the activity.';
+    }
+
+    private function createUser(): User
+    {
+        return User::query()->create([
+            'name' => 'Model Argument',
+            'email' => 'model-argument@example.com',
+            'password' => 'password',
+        ]);
     }
 
     private function drainReadyTasks(): void

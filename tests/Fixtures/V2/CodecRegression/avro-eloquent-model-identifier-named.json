@@ -1,0 +1,41 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.codec-regression/v1",
+  "id": "avro-eloquent-model-identifier-named",
+  "protocol": {
+    "codec": "avro",
+    "schema": "durable_workflow.protocol.Value",
+    "version": "1",
+    "fingerprint": "e2a33dff55802237"
+  },
+  "bindings": [
+    "php"
+  ],
+  "value": {
+    "type": "map",
+    "entries": [
+      {
+        "key": "model_class",
+        "value": {
+          "type": "string",
+          "value": "App\\Models\\User"
+        }
+      },
+      {
+        "key": "model_key",
+        "value": {
+          "type": "long",
+          "value": "42"
+        }
+      }
+    ]
+  },
+  "framing": {
+    "encoding": "avro-single-object",
+    "wire_base64": null
+  },
+  "failure_policy": {
+    "operation": "encode_reject",
+    "error": "unsupported_value_type: Eloquent model App\\Models\\User cannot cross a V2 payload boundary. Pass its key and load the model inside the activity."
+  }
+}

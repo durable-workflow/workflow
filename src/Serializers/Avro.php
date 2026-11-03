@@ -7,6 +7,9 @@ namespace Workflow\Serializers;
 use Apache\Avro\Datum\AvroIOBinaryEncoder;
 use Apache\Avro\IO\AvroStringIO;
 use Apache\Avro\Schema\AvroSchema;
+use Illuminate\Contracts\Database\ModelIdentifier;
+use Illuminate\Contracts\Queue\QueueableCollection;
+use Illuminate\Database\Eloquent\Model;
 use InvalidArgumentException;
 use Throwable;
 use UnderflowException;
@@ -314,10 +317,51 @@ final class Avro implements SerializerInterface
             ];
         }
 
+        $eloquentMessage = self::eloquentValueMessage($value);
+        if ($eloquentMessage !== null) {
+            throw new InvalidArgumentException('unsupported_value_type: ' . $eloquentMessage);
+        }
+
         throw new InvalidArgumentException(sprintf(
             'unsupported_value_type: adapt %s to null, bool, int, finite float, UTF-8 string, AvroBinaryValue, list, or string-keyed map.',
             get_debug_type($value),
         ));
+    }
+
+    /**
+     * Name the user's model, not Laravel's internal identifier type, when an
+     * Eloquent value reaches the portable codec. V2 never serializes models;
+     * callers pass keys and load the model where it is used.
+     */
+    private static function eloquentValueMessage(mixed $value): ?string
+    {
+        $class = match (true) {
+            $value instanceof Model => $value::class,
+            $value instanceof ModelIdentifier => $value->class,
+            default => null,
+        };
+
+        if ($class !== null) {
+            return sprintf(
+                'Eloquent model %s cannot cross a V2 payload boundary. Pass its key and load the model inside the activity.',
+                $class,
+            );
+        }
+
+        if (! $value instanceof QueueableCollection) {
+            return null;
+        }
+
+        try {
+            $class = $value->getQueueableClass();
+        } catch (Throwable) {
+            $class = null;
+        }
+
+        return sprintf(
+            'Eloquent collection%s cannot cross a V2 payload boundary. Pass its keys and load the models inside the activity.',
+            is_string($class) && $class !== '' ? ' of ' . $class : '',
+        );
     }
 
     private static function fromDatum(mixed $datum): mixed
