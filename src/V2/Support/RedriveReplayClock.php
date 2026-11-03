@@ -32,6 +32,19 @@ final class RedriveReplayClock
 
     public static function activityCompletedAt(WorkflowHistoryEvent $event): ?CarbonInterface
     {
+        return self::recordedAt($event);
+    }
+
+    /**
+     * The workflow time of a recorded step. A step that redrive reused from
+     * an earlier run keeps the time it was first recorded.
+     */
+    public static function recordedAt(?WorkflowHistoryEvent $event): ?CarbonInterface
+    {
+        if ($event === null) {
+            return null;
+        }
+
         $payload = $event->payload;
 
         return is_array($payload) && is_string($payload['reused_recorded_at'] ?? null)

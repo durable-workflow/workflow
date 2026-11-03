@@ -12,6 +12,15 @@
   `redrive()` applies, so the action an operator sees matches what redrive
   does. Runs that are not failed report `run_not_failed`, and a source that
   was already redriven reports `already_redriven` (#864).
+- Redrive a failed run whose completed steps include side effects or version
+  markers. Before, any `SideEffectRecorded` or `VersionMarkerRecorded` event
+  refused redrive with `unsupported_history`. The successor reuses them in step
+  order without running the side effect again. Like reused activity
+  completions, they carry `reused_from_run_id` and `reused_recorded_at`, and
+  replay uses `reused_recorded_at` so workflow time after the step matches the
+  source run. New refusal reasons: `invalid_step_sequence`,
+  `duplicate_step_sequence` and `external_side_effect_result_not_supported`
+  (#864).
 
 ## 2.17.1 - 2026-11-03
 

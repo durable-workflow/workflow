@@ -1054,7 +1054,7 @@ final class WorkflowExecutor
             $this->syncWorkflowCursor($workflow, $sequence + 1);
             $current = $workflowExecution->send(
                 $this->sideEffectResult($sideEffectEvent, $run),
-                $sideEffectEvent->recorded_at,
+                RedriveReplayClock::recordedAt($sideEffectEvent),
                 advanceCancellationTime: false
             );
         } catch (Throwable $throwable) {
@@ -1118,7 +1118,7 @@ final class WorkflowExecutor
             $this->syncWorkflowCursor($workflow, $sequence + ($resolution->advancesSequence ? 1 : 0));
             $current = $workflowExecution->send(
                 $current->resolveValue($version),
-                $versionMarkerEvent?->recorded_at,
+                RedriveReplayClock::recordedAt($versionMarkerEvent),
                 advanceCancellationTime: false
             );
         } catch (Throwable $throwable) {

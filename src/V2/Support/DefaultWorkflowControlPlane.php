@@ -242,23 +242,32 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             app(MemoUpsertService::class)->inheritFromParent($source, $continuedRun, 1);
             app(SearchAttributeUpsertService::class)->inheritFromParent($source, $continuedRun, 1);
 
-            foreach ($plan['completed'] as $completion) {
+            foreach ($plan['reused_steps'] as $step) {
+                $reused = $step['payload'];
+                // A step reused more than once keeps the time it first ran.
+                $reusedRecordedAt = is_string($reused['reused_recorded_at'] ?? null)
+                    ? $reused['reused_recorded_at']
+                    : $step['recorded_at'];
+
+                if ($step['event_type'] !== HistoryEventType::ActivityCompleted) {
+                    WorkflowHistoryEvent::record($continuedRun, $step['event_type'], array_merge($reused, [
+                        'reused_from_run_id' => $source->id,
+                        'reused_recorded_at' => $reusedRecordedAt,
+                    ]));
+
+                    continue;
+                }
+
                 WorkflowHistoryEvent::record($continuedRun, HistoryEventType::ActivityCompleted, [
                     'activity_execution_id' => (string) Str::ulid(),
-                    'activity_class' => $completion['activity_class'] ?? null,
-                    'activity_type' => $completion['activity_type'],
-                    'sequence' => $completion['sequence'],
-                    'result' => $completion['result'],
-                    'payload_codec' => $completion['payload_codec'],
+                    'activity_class' => $reused['activity_class'] ?? null,
+                    'activity_type' => $reused['activity_type'],
+                    'sequence' => $reused['sequence'],
+                    'result' => $reused['result'],
+                    'payload_codec' => $reused['payload_codec'],
                     'reused_from_run_id' => $source->id,
-                    'reused_activity_execution_id' => $completion['activity_execution_id'] ?? null,
-                    'reused_recorded_at' => is_string($completion['reused_recorded_at'] ?? null)
-                        ? $completion['reused_recorded_at']
-                        : $source->historyEvents
-                            ->first(
-                                static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ActivityCompleted
-                                && ($event->payload['sequence'] ?? null) === $completion['sequence']
-                            )?->recorded_at?->toIso8601String(),
+                    'reused_activity_execution_id' => $reused['activity_execution_id'] ?? null,
+                    'reused_recorded_at' => $reusedRecordedAt,
                 ]);
             }
 
