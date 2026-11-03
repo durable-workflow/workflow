@@ -240,8 +240,8 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 ],
             ), null, $command);
 
-            app(MemoUpsertService::class)->inheritFromParent($source, $continuedRun, 1);
-            app(SearchAttributeUpsertService::class)->inheritFromParent($source, $continuedRun, 1);
+            app(MemoUpsertService::class)->copyForRedrive($source, $continuedRun);
+            app(SearchAttributeUpsertService::class)->copyForRedrive($source, $continuedRun);
 
             foreach ($plan['reused_steps'] as $step) {
                 $reused = $step['payload'];

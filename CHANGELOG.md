@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Redrive a failed run whose workflow code upserted memos or search
+  attributes. Before, any `MemoUpserted` or `SearchAttributesUpserted` event
+  refused redrive with `unsupported_history`. The successor reuses those
+  events in step order, carrying `reused_from_run_id` and
+  `reused_recorded_at`, and replay uses the original time. Memo and search
+  attribute rows now carry to the successor unchanged, keeping the step that
+  wrote them and whether they were inherited, so a successor that fails again
+  can be redriven again. A row written by workflow code with no matching
+  reused upsert step is still refused with `unsupported_visibility_metadata`
+  (#864).
+
 ## 2.18.0 - 2026-11-03
 
 - Redrive a failed run that has start-time memos or search attributes. Before,

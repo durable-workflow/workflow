@@ -237,6 +237,40 @@ final class SearchAttributeUpsertService
     }
 
     /**
+     * Copy search attributes to a redrive successor as they are. The successor
+     * reuses the source's history, so each row keeps the step that wrote it
+     * and whether it was inherited.
+     */
+    public function copyForRedrive(WorkflowRun $source, WorkflowRun $successor): void
+    {
+        ConfiguredV2Models::connection()->transaction(static function () use ($source, $successor): void {
+            $sourceAttributes = WorkflowSearchAttribute::where('workflow_run_id', $source->id)
+                ->get();
+
+            foreach ($sourceAttributes as $sourceAttribute) {
+                (new WorkflowSearchAttribute([
+                    'workflow_run_id' => $successor->id,
+                    'workflow_instance_id' => $successor->workflow_instance_id,
+                    'key' => $sourceAttribute->key,
+                    'type' => $sourceAttribute->type,
+                    'value_string' => $sourceAttribute->value_string,
+                    'value_keyword' => $sourceAttribute->value_keyword,
+                    'value_keyword_list' => $sourceAttribute->value_keyword_list,
+                    'value_int' => $sourceAttribute->value_int,
+                    'value_float' => $sourceAttribute->value_float,
+                    'value_bool' => $sourceAttribute->value_bool,
+                    'value_datetime' => $sourceAttribute->value_datetime,
+                    'upserted_at_sequence' => $sourceAttribute->upserted_at_sequence,
+                    'inherited_from_parent' => $sourceAttribute->inherited_from_parent,
+                ]))->save();
+            }
+
+            WorkflowSearchAttribute::validateCount($successor->id);
+            WorkflowSearchAttribute::validateTotalSize($successor->id);
+        });
+    }
+
+    /**
      * Get all search attributes for a run as key-value array.
      *
      * @param WorkflowRun $run The workflow run

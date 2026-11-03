@@ -316,6 +316,68 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         ]);
     }
 
+    public function testRedriveReusedUpsertsCorpusKeepsTheirStepsRowsAndTime(): void
+    {
+        $path = self::FIXTURE_DIR . '/redrive-reused-upserts-clock.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The redrive reused-upsert evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['redrive_reused_upserts'];
+        self::stopWorkers();
+        config([
+            'queue.default' => 'sync',
+            'queue.connections.sync.driver' => 'sync',
+        ]);
+        foreach (['first-calls', 'second-calls'] as $counter) {
+            Cache::forget("test:redrive:{$counter}");
+        }
+        $this->clearWorkflowState();
+        WorkflowStub::fake();
+
+        $stub = WorkflowStub::make($fixture['workflow']['type'], 'regression-corpus-redrive-upserts');
+        $stub->start(...$fixture['workflow']['arguments']);
+        $this->assertTrue($stub->refresh()->failed());
+        $sourceRunId = $stub->runId();
+        $sourceTimes = [];
+        foreach ($scenario['reused_steps'] as $step) {
+            $sourceTimes[$step['sequence']] = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $sourceRunId)
+                ->where('event_type', $step['event_type'])
+                ->firstOrFail()
+                ->recorded_at?->toIso8601String();
+        }
+
+        $this->travel($scenario['redrive_after_minutes'])
+            ->minutes();
+        $result = app(WorkflowControlPlane::class)->redrive('regression-corpus-redrive-upserts', $sourceRunId);
+
+        $this->assertSame($scenario['redrive'] === 'accepted', $result['accepted'], (string) $result['reason']);
+        $this->assertSame($scenario['resume_step_sequence'], $result['resume_step_sequence']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame($scenario['successor_status'], $successor->status->value);
+        $this->assertSame(1, (int) Cache::get('test:redrive:first-calls'));
+        foreach ($scenario['reused_steps'] as $step) {
+            $reused = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $successor->id)
+                ->where('event_type', $step['event_type'])
+                ->sole();
+            $this->assertSame($step['sequence'], $reused->payload['sequence']);
+            $this->assertSame($sourceRunId, $reused->payload['reused_from_run_id'] ?? null);
+            $this->assertSame($sourceTimes[$step['sequence']], $reused->payload['reused_recorded_at'] ?? null);
+        }
+        $this->assertEquals($scenario['memo'], $successor->typedMemos());
+        $this->assertEquals($scenario['search_attributes'], $successor->typedSearchAttributes());
+        $output = $successor->workflowOutput();
+        $this->assertSame([
+            'time_after_memo' => $sourceTimes[1],
+            'time_after_search_attributes' => $sourceTimes[2],
+        ], [
+            'time_after_memo' => $output['time_after_memo'],
+            'time_after_search_attributes' => $output['time_after_search_attributes'],
+        ]);
+    }
+
     public function testRedriveReusedTimerCorpusDoesNotWaitAgain(): void
     {
         $path = self::FIXTURE_DIR . '/redrive-reused-timer-clock.json';

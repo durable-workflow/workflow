@@ -1,0 +1,95 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "redrive-reused-upserts-clock",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestRedriveVisibilityWorkflow",
+    "arguments": [
+      "Taylor"
+    ],
+    "payload_codec": "avro"
+  },
+  "redrive_reused_upserts": {
+    "redrive_after_minutes": 5,
+    "redrive": "accepted",
+    "resume_step_sequence": 4,
+    "successor_status": "completed",
+    "reused_steps": [
+      {
+        "sequence": 1,
+        "event_type": "MemoUpserted"
+      },
+      {
+        "sequence": 2,
+        "event_type": "SearchAttributesUpserted"
+      }
+    ],
+    "memo": {
+      "customer": "Taylor",
+      "stage": "greeting"
+    },
+    "search_attributes": {
+      "Stage": "greeting"
+    }
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {}
+    },
+    {
+      "sequence": 2,
+      "event_type": "MemoUpserted",
+      "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "sequence": 1,
+        "entries": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNw4EEGN1c3RvbWVyCgxUYXlsb3IKc3RhZ2UKEGdyZWV0aW5nAA=="
+        },
+        "merged": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNw4EEGN1c3RvbWVyCgxUYXlsb3IKc3RhZ2UKEGdyZWV0aW5nAA=="
+        },
+        "reused_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "reused_recorded_at": "2026-11-03T00:00:00+00:00"
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "SearchAttributesUpserted",
+      "recorded_at": "2026-11-03T00:05:00+00:00",
+      "payload": {
+        "sequence": 2,
+        "attributes": {
+          "Stage": "greeting"
+        },
+        "attribute_types": {
+          "Stage": "keyword"
+        },
+        "merged": {
+          "Stage": "greeting"
+        },
+        "reused_from_run_id": "01JBREDRIVESOURCERUN000000",
+        "reused_recorded_at": "2026-11-03T00:00:00+00:00"
+      }
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "schedule_activity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+        "payload_codec": "avro"
+      }
+    ]
+  }
+}

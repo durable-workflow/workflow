@@ -401,7 +401,7 @@ final class QueryStateReplayer
                 );
 
                 $this->syncWorkflowCursor($workflow, $sequence + 1);
-                $current = $workflowExecution->send(null, $upsertEvent->recorded_at);
+                $current = $workflowExecution->send(null, RedriveReplayClock::recordedAt($upsertEvent));
 
                 ++$sequence;
 
@@ -428,7 +428,7 @@ final class QueryStateReplayer
                 );
 
                 $this->syncWorkflowCursor($workflow, $sequence + 1);
-                $current = $workflowExecution->send(null, $upsertEvent->recorded_at);
+                $current = $workflowExecution->send(null, RedriveReplayClock::recordedAt($upsertEvent));
 
                 ++$sequence;
 
