@@ -2,10 +2,38 @@
 
 ## Unreleased
 
+- Redrive a failed run whose workflow code upserted memos or search
+  attributes. Before, any `MemoUpserted` or `SearchAttributesUpserted` event
+  refused redrive with `unsupported_history`. The successor reuses those
+  events in step order, carrying `reused_from_run_id` and
+  `reused_recorded_at`, and replay uses the original time. Memo and search
+  attribute rows now carry to the successor unchanged, keeping the step that
+  wrote them and whether they were inherited, so a successor that fails again
+  can be redriven again. A row written by workflow code with no matching
+  reused upsert step is still refused with `unsupported_visibility_metadata`
+  (#864).
+- Redrive a failed run whose completed steps include a signal wait
+  (`await('name')`) that received and applied its signal. The successor
+  records the wait, receipt and application with `reused_from_run_id` and
+  `reused_recorded_at`, and replay uses the original time, so the workflow
+  gets the same value without a new signal. Redrive also carries the source's
+  message cursor, so a consumed message is not delivered again. A wait with a
+  timeout, cancellation scope or parallel group is refused with
+  `unsupported_signal_wait`, a signal the source received but never applied
+  with `unsupported_pending_signal`, and a wait without its receipt and
+  application with `incomplete_signal_step`. A receipt that names another
+  run, instance, command or wait is refused with `mismatched_signal_receipt`,
+  and an externally stored signal payload with
+  `external_signal_payload_not_supported`. Updates in the completed prefix
+  are still refused (#864).
+
+## 2.18.0 - 2026-11-03
+
 - Redrive a failed run that has start-time memos or search attributes. Before,
   any memo or search attribute row refused redrive with
   `unsupported_visibility_metadata`. The successor now inherits the start
-  values, as continue-as-new does (#864).
+  values, as continue-as-new does. A value upserted by workflow code is still
+  refused until redrive replays that part of the history (#864).
 - Run detail and describe report whether redrive would accept a run.
   `can_redrive` and `redrive_blocked_reason` come from the same decision
   `redrive()` applies, so the action an operator sees matches what redrive
@@ -37,29 +65,21 @@
   Apply the nullable `intent_digest` migration, drain and upgrade all embedded
   database writers together, and allocate new keys for different operations.
   Native Server and published SDK/CLI qualification remain separate.
-- Redrive a failed run whose workflow code upserted memos or search
-  attributes. Before, any `MemoUpserted` or `SearchAttributesUpserted` event
-  refused redrive with `unsupported_history`. The successor reuses those
-  events in step order, carrying `reused_from_run_id` and
-  `reused_recorded_at`, and replay uses the original time. Memo and search
-  attribute rows now carry to the successor unchanged, keeping the step that
-  wrote them and whether they were inherited, so a successor that fails again
-  can be redriven again. A row written by workflow
-  code with no matching reused upsert step is still refused with
-  `unsupported_visibility_metadata` (#864).
-- Redrive a failed run whose completed steps include a signal wait
-  (`await('name')`) that received and applied its signal. The successor records the wait, receipt
-  and application with `reused_from_run_id` and `reused_recorded_at`, and
-  replay uses the original time, so the workflow gets the same value without
-  a new signal. Redrive also carries the source's message cursor, so a
-  consumed message is not delivered again. A wait with a timeout, cancellation
-  scope or parallel group is refused with `unsupported_signal_wait`, a signal
-  the source received but never applied with `unsupported_pending_signal`, and
-  a wait without its receipt and application with `incomplete_signal_step`.
-  A receipt that names another run, instance, command or wait is refused with
-  `mismatched_signal_receipt`, and an externally stored signal payload with
-  `external_signal_payload_not_supported`. Updates in the completed prefix are
-  still refused (#864).
+
+- V2 payloads reject an Eloquent model, `ModelIdentifier` or Eloquent
+  collection with an `unsupported_value_type` message that names the model
+  class and says to pass the key and load the model inside the activity.
+  Before, the message named Laravel's internal `ModelIdentifier` type. The
+  Avro argument path no longer runs `serializeModels`, and failure and
+  throwable normalization are unchanged (#997).
+- Record a bounded diagnostic when a late activity outcome is refused. The
+  first refused completion or failure from an expired or superseded attempt
+  appends one `ActivityOutcomeRejected` event with the attempt identity, lease
+  owner, attempted outcome, refusal reason and observation time. It is
+  payload-free: the result, failure, stack and request snapshot are never
+  stored. It grants no business outcome, renews no lease and changes no retry.
+  Readers have understood this event since 2.13.0, so after an upgraded
+  release writes one, do not roll back below 2.13.0 (#878, #901).
 
 ## 2.17.1 - 2026-11-03
 
