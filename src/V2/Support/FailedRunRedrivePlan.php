@@ -49,6 +49,7 @@ final class FailedRunRedrivePlan
         $markerEvents = [];
         $timerEvents = [];
         $signalEvents = [];
+        $updateEvents = [];
         $lastActivityEvent = null;
 
         foreach ($events as $event) {
@@ -113,6 +114,21 @@ final class FailedRunRedrivePlan
                 }
 
                 $markerEvents[$sequence] = $event;
+
+                continue;
+            }
+
+            if (in_array($event->event_type, [
+                HistoryEventType::UpdateAccepted,
+                HistoryEventType::UpdateRejected,
+                HistoryEventType::UpdateApplied,
+                HistoryEventType::UpdateCompleted,
+            ], true)) {
+                if ($started === null) {
+                    return self::reject('invalid_step_sequence');
+                }
+
+                $updateEvents[] = $event;
 
                 continue;
             }
@@ -212,10 +228,17 @@ final class FailedRunRedrivePlan
             }
         }
 
-        $signalSteps = self::signalSteps($signalEvents, $run);
+        $provenance = self::provenance($run, $started);
+        $signalSteps = self::signalSteps($signalEvents, $run, $provenance);
 
         if (is_string($signalSteps)) {
             return self::reject($signalSteps);
+        }
+
+        $updateBundles = self::updateBundles($updateEvents, $run, $boundary, $provenance);
+
+        if (is_string($updateBundles)) {
+            return self::reject($updateBundles);
         }
 
         foreach ([
@@ -392,6 +415,7 @@ final class FailedRunRedrivePlan
             'failed_step_kind' => $failedStepKind,
             'completed' => $completed,
             'reused_steps' => $reusedSteps,
+            'update_bundles' => $updateBundles,
         ];
     }
 
@@ -406,8 +430,30 @@ final class FailedRunRedrivePlan
     public static function successorEvents(array $plan, string $sourceRunId): array
     {
         $events = [];
+        $updateBundles = $plan['update_bundles'] ?? [];
+        // An applied update runs before the step it is recorded at, so it is
+        // written ahead of that step.
+        $emitUpdatesThrough = static function (?int $sequence) use (&$updateBundles, &$events, $sourceRunId): void {
+            while ($updateBundles !== [] && ($sequence === null || $updateBundles[0]['sequence'] <= $sequence)) {
+                foreach (array_shift($updateBundles)['events'] as $updateEvent) {
+                    $updatePayload = $updateEvent['payload'];
+                    $events[] = [
+                        'event_type' => $updateEvent['event_type'],
+                        'payload' => array_merge($updatePayload, [
+                            'reused_from_run_id' => $sourceRunId,
+                            'reused_recorded_at' => self::originalRecordedAt(
+                                $updatePayload,
+                                $updateEvent['recorded_at']
+                            ),
+                        ]),
+                    ];
+                }
+            }
+        };
 
         foreach ($plan['reused_steps'] as $step) {
+            $stepSequence = $step['payload']['sequence'] ?? null;
+            $emitUpdatesThrough(is_int($stepSequence) ? $stepSequence : null);
             $reused = $step['payload'];
             // A step reused more than once keeps the time it first ran.
             $reusedRecordedAt = is_string($reused['reused_recorded_at'] ?? null)
@@ -424,9 +470,10 @@ final class FailedRunRedrivePlan
                         'event_type' => $signalEvent['event_type'],
                         'payload' => array_merge($signalPayload, [
                             'reused_from_run_id' => $sourceRunId,
-                            'reused_recorded_at' => is_string($signalPayload['reused_recorded_at'] ?? null)
-                                ? $signalPayload['reused_recorded_at']
-                                : $signalEvent['recorded_at'],
+                            'reused_recorded_at' => self::originalRecordedAt(
+                                $signalPayload,
+                                $signalEvent['recorded_at']
+                            ),
                         ]),
                     ];
                 }
@@ -484,7 +531,322 @@ final class FailedRunRedrivePlan
             ];
         }
 
+        $emitUpdatesThrough(null);
+
         return $events;
+    }
+
+    /**
+     * Who may have recorded a reused-step payload in this run's history: the
+     * run itself, or, for a step it reused, its immediate redrive source while
+     * the payload keeps the earlier run of the same instance that recorded it.
+     *
+     * @return array{immediate_source: string|null, earlier_runs: array<string, true>}
+     */
+    private static function provenance(WorkflowRun $run, ?WorkflowHistoryEvent $started): array
+    {
+        $startedPayload = is_array($started?->payload) ? $started->payload : [];
+        $immediateSource = ($startedPayload['recovery_kind'] ?? null) === 'redrive'
+            ? ($startedPayload['continued_from_run_id'] ?? null)
+            : null;
+        $earlierRuns = [];
+
+        if (is_string($immediateSource) && $immediateSource !== '') {
+            foreach (WorkflowRun::query()
+                ->where('workflow_instance_id', $run->workflow_instance_id)
+                ->where('run_number', '<', $run->run_number)
+                ->pluck('id') as $id) {
+                $earlierRuns[(string) $id] = true;
+            }
+        } else {
+            $immediateSource = null;
+        }
+
+        return [
+            'immediate_source' => $immediateSource,
+            'earlier_runs' => $earlierRuns,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @param array{immediate_source: string|null, earlier_runs: array<string, true>} $provenance
+     */
+    private static function boundToRun(array $payload, WorkflowRun $run, array $provenance): bool
+    {
+        if (($payload['workflow_instance_id'] ?? null) !== $run->workflow_instance_id
+            || ! self::hasReuseProvenance($payload, $provenance)) {
+            return false;
+        }
+
+        if (! array_key_exists('reused_from_run_id', $payload)) {
+            return ($payload['workflow_run_id'] ?? null) === $run->id;
+        }
+
+        $original = $payload['workflow_run_id'] ?? null;
+
+        return is_string($original) && isset($provenance['earlier_runs'][$original]);
+    }
+
+    /**
+     * The reuse keys come as a pair. Both absent: the event was recorded in
+     * this run. Both present: this run reused it from its immediate redrive
+     * source, keeping the time the event was first recorded.
+     *
+     * @param array<string, mixed> $payload
+     * @param array{immediate_source: string|null, earlier_runs: array<string, true>} $provenance
+     */
+    private static function hasReuseProvenance(array $payload, array $provenance): bool
+    {
+        $hasSource = array_key_exists('reused_from_run_id', $payload);
+
+        if ($hasSource !== array_key_exists('reused_recorded_at', $payload)) {
+            return false;
+        }
+
+        if (! $hasSource) {
+            return true;
+        }
+
+        $recordedAt = $payload['reused_recorded_at'];
+
+        return $provenance['immediate_source'] !== null
+            && $payload['reused_from_run_id'] === $provenance['immediate_source']
+            && is_string($recordedAt)
+            && trim($recordedAt) !== ''
+            && strtotime($recordedAt) !== false;
+    }
+
+    /**
+     * When the event was first recorded. Only called for events whose reuse
+     * pair was validated, so a reused event always carries its original time.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private static function originalRecordedAt(array $payload, ?string $recordedAt): ?string
+    {
+        return array_key_exists('reused_from_run_id', $payload)
+            ? $payload['reused_recorded_at']
+            : $recordedAt;
+    }
+
+    /**
+     * Every event of one update names the same update, command and handler,
+     * and was recorded by the same run with the same reuse provenance.
+     *
+     * @param list<WorkflowHistoryEvent> $events
+     * @param array{immediate_source: string|null, earlier_runs: array<string, true>} $provenance
+     */
+    private static function sameUpdate(array $events, WorkflowRun $run, array $provenance): bool
+    {
+        $first = $events[0]->payload;
+
+        foreach ($events as $event) {
+            $payload = $event->payload;
+
+            if (! is_array($payload)) {
+                return false;
+            }
+
+            foreach (['update_id', 'workflow_command_id', 'update_name'] as $key) {
+                if (! is_string($payload[$key] ?? null) || $payload[$key] === '' || $payload[$key] !== $first[$key]) {
+                    return false;
+                }
+            }
+
+            if (! self::boundToRun($payload, $run, $provenance)
+                || ($payload['workflow_run_id'] ?? null) !== ($first['workflow_run_id'] ?? null)
+                || ($payload['reused_from_run_id'] ?? null) !== ($first['reused_from_run_id'] ?? null)
+                || (! array_key_exists('reused_from_run_id', $payload) && $event->recorded_at === null)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Group update events into the update's exact lifecycle. Only three shapes
+     * are accepted, in history order: a rejection alone; an acceptance closed
+     * by the run's failure before it ran; or an acceptance, application and
+     * successful completion, which the successor reuses at the step it ran
+     * before. Anything else is refused, because replay would not reproduce it.
+     *
+     * @param list<WorkflowHistoryEvent> $events
+     * @param array{immediate_source: string|null, earlier_runs: array<string, true>} $provenance
+     *
+     * @return list<array{sequence: int, events: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null}>}>|string
+     */
+    private static function updateBundles(
+        array $events,
+        WorkflowRun $run,
+        int $boundary,
+        array $provenance
+    ): array|string {
+        $byUpdate = [];
+
+        foreach ($events as $event) {
+            $updateId = is_array($event->payload) ? ($event->payload['update_id'] ?? null) : null;
+
+            if (! is_string($updateId) || $updateId === '') {
+                return 'mismatched_update_history';
+            }
+
+            $byUpdate[$updateId][] = $event;
+        }
+
+        $bundles = [];
+
+        foreach ($byUpdate as $updateEvents) {
+            usort(
+                $updateEvents,
+                static fn (WorkflowHistoryEvent $left, WorkflowHistoryEvent $right): int => $left->sequence <=> $right->sequence
+            );
+            $shape = array_map(
+                static fn (WorkflowHistoryEvent $event): string => $event->event_type->value,
+                $updateEvents
+            );
+
+            if ($shape === [HistoryEventType::UpdateRejected->value]) {
+                // Rejected before acceptance, so replay never sees it.
+                if (! self::sameUpdate($updateEvents, $run, $provenance)) {
+                    return 'mismatched_update_history';
+                }
+
+                continue;
+            }
+
+            if ($shape === [HistoryEventType::UpdateAccepted->value, HistoryEventType::UpdateCompleted->value]) {
+                // Closed with the run before its handler ran: a terminal
+                // failure with no result and no step.
+                $closed = $updateEvents[1]->payload;
+
+                if (
+                    ! self::sameUpdate($updateEvents, $run, $provenance)
+                    || ! is_string($closed['terminal_reason'] ?? null)
+                    || trim($closed['terminal_reason']) === ''
+                    || ! is_string($closed['failure_id'] ?? null)
+                    || trim($closed['failure_id']) === ''
+                    || array_key_exists('result', $closed)
+                    || array_key_exists('sequence', $closed)
+                ) {
+                    return 'mismatched_update_history';
+                }
+
+                continue;
+            }
+
+            if ($shape === [HistoryEventType::UpdateAccepted->value]) {
+                return 'unsupported_pending_update';
+            }
+
+            if ($shape !== [
+                HistoryEventType::UpdateAccepted->value,
+                HistoryEventType::UpdateApplied->value,
+                HistoryEventType::UpdateCompleted->value,
+            ]) {
+                return 'mismatched_update_history';
+            }
+
+            [$accepted, $applied, $completed] = $updateEvents;
+            $first = $accepted->payload;
+
+            if (! self::sameUpdate($updateEvents, $run, $provenance)) {
+                return 'mismatched_update_history';
+            }
+
+            // Replay runs the handler from the applied arguments, so they must
+            // be exactly the accepted ones.
+            if (
+                ! array_key_exists('arguments', $first)
+                || ! array_key_exists('arguments', $applied->payload)
+                || $first['arguments'] !== $applied->payload['arguments']
+            ) {
+                return 'mismatched_update_history';
+            }
+
+            if (
+                ! array_key_exists('result', $completed->payload)
+                || array_key_exists('failure_id', $completed->payload)
+                || array_key_exists('terminal_reason', $completed->payload)
+            ) {
+                return 'incomplete_update_step';
+            }
+
+            $sequence = $applied->payload['sequence'] ?? null;
+
+            if (! is_int($sequence) || $sequence < 1 || $sequence > $boundary
+                || ($completed->payload['sequence'] ?? null) !== $sequence) {
+                return 'invalid_step_sequence';
+            }
+
+            foreach ([$first['arguments'], $completed->payload['result']] as $value) {
+                if (self::holdsExternalPayload($value)) {
+                    return 'external_update_payload_not_supported';
+                }
+
+                if (! self::decodesInline($value, $run)) {
+                    return 'unavailable_update_payload';
+                }
+            }
+
+            $bundleEvents = [];
+            foreach ([$accepted, $applied, $completed] as $event) {
+                $eventPayload = $event->payload;
+                // The task and command are the source run's recording context.
+                unset($eventPayload['task'], $eventPayload['command']);
+                $bundleEvents[] = [
+                    'event_type' => $event->event_type,
+                    'payload' => $eventPayload,
+                    'recorded_at' => $event->recorded_at?->toIso8601String(),
+                ];
+            }
+
+            $bundles[] = [
+                'sequence' => $sequence,
+                'order' => (int) $applied->sequence,
+                'events' => $bundleEvents,
+            ];
+        }
+
+        usort($bundles, static fn (array $left, array $right): int => [$left['sequence'], $left['order']]
+            <=> [$right['sequence'], $right['order']]);
+
+        return array_map(static fn (array $bundle): array => [
+            'sequence' => $bundle['sequence'],
+            'events' => $bundle['events'],
+        ], $bundles);
+    }
+
+    /**
+     * Any external-storage shape, including a key whose value is null.
+     */
+    private static function holdsExternalPayload(mixed $value): bool
+    {
+        return (is_array($value) && array_key_exists('external_storage', $value))
+            || (is_string($value) && ExternalPayloads::isStoredReference($value));
+    }
+
+    /**
+     * An inline payload the successor's replay can decode with the run's codec.
+     */
+    private static function decodesInline(mixed $value, WorkflowRun $run): bool
+    {
+        $codec = is_string($run->payload_codec) && $run->payload_codec !== '' ? $run->payload_codec : 'avro';
+
+        try {
+            $blob = ExternalPayloads::payloadBlob($value, $codec, $run->namespace);
+
+            if (! is_string($blob)) {
+                return false;
+            }
+
+            Serializer::unserializeWithCodec($codec, $blob);
+
+            return true;
+        } catch (Throwable) {
+            return false;
+        }
     }
 
     /**
@@ -574,7 +936,7 @@ final class FailedRunRedrivePlan
      *
      * @return array<int, array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null, signal_events: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null}>}>|string
      */
-    private static function signalSteps(array $events, WorkflowRun $run): array|string
+    private static function signalSteps(array $events, WorkflowRun $run, array $provenance): array|string
     {
         $opened = [];
         $applied = [];
@@ -656,10 +1018,23 @@ final class FailedRunRedrivePlan
                 || ! is_string($commandId)
                 || $commandId === ''
                 || ($receiptPayload['workflow_command_id'] ?? null) !== $commandId
-                || ($receiptPayload['workflow_run_id'] ?? null) !== $run->id
-                || ($receiptPayload['workflow_instance_id'] ?? null) !== $run->workflow_instance_id
+                || ! self::boundToRun($receiptPayload, $run, $provenance)
             ) {
                 return 'mismatched_signal_receipt';
+            }
+
+            // The wait and application carry no run id, so the reuse pair is
+            // their provenance. All three events come from the same run.
+            foreach ([$wait, $application, $receipt] as $event) {
+                $eventPayload = is_array($event->payload) ? $event->payload : [];
+
+                if (
+                    ! self::hasReuseProvenance($eventPayload, $provenance)
+                    || ($eventPayload['reused_from_run_id'] ?? null) !== ($receiptPayload['reused_from_run_id'] ?? null)
+                    || (! array_key_exists('reused_from_run_id', $eventPayload) && $event->recorded_at === null)
+                ) {
+                    return 'mismatched_signal_receipt';
+                }
             }
 
             // One admitted signal is one workflow input: a receipt may satisfy
@@ -675,8 +1050,8 @@ final class FailedRunRedrivePlan
             }
 
             if (
-                self::isExternalResult($receiptPayload['arguments'] ?? null)
-                || self::isExternalResult($applicationPayload['value'])
+                self::holdsExternalPayload($receiptPayload['arguments'] ?? null)
+                || self::holdsExternalPayload($applicationPayload['value'])
             ) {
                 return 'external_signal_payload_not_supported';
             }

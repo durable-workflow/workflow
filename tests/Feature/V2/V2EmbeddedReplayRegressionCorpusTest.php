@@ -595,6 +595,50 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         );
     }
 
+    public function testRedriveReusedUpdateCorpusReappliesItsStateChange(): void
+    {
+        $path = self::FIXTURE_DIR . '/redrive-reused-update.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The redrive reused-update evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['redrive_reused_update'];
+        self::stopWorkers();
+        config([
+            'queue.default' => 'sync',
+            'queue.connections.sync.driver' => 'sync',
+        ]);
+        Cache::forget('test:redrive:first-calls');
+        Cache::forget('test:redrive:second-calls');
+        $this->clearWorkflowState();
+        WorkflowStub::fake();
+
+        $stub = WorkflowStub::make($fixture['workflow']['type'], 'regression-corpus-redrive-update');
+        $stub->start(...$fixture['workflow']['arguments']);
+        $this->assertSame(
+            $scenario['update_result'],
+            $stub->update($scenario['update'], ...$scenario['update_arguments'])
+        );
+        $stub->signal($scenario['signal']);
+        $this->assertTrue($stub->refresh()->failed());
+        $sourceRunId = $stub->runId();
+
+        $result = app(WorkflowControlPlane::class)->redrive('regression-corpus-redrive-update', $sourceRunId);
+
+        $this->assertSame($scenario['redrive'] === 'accepted', $result['accepted'], (string) $result['reason']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame($scenario['successor_status'], $successor->status->value);
+        $this->assertSame($scenario['output'], $successor->workflowOutput());
+        $this->assertSame(1, (int) Cache::get('test:redrive:first-calls'));
+        foreach ($scenario['reused_events'] as $type) {
+            $reused = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $successor->id)
+                ->where('event_type', $type)
+                ->sole();
+            $this->assertSame($sourceRunId, $reused->payload['reused_from_run_id'] ?? null);
+        }
+    }
+
     public function testRedriveTypedLineageCorpusLinksBothRunsFromHistory(): void
     {
         $path = self::FIXTURE_DIR . '/redrive-typed-lineage.json';
