@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.17.1 - 2026-11-03
+
 - Replay verification accepts a failed run that replays to its recorded
   failure. Before, `ReplayDiff` and `workflow:v2:replay-verify` reported
   `replay_error` for any run that failed because workflow code threw, even when
