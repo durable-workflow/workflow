@@ -1,0 +1,64 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "redrive-eligibility-report",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestRedriveWorkflow",
+    "arguments": [
+      "Taylor"
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-03T00:00:00+00:00"
+    }
+  ],
+  "redrive_eligibility_report": {
+    "redrivable": {
+      "before": {
+        "can_redrive": true,
+        "redrive_blocked_reason": null
+      },
+      "redrive": "accepted",
+      "source_after": {
+        "can_redrive": false,
+        "redrive_blocked_reason": "already_redriven"
+      },
+      "successor_status": "completed",
+      "successor": {
+        "can_redrive": false,
+        "redrive_blocked_reason": "run_not_failed"
+      }
+    },
+    "refused": {
+      "workflow": "Tests\\Fixtures\\V2\\TestThrowAfterGreetingWorkflow",
+      "arguments": [
+        "Taylor"
+      ],
+      "report": {
+        "can_redrive": false,
+        "redrive_blocked_reason": "unrecorded_failure_boundary"
+      },
+      "redrive_reason": "unrecorded_failure_boundary"
+    }
+  },
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "schedule_activity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+        "payload_codec": "avro"
+      }
+    ]
+  }
+}

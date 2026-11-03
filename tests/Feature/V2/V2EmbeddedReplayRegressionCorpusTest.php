@@ -255,6 +255,51 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         );
     }
 
+    public function testRedriveEligibilityCorpusReportsWhatRedriveDoes(): void
+    {
+        $path = self::FIXTURE_DIR . '/redrive-eligibility-report.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The redrive eligibility report evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['redrive_eligibility_report'];
+        self::stopWorkers();
+        config([
+            'queue.default' => 'sync',
+            'queue.connections.sync.driver' => 'sync',
+        ]);
+        Cache::forget('test:redrive:first-calls');
+        Cache::forget('test:redrive:second-calls');
+        $this->clearWorkflowState();
+        WorkflowStub::fake();
+        $controlPlane = app(WorkflowControlPlane::class);
+
+        $redrivable = $scenario['redrivable'];
+        $stub = WorkflowStub::make($fixture['workflow']['type'], 'regression-corpus-redrive-report');
+        $stub->start(...$fixture['workflow']['arguments']);
+        $this->assertTrue($stub->refresh()->failed());
+        $sourceRunId = $stub->runId();
+        $this->assertRedriveReport($controlPlane, $sourceRunId, $redrivable['before']);
+
+        $result = $controlPlane->redrive('regression-corpus-redrive-report', $sourceRunId);
+
+        $this->assertSame($redrivable['redrive'] === 'accepted', $result['accepted'], (string) $result['reason']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame($redrivable['successor_status'], $successor->status->value);
+        $this->assertRedriveReport($controlPlane, $sourceRunId, $redrivable['source_after']);
+        $this->assertRedriveReport($controlPlane, $successor->id, $redrivable['successor']);
+
+        $refused = $scenario['refused'];
+        $refusedStub = WorkflowStub::make($refused['workflow'], 'regression-corpus-redrive-report-refused');
+        $refusedStub->start(...$refused['arguments']);
+        $this->assertTrue($refusedStub->refresh()->failed());
+        $this->assertRedriveReport($controlPlane, $refusedStub->runId(), $refused['report']);
+        $this->assertSame(
+            $refused['redrive_reason'],
+            $controlPlane->redrive('regression-corpus-redrive-report-refused', $refusedStub->runId())['reason'],
+        );
+    }
+
     public function testRecordedWorkflowFailureCorpusReplaysAsTheRecordedFailure(): void
     {
         $path = self::FIXTURE_DIR . '/recorded-workflow-failure-replay.json';
@@ -3531,6 +3576,35 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 return $this->projectRun($run);
             }
         });
+    }
+
+    /**
+     * @param array{can_redrive: bool, redrive_blocked_reason: string|null} $expected
+     */
+    private function assertRedriveReport(WorkflowControlPlane $controlPlane, string $runId, array $expected): void
+    {
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $detail = RunDetailView::forRun($run);
+        $describe = $controlPlane->describe($run->workflow_instance_id, [
+            'run_id' => $runId,
+        ]);
+
+        foreach ([
+            'run detail' => $detail,
+            'describe' => $describe['actions'] ?? [],
+        ] as $surface => $actions) {
+            $this->assertSame(
+                $expected['can_redrive'],
+                $actions['can_redrive'] ?? null,
+                "{$surface} can_redrive for {$runId}"
+            );
+            $this->assertArrayHasKey('redrive_blocked_reason', $actions, "{$surface} for {$runId}");
+            $this->assertSame(
+                $expected['redrive_blocked_reason'],
+                $actions['redrive_blocked_reason'],
+                "{$surface} redrive_blocked_reason for {$runId}",
+            );
+        }
     }
 }
 
