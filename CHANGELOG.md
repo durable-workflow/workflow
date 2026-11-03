@@ -48,6 +48,14 @@
   registered for its type later. Failures
   recorded by earlier releases have no boundary and still refuse with
   `unrecorded_failure_boundary` (#864).
+- Redrive refuses a run a service worker started when its completed prefix
+  has a memo upsert, search-attribute upsert or signal wait to reuse, with
+  `service_redrive_history_not_qualified`, before writing anything. Embedded
+  runs, and service runs whose prefix holds only activities, side effects,
+  version markers and fired timers, redrive as before. The refusal lifts only
+  through a replay-capability check once SDK replay of those reused events
+  ships (durable-workflow/sdk-python#235, durable-workflow/sdk-php#244,
+  durable-workflow/sdk-rust#172) (#864).
 
 ## 2.18.0 - 2026-11-03
 

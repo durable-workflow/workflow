@@ -1,0 +1,39 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "redrive-service-unqualified-history",
+  "protocol_version": "1.0",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestRedriveWorkflow",
+    "arguments": ["Service Worker"],
+    "payload_codec": "avro"
+  },
+  "redrive_service_unqualified_history": {
+    "service_workflow_type": "remote.redrive",
+    "worker_fingerprint": "worker-definition-1",
+    "reused_step": "MemoUpserted",
+    "memo": {"stage": "review"},
+    "redrive": "refused",
+    "reason": "service_redrive_history_not_qualified"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-03T00:00:00+00:00",
+      "payload": {}
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "schedule_activity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+        "payload_codec": "avro"
+      }
+    ]
+  }
+}
