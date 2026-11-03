@@ -169,6 +169,11 @@ jobs:
     needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 6
+    env:
+      # The runner's system PHP loads Xdebug. Each official consumer run takes
+      # several times longer with it, and the validator runs the consumer
+      # 1 + 2N times for N new fixtures.
+      XDEBUG_MODE: 'off'
 
     services:
       redis:
