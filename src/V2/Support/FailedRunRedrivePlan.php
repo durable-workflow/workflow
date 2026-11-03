@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Support\Str;
 use Throwable;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
@@ -21,6 +22,7 @@ final class FailedRunRedrivePlan
      *     eligible: bool,
      *     reason: string|null,
      *     resume_step_sequence: int|null,
+     *     failed_step_kind?: string,
      *     completed: list<array<string, mixed>>,
      *     reused_steps: list<array{
      *         event_type: HistoryEventType,
@@ -187,12 +189,27 @@ final class FailedRunRedrivePlan
         $failurePayload = $failure->payload;
         $boundary = is_array($failurePayload) ? ($failurePayload['failed_step_sequence'] ?? null) : null;
 
+        $failedStepKind = is_array($failurePayload) ? ($failurePayload['failed_step_kind'] ?? null) : null;
+
         if (
             ! is_int($boundary)
             || $boundary < 1
-            || ($failurePayload['failed_step_kind'] ?? null) !== 'activity'
+            || ! in_array($failedStepKind, ['activity', 'workflow_code', 'structural_limit'], true)
         ) {
             return self::reject('unrecorded_failure_boundary');
+        }
+
+        // An escaped activity failure owns its step, which runs again. When
+        // workflow code failed, the boundary is the step it never took.
+        $failedActivity = $failedStepKind === 'activity';
+        $expectedSteps = $failedActivity ? $boundary : $boundary - 1;
+
+        if (! $failedActivity) {
+            foreach (array_keys($activityEvents) as $sequence) {
+                if ($sequence >= $boundary) {
+                    return self::reject('invalid_failed_step');
+                }
+            }
         }
 
         $signalSteps = self::signalSteps($signalEvents, $run);
@@ -229,14 +246,16 @@ final class FailedRunRedrivePlan
             }
         }
 
-        if (count($activityEvents) + count($markerEvents) + count($timerEvents) + count($signalSteps) !== $boundary) {
+        if (count($activityEvents) + count($markerEvents) + count($timerEvents) + count(
+            $signalSteps
+        ) !== $expectedSteps) {
             return self::reject('activity_sequence_gap');
         }
 
         $completed = [];
         $reusedSteps = [];
 
-        for ($sequence = 1; $sequence <= $boundary; ++$sequence) {
+        for ($sequence = 1; $sequence <= $expectedSteps; ++$sequence) {
             $marker = $markerEvents[$sequence] ?? null;
 
             if ($marker instanceof WorkflowHistoryEvent) {
@@ -358,11 +377,11 @@ final class FailedRunRedrivePlan
             ];
         }
 
-        if (
+        if ($failedActivity && (
             ! $lastActivityEvent instanceof WorkflowHistoryEvent
             || $lastActivityEvent->event_type !== HistoryEventType::ActivityFailed
             || ($lastActivityEvent->payload['sequence'] ?? null) !== $boundary
-        ) {
+        )) {
             return self::reject('unrecorded_failure_boundary');
         }
 
@@ -370,9 +389,102 @@ final class FailedRunRedrivePlan
             'eligible' => true,
             'reason' => null,
             'resume_step_sequence' => $boundary,
+            'failed_step_kind' => $failedStepKind,
             'completed' => $completed,
             'reused_steps' => $reusedSteps,
         ];
+    }
+
+    /**
+     * The history events a redrive successor records for its reused steps, in
+     * order. Redrive writes exactly these, and a definition check replays them.
+     *
+     * @param array{reused_steps: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null, scheduled_payload?: array<string, mixed>, signal_events?: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null}>}>} $plan
+     *
+     * @return list<array{event_type: HistoryEventType, payload: array<string, mixed>}>
+     */
+    public static function successorEvents(array $plan, string $sourceRunId): array
+    {
+        $events = [];
+
+        foreach ($plan['reused_steps'] as $step) {
+            $reused = $step['payload'];
+            // A step reused more than once keeps the time it first ran.
+            $reusedRecordedAt = is_string($reused['reused_recorded_at'] ?? null)
+                ? $reused['reused_recorded_at']
+                : $step['recorded_at'];
+
+            if (isset($step['signal_events'])) {
+                // A completed signal wait: the successor records the wait, the
+                // receipt and the application without a signal row or command
+                // to deliver again.
+                foreach ($step['signal_events'] as $signalEvent) {
+                    $signalPayload = $signalEvent['payload'];
+                    $events[] = [
+                        'event_type' => $signalEvent['event_type'],
+                        'payload' => array_merge($signalPayload, [
+                            'reused_from_run_id' => $sourceRunId,
+                            'reused_recorded_at' => is_string($signalPayload['reused_recorded_at'] ?? null)
+                                ? $signalPayload['reused_recorded_at']
+                                : $signalEvent['recorded_at'],
+                        ]),
+                    ];
+                }
+
+                continue;
+            }
+
+            if ($step['event_type'] === HistoryEventType::TimerFired) {
+                // The timer already fired, so the successor records it fired
+                // with no timer row or task to wait on.
+                $timerId = (string) Str::ulid();
+                $events[] = [
+                    'event_type' => HistoryEventType::TimerScheduled,
+                    'payload' => array_merge($step['scheduled_payload'] ?? [], [
+                        'timer_id' => $timerId,
+                    ]),
+                ];
+                $events[] = [
+                    'event_type' => HistoryEventType::TimerFired,
+                    'payload' => array_merge($reused, [
+                        'timer_id' => $timerId,
+                        'reused_from_run_id' => $sourceRunId,
+                        'reused_recorded_at' => $reusedRecordedAt,
+                    ]),
+                ];
+
+                continue;
+            }
+
+            if ($step['event_type'] !== HistoryEventType::ActivityCompleted) {
+                $events[] = [
+                    'event_type' => $step['event_type'],
+                    'payload' => array_merge($reused, [
+                        'reused_from_run_id' => $sourceRunId,
+                        'reused_recorded_at' => $reusedRecordedAt,
+                    ]),
+                ];
+
+                continue;
+            }
+
+            $events[] = [
+                'event_type' => HistoryEventType::ActivityCompleted,
+                'payload' => [
+                    'activity_execution_id' => (string) Str::ulid(),
+                    'activity_class' => $reused['activity_class'] ?? null,
+                    'activity_type' => $reused['activity_type'],
+                    'sequence' => $reused['sequence'],
+                    'result' => $reused['result'],
+                    'payload_codec' => $reused['payload_codec'],
+                    'reused_from_run_id' => $sourceRunId,
+                    'reused_activity_execution_id' => $reused['activity_execution_id'] ?? null,
+                    'reused_recorded_at' => $reusedRecordedAt,
+                ],
+            ];
+        }
+
+        return $events;
     }
 
     /**

@@ -97,6 +97,7 @@ use Workflow\V2\Support\ScheduleManager;
 use Workflow\V2\Support\ServiceCallPrincipal;
 use Workflow\V2\Support\ServiceCallScheduler;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
+use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\Support\WorkflowRunRetentionCleanup;
@@ -439,6 +440,82 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertSame($sourceTimes['SignalApplied'], $output['time_after_signal']);
     }
 
+    public function testRedriveCorrectedDefinitionCorpusReplaysThePrefixWithNewCode(): void
+    {
+        $path = self::FIXTURE_DIR . '/redrive-corrected-definition.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The redrive corrected-definition evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['redrive_corrected_definition'];
+        self::stopWorkers();
+        config([
+            'queue.default' => 'sync',
+            'queue.connections.sync.driver' => 'sync',
+            'workflows.v2.testing.redrive_failures_before_success' => 0,
+        ]);
+        Cache::forget('test:redrive:first-calls');
+        Cache::forget('test:redrive:second-calls');
+        $this->clearWorkflowState();
+        WorkflowStub::fake();
+        $controlPlane = app(WorkflowControlPlane::class);
+        $useDefinition = static fn (string $class) => config([
+            'workflows.v2.types.workflows' => [
+                $scenario['workflow_type'] => $class,
+            ],
+        ]);
+
+        $useDefinition($scenario['failing_definition']);
+        $stub = WorkflowStub::make($scenario['failing_definition'], 'regression-corpus-redrive-corrected');
+        $stub->start(...$fixture['workflow']['arguments']);
+        $this->assertTrue($stub->refresh()->failed());
+        $sourceRunId = $stub->runId();
+        $failure = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $sourceRunId)
+            ->where('event_type', HistoryEventType::WorkflowFailed)
+            ->sole()
+            ->payload;
+        $this->assertSame($scenario['failed_step_kind'], $failure['failed_step_kind'] ?? null);
+        $this->assertSame($scenario['resume_step_sequence'], $failure['failed_step_sequence'] ?? null);
+
+        $this->assertSame(
+            $scenario['same_definition_reason'],
+            $controlPlane->redrive('regression-corpus-redrive-corrected', $sourceRunId)['reason'],
+        );
+        $useDefinition($scenario['incompatible_definition']);
+        $this->assertSame(
+            $scenario['incompatible_reason'],
+            $controlPlane->redrive('regression-corpus-redrive-corrected', $sourceRunId, [
+                'allow_definition_change' => true,
+            ])['reason'],
+        );
+        $this->assertSame(
+            1,
+            WorkflowRun::query()->where('workflow_instance_id', 'regression-corpus-redrive-corrected')->count()
+        );
+
+        $useDefinition($fixture['workflow']['type']);
+        $result = $controlPlane->redrive('regression-corpus-redrive-corrected', $sourceRunId, [
+            'allow_definition_change' => true,
+        ]);
+
+        $this->assertTrue($result['accepted'], (string) $result['reason']);
+        $this->assertSame($scenario['resume_step_sequence'], $result['resume_step_sequence']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame($scenario['successor_status'], $successor->status->value);
+        $this->assertSame($scenario['result'], $successor->workflowOutput());
+        $this->assertSame(1, (int) Cache::get('test:redrive:first-calls'));
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $successor->id)
+            ->where('event_type', HistoryEventType::WorkflowStarted)
+            ->sole()
+            ->payload;
+        $this->assertSame(
+            WorkflowDefinition::fingerprint($scenario['failing_definition']),
+            $started['definition_changed_from'] ?? null,
+        );
+    }
+
     public function testRedriveReusedTimerCorpusDoesNotWaitAgain(): void
     {
         $path = self::FIXTURE_DIR . '/redrive-reused-timer-clock.json';
@@ -531,6 +608,17 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $refusedStub = WorkflowStub::make($refused['workflow'], 'regression-corpus-redrive-report-refused');
         $refusedStub->start(...$refused['arguments']);
         $this->assertTrue($refusedStub->refresh()->failed());
+        // This evidence covers a workflow-code failure from a release that
+        // recorded no failure boundary. Current releases record one (#864 A3).
+        $failure = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $refusedStub->runId())
+            ->where('event_type', HistoryEventType::WorkflowFailed)
+            ->sole();
+        $legacyPayload = $failure->payload;
+        unset($legacyPayload['failed_step_sequence'], $legacyPayload['failed_step_kind']);
+        $failure->forceFill([
+            'payload' => $legacyPayload,
+        ])->save();
         $this->assertRedriveReport($controlPlane, $refusedStub->runId(), $refused['report']);
         $this->assertSame(
             $refused['redrive_reason'],

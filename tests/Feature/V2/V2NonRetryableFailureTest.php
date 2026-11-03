@@ -95,7 +95,10 @@ final class V2NonRetryableFailureTest extends TestCase
             ->where('event_type', HistoryEventType::WorkflowFailed)
             ->firstOrFail();
 
-        $this->assertArrayNotHasKey('failed_step_sequence', $workflowFailedEvent->payload);
+        // Workflow code failed at the step after the completed activity. The
+        // boundary never names the activity's step or claims it failed.
+        $this->assertSame('workflow_code', $workflowFailedEvent->payload['failed_step_kind'] ?? null);
+        $this->assertSame(2, $workflowFailedEvent->payload['failed_step_sequence'] ?? null);
     }
 
     public function testDifferentExceptionAfterHandledActivityFailureDoesNotClaimActivityBoundary(): void
@@ -112,7 +115,10 @@ final class V2NonRetryableFailureTest extends TestCase
             ->where('event_type', HistoryEventType::WorkflowFailed)
             ->firstOrFail();
 
-        $this->assertArrayNotHasKey('failed_step_sequence', $workflowFailedEvent->payload);
+        // The handled activity failure stays at its own step. The later
+        // exception is a workflow-code failure at the next step.
+        $this->assertSame('workflow_code', $workflowFailedEvent->payload['failed_step_kind'] ?? null);
+        $this->assertSame(2, $workflowFailedEvent->payload['failed_step_sequence'] ?? null);
     }
 
     public function testRetryableActivityFailureRecordsNonRetryableFalse(): void

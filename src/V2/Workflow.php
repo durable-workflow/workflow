@@ -259,6 +259,16 @@ abstract class Workflow
         $this->visibleSequence = max(1, $visibleSequence);
     }
 
+    /**
+     * The step position workflow code reaches next.
+     *
+     * @internal Read by the engine to record where workflow code failed.
+     */
+    public function executionCursor(): int
+    {
+        return $this->visibleSequence;
+    }
+
     public function setCommandDispatchEnabled(bool $enabled): void
     {
         $this->commandDispatchEnabled = $enabled;

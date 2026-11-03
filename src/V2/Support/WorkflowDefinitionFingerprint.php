@@ -20,6 +20,15 @@ final class WorkflowDefinitionFingerprint
         );
     }
 
+    /**
+     * The definition a redrive replaced when it moved this run to corrected
+     * code, or null when the run kept its source's definition.
+     */
+    public static function changedFromForRun(WorkflowRun $run): ?string
+    {
+        return self::stringValue(self::workflowStartedEvent($run)?->payload['definition_changed_from'] ?? null);
+    }
+
     public static function currentForRun(WorkflowRun $run): ?string
     {
         try {

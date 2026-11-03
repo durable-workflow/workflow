@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Database\Eloquent\ModelNotFoundException;
-use Illuminate\Support\Str;
 use LogicException;
 use Throwable;
 use Workflow\Serializers\AvroValueJsonProjection;
@@ -125,17 +124,35 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 $source,
                 $currentRun,
                 is_string($externalFingerprint) ? $externalFingerprint : null,
+                allowDefinitionChange: ($options['allow_definition_change'] ?? false) === true,
             );
 
             if ($eligibility['reason'] !== null || $eligibility['plan'] === null) {
                 $result['reason'] = $eligibility['reason'];
                 $result['status'] = 409;
 
+                if (isset($eligibility['definition_mismatch'])) {
+                    $result['definition_mismatch'] = $eligibility['definition_mismatch'];
+                }
+
                 return;
             }
 
             $plan = $eligibility['plan'];
             $startedPayload = $eligibility['started_payload'];
+            $definitionChange = $eligibility['definition_change'] ?? null;
+            $successorClass = $definitionChange['workflow_class'] ?? $source->workflow_class;
+            // Change provenance describes one transition. A successor that keeps
+            // its source's definition records none, even if the source changed.
+            unset($startedPayload['definition_changed_from']);
+
+            if ($definitionChange !== null) {
+                // The successor runs the corrected definition and records the
+                // one it replaced.
+                $startedPayload['workflow_class'] = $successorClass;
+                $startedPayload['workflow_definition_fingerprint'] = $definitionChange['to'];
+                $startedPayload['definition_changed_from'] = $definitionChange['from'];
+            }
             $now = now();
             $executionDeadlineAt = $source->execution_deadline_at;
             $runTimeoutSeconds = $source->run_timeout_seconds;
@@ -160,7 +177,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 ->create([
                     'workflow_instance_id' => $instance->id,
                     'run_number' => $source->run_number + 1,
-                    'workflow_class' => $source->workflow_class,
+                    'workflow_class' => $successorClass,
                     'workflow_type' => $source->workflow_type,
                     'namespace' => $source->namespace,
                     'business_key' => $source->business_key,
@@ -246,72 +263,8 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             app(MemoUpsertService::class)->copyForRedrive($source, $continuedRun);
             app(SearchAttributeUpsertService::class)->copyForRedrive($source, $continuedRun);
 
-            foreach ($plan['reused_steps'] as $step) {
-                $reused = $step['payload'];
-                // A step reused more than once keeps the time it first ran.
-                $reusedRecordedAt = is_string($reused['reused_recorded_at'] ?? null)
-                    ? $reused['reused_recorded_at']
-                    : $step['recorded_at'];
-
-                if (isset($step['signal_events'])) {
-                    // A completed signal wait: the successor records the
-                    // wait, the receipt and the application without a signal
-                    // row or command to deliver again.
-                    foreach ($step['signal_events'] as $signalEvent) {
-                        $signalPayload = $signalEvent['payload'];
-                        WorkflowHistoryEvent::record($continuedRun, $signalEvent['event_type'], array_merge(
-                            $signalPayload,
-                            [
-                                'reused_from_run_id' => $source->id,
-                                'reused_recorded_at' => is_string($signalPayload['reused_recorded_at'] ?? null)
-                                    ? $signalPayload['reused_recorded_at']
-                                    : $signalEvent['recorded_at'],
-                            ],
-                        ));
-                    }
-
-                    continue;
-                }
-
-                if ($step['event_type'] === HistoryEventType::TimerFired) {
-                    // The timer already fired, so the successor records it
-                    // fired with no timer row or task to wait on.
-                    $timerId = (string) Str::ulid();
-                    WorkflowHistoryEvent::record($continuedRun, HistoryEventType::TimerScheduled, array_merge(
-                        $step['scheduled_payload'] ?? [],
-                        [
-                            'timer_id' => $timerId,
-                        ],
-                    ));
-                    WorkflowHistoryEvent::record($continuedRun, HistoryEventType::TimerFired, array_merge($reused, [
-                        'timer_id' => $timerId,
-                        'reused_from_run_id' => $source->id,
-                        'reused_recorded_at' => $reusedRecordedAt,
-                    ]));
-
-                    continue;
-                }
-
-                if ($step['event_type'] !== HistoryEventType::ActivityCompleted) {
-                    WorkflowHistoryEvent::record($continuedRun, $step['event_type'], array_merge($reused, [
-                        'reused_from_run_id' => $source->id,
-                        'reused_recorded_at' => $reusedRecordedAt,
-                    ]));
-
-                    continue;
-                }
-
-                WorkflowHistoryEvent::record($continuedRun, HistoryEventType::ActivityCompleted, [
-                    'activity_execution_id' => (string) Str::ulid(),
-                    'activity_class' => $reused['activity_class'] ?? null,
-                    'activity_type' => $reused['activity_type'],
-                    'sequence' => $reused['sequence'],
-                    'result' => $reused['result'],
-                    'payload_codec' => $reused['payload_codec'],
-                    'reused_from_run_id' => $source->id,
-                    'reused_activity_execution_id' => $reused['activity_execution_id'] ?? null,
-                    'reused_recorded_at' => $reusedRecordedAt,
-                ]);
+            foreach (FailedRunRedrivePlan::successorEvents($plan, $source->id) as $reusedEvent) {
+                WorkflowHistoryEvent::record($continuedRun, $reusedEvent['event_type'], $reusedEvent['payload']);
             }
 
             /** @var WorkflowTask $task */
@@ -1090,6 +1043,9 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                     : null,
                 'recovery_kind' => is_string($startedPayload['recovery_kind'] ?? null)
                     ? $startedPayload['recovery_kind']
+                    : null,
+                'definition_changed_from' => is_string($startedPayload['definition_changed_from'] ?? null)
+                    ? $startedPayload['definition_changed_from']
                     : null,
                 'is_current_run' => $isCurrentRun,
                 'status' => $run->status->value,

@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Fixtures\V2\TestRedriveFixedWorkflow;
 use Tests\Fixtures\V2\TestRedriveWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
@@ -185,6 +186,28 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
             'request_id_already_used',
             409,
         ];
+    }
+
+    public function testAWorkerSourcedRunRefusesADefinitionChangeAfterALocalClassAppears(): void
+    {
+        $source = $this->failedSource();
+        // A local class registered for the service type after the run started
+        // must not turn the worker's definition into one the server replays.
+        config([
+            'workflows.v2.types.workflows' => [
+                'remote.redrive' => TestRedriveFixedWorkflow::class,
+            ],
+        ]);
+        $before = $this->records();
+        $options = $this->redriveOptions();
+        $options['external_workflow_definition_fingerprint'] = 'worker-definition-2';
+        $options['allow_definition_change'] = true;
+
+        $result = $this->controlPlane->redrive($source->workflow_instance_id, $source->id, $options);
+
+        $this->assertFalse($result['accepted']);
+        $this->assertSame('definition_change_requires_replay_check', $result['reason']);
+        $this->assertSame($before, $this->records());
     }
 
     public function testServiceRunMemoAndSearchAttributeRowsCarryToTheRedriveSuccessor(): void

@@ -60,6 +60,12 @@ use Workflow\WorkflowMetadata;
 
 final class WorkflowExecutor
 {
+    /**
+     * The workflow object running the current task. When workflow code fails
+     * without an activity step, its cursor is the step where it failed.
+     */
+    private ?Workflow $taskWorkflow = null;
+
     public function run(
         WorkflowRun $run,
         WorkflowTask $task,
@@ -293,6 +299,7 @@ final class WorkflowExecutor
         $workflowClass = WorkflowDefinitionFingerprint::resolveClassForRun($run);
         $frame = $continuation?->begin($run, $task, $workflowClass);
         $workflow = $frame?->workflow ?? RuntimeObjectFactory::workflow($workflowClass, $run);
+        $this->taskWorkflow = $workflow;
         $run = $workflow->run;
         $arguments = [];
         if ($frame === null) {
@@ -4459,6 +4466,17 @@ final class WorkflowExecutor
         if ($failedStepSequence !== null) {
             $failedEventPayload['failed_step_sequence'] = $failedStepSequence;
             $failedEventPayload['failed_step_kind'] = 'activity';
+        } elseif (
+            $sourceKind === 'workflow_run'
+            && $this->taskWorkflow instanceof Workflow
+            && $this->taskWorkflow->run->id === $run->id
+        ) {
+            // Workflow code threw, or a structural limit stopped it, before its
+            // next step. Redrive validates the earlier steps before resuming here.
+            $failedEventPayload['failed_step_sequence'] = $this->taskWorkflow->executionCursor();
+            $failedEventPayload['failed_step_kind'] = $throwable instanceof StructuralLimitExceededException
+                ? 'structural_limit'
+                : 'workflow_code';
         }
 
         if ($throwable instanceof StructuralLimitExceededException) {
