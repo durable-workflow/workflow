@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Symfony\Component\Process\Process;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
+use Tests\Fixtures\V2\TestRedriveMarkersWorkflow;
 use Tests\Fixtures\V2\TestRedriveWorkflow;
 use Tests\Fixtures\V2\TestThrowAfterGreetingWorkflow;
 use Tests\TestCase;
@@ -30,6 +31,7 @@ use Workflow\V2\Support\EmbeddedV2HistoryImport;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\RunActivityView;
 use Workflow\V2\Support\RunDetailView;
+use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\WorkflowStub;
 
@@ -375,6 +377,103 @@ final class V2FailedRunRedriveTest extends TestCase
         $this->assertFalse($result['accepted']);
         $this->assertSame('unrecorded_failure_boundary', $result['reason']);
         $this->assertSame(1, WorkflowRun::query()->where('workflow_instance_id', 'redrive-ambiguous-1')->count());
+    }
+
+    public function testRedriveReusesSideEffectsAndVersionMarkersAtTheirRecordedTime(): void
+    {
+        WorkflowStub::fake();
+        Cache::forget('test:redrive:side-effect-calls');
+
+        $workflow = WorkflowStub::make(TestRedriveMarkersWorkflow::class, 'redrive-markers-1');
+        $workflow->start('Taylor');
+        $this->assertTrue($workflow->refresh()->failed());
+        $sourceRunId = $workflow->runId();
+        $this->assertSame(1, (int) Cache::get('test:redrive:side-effect-calls'));
+        $sourceEvent = static fn (HistoryEventType $type): WorkflowHistoryEvent => WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $sourceRunId)
+            ->where('event_type', $type)
+            ->firstOrFail();
+        $sourceSideEffect = $sourceEvent(HistoryEventType::SideEffectRecorded);
+        $sourceMarker = $sourceEvent(HistoryEventType::VersionMarkerRecorded);
+
+        // Redrive later than the source, so a successor that used its own
+        // event times would report different workflow times.
+        $this->travel(5)
+            ->minutes();
+        $result = app(WorkflowControlPlane::class)->redrive('redrive-markers-1', $sourceRunId);
+
+        $this->assertTrue($result['accepted'], (string) $result['reason']);
+        $this->assertSame(4, $result['resume_step_sequence']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame(RunStatus::Completed, $successor->status);
+        $this->assertSame(1, (int) Cache::get('test:redrive:side-effect-calls'));
+        $this->assertSame(1, (int) Cache::get('test:redrive:first-calls'));
+
+        $successorEvent = static fn (HistoryEventType $type): WorkflowHistoryEvent => WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $successor->id)
+            ->where('event_type', $type)
+            ->firstOrFail();
+        $reusedSideEffect = $successorEvent(HistoryEventType::SideEffectRecorded);
+        $reusedMarker = $successorEvent(HistoryEventType::VersionMarkerRecorded);
+        $this->assertSame($sourceSideEffect->payload['result'], $reusedSideEffect->payload['result']);
+        $this->assertSame(1, $reusedSideEffect->payload['sequence']);
+        $this->assertSame(2, $reusedMarker->payload['sequence']);
+        $this->assertSame($sourceMarker->payload['version'], $reusedMarker->payload['version']);
+        foreach ([[$sourceSideEffect, $reusedSideEffect], [$sourceMarker, $reusedMarker]] as [$original, $reused]) {
+            $this->assertSame($sourceRunId, $reused->payload['reused_from_run_id'] ?? null);
+            $this->assertSame(
+                $original->recorded_at?->toIso8601String(),
+                $reused->payload['reused_recorded_at'] ?? null,
+            );
+        }
+
+        $expectedTimes = [
+            'time_after_side_effect' => $sourceSideEffect->recorded_at?->toIso8601String(),
+            'time_after_version' => $sourceMarker->recorded_at?->toIso8601String(),
+        ];
+        $output = $successor->workflowOutput();
+        $this->assertSame('Hello, Taylor! Redrive completed.', $output['result']);
+        $this->assertSame(1, $output['version']);
+        $this->assertMatchesRegularExpression('/^[0-9a-f]{16}$/', $output['token']);
+        $this->assertSame($expectedTimes, [
+            'time_after_side_effect' => $output['time_after_side_effect'],
+            'time_after_version' => $output['time_after_version'],
+        ]);
+
+        $export = json_decode(
+            json_encode(HistoryExport::forRun($successor->fresh()), JSON_THROW_ON_ERROR),
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+        $this->assertSame($expectedTimes, (new WorkflowReplayer())->replayExport($export)->workflow->replayTimes());
+        $this->assertSame(
+            $expectedTimes,
+            (new WorkflowReplayer())->replay($successor->fresh())
+                ->workflow->replayTimes(),
+        );
+
+        $history = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $successor->id)
+            ->orderBy('sequence')
+            ->get()
+            ->map(static fn (WorkflowHistoryEvent $event): array => [
+                'sequence' => $event->sequence,
+                'event_type' => $event->event_type->value,
+                'payload' => $event->payload,
+                'recorded_at' => $event->recorded_at?->toIso8601String(),
+            ])
+            ->all();
+        $fiber = WorkflowFiberRunner::forClass(
+            TestRedriveMarkersWorkflow::class,
+            'redrive-markers-1',
+            $successor->id,
+            ['Taylor'],
+            (string) $successor->payload_codec,
+            $history,
+        )->step();
+        $this->assertTrue($fiber->completed);
+        $this->assertSame($output, $fiber->result);
     }
 
     public function testRunDetailAndDescribeReportTheRedriveDecision(): void

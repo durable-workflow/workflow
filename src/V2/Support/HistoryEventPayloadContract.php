@@ -602,8 +602,16 @@ final class HistoryEventPayloadContract
             'parallel_group_index',
             'parallel_group_path',
         ],
-        'SideEffectRecorded' => ['sequence', 'result'],
-        'VersionMarkerRecorded' => ['sequence', 'change_id', 'version', 'min_supported', 'max_supported'],
+        'SideEffectRecorded' => ['sequence', 'result', 'reused_from_run_id', 'reused_recorded_at'],
+        'VersionMarkerRecorded' => [
+            'sequence',
+            'change_id',
+            'version',
+            'min_supported',
+            'max_supported',
+            'reused_from_run_id',
+            'reused_recorded_at',
+        ],
         'ChildWorkflowScheduled' => [
             'sequence',
             'workflow_link_id',

@@ -338,6 +338,55 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
                     'payload' => $payload,
                 ])->save();
                 break;
+            case 'side effect sharing an activity step':
+            case 'duplicate side effect step':
+                $sideEffect = [
+                    'event_type' => HistoryEventType::SideEffectRecorded,
+                    'payload' => [
+                        'sequence' => 1,
+                        'result' => Serializer::serializeWithCodec('avro', 'token'),
+                    ],
+                ];
+                $scheduled->forceFill($sideEffect)
+                    ->save();
+                if ($case === 'duplicate side effect step') {
+                    $completion->forceFill($sideEffect)
+                        ->save();
+                }
+                break;
+            case 'side effect without sequence':
+            case 'stored side effect result':
+                $completion->forceFill([
+                    'event_type' => HistoryEventType::SideEffectRecorded,
+                    'payload' => $case === 'stored side effect result'
+                        ? [
+                            'sequence' => 1,
+                            'result' => $this->storedPayload(),
+                        ]
+                        : [
+                            'result' => Serializer::serializeWithCodec('avro', 'token'),
+                        ],
+                ])->save();
+                break;
+            case 'version marker at failed step':
+                foreach ($source->historyEvents()->where(
+                    'event_type',
+                    HistoryEventType::ActivityScheduled->value
+                )->get() as $event) {
+                    if (($event->payload['sequence'] ?? null) === 2) {
+                        $event->forceFill([
+                            'event_type' => HistoryEventType::VersionMarkerRecorded,
+                            'payload' => [
+                                'sequence' => 2,
+                                'change_id' => 'late-marker',
+                                'version' => 1,
+                                'min_supported' => -1,
+                                'max_supported' => 1,
+                            ],
+                        ])->save();
+                    }
+                }
+                break;
             case 'stored completed result':
             case 'null completed result':
                 $completion->forceFill([
@@ -354,6 +403,7 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
             'reason' => $reason,
             'resume_step_sequence' => null,
             'completed' => [],
+            'reused_steps' => [],
         ], $plan);
         $this->assertRefusedWithoutMutation(
             $source->workflow_instance_id,
@@ -390,6 +440,12 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
             yield $case => [$case, 'missing_activity_result'];
         }
         yield 'stored completed result' => ['stored completed result', 'external_activity_result_not_supported'];
+        foreach (['side effect sharing an activity step', 'duplicate side effect step'] as $case) {
+            yield $case => [$case, 'duplicate_step_sequence'];
+        }
+        yield 'side effect without sequence' => ['side effect without sequence', 'invalid_step_sequence'];
+        yield 'stored side effect result' => ['stored side effect result', 'external_side_effect_result_not_supported'];
+        yield 'version marker at failed step' => ['version marker at failed step', 'invalid_failed_step'];
     }
 
     public function testRecordedLocalClassStillRedrivesAfterItsAliasIsRemoved(): void
