@@ -308,6 +308,10 @@ PHP_CODEC_NAMES = {"avro"}
 PHP_CODEC_ALIASES: dict[str, str] = {}
 PHP_REPLAY_PAYLOAD_DECODER = Path(__file__).with_name("decode-replay-payload.php")
 RUNTIME_DEPENDENCY_PATHS = ("vendor",)
+# The consumer tree lives under the repository root so it can hard-link the
+# runtime dependencies. .gitignore excludes it, so a run that is killed before
+# cleanup cannot leave committable source behind.
+CONSUMER_TREE_PREFIX = ".regression-corpus-consumer-"
 ZERO_COMMIT = re.compile(r"^0+$")
 LEGACY_MALFORMED_WIRE_REPAIRS = {
     "%%%": "JSUl",
@@ -1820,7 +1824,7 @@ def _consumer_result(
 ) -> subprocess.CompletedProcess[str]:
     started = time.monotonic()
     with tempfile.TemporaryDirectory(
-        prefix=".regression-corpus-consumer-",
+        prefix=CONSUMER_TREE_PREFIX,
         dir=source_root,
     ) as temporary:
         consumer_root = Path(temporary)
