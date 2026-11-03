@@ -300,7 +300,8 @@ final class RunLineageView
             return null;
         }
 
-        // The source is an earlier run of this instance.
+        // The source is an earlier run of this instance, and exactly one
+        // redrive link joins it to this run under the recorded link id.
         $source = self::resolveRun($run, $start['source_run_id']);
 
         if (
@@ -308,6 +309,20 @@ final class RunLineageView
             || $source->workflow_instance_id !== $run->workflow_instance_id
             || (int) $source->run_number >= (int) $run->run_number
         ) {
+            return null;
+        }
+
+        $links = $run->parentLinks->filter(
+            static fn (mixed $link): bool => $link instanceof WorkflowLink
+                && $link->link_type === 'redrive'
+                && $link->id === $start['link_id']
+                && $link->parent_workflow_run_id === $source->id
+                && $link->parent_workflow_instance_id === $run->workflow_instance_id
+                && $link->child_workflow_run_id === $run->id
+                && $link->child_workflow_instance_id === $run->workflow_instance_id
+        );
+
+        if ($links->count() !== 1) {
             return null;
         }
 
@@ -352,6 +367,7 @@ final class RunLineageView
             if (
                 $successor === null
                 || $start === null
+                || $successor->id !== $link->child_workflow_run_id
                 || $successor->workflow_instance_id !== $run->workflow_instance_id
                 || (int) $successor->run_number <= (int) $run->run_number
                 || $start['source_run_id'] !== $run->id

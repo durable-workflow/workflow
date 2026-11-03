@@ -1207,31 +1207,28 @@ final class V2FailedRunRedriveTest extends TestCase
     }
 
     /**
-     * @return iterable<string, array{string, bool}>
+     * @return iterable<string, array{string}>
      */
     public static function redriveStartIdentityMutations(): iterable
     {
-        // [mutation, whether the successor's own parent view may stay typed]
-        yield 'missing run id' => ['missing_run', false];
-        yield 'another run id' => ['foreign_run', false];
-        yield 'missing instance id' => ['missing_instance', false];
-        yield 'another instance id' => ['foreign_instance', false];
-        yield 'missing link id' => ['missing_link', false];
-        yield 'blank link id' => ['blank_link', false];
-        // The successor's history is the authority for its own link id; only
-        // the source side, which must match the link row, falls back.
-        yield 'another link id' => ['foreign_link', true];
-        yield 'missing resume step' => ['missing_resume', false];
-        yield 'zero resume step' => ['zero_resume', false];
-        yield 'string resume step' => ['string_resume', false];
-        yield 'missing source run' => ['missing_source', false];
-        yield 'another source run' => ['foreign_source', false];
-        yield 'source names the successor' => ['self_source', false];
-        yield 'not a redrive' => ['not_redrive', false];
+        yield 'missing run id' => ['missing_run'];
+        yield 'another run id' => ['foreign_run'];
+        yield 'missing instance id' => ['missing_instance'];
+        yield 'another instance id' => ['foreign_instance'];
+        yield 'missing link id' => ['missing_link'];
+        yield 'blank link id' => ['blank_link'];
+        yield 'another link id' => ['foreign_link'];
+        yield 'missing resume step' => ['missing_resume'];
+        yield 'zero resume step' => ['zero_resume'];
+        yield 'string resume step' => ['string_resume'];
+        yield 'missing source run' => ['missing_source'];
+        yield 'another source run' => ['foreign_source'];
+        yield 'source names the successor' => ['self_source'];
+        yield 'not a redrive' => ['not_redrive'];
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('redriveStartIdentityMutations')]
-    public function testARedriveStartWithoutItsExactIdentityIsNotTypedLineage(string $mutation, bool $parentTyped): void
+    public function testARedriveStartWithoutItsExactIdentityIsNotTypedLineage(string $mutation): void
     {
         WorkflowStub::fake();
 
@@ -1276,24 +1273,56 @@ final class V2FailedRunRedriveTest extends TestCase
             'payload' => $payload,
         ])->save();
 
-        foreach ([
-            'parent' => [RunDetailView::forRun($successor->fresh())['parents'], $parentTyped],
-            'successor' => [RunDetailView::forRun($source->fresh())['continuedWorkflows'], false],
-        ] as $side => [$view, $typed]) {
-            $redrive = array_values(
-                array_filter($view, static fn (array $entry): bool => $entry['link_type'] === 'redrive')
-            );
-            // One edge either way: the typed entry, or the link row as a
-            // diagnostic fallback.
-            $this->assertCount(1, $redrive, $side);
-            $this->assertSame(
-                $typed ? 'typed_history' : 'mutable_open_fallback',
-                $redrive[0]['history_authority'],
-                $side
-            );
-            $this->assertSame(! $typed, $redrive[0]['diagnostic_only'], $side);
-            $this->assertSame($side === 'parent' ? $source->id : $successor->id, $redrive[0]['workflow_run_id'], $side);
+        $this->assertOneDiagnosticRedriveEdge($source, $successor);
+    }
+
+    /**
+     * A redrive chain A -> B -> C where C's start names A, a real earlier
+     * failed run of the same instance, instead of B. No link joins A and C,
+     * so neither run gets a typed or a second edge.
+     */
+    public function testARedriveStartNamingAnotherEarlierFailedRunIsNotTypedLineage(): void
+    {
+        WorkflowStub::fake();
+        config([
+            'workflows.v2.testing.redrive_failures_before_success' => 2,
+        ]);
+        $controlPlane = app(WorkflowControlPlane::class);
+
+        $workflow = WorkflowStub::make(TestRedriveWorkflow::class, 'redrive-lineage-chain');
+        $workflow->start('Taylor');
+        $this->assertTrue($workflow->refresh()->failed());
+        $first = WorkflowRun::query()->findOrFail($workflow->runId());
+        $second = $controlPlane->redrive('redrive-lineage-chain', $first->id);
+        $this->assertTrue($second['accepted'], (string) $second['reason']);
+        $secondRun = WorkflowRun::query()->findOrFail($second['workflow_run_id']);
+        $this->assertSame(RunStatus::Failed, $secondRun->status);
+        $third = $controlPlane->redrive('redrive-lineage-chain', $secondRun->id);
+        $this->assertTrue($third['accepted'], (string) $third['reason']);
+        $thirdRun = WorkflowRun::query()->findOrFail($third['workflow_run_id']);
+
+        // The unmodified chain is typed on every edge.
+        foreach ([[$first, $secondRun], [$secondRun, $thirdRun]] as [$source, $successor]) {
+            $parents = $this->redriveEdges(RunDetailView::forRun($successor->fresh())['parents']);
+            $this->assertCount(1, $parents);
+            $this->assertSame('typed_history', $parents[0]['history_authority']);
+            $this->assertSame($source->id, $parents[0]['workflow_run_id']);
         }
+
+        $started = $this->sourceEvent($thirdRun, HistoryEventType::WorkflowStarted);
+        $started->forceFill([
+            'payload' => array_merge($started->payload, [
+                'continued_from_run_id' => $first->id,
+            ]),
+        ])->save();
+
+        $this->assertOneDiagnosticRedriveEdge($secondRun, $thirdRun);
+        // The first run keeps its typed edge to the second run and gains no
+        // edge to the third.
+        $firstSuccessors = $this->redriveEdges(RunDetailView::forRun($first->fresh())['continuedWorkflows']);
+        $this->assertCount(1, $firstSuccessors);
+        $this->assertSame($secondRun->id, $firstSuccessors[0]['workflow_run_id']);
+        $this->assertSame('typed_history', $firstSuccessors[0]['history_authority']);
     }
 
     public function testARedriveLinkTheSuccessorDoesNotConfirmStaysADiagnosticFallback(): void
@@ -1664,6 +1693,34 @@ final class V2FailedRunRedriveTest extends TestCase
             'completed' => true,
             'result' => $expectedOutput,
         ], json_decode($coldReplay->getOutput(), true, flags: JSON_THROW_ON_ERROR));
+    }
+
+    /**
+     * Both views show the one existing link row as a diagnostic fallback, and
+     * no typed redrive edge.
+     */
+    private function assertOneDiagnosticRedriveEdge(WorkflowRun $source, WorkflowRun $successor): void
+    {
+        foreach ([
+            'parent' => [RunDetailView::forRun($successor->fresh())['parents'], $source->id],
+            'successor' => [RunDetailView::forRun($source->fresh())['continuedWorkflows'], $successor->id],
+        ] as $side => [$view, $runId]) {
+            $redrive = $this->redriveEdges($view);
+            $this->assertCount(1, $redrive, $side);
+            $this->assertSame('mutable_open_fallback', $redrive[0]['history_authority'], $side);
+            $this->assertTrue($redrive[0]['diagnostic_only'], $side);
+            $this->assertSame($runId, $redrive[0]['workflow_run_id'], $side);
+        }
+    }
+
+    /**
+     * @param list<array<string, mixed>> $view
+     *
+     * @return list<array<string, mixed>>
+     */
+    private function redriveEdges(array $view): array
+    {
+        return array_values(array_filter($view, static fn (array $entry): bool => $entry['link_type'] === 'redrive'));
     }
 
     private function failedSignalSource(string $instanceId): WorkflowRun
