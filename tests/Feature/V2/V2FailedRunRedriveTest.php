@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Queue;
 use Symfony\Component\Process\Process;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestRedriveBuggyWorkflow;
+use Tests\Fixtures\V2\TestRedriveFinishesEarlyWorkflow;
 use Tests\Fixtures\V2\TestRedriveFixedWorkflow;
 use Tests\Fixtures\V2\TestRedriveIncompatibleWorkflow;
 use Tests\Fixtures\V2\TestRedriveMarkersWorkflow;
@@ -980,9 +981,10 @@ final class V2FailedRunRedriveTest extends TestCase
             'workflow_definition_unavailable_or_changed',
         );
 
-        // Code that can't replay the completed prefix is refused before any write.
+        // Code that can't replay the completed prefix is refused before any
+        // write, naming the first step it disagrees with.
         $useDefinition(TestRedriveIncompatibleWorkflow::class);
-        $this->assertRefusedWithoutMutation(
+        $incompatible = $this->assertRefusedWithoutMutation(
             'redrive-corrected-1',
             $source,
             'definition_incompatible_with_prefix',
@@ -990,6 +992,24 @@ final class V2FailedRunRedriveTest extends TestCase
                 'allow_definition_change' => true,
             ],
         );
+        $this->assertSame([
+            'sequence' => 1,
+            'kind' => 'step_shape',
+        ], $incompatible['definition_mismatch'] ?? null);
+
+        $useDefinition(TestRedriveFinishesEarlyWorkflow::class);
+        $finishesEarly = $this->assertRefusedWithoutMutation(
+            'redrive-corrected-1',
+            $source,
+            'definition_incompatible_with_prefix',
+            [
+                'allow_definition_change' => true,
+            ],
+        );
+        $this->assertSame([
+            'sequence' => 1,
+            'kind' => 'finished_before_boundary',
+        ], $finishesEarly['definition_mismatch'] ?? null);
 
         // The check never replays more history than the budget allows.
         $useDefinition(TestRedriveFixedWorkflow::class);
@@ -1036,6 +1056,56 @@ final class V2FailedRunRedriveTest extends TestCase
             RunDetailView::forRun($successor->fresh())['workflow_definition_changed_from'] ?? null,
         );
         $this->assertNull(RunDetailView::forRun($source->fresh())['workflow_definition_changed_from'] ?? null);
+    }
+
+    public function testALaterRedriveOnTheSameDefinitionRecordsNoInheritedChange(): void
+    {
+        WorkflowStub::fake();
+        $controlPlane = app(WorkflowControlPlane::class);
+        // The corrected run's second activity fails once, so it is redriven
+        // again on the same corrected definition.
+        config([
+            'workflows.v2.testing.redrive_failures_before_success' => 1,
+            'workflows.v2.types.workflows' => [
+                'test-redrive-correctable' => TestRedriveBuggyWorkflow::class,
+            ],
+        ]);
+        $workflow = WorkflowStub::make(TestRedriveBuggyWorkflow::class, 'redrive-corrected-chain');
+        $workflow->start('Taylor');
+        $this->assertTrue($workflow->refresh()->failed());
+        config([
+            'workflows.v2.types.workflows' => [
+                'test-redrive-correctable' => TestRedriveFixedWorkflow::class,
+            ],
+        ]);
+
+        $corrected = $controlPlane->redrive('redrive-corrected-chain', $workflow->runId(), [
+            'allow_definition_change' => true,
+        ]);
+        $this->assertTrue($corrected['accepted'], (string) $corrected['reason']);
+        $correctedRun = WorkflowRun::query()->findOrFail($corrected['workflow_run_id']);
+        $this->assertSame(RunStatus::Failed, $correctedRun->status);
+        $this->assertNotNull(
+            $this->sourceEvent(
+                $correctedRun,
+                HistoryEventType::WorkflowStarted
+            )->payload['definition_changed_from'] ?? null
+        );
+
+        $again = $controlPlane->redrive('redrive-corrected-chain', $correctedRun->id);
+
+        $this->assertTrue($again['accepted'], (string) $again['reason']);
+        $final = WorkflowRun::query()->findOrFail($again['workflow_run_id']);
+        $this->assertSame(RunStatus::Completed, $final->status);
+        $this->assertSame(TestRedriveFixedWorkflow::class, $final->workflow_class);
+        $this->assertArrayNotHasKey(
+            'definition_changed_from',
+            $this->sourceEvent($final, HistoryEventType::WorkflowStarted)->payload,
+        );
+        $this->assertNull(RunDetailView::forRun($final->fresh())['workflow_definition_changed_from'] ?? null);
+        $this->assertNull($controlPlane->describe('redrive-corrected-chain', [
+            'run_id' => $final->id,
+        ])['run']['definition_changed_from'] ?? null);
     }
 
     public function testRedriveReusesOneMarkerForARepeatedPatchCall(): void
@@ -1403,13 +1473,15 @@ final class V2FailedRunRedriveTest extends TestCase
 
     /**
      * @param array<string, mixed> $options
+     *
+     * @return array<string, mixed>
      */
     private function assertRefusedWithoutMutation(
         string $instanceId,
         WorkflowRun $source,
         string $reason,
         array $options = [],
-    ): void {
+    ): array {
         $cursor = (int) $source->fresh()
             ->message_cursor_position;
         $events = WorkflowHistoryEvent::query()->count();
@@ -1422,6 +1494,8 @@ final class V2FailedRunRedriveTest extends TestCase
         $this->assertSame($cursor, (int) $source->fresh()->message_cursor_position);
         $this->assertSame($events, WorkflowHistoryEvent::query()->count());
         $this->assertSame($source->id, $source->instance->fresh()->current_run_id);
+
+        return $result;
     }
 
     private function assertRedriveAction(

@@ -131,6 +131,10 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 $result['reason'] = $eligibility['reason'];
                 $result['status'] = 409;
 
+                if (isset($eligibility['definition_mismatch'])) {
+                    $result['definition_mismatch'] = $eligibility['definition_mismatch'];
+                }
+
                 return;
             }
 
@@ -138,6 +142,9 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             $startedPayload = $eligibility['started_payload'];
             $definitionChange = $eligibility['definition_change'] ?? null;
             $successorClass = $definitionChange['workflow_class'] ?? $source->workflow_class;
+            // Change provenance describes one transition. A successor that keeps
+            // its source's definition records none, even if the source changed.
+            unset($startedPayload['definition_changed_from']);
 
             if ($definitionChange !== null) {
                 // The successor runs the corrected definition and records the

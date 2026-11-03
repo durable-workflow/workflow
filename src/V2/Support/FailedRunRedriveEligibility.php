@@ -41,7 +41,8 @@ final class FailedRunRedriveEligibility
      *         reused_steps: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null, scheduled_payload?: array<string, mixed>, signal_events?: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null}>}>
      *     }|null,
      *     started_payload: array<string, mixed>,
-     *     definition_change?: array{workflow_class: class-string<Workflow>, from: string, to: string}|null
+     *     definition_change?: array{workflow_class: class-string<Workflow>, from: string, to: string}|null,
+     *     definition_mismatch?: array{sequence: int|null, kind: string|null}
      * }
      */
     public static function evaluate(
@@ -115,22 +116,35 @@ final class FailedRunRedriveEligibility
             $externalFingerprint,
             $fingerprintPresentedAtRedrive,
         )) {
-            $workflowClass = self::localWorkflowClass($source);
-            $currentFingerprint = $workflowClass === null ? null : WorkflowDefinition::fingerprint($workflowClass);
-
             if (! $allowDefinitionChange || ! is_string($sourceFingerprint) || $sourceFingerprint === '') {
                 return self::refuse('workflow_definition_unavailable_or_changed');
             }
 
-            // The server can't replay a service worker's code before accepting.
+            // The source's recorded execution mode decides, not today's type
+            // map: the server can't replay a service worker's code, even when
+            // a local class is registered for its type later.
+            $workerSourced = ($startedPayload['workflow_definition_fingerprint_source'] ?? null) === 'worker';
+            $workflowClass = $workerSourced ? null : self::localWorkflowClass($source);
+            $currentFingerprint = $workflowClass === null ? null : WorkflowDefinition::fingerprint($workflowClass);
+
             if ($workflowClass === null || $currentFingerprint === null) {
                 return self::refuse('definition_change_requires_replay_check');
             }
 
-            $definitionReason = FailedRunRedriveDefinitionCheck::check($source, $workflowClass, $startedPayload, $plan);
+            $definitionRefusal = FailedRunRedriveDefinitionCheck::check(
+                $source,
+                $workflowClass,
+                $startedPayload,
+                $plan,
+            );
 
-            if ($definitionReason !== null) {
-                return self::refuse($definitionReason);
+            if ($definitionRefusal !== null) {
+                return array_merge(self::refuse($definitionRefusal['reason']), [
+                    'definition_mismatch' => [
+                        'sequence' => $definitionRefusal['mismatch_sequence'],
+                        'kind' => $definitionRefusal['mismatch_kind'],
+                    ],
+                ]);
             }
 
             $definitionChange = [

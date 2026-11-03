@@ -35,13 +35,17 @@
   would throw again. Pass `allow_definition_change: true` to redrive onto a
   corrected definition: inside the redrive transaction, the new code replays
   the reused prefix in memory, and redrive refuses with
-  `definition_incompatible_with_prefix` when it can't, or with
+  `definition_incompatible_with_prefix` when it can't (with
+  `definition_mismatch.sequence` and `.kind` naming the first step it
+  disagrees with), or with
   `definition_check_over_budget` when the prefix exceeds the history budget,
   before writing anything. An accepted change records
   `definition_changed_from` on the successor's `WorkflowStarted`, and run
   detail (`workflow_definition_changed_from`) and describe
-  (`run.definition_changed_from`) show it. A service-mode run whose definition
-  changed is refused with `definition_change_requires_replay_check`. Failures
+  (`run.definition_changed_from`) show it. A later redrive on the same
+  definition records no change. A run started by a service worker is refused
+  with `definition_change_requires_replay_check`, even when a local class is
+  registered for its type later. Failures
   recorded by earlier releases have no boundary and still refuse with
   `unrecorded_failure_boundary` (#864).
 

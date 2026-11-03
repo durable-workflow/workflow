@@ -9,6 +9,11 @@ use Illuminate\Support\Str;
 use Throwable;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Exceptions\ActivityRetryPolicyMismatchException;
+use Workflow\V2\Exceptions\ConditionWaitDefinitionMismatchException;
+use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
+use Workflow\V2\Exceptions\VersionRangeMismatchException;
+use Workflow\V2\Exceptions\WorkflowEntryArgumentsMismatchException;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Workflow;
@@ -27,15 +32,18 @@ final class FailedRunRedriveDefinitionCheck
      * @param array<string, mixed> $startedPayload the source's WorkflowStarted payload
      * @param array{resume_step_sequence: int|null, reused_steps: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null, scheduled_payload?: array<string, mixed>, signal_events?: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null}>}>} $plan
      *
-     * @return string|null the refusal reason, or null when the new code replays the prefix
+     * @return array{reason: string, mismatch_sequence: int|null, mismatch_kind: string|null}|null the
+     *     refusal, or null when the new code replays the prefix. The mismatch fields name only the
+     *     first incompatible step and a stable kind, never an exception message or payload.
      */
     public static function check(
         WorkflowRun $source,
         string $workflowClass,
         array $startedPayload,
         array $plan,
-    ): ?string {
-        $resumeStep = $plan['resume_step_sequence'];
+    ): ?array {
+        $resumeStep = (int) $plan['resume_step_sequence'];
+        unset($startedPayload['definition_changed_from']);
         $started = array_merge($startedPayload, [
             'workflow_class' => $workflowClass,
             'workflow_definition_fingerprint' => WorkflowDefinition::fingerprint($workflowClass),
@@ -52,7 +60,7 @@ final class FailedRunRedriveDefinitionCheck
             count($events) > HistoryBudget::eventHardThreshold()
             || strlen(json_encode($events, JSON_THROW_ON_ERROR)) > HistoryBudget::sizeBytesHardThreshold()
         ) {
-            return 'definition_check_over_budget';
+            return self::refusal('definition_check_over_budget');
         }
 
         $candidate = $source->replicate();
@@ -87,12 +95,60 @@ final class FailedRunRedriveDefinitionCheck
 
         try {
             $state = (new QueryStateReplayer())->replayState($candidate);
-        } catch (Throwable) {
-            return 'definition_incompatible_with_prefix';
+        } catch (Throwable $throwable) {
+            [$sequence, $kind] = self::mismatch($throwable);
+
+            return self::refusal('definition_incompatible_with_prefix', $sequence, $kind);
         }
 
         // The new code must use every reused step and stop at the step where
         // the source failed, either to take it or to finish there.
-        return $state->sequence === $resumeStep ? null : 'definition_incompatible_with_prefix';
+        if ($state->sequence === $resumeStep) {
+            return null;
+        }
+
+        // The first recorded step the new code didn't take. A workflow that
+        // returns before any step reports position 0, which is step 1.
+        return self::refusal(
+            'definition_incompatible_with_prefix',
+            max(1, $state->sequence),
+            $state->current === null ? 'finished_before_boundary' : 'new_step_before_boundary',
+        );
+    }
+
+    /**
+     * @return array{int|null, string}
+     */
+    private static function mismatch(Throwable $throwable): array
+    {
+        return match (true) {
+            $throwable instanceof HistoryEventShapeMismatchException => [
+                $throwable->workflowSequence,
+                'step_shape',
+            ],
+            $throwable instanceof ActivityRetryPolicyMismatchException => [
+                $throwable->workflowSequence,
+                'activity_retry_policy',
+            ],
+            $throwable instanceof ConditionWaitDefinitionMismatchException => [
+                $throwable->workflowSequence,
+                'condition_wait_definition',
+            ],
+            $throwable instanceof VersionRangeMismatchException => [null, 'version_range'],
+            $throwable instanceof WorkflowEntryArgumentsMismatchException => [null, 'entry_arguments'],
+            default => [null, 'replay_error'],
+        };
+    }
+
+    /**
+     * @return array{reason: string, mismatch_sequence: int|null, mismatch_kind: string|null}
+     */
+    private static function refusal(string $reason, ?int $sequence = null, ?string $kind = null): array
+    {
+        return [
+            'reason' => $reason,
+            'mismatch_sequence' => $sequence,
+            'mismatch_kind' => $kind,
+        ];
     }
 }
