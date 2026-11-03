@@ -158,13 +158,22 @@ final class ServiceCallEffectIdentityTest extends TestCase
             'arguments' => ['second'],
         ]));
         $this->assertNotSame($firstUpdate['update_id'], $secondUpdate['update_id']);
-        $this->assertSame(2, WorkflowUpdate::query()->count());
+        $this->assertSame(409, $secondUpdate['status']);
+        $this->assertSame('request_id_conflict', $secondUpdate['reason']);
+        $this->assertSame(1, WorkflowUpdate::query()->count());
+        $updateCommand = WorkflowCommand::query()->findOrFail($firstUpdate['command_id']);
+        $this->assertStringStartsWith('update-v1:', $updateCommand->request_id);
+        $this->assertNotSame($rawOptions['request_id'], $updateCommand->request_id);
 
         $signalWorkflow = $this->waitingWorkflow('raw-effect-signal');
         $firstSignal = $control->signal($signalWorkflow->id(), 'finish', $rawOptions);
         $secondSignal = $control->signal($signalWorkflow->id(), 'finish', $rawOptions);
-        $this->assertNotSame($firstSignal['workflow_command_id'], $secondSignal['workflow_command_id']);
-        $this->assertSame(2, WorkflowSignal::query()->count());
+        $this->assertSame($firstSignal['workflow_command_id'], $secondSignal['workflow_command_id']);
+        $this->assertTrue($secondSignal['retained']);
+        $this->assertSame(1, WorkflowSignal::query()->count());
+        $signalCommand = WorkflowCommand::query()->findOrFail($firstSignal['command_id']);
+        $this->assertStringStartsWith('signal-v1:', $signalCommand->request_id);
+        $this->assertNotSame($rawOptions['request_id'], $signalCommand->request_id);
     }
 
     public function testCraftedCommandContextCannotClaimReservedSignalIdentity(): void
@@ -191,8 +200,11 @@ final class ServiceCallEffectIdentityTest extends TestCase
             ->where('command_type', CommandType::Signal->value)
             ->get();
         $this->assertCount(2, $commands);
-        $this->assertTrue($commands->every(static fn (WorkflowCommand $command): bool =>
-            $command->request_id === null));
+        foreach ($commands as $command) {
+            $this->assertStringStartsWith('signal-v1:', $command->request_id);
+            $this->assertNull($command->requestId());
+        }
+        $this->assertCount(2, $commands->pluck('request_id')->unique());
     }
 
     public function testPredictableRawIdentityCannotPreseedTheScheduledUpdateReceipt(): void
@@ -278,7 +290,8 @@ final class ServiceCallEffectIdentityTest extends TestCase
         $this->assertNull($start->request_id);
         $this->assertStringStartsWith('update-v1:', $update->request_id);
         $this->assertNotSame($guessedReservedToken, $update->request_id);
-        $this->assertNull($signal->request_id);
+        $this->assertStringStartsWith('signal-v1:', $signal->request_id);
+        $this->assertNotSame($guessedReservedToken, $signal->request_id);
     }
 
     public function testLowLevelCommandRequestIdCannotReserveAnActualOpaqueEffectToken(): void
@@ -319,7 +332,8 @@ final class ServiceCallEffectIdentityTest extends TestCase
         $this->assertNull($start->request_id);
         $this->assertStringStartsWith('update-v1:', $update->request_id);
         $this->assertNotSame($effectToken, $update->request_id);
-        $this->assertNull($signal->request_id);
+        $this->assertStringStartsWith('signal-v1:', $signal->request_id);
+        $this->assertNotSame($effectToken, $signal->request_id);
 
         $legitimate = (new DefaultWorkflowControlPlane())->update($workflow->id(), 'change', [
             'arguments' => ['legitimate'],

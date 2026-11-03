@@ -77,6 +77,8 @@ interface WorkflowControlPlane
      * Options:
      * - arguments: array<int, mixed> — positional signal arguments
      * - namespace: string|null — require the workflow instance to belong to this namespace
+     * - request_id: string|null — the caller's command key; a retry with the same key and the same
+     *   signal returns the retained admission, reuse with a different signal is refused (409)
      * - command_context: \Workflow\V2\CommandContext|null — recorded command attribution/context
      * - strict_configured_type_validation: bool — fail closed when a configured workflow type mapping is now invalid
      *
@@ -136,6 +138,8 @@ interface WorkflowControlPlane
      * Options:
      * - arguments: array<int|string, mixed> — positional or named update arguments
      * - namespace: string|null — require the workflow instance to belong to this namespace
+     * - request_id: string|null — the caller's command key; a retry with the same key and the same
+     *   update returns the retained receipt, reuse with a different update is refused (409)
      * - command_context: \Workflow\V2\CommandContext|null — recorded command attribution/context
      * - wait_for: 'accepted'|'completed'|null — accepted-only submit or completion wait
      * - wait_timeout_seconds: int|null — completion wait timeout

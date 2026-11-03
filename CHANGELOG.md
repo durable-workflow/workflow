@@ -29,6 +29,15 @@
   timers in a cancellation scope or parallel group are refused with
   `unsupported_timer`. A timer step without both its scheduled and fired events
   is refused with `incomplete_timer_step` (#864).
+- Retain keyed signal admissions and compare canonical typed intent for keyed
+  signals and updates. Conflicting key reuse refuses without durable writes;
+  undecodable legacy receipts remain explicitly unverified. This strengthens
+  the earlier same-key update receipt contract (#877).
+- Require valid UTF-8 caller keys of 1..255 code points before admission.
+  Explicit empty or non-string keys refuse; null clears an inherited key.
+  Apply the nullable `intent_digest` migration, drain and upgrade all embedded
+  database writers together, and allocate new keys for different operations.
+  Native Server and published SDK/CLI qualification remain separate.
 
 ## 2.17.1 - 2026-11-03
 
