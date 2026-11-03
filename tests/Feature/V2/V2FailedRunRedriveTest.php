@@ -13,6 +13,7 @@ use Tests\Fixtures\V2\TestRedriveMarkersWorkflow;
 use Tests\Fixtures\V2\TestRedrivePatchedWorkflow;
 use Tests\Fixtures\V2\TestRedriveSignalWorkflow;
 use Tests\Fixtures\V2\TestRedriveTimerWorkflow;
+use Tests\Fixtures\V2\TestRedriveTwoSignalsWorkflow;
 use Tests\Fixtures\V2\TestRedriveVisibilityWorkflow;
 use Tests\Fixtures\V2\TestRedriveWorkflow;
 use Tests\Fixtures\V2\TestThrowAfterGreetingWorkflow;
@@ -36,6 +37,7 @@ use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\EmbeddedV2HistoryImport;
+use Workflow\V2\Support\FailedRunRedrivePlan;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\RunActivityView;
 use Workflow\V2\Support\RunDetailView;
@@ -825,6 +827,61 @@ final class V2FailedRunRedriveTest extends TestCase
         $this->assertSame($source->id, $source->instance->fresh()->current_run_id);
     }
 
+    public function testRedriveRefusesOneBufferedReceiptAppliedToTwoWaits(): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestRedriveTwoSignalsWorkflow::class, 'redrive-signal-twice');
+        $workflow->start('Taylor');
+        $workflow->signal('approve', 'Grace');
+        $workflow->signal('approve', 'Ada');
+        $this->assertTrue($workflow->refresh()->failed());
+        $source = WorkflowRun::query()->findOrFail($workflow->runId());
+        // The unmodified two-signal source is redrivable.
+        $this->assertTrue(FailedRunRedrivePlan::forRun($source->fresh())['eligible']);
+        $receipts = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $source->id)
+            ->where('event_type', HistoryEventType::SignalReceived)
+            ->orderBy('sequence')
+            ->get();
+        $applications = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $source->id)
+            ->where('event_type', HistoryEventType::SignalApplied)
+            ->orderBy('sequence')
+            ->get();
+        // The first receipt was buffered, and the second application claims it
+        // too. The second receipt no longer exists, so nothing is pending.
+        $receipts[0]->forceFill([
+            'payload' => array_merge($receipts[0]->payload, [
+                'signal_wait_id' => null,
+            ]),
+        ])->save();
+        $applications[1]->forceFill([
+            'payload' => array_merge($applications[1]->payload, [
+                'signal_id' => $receipts[0]->payload['signal_id'],
+                'workflow_command_id' => $receipts[0]->payload['workflow_command_id'],
+            ]),
+        ])->save();
+        $receipts[1]->delete();
+
+        $this->assertRefusedWithoutMutation('redrive-signal-twice', $source, 'mismatched_signal_receipt');
+    }
+
+    public function testRedriveRefusesASignalApplicationWithoutItsValue(): void
+    {
+        WorkflowStub::fake();
+
+        $source = $this->failedSignalSource('redrive-signal-no-value');
+        $application = $this->sourceEvent($source, HistoryEventType::SignalApplied);
+        $payload = $application->payload;
+        unset($payload['value']);
+        $application->forceFill([
+            'payload' => $payload,
+        ])->save();
+
+        $this->assertRefusedWithoutMutation('redrive-signal-no-value', $source, 'incomplete_signal_step');
+    }
+
     public function testRedriveAcceptsASignalReceivedBeforeItsWaitOpened(): void
     {
         WorkflowStub::fake();
@@ -1220,6 +1277,41 @@ final class V2FailedRunRedriveTest extends TestCase
             'completed' => true,
             'result' => $expectedOutput,
         ], json_decode($coldReplay->getOutput(), true, flags: JSON_THROW_ON_ERROR));
+    }
+
+    private function failedSignalSource(string $instanceId): WorkflowRun
+    {
+        $workflow = WorkflowStub::make(TestRedriveSignalWorkflow::class, $instanceId);
+        $workflow->start('Taylor');
+        $workflow->signal('approve', 'Grace');
+        $this->assertTrue($workflow->refresh()->failed());
+
+        return WorkflowRun::query()->findOrFail($workflow->runId());
+    }
+
+    private function sourceEvent(WorkflowRun $source, HistoryEventType $type): WorkflowHistoryEvent
+    {
+        return WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $source->id)
+            ->where('event_type', $type)
+            ->orderBy('sequence')
+            ->firstOrFail();
+    }
+
+    private function assertRefusedWithoutMutation(string $instanceId, WorkflowRun $source, string $reason): void
+    {
+        $cursor = (int) $source->fresh()
+->message_cursor_position;
+        $events = WorkflowHistoryEvent::query()->count();
+
+        $result = app(WorkflowControlPlane::class)->redrive($instanceId, $source->id);
+
+        $this->assertFalse($result['accepted']);
+        $this->assertSame($reason, $result['reason']);
+        $this->assertSame(1, WorkflowRun::query()->where('workflow_instance_id', $instanceId)->count());
+        $this->assertSame($cursor, (int) $source->fresh()->message_cursor_position);
+        $this->assertSame($events, WorkflowHistoryEvent::query()->count());
+        $this->assertSame($source->id, $source->instance->fresh()->current_run_id);
     }
 
     private function assertRedriveAction(

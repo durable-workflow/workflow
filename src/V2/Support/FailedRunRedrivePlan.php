@@ -550,9 +550,21 @@ final class FailedRunRedrivePlan
                 return 'mismatched_signal_receipt';
             }
 
+            // One admitted signal is one workflow input: a receipt may satisfy
+            // only one wait.
+            if (isset($appliedSignalIds[$signalId])) {
+                return 'mismatched_signal_receipt';
+            }
+
+            // Every replay path resumes the wait with the application's value,
+            // so it must be recorded inline.
+            if (! array_key_exists('value', $applicationPayload)) {
+                return 'incomplete_signal_step';
+            }
+
             if (
                 self::isExternalResult($receiptPayload['arguments'] ?? null)
-                || self::isExternalResult($applicationPayload['value'] ?? null)
+                || self::isExternalResult($applicationPayload['value'])
             ) {
                 return 'external_signal_payload_not_supported';
             }
