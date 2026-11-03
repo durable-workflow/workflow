@@ -369,7 +369,10 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
                 ])->save();
                 break;
             case 'version marker at failed step':
-                foreach ($source->historyEvents()->where('event_type', HistoryEventType::ActivityScheduled->value)->get() as $event) {
+                foreach ($source->historyEvents()->where(
+                    'event_type',
+                    HistoryEventType::ActivityScheduled->value
+                )->get() as $event) {
                     if (($event->payload['sequence'] ?? null) === 2) {
                         $event->forceFill([
                             'event_type' => HistoryEventType::VersionMarkerRecorded,

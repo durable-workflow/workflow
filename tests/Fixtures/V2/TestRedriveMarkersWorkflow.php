@@ -31,9 +31,11 @@ final class TestRedriveMarkersWorkflow extends Workflow
 
             return bin2hex(random_bytes(8));
         });
-        $this->timeAfterSideEffect = now()->toIso8601String();
+        $this->timeAfterSideEffect = now()
+            ->toIso8601String();
         $version = getVersion('redrive-markers', WorkflowStub::DEFAULT_VERSION, 1);
-        $this->timeAfterVersion = now()->toIso8601String();
+        $this->timeAfterVersion = now()
+            ->toIso8601String();
         $greeting = activity(TestRedriveFirstActivity::class, $name);
 
         return [
