@@ -16,6 +16,7 @@ use Tests\TestCase;
 use Workflow\V2\Contracts\ActivityLeaseRenewal;
 use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Enums\ActivityAttemptStatus;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -102,7 +103,7 @@ final class ActivityOutcomeRetentionTest extends TestCase
         self::assertNull(WorkflowRunSummary::query()->find($run->id));
     }
 
-    public function testRefusedExpiredOutcomeDoesNotPreparePayloadOrWriteHistory(): void
+    public function testRefusedExpiredOutcomeDoesNotPreparePayloadAndOnlyAppendsItsAudit(): void
     {
         [$bridge, $claim, $run] = $this->claimedOriginal();
         $this->travel(301)
@@ -120,7 +121,19 @@ final class ActivityOutcomeRetentionTest extends TestCase
 
         self::assertFalse($reply['recorded']);
         self::assertSame('lease_expired', $reply['reason']);
-        self::assertSame($before, $run->historyEvents()->get()->map->getAttributes()->all());
+        $after = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get();
+        // The existing history is untouched. The only append is the bounded
+        // diagnostic audit fact, which carries no result payload (#878).
+        self::assertSame($before, $after->take(count($before))->map->getAttributes()->values()->all());
+        self::assertCount(count($before) + 1, $after);
+        $audit = $after->last();
+        self::assertSame(HistoryEventType::ActivityOutcomeRejected, $audit->event_type);
+        self::assertSame('completed', $audit->payload['outcome']);
+        self::assertSame('lease_expired', $audit->payload['reason']);
+        self::assertSame($claim['activity_attempt_id'], $audit->payload['activity_attempt_id']);
+        self::assertArrayNotHasKey('result', $audit->payload);
         self::assertSame(
             ActivityAttemptStatus::Running,
             ActivityAttempt::query()->findOrFail($claim['activity_attempt_id'])->status
