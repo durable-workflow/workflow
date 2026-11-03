@@ -1287,7 +1287,7 @@ final class WorkflowExecutor
             $this->syncWorkflowCursor($workflow, $sequence + 1);
             $current = $workflowExecution->send(
                 true,
-                $timer instanceof WorkflowHistoryEvent ? $timer->recorded_at : $timer->fired_at,
+                $timer instanceof WorkflowHistoryEvent ? RedriveReplayClock::recordedAt($timer) : $timer->fired_at,
             );
         } catch (Throwable $throwable) {
             $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);

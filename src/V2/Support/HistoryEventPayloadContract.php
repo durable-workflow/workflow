@@ -395,6 +395,8 @@ final class HistoryEventPayloadContract
             'signal_name',
         ],
         'TimerFired' => [
+            'reused_from_run_id',
+            'reused_recorded_at',
             'timer_id',
             'sequence',
             'delay_seconds',

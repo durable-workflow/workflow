@@ -281,7 +281,7 @@ final class QueryStateReplayer
 
                 if ($timerFired !== null) {
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
-                    $current = $workflowExecution->send(true, $timerFired->recorded_at);
+                    $current = $workflowExecution->send(true, RedriveReplayClock::recordedAt($timerFired));
 
                     ++$sequence;
 
@@ -1069,7 +1069,7 @@ final class QueryStateReplayer
                     'resolved' => true,
                     'value' => true,
                     'failure' => null,
-                    'recorded_at' => $event->recorded_at,
+                    'recorded_at' => RedriveReplayClock::recordedAt($event),
                 ];
             }
             $timer = $run->timers->firstWhere('sequence', $sequence);

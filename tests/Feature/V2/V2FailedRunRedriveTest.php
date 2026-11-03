@@ -10,6 +10,8 @@ use Illuminate\Support\Facades\Queue;
 use Symfony\Component\Process\Process;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestRedriveMarkersWorkflow;
+use Tests\Fixtures\V2\TestRedrivePatchedWorkflow;
+use Tests\Fixtures\V2\TestRedriveTimerWorkflow;
 use Tests\Fixtures\V2\TestRedriveWorkflow;
 use Tests\Fixtures\V2\TestThrowAfterGreetingWorkflow;
 use Tests\TestCase;
@@ -18,6 +20,8 @@ use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
@@ -25,12 +29,14 @@ use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\EmbeddedV2HistoryImport;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\RunActivityView;
 use Workflow\V2\Support\RunDetailView;
+use Workflow\V2\Support\RunTimerView;
 use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\WorkflowStub;
@@ -469,6 +475,144 @@ final class V2FailedRunRedriveTest extends TestCase
             'redrive-markers-1',
             $successor->id,
             ['Taylor'],
+            (string) $successor->payload_codec,
+            $history,
+        )->step();
+        $this->assertTrue($fiber->completed);
+        $this->assertSame($output, $fiber->result);
+    }
+
+    public function testRedriveReusesOneMarkerForARepeatedPatchCall(): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestRedrivePatchedWorkflow::class, 'redrive-patched-1');
+        $workflow->start('Taylor');
+        $this->assertTrue($workflow->refresh()->failed());
+        $sourceRunId = $workflow->runId();
+        $sourceMarkers = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $sourceRunId)
+            ->where('event_type', HistoryEventType::VersionMarkerRecorded)
+            ->get();
+        // Only the first call records a marker, at its own step. The repeated
+        // call takes no step, so no marker shares a step with an activity.
+        $this->assertCount(1, $sourceMarkers);
+        $this->assertSame(1, $sourceMarkers[0]->payload['sequence']);
+
+        $result = app(WorkflowControlPlane::class)->redrive('redrive-patched-1', $sourceRunId);
+
+        $this->assertTrue($result['accepted'], (string) $result['reason']);
+        $this->assertSame(3, $result['resume_step_sequence']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame(RunStatus::Completed, $successor->status);
+        $this->assertSame([
+            'result' => 'Hello, Taylor! Redrive completed.',
+            'patched' => true,
+            'patched_again' => true,
+        ], $successor->workflowOutput());
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $successor->id)
+            ->where('event_type', HistoryEventType::VersionMarkerRecorded)
+            ->count());
+    }
+
+    public function testRedriveReusesAFiredTimerAtItsRecordedTime(): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestRedriveTimerWorkflow::class, 'redrive-timer-1');
+        $workflow->start('Taylor', 5);
+        $this->travel(6)
+            ->seconds();
+        $timerTask = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Timer->value)
+            ->firstOrFail();
+        $this->app->call([new RunTimerTask($timerTask->id), 'handle']);
+        $this->assertTrue($workflow->refresh()->failed());
+        $sourceRunId = $workflow->runId();
+        $sourceFired = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $sourceRunId)
+            ->where('event_type', HistoryEventType::TimerFired)
+            ->firstOrFail();
+
+        // Redrive later than the source, so a successor that waited again or
+        // used its own event times would report a different workflow time.
+        $this->travel(5)
+            ->minutes();
+        $result = app(WorkflowControlPlane::class)->redrive('redrive-timer-1', $sourceRunId);
+
+        $this->assertTrue($result['accepted'], (string) $result['reason']);
+        $this->assertSame(3, $result['resume_step_sequence']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame(RunStatus::Completed, $successor->status);
+        $this->assertSame(1, (int) Cache::get('test:redrive:first-calls'));
+        $this->assertSame(0, WorkflowTask::query()
+            ->where('workflow_run_id', $successor->id)
+            ->where('task_type', TaskType::Timer->value)
+            ->count());
+        $this->assertSame(0, WorkflowTimer::query()->where('workflow_run_id', $successor->id)->count());
+
+        $reusedEvents = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $successor->id)
+            ->whereIn('event_type', [HistoryEventType::TimerScheduled->value, HistoryEventType::TimerFired->value])
+            ->orderBy('sequence')
+            ->get();
+        $this->assertSame(
+            [HistoryEventType::TimerScheduled, HistoryEventType::TimerFired],
+            $reusedEvents->pluck('event_type')
+                ->all(),
+        );
+        [$reusedScheduled, $reusedFired] = $reusedEvents->all();
+        $this->assertSame(2, $reusedFired->payload['sequence']);
+        $this->assertSame($reusedScheduled->payload['timer_id'], $reusedFired->payload['timer_id']);
+        $this->assertNotSame($sourceFired->payload['timer_id'], $reusedFired->payload['timer_id']);
+        $this->assertSame($sourceRunId, $reusedFired->payload['reused_from_run_id'] ?? null);
+        $this->assertSame(
+            $sourceFired->recorded_at?->toIso8601String(),
+            $reusedFired->payload['reused_recorded_at'] ?? null,
+        );
+
+        $expectedTime = $sourceFired->recorded_at?->toIso8601String();
+        $output = $successor->workflowOutput();
+        $this->assertSame('Hello, Taylor! Redrive completed.', $output['result']);
+        $this->assertSame($expectedTime, $output['time_after_timer']);
+
+        $timers = RunTimerView::timersForRun($successor->fresh());
+        $this->assertCount(1, $timers);
+        $this->assertSame('fired', $timers[0]['status']);
+
+        $export = json_decode(
+            json_encode(HistoryExport::forRun($successor->fresh()), JSON_THROW_ON_ERROR),
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+        $this->assertSame([
+            'time_after_timer' => $expectedTime,
+        ], (new WorkflowReplayer())->replayExport($export)
+            ->workflow->replayTimes());
+        $this->assertSame([
+            'time_after_timer' => $expectedTime,
+        ], (new WorkflowReplayer())->replay($successor->fresh())
+            ->workflow->replayTimes());
+
+        $history = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $successor->id)
+            ->orderBy('sequence')
+            ->get()
+            ->map(static fn (WorkflowHistoryEvent $event): array => [
+                'sequence' => $event->sequence,
+                'event_type' => $event->event_type->value,
+                'payload' => $event->payload,
+                'recorded_at' => $event->recorded_at?->toIso8601String(),
+            ])
+            ->all();
+        $fiber = WorkflowFiberRunner::forClass(
+            TestRedriveTimerWorkflow::class,
+            'redrive-timer-1',
+            $successor->id,
+            ['Taylor', 5],
             (string) $successor->payload_codec,
             $history,
         )->step();
