@@ -555,10 +555,12 @@ final class V2FailedRunRedriveTest extends TestCase
         );
         $this->assertSame([
             'time_after_timer' => $expectedTime,
-        ], (new WorkflowReplayer())->replayExport($export)->workflow->replayTimes());
+        ], (new WorkflowReplayer())->replayExport($export)
+            ->workflow->replayTimes());
         $this->assertSame([
             'time_after_timer' => $expectedTime,
-        ], (new WorkflowReplayer())->replay($successor->fresh())->workflow->replayTimes());
+        ], (new WorkflowReplayer())->replay($successor->fresh())
+            ->workflow->replayTimes());
 
         $history = WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $successor->id)

@@ -23,7 +23,8 @@ final class TestRedriveTimerWorkflow extends Workflow
     {
         $greeting = activity(TestRedriveFirstActivity::class, $name);
         timer($seconds);
-        $this->timeAfterTimer = now()->toIso8601String();
+        $this->timeAfterTimer = now()
+            ->toIso8601String();
 
         return [
             'result' => activity(TestRedriveSecondActivity::class, $greeting),
