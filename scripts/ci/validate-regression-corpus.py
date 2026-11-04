@@ -36,6 +36,7 @@ VERSION_MARKER_HISTORY_RANGE_INVALID = "version_marker_history_range_invalid"
 UNSUPPORTED_PAYLOAD_CODEC = "unsupported_payload_codec"
 PHP_GOLDEN_REPLAY_WORKFLOW = "Tests\\Fixtures\\V2\\TestGoldenReplayWorkflow"
 PHP_REPLAY_CONSUMERS = {
+    "embedded-runtime-profile-guard",
     "embedded-history-import",
     "query-state-replayer",
     "workflow-executor",
@@ -136,6 +137,7 @@ OFFICIAL_BINDING_CONSUMERS = {
         "--colors=never",
         "tests/Unit/V2/ReplayRegressionCorpusTest.php",
         "tests/Feature/V2/V2EmbeddedReplayRegressionCorpusTest.php",
+        "tests/Unit/V2/RuntimeProfileCorpusConsumerTest.php",
     ),
 }
 OFFICIAL_BINDING_CONSUMER_SUPPORT = {
@@ -179,6 +181,8 @@ OFFICIAL_BINDING_CONSUMER_SUPPORT = {
         "tests/Fixtures/V2/TestNexusDeadlineCallerWorkflow.php",
         "tests/Support/NexusCallerDeliveryScenario.php",
         "tests/Unit/V2/ReplayRegressionCorpusTest.php",
+        "tests/Unit/V2/RuntimeProfileCorpusConsumerTest.php",
+        "tests/Fixtures/V2/TestRuntimeProfileProbeWorkflow.php",
     ),
 }
 FAILURE_EVENT_FALLBACK_MESSAGES = {
@@ -572,6 +576,7 @@ def _replay_semantic(
     command_sequence: Any,
     expected: Mapping[str, Any],
     history_import_metadata: Mapping[str, Any] | None = None,
+    runtime_profile_guard: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any]:
     """Project every replay representation onto consumer-executed values."""
 
@@ -588,6 +593,8 @@ def _replay_semantic(
     }
     if history_import_metadata is not None:
         semantic["history_import_metadata"] = history_import_metadata
+    if runtime_profile_guard is not None:
+        semantic["runtime_profile_guard"] = runtime_profile_guard
     return semantic
 
 
@@ -1302,6 +1309,59 @@ def _replay_expected_failure(value: Any, context: str) -> Mapping[str, str]:
     }
 
 
+def _runtime_profile_guard(
+    document: Mapping[str, Any], consumers: Sequence[str], path: str
+) -> Mapping[str, Any] | None:
+    declared = "embedded-runtime-profile-guard" in consumers
+    present = "runtime_profile_guard" in document
+    if declared != present:
+        raise CorpusError(f"{path} must bind the runtime-profile consumer and typed object together")
+    if not present:
+        return None
+    allowed = {"$schema", "fixture_schema", "id", "protocol_version", "bindings", "consumers",
+               "workflow", "history", "expected", "runtime_profile_guard", "supersedes"}
+    if not set(document) <= allowed:
+        raise CorpusError(f"{path} runtime-profile fixture contains ignored top-level metadata")
+    guard = _object(document["runtime_profile_guard"], f"{path}.runtime_profile_guard")
+    if set(guard) != {"version", "retained_run", "entry_points", "expected"}:
+        raise CorpusError(f"{path} runtime-profile guard has unknown or missing fields")
+    if type(guard["version"]) is not int or guard["version"] != 1:
+        raise CorpusError(f"{path} runtime-profile guard version must be 1")
+    row = _object(guard["retained_run"], f"{path}.runtime_profile_guard.retained_run")
+    if set(row) != {"instance_id", "run_id", "task_id", "namespace", "profile"}:
+        raise CorpusError(f"{path} retained-run identity has unknown or missing fields")
+    for field in ("instance_id", "namespace"):
+        value = _string(row[field], f"{path}.retained_run.{field}")
+        if re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._:-]{0,190}", value) is None:
+            raise CorpusError(f"{path} malformed retained-run {field}")
+    for field in ("run_id", "task_id"):
+        if re.fullmatch(r"[0-7][0-9A-HJKMNP-TV-Z]{25}", _string(row[field], f"{path}.{field}")) is None:
+            raise CorpusError(f"{path} malformed retained-run {field}")
+    if row["run_id"] == row["task_id"]:
+        raise CorpusError(f"{path} run and task identities must be distinct")
+    if re.fullmatch(r"[a-z][a-z0-9._-]{0,63}", _string(row["profile"], f"{path}.profile")) is None:
+        raise CorpusError(f"{path} malformed unsupported runtime profile")
+    entries = _unique_strings(guard["entry_points"], f"{path}.entry_points",
+                              allowed={"workflow-task-claim", "query-state-replay"})
+    if set(entries) != {"workflow-task-claim", "query-state-replay"}:
+        raise CorpusError(f"{path} must independently exercise claim and query")
+    expected = _object(guard["expected"], f"{path}.runtime_profile_guard.expected")
+    if set(expected) != {"reason", "unchanged"} or expected["reason"] != "runtime_profile_unsupported":
+        raise CorpusError(f"{path} unsupported runtime-profile outcome")
+    effects = {"durable-rows", "queue", "cache", "application-invocations"}
+    unchanged = _unique_strings(expected["unchanged"], f"{path}.unchanged", allowed=effects)
+    if set(unchanged) != effects:
+        raise CorpusError(f"{path} must assert the complete zero-effect scope")
+    if document.get("bindings") != ["php"] or document.get("workflow") != {
+        "type": "Tests\\Fixtures\\V2\\TestRuntimeProfileProbeWorkflow", "arguments": [], "payload_codec": "avro"
+    }:
+        raise CorpusError(f"{path} runtime-profile consumer requires its executable PHP probe")
+    if document.get("expected") != {"completed": True, "result": "done", "commands": [{"type": "complete_workflow"}]}:
+        raise CorpusError(f"{path} runtime-profile fixture must retain its Fiber positive outcome")
+    return {"version": 1, "retained_run": dict(row), "entry_points": sorted(entries),
+            "expected": {"reason": expected["reason"], "unchanged": sorted(unchanged)}}
+
+
 def _replay_fixture(
     document: Mapping[str, Any],
     path: str,
@@ -1331,6 +1391,7 @@ def _replay_fixture(
             f"{path}.consumers must include workflow-fiber-runner for the "
             "replay-regression-v1 consumer"
         )
+    runtime_profile_guard = _runtime_profile_guard(document, consumers, path)
     raw_history_import_metadata = document.get("history_import_metadata")
     history_import_metadata = None
     if raw_history_import_metadata is not None:
@@ -1470,6 +1531,7 @@ def _replay_fixture(
         command_sequence=canonical_steps,
         expected=expected,
         history_import_metadata=history_import_metadata,
+        runtime_profile_guard=runtime_profile_guard,
     )
     return [
         _fixture_evidence(
@@ -1857,6 +1919,8 @@ def _base_consumer_files(
 ) -> dict[str, bytes]:
     files = dict(base_files)
     for path in OFFICIAL_BINDING_CONSUMER_SUPPORT.get(command, ()):
+        if not path.startswith("tests/") or ".." in Path(path).parts or not path.endswith(".php"):
+            raise CorpusError("official base consumer support cannot overlay production source")
         if path in current_files:
             files[path] = current_files[path]
     return files

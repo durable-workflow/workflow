@@ -2254,6 +2254,22 @@ final class DefaultWorkflowTaskBridge {
         self.assertIn("replay implementation changed but its corpus did not grow", result.stderr)
 
 
+    def test_inert_runtime_profile_fixture_does_not_prove_a_regression(self) -> None:
+        # The fake binding intentionally ignores the typed guard. A new case
+        # that passes both product revisions must never qualify corpus growth.
+        (self.root / "src/V2/Support/QueryStateReplayer.php").write_text(
+            "<?php\nreturn 'changed';\n", encoding="utf-8"
+        )
+        fixture = json.loads((REPOSITORY_ROOT /
+            "tests/Fixtures/V2/ReplayRegression/runtime-profile-pre-effect-refusal.json"
+        ).read_text())
+        self.write_json("tests/Fixtures/V2/ReplayRegression/guard.json", fixture)
+        result = self.validate()
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("passes the official", result.stderr)
+        self.assertIn("at both base and current revisions", result.stderr)
+
+
 
 def load_validator() -> Any:
     import importlib.util
@@ -2266,6 +2282,102 @@ def load_validator() -> Any:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+class RuntimeProfileCorpusPolicyTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.validator = load_validator()
+        self.fixture = json.loads((REPOSITORY_ROOT /
+            "tests/Fixtures/V2/ReplayRegression/runtime-profile-pre-effect-refusal.json"
+        ).read_text())
+
+    def normalize(self, fixture: dict[str, Any]) -> Any:
+        return self.validator._runtime_profile_guard(
+            fixture, fixture["consumers"], "typed-profile-fixture"
+        )
+
+    def test_guard_object_and_consumer_are_bidirectionally_required(self) -> None:
+        import copy
+        for missing in ("consumer", "object"):
+            fixture = copy.deepcopy(self.fixture)
+            if missing == "consumer":
+                fixture["consumers"].remove("embedded-runtime-profile-guard")
+            else:
+                del fixture["runtime_profile_guard"]
+            with self.subTest(missing=missing), self.assertRaises(self.validator.CorpusError):
+                self.normalize(fixture)
+
+    def test_ignored_fields_malformed_profiles_and_incomplete_scope_are_rejected(self) -> None:
+        import copy
+        mutations = [
+            lambda f: f.update({"ignored": True}),
+            lambda f: f["runtime_profile_guard"].update({"ignored": True}),
+            lambda f: f["runtime_profile_guard"]["retained_run"].update({"ignored": True}),
+            lambda f: f["runtime_profile_guard"]["expected"].update({"ignored": True}),
+            lambda f: f["runtime_profile_guard"].update({"version": True}),
+            lambda f: f["runtime_profile_guard"]["retained_run"].update({"profile": ""}),
+            lambda f: f["runtime_profile_guard"]["retained_run"].update({"profile": "future\u0000hidden"}),
+            lambda f: f["runtime_profile_guard"]["retained_run"].update({"profile": "x" * 65}),
+            lambda f: f["runtime_profile_guard"]["retained_run"].update({"run_id": "not-a-run"}),
+            lambda f: f["runtime_profile_guard"]["retained_run"].update({"task_id": f["runtime_profile_guard"]["retained_run"]["run_id"]}),
+            lambda f: f["runtime_profile_guard"].update({"entry_points": ["workflow-task-claim"]}),
+            lambda f: f["runtime_profile_guard"].update({"entry_points": ["workflow-task-claim"] * 2}),
+            lambda f: f["runtime_profile_guard"].update({"entry_points": ["workflow-task-claim", "unknown"]}),
+            lambda f: f["runtime_profile_guard"]["expected"].update({"reason": "success"}),
+            lambda f: f["runtime_profile_guard"]["expected"].update({"unchanged": ["durable-rows"]}),
+        ]
+        for index, mutate in enumerate(mutations):
+            fixture = copy.deepcopy(self.fixture)
+            mutate(fixture)
+            with self.subTest(mutation=index), self.assertRaises(self.validator.CorpusError):
+                self.normalize(fixture)
+
+    def semantic(self, guard: Any) -> Any:
+        return self.validator._replay_semantic(
+            workflow_type=self.fixture["workflow"]["type"], workflow_input=[],
+            workflow_codec="avro", replay_namespace=None, history=[],
+            command_sequence=None, expected=self.fixture["expected"],
+            runtime_profile_guard=guard,
+        )
+
+    def test_every_typed_field_participates_in_the_semantic_fingerprint(self) -> None:
+        import copy
+        guard = self.normalize(self.fixture)
+        original = self.validator._canonical_digest(self.semantic(guard))
+        # Even fixed-outcome/version fields stay in the fingerprint; validation
+        # rejects unsupported values before they could become evidence.
+        paths = [("version",)] + [
+            ("retained_run", name) for name in guard["retained_run"]
+        ] + [("entry_points",), ("expected", "reason"), ("expected", "unchanged")]
+        for path in paths:
+            changed = copy.deepcopy(guard)
+            target = changed
+            for name in path[:-1]:
+                target = target[name]
+            target[path[-1]] = {"changed": target[path[-1]]}
+            with self.subTest(path=path):
+                self.assertNotEqual(original, self.validator._canonical_digest(self.semantic(changed)))
+        legacy = self.semantic(None)
+        self.assertNotIn("runtime_profile_guard", legacy)
+
+    def test_entry_and_scope_order_cannot_manufacture_distinct_evidence(self) -> None:
+        import copy
+        reordered = copy.deepcopy(self.fixture)
+        reordered["runtime_profile_guard"]["entry_points"].reverse()
+        reordered["runtime_profile_guard"]["expected"]["unchanged"].reverse()
+        self.assertEqual(self.normalize(self.fixture), self.normalize(reordered))
+
+    def test_base_consumer_support_cannot_overlay_production_code(self) -> None:
+        command = ("synthetic-binding",)
+        support = self.validator.OFFICIAL_BINDING_CONSUMER_SUPPORT
+        support[command] = ("src/V2/Support/RuntimeProfileGuard.php",)
+        with self.assertRaisesRegex(self.validator.CorpusError, "cannot overlay production"):
+            self.validator._base_consumer_files({}, {support[command][0]: b"candidate"}, command)
+        support[command] = ("tests/../src/V2/Support/RuntimeProfileGuard.php",)
+        with self.assertRaises(self.validator.CorpusError):
+            self.validator._base_consumer_files({}, {}, command)
+        del support[command]
+
 
 
 class ConsumerScratchTreeTest(unittest.TestCase):
