@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 2.20.2 - 2026-11-04
+
+- Rollback, embedded Workflow package: 2.20.2 changes no schema, history
+  event or API. Rolling back to 2.20.1 or earlier brings back the stranded
+  pending stream messages at redrive (#1013) and at continue-as-new (#1018).
+  Messages that 2.20.2 already moved to a successor or continued run stay
+  there.
 - Continue-as-new moves the run's pending inbound stream messages to the
   continued run (#1018). Before, only the message cursor carried over, so a
   stream message still pending when a run continued as new stayed on the
@@ -14,6 +21,12 @@
   arrived while the run was failed stayed on the failed run and the successor
   never received it. A replayed receive whose original call found nothing can
   now return one of the moved messages.
+- Known limitation, not fixed in 2.20.2 (#1011): stream receives still start
+  after the run's shared message cursor, which signals and receives on other
+  streams also advance. A stream message that is still pending behind that
+  cursor stays hidden from `inbox()->receive()` and `receiveOne()`. A replayed
+  receive whose original call found nothing can also read the stream again
+  and return a message. The fix (#1017) follows in 2.20.3.
 
 ## 2.20.1 - 2026-11-04
 
