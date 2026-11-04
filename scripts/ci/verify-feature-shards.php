@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 const FEATURE_SHARDS = 4;
+const PULL_REQUEST_CONDITION = "github.event_name == 'pull_request'";
 
 $root = dirname(__DIR__, 2);
 $workflow = $root . '/.github/workflows/php.yml';
@@ -116,9 +117,9 @@ function verify_gate_wiring(string $workflow, string $publicBoundaryWorkflow): v
     $routes = [
         'regression-corpus' => [],
         'quality' => [],
-        'pr-unit-contracts' => ["github.event_name == 'pull_request'"],
-        'pr-tracing' => ["github.event_name == 'pull_request'"],
-        'pr-feature-mysql' => ["github.event_name == 'pull_request'"],
+        'pr-unit-contracts' => [PULL_REQUEST_CONDITION],
+        'pr-tracing' => [PULL_REQUEST_CONDITION],
+        'pr-feature-mysql' => [PULL_REQUEST_CONDITION],
         'feature-mysql' => ["github.event_name != 'pull_request'"],
         'feature-postgresql' => ["github.event_name != 'pull_request'"],
         'feature-mariadb' => ["github.event_name != 'pull_request'"],
