@@ -25,12 +25,15 @@
     won't receive them again. Check streams that workflow code receives from
     for consumed messages the workflow never handled.
   - A replayed receive whose original call found no message still reads the
-    stream again, because nothing records an empty receive. Receive only after
-    a signal or condition says a message is there, and send that signal before
-    the message: a signal moves the run's shared message cursor past older
-    pending messages (#1011).
-  - A send is matched by its content (channel, stream, target, reference,
-    correlation id and idempotency key). An identical row that code outside
+    stream again, because nothing records an empty receive. It can return a
+    newer message, or a message that a later call consumed at the same step,
+    for example through a stream kept in a property, which keeps the step it
+    was opened at. Receive only after a signal or condition says a message is
+    there, and send that signal before the message: a signal moves the run's
+    shared message cursor past older pending messages (#1011).
+  - A send is matched by its exact content (channel, stream, target,
+    reference, correlation id and idempotency key), whatever the column
+    collation. An identical row that code outside
     the workflow wrote for the same run can satisfy it, so give workflow sends
     their own idempotency key.
 

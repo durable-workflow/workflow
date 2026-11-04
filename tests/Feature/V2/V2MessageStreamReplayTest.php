@@ -7,6 +7,7 @@ namespace Tests\Feature\V2;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestInboxTurnsWorkflow;
+use Tests\Fixtures\V2\TestMessageStreamExactContentWorkflow;
 use Tests\Fixtures\V2\TestMessageStreamKeptStreamWorkflow;
 use Tests\Fixtures\V2\TestMessageStreamRedriveWorkflow;
 use Tests\Fixtures\V2\TestMessageStreamTurnsWorkflow;
@@ -222,6 +223,9 @@ final class V2MessageStreamReplayTest extends TestCase
             ->where('direction', MessageDirection::Outbound->value)
             ->pluck('payload_reference')
             ->all());
+        // m1 is consumed once. m2 is left on the source run, because redrive
+        // doesn't move pending messages yet (#1013); this records that, not a
+        // requirement.
         $this->assertSame(
             [
                 'm1' => MessageConsumeState::Consumed->value,
@@ -237,6 +241,39 @@ final class V2MessageStreamReplayTest extends TestCase
                     (string) $message->payload_reference => $message->consume_state->value,
                 ])
                 ->all(),
+        );
+    }
+
+    /**
+     * Sends that differ only by case, accent or trailing space are separate
+     * sends, even where the column collation compares them as equal.
+     */
+    public function testSendsThatDifferOnlyByCaseAccentOrTrailingSpaceStaySeparate(): void
+    {
+        $workflow = WorkflowStub::make(TestMessageStreamExactContentWorkflow::class, 'message-stream-exact');
+        $workflow->start();
+        $this->drainReadyTasks();
+        $workflow->signal('go');
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $rows = WorkflowMessage::query()
+            ->where('workflow_instance_id', 'message-stream-exact')
+            ->where('stream_key', 'docs')
+            ->where('direction', MessageDirection::Outbound->value)
+            ->orderBy('sequence')
+            ->get();
+        $this->assertSame(
+            TestMessageStreamExactContentWorkflow::REFERENCES,
+            $rows->map(static fn (WorkflowMessage $row): string => (string) $row->getRawOriginal('payload_reference'))
+                ->all(),
+        );
+        $output = $workflow->output();
+        $this->assertSame(TestMessageStreamExactContentWorkflow::REFERENCES, array_column($output, 'reference'));
+        $this->assertSame(
+            $rows->map(static fn (WorkflowMessage $row): int|string => $row->getKey())
+                ->all(),
+            array_column($output, 'id'),
         );
     }
 

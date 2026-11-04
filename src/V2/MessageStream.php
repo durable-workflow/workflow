@@ -276,11 +276,35 @@ final class MessageStream
             $value === null ? $query->whereNull($column) : $query->where($column, $value);
         }
 
-        /** @var WorkflowMessage|null $message */
-        $message = $query->orderBy('sequence')
+        // The query only narrows the candidates: a case- or accent-insensitive
+        // collation (MySQL's default) treats different text as equal, so the
+        // match itself compares each field exactly.
+        $exact = [
+            'channel' => $channel,
+            'stream_key' => $this->streamKey,
+            'target_workflow_instance_id' => $targetInstanceId,
+            'payload_reference' => $payloadReference,
+            'correlation_id' => $correlationId,
+            'idempotency_key' => $idempotencyKey,
+        ];
+        $matches = $query->orderBy('sequence')
             ->orderBy('id')
-            ->skip($this->replayLedger?->sendOffset($identity) ?? 0)
-            ->first();
+            ->get()
+            ->filter(static function (WorkflowMessage $message) use ($exact): bool {
+                foreach ($exact as $column => $value) {
+                    $stored = $message->getRawOriginal($column);
+
+                    if (($stored === null ? null : (string) $stored) !== $value) {
+                        return false;
+                    }
+                }
+
+                return true;
+            })
+            ->values();
+
+        /** @var WorkflowMessage|null $message */
+        $message = $matches->get($this->replayLedger?->sendOffset($identity) ?? 0);
 
         return $message;
     }
@@ -295,6 +319,7 @@ final class MessageStream
     {
         $offset = $this->replayLedger?->receiveOffset($this->streamKey, $consumedBySequence) ?? 0;
 
+        // As with sends, the stream key is compared exactly, not by collation.
         /** @var Collection<int, WorkflowMessage> $messages */
         $messages = WorkflowMessage::query()
             ->whereIn('workflow_run_id', $this->runIds())
@@ -303,9 +328,11 @@ final class MessageStream
             ->where('consume_state', MessageConsumeState::Consumed->value)
             ->where('consumed_by_sequence', $consumedBySequence)
             ->orderBy('sequence')
-            ->skip($offset)
-            ->take($limit)
-            ->get();
+            ->orderBy('id')
+            ->get()
+            ->filter(fn (WorkflowMessage $message): bool => $message->getRawOriginal('stream_key') === $this->streamKey)
+            ->slice($offset, $limit)
+            ->values();
 
         if ($messages->isNotEmpty()) {
             $this->replayLedger?->advanceReceive($this->streamKey, $consumedBySequence, $messages->count());
