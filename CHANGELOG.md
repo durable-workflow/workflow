@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 2.20.1 - 2026-11-04
+
+- Rollback, embedded Workflow package: 2.20.1 changes no schema, history
+  event or API. Rolling back to 2.20.0 or earlier brings back the duplicate
+  sends and replay receives that #1010 describes. Rows written while 2.20.1
+  ran stay correct, and a run that 2.20.0 later replays can add duplicates
+  again. Service-mode SDK workers don't use `MessageStream`.
 - Message stream calls in workflow code act once instead of on every replay
   (#1010). Workflow code runs again on each later workflow task, on every
   query and in a redrive successor's reused prefix.
