@@ -30,8 +30,12 @@ final class RuntimeProfileGuard
      * @param callable(): T $hydrate
      * @return T
      */
-    public static function hydrateBatch(WorkflowRun $model, array $items, callable $hydrate): mixed
-    {
+    public static function hydrateBatch(
+        WorkflowRun $model,
+        array $items,
+        callable $hydrate,
+        string|bool|null $lock = null,
+    ): mixed {
         $key = $model->getKeyName();
         $attributes = [];
         foreach ($items as $item) {
@@ -45,10 +49,17 @@ final class RuntimeProfileGuard
         }
         foreach (array_chunk(array_map('strval', array_keys($attributes)), 500) as $ids) {
             try {
-                $rows = $model->getConnection()
+                $query = $model->getConnection()
                     ->table($model->getTable())
                     ->useWritePdo()
-                    ->whereIn($key, $ids)
+                    ->whereIn($key, $ids);
+                // These exact rows were already selected with this lock.
+                // Dropping it here would use an older MySQL consistent-read
+                // snapshot instead of the authority that was just locked.
+                if ($lock !== null) {
+                    $query->lock($lock);
+                }
+                $rows = $query->orderBy($key)
                     ->get(self::profileColumns($model->getConnection(), $model->getTable(), $key))
                     ->keyBy($key);
             } catch (Throwable $error) {
@@ -208,7 +219,7 @@ final class RuntimeProfileGuard
         if (! is_string($id) || $id === '') {
             throw new RuntimeProfileRefusal('runtime_profile_identity');
         }
-        self::assertStored($model->getConnection(), $model->getTable(), $key, $id, $original);
+        self::assertStored($model->getConnection(), $model->getTable(), $key, $id, $original, forUpdate: true);
     }
 
     /**
@@ -480,12 +491,19 @@ final class RuntimeProfileGuard
         string $key,
         string $id,
         array $expected,
+        bool $forUpdate = false,
     ): void {
         try {
-            $row = $connection->table($table)
+            $query = $connection->table($table)
                 ->useWritePdo()
-                ->where($key, $id)
-                ->first(self::profileColumns($connection, $table, $key));
+                ->where($key, $id);
+            // An impending update of this exact row must validate the current
+            // MySQL authority, not an older caller-owned consistent snapshot.
+            // Read-only guards do not acquire this writer lock.
+            if ($forUpdate && in_array($connection->getDriverName(), ['mysql', 'mariadb'], true)) {
+                $query->lockForUpdate();
+            }
+            $row = $query->first(self::profileColumns($connection, $table, $key));
         } catch (Throwable $error) {
             throw new RuntimeProfileRefusal('runtime_profile_storage', $error);
         }

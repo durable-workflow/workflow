@@ -39,6 +39,112 @@ final class RuntimeProfileStorageBackendTest extends SchemaTestCase
         }
     }
 
+    #[\PHPUnit\Framework\Attributes\DataProvider('currentReadProfiles')]
+    public function testLockedHydrationUsesCurrentAuthorityOverAnOlderSnapshot(?string $profile, string $lock): void
+    {
+        if (! in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('Native consistent-read versus locking-read control.');
+        }
+        $row = $this->identityRow(null);
+        DB::table('workflow_runs')->where('id', $row['id'])->delete();
+        config()
+            ->set(
+                'database.connections.profile_guard_alias',
+                config('database.connections.' . config('database.default'))
+            );
+        $other = DB::connection('profile_guard_alias');
+        $observed = 0;
+        WorkflowRun::retrieved(static function () use (&$observed): void {
+            ++$observed;
+        });
+        DB::statement('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+        DB::beginTransaction();
+        try {
+            $this->assertFalse(DB::table('workflow_runs')->where('id', $row['id'])->exists());
+            $row['runtime_profile'] = $profile;
+            $other->table('workflow_runs')
+                ->insert($row);
+            $before = $other->table('workflow_runs')
+                ->orderBy('id')
+                ->get()
+                ->all();
+            $query = WorkflowRun::query()->select(['id', 'workflow_instance_id', 'namespace'])
+                ->whereKey($row['id']);
+            $query->{$lock}();
+            try {
+                $run = $query->first();
+                $this->assertNull($profile, 'A protected row must refuse before any observer.');
+                $this->assertInstanceOf(WorkflowRun::class, $run);
+                $this->assertSame($row['id'], $run->id);
+                $this->assertSame(1, $observed);
+                $run->forceFill([
+                    'status' => 'running',
+                ])->save();
+                $this->assertSame('running', $run->getRawOriginal('status'));
+            } catch (RuntimeProfileRefusal $error) {
+                $this->assertSame('future', $profile);
+                $this->assertSame('runtime_profile_unsupported', $error->reason);
+                $this->assertSame(0, $observed);
+            }
+            $this->assertEquals($before, $other->table('workflow_runs')->orderBy('id')->get()->all());
+        } finally {
+            DB::rollBack();
+        }
+    }
+
+    public static function currentReadProfiles(): iterable
+    {
+        foreach (['lockForUpdate', 'sharedLock'] as $lock) {
+            yield $lock . ' legacy' => [null, $lock];
+            yield $lock . ' protected' => ['future', $lock];
+        }
+    }
+
+    public function testDisjointLegacyInsertsDoNotAcquireEachOthersMissingKeyRange(): void
+    {
+        if (! in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('Native InnoDB missing-key lock control.');
+        }
+        $first = [
+            'id' => 'concurrent-legacy-1',
+            'workflow_instance_id' => 'concurrent-owner-1',
+            'run_number' => 1,
+            'workflow_class' => 'identity-fixture',
+            'workflow_type' => 'identity-fixture',
+            'namespace' => 'profile-tests',
+            'status' => 'waiting',
+            'runtime_profile' => null,
+        ];
+        $second = $first;
+        $second['id'] = 'concurrent-legacy-2';
+        $second['workflow_instance_id'] .= '-second';
+        config()
+            ->set(
+                'database.connections.profile_guard_alias',
+                config('database.connections.' . config('database.default'))
+            );
+        $other = DB::connection('profile_guard_alias');
+        $timeoutRow = $other->selectOne('SELECT @@SESSION.innodb_lock_wait_timeout AS value');
+        $timeout = (int) $timeoutRow->value;
+        $other->statement('SET SESSION innodb_lock_wait_timeout = 1');
+        DB::statement('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+        $other->statement('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+        DB::beginTransaction();
+        try {
+            DB::table('workflow_runs')->insert($first);
+            $other->table('workflow_runs')
+                ->insert($second);
+            $this->assertTrue(DB::table('workflow_runs')->where('id', $first['id'])->exists());
+            $this->assertSame($second, (array) $other->table('workflow_runs')
+                ->where('id', $second['id'])->first(array_keys($second)));
+        } finally {
+            DB::rollBack();
+            $other->statement('SET SESSION innodb_lock_wait_timeout = ' . $timeout);
+        }
+        $this->assertFalse(DB::table('workflow_runs')->where('id', $first['id'])->exists());
+        $this->assertSame(1, DB::table('workflow_runs')->where('id', $second['id'])->count());
+    }
+
     public function testNullOnlyAutomaticDownIsAtomicOrRefusesBeforeAnyDdl(): void
     {
         $driver = DB::connection()->getDriverName();
@@ -233,27 +339,8 @@ final class RuntimeProfileStorageBackendTest extends SchemaTestCase
 
     public function testLegacySourceCannotReplaceProtectedAuthorityOrItsDependents(): void
     {
-        $future = $this->identityRow('future');
+        $future = $this->protectedAuthorityWithDependents();
         $legacy = $this->identityRow(null);
-        $taskId = (string) \Illuminate\Support\Str::ulid();
-        DB::table('workflow_tasks')->insert([
-            'id' => $taskId,
-            'workflow_run_id' => $future['id'],
-            'namespace' => $future['namespace'],
-            'task_type' => 'workflow',
-            'status' => 'ready',
-            'payload' => '{}',
-        ]);
-        DB::table('workflow_history_events')->insert([
-            'id' => (string) \Illuminate\Support\Str::ulid(),
-            'workflow_run_id' => $future['id'],
-            'workflow_task_id' => $taskId,
-            'sequence' => 1,
-            'event_type' => 'WorkflowStarted',
-            'payload' => '{}',
-            'recorded_at' => now()
-                ->format('Y-m-d H:i:s.u'),
-        ]);
         if (DB::connection()->getDriverName() === 'sqlite') {
             DB::statement('PRAGMA recursive_triggers = OFF');
         }
@@ -281,9 +368,91 @@ final class RuntimeProfileStorageBackendTest extends SchemaTestCase
             DB::table('workflow_runs')->insert($replacement);
             $this->fail('The original protected key cannot be recreated as legacy.');
         } catch (QueryException $error) {
-            $this->assertStringContainsString('runtime_profile_immutable', $error->getMessage());
+            if (in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb'], true)) {
+                // Plain INSERT cannot replace a retained row. REPLACE and
+                // UPSERT exercise the explicit DELETE/UPDATE guards below.
+                $this->assertSame('23000', $error->errorInfo[0]);
+                $this->assertSame(1062, (int) $error->errorInfo[1]);
+            } else {
+                $this->assertStringContainsString('runtime_profile_immutable', $error->getMessage());
+            }
         }
         $this->assertSame($before, $this->durableRows());
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('mysqlProtectedConflictForms')]
+    public function testMysqlProtectedConflictStatementsPreserveCompleteAuthority(string $form): void
+    {
+        if (! in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('MySQL/MariaDB native conflict statement control.');
+        }
+        $future = $this->protectedAuthorityWithDependents();
+        $replacement = $future;
+        $replacement['runtime_profile'] = $form === 'replace-same' ? 'future' : null;
+        $before = $this->durableRows();
+        try {
+            if ($form === 'plain' || $form === 'multi') {
+                $first = $replacement;
+                $first['id'] = (string) \Illuminate\Support\Str::ulid();
+                $first['workflow_instance_id'] .= '-new';
+                DB::table('workflow_runs')->insert($form === 'plain' ? $replacement : [$first, $replacement]);
+            } elseif ($form === 'ignore') {
+                $this->assertSame(0, DB::table('workflow_runs')->insertOrIgnore($replacement));
+                $pdo = DB::connection()->getPdo();
+                $emulated = $pdo->getAttribute(\PDO::ATTR_EMULATE_PREPARES);
+                try {
+                    // Preparing SHOW WARNINGS can replace the warning under
+                    // inspection with a prepared-protocol warning.
+                    $pdo->setAttribute(\PDO::ATTR_EMULATE_PREPARES, true);
+                    $statement = $pdo->query('SHOW WARNINGS');
+                    $this->assertInstanceOf(\PDOStatement::class, $statement);
+                    $warnings = $statement->fetchAll(\PDO::FETCH_OBJ);
+                } finally {
+                    $pdo->setAttribute(\PDO::ATTR_EMULATE_PREPARES, $emulated);
+                }
+                $this->assertCount(1, $warnings);
+                $this->assertSame(1062, (int) $warnings[0]->Code);
+                $this->assertSame($before, $this->durableRows());
+                return;
+            } else {
+                $grammar = DB::connection()->getQueryGrammar();
+                $columns = implode(', ', array_map($grammar->wrap(...), array_keys($replacement)));
+                $values = implode(', ', array_fill(0, count($replacement), '?'));
+                $replace = str_starts_with($form, 'replace-');
+                $sql = ($replace ? 'REPLACE' : 'INSERT') . ' INTO ' . $grammar->wrapTable('workflow_runs')
+                    . ' (' . $columns . ') VALUES (' . $values . ')';
+                if (! $replace) {
+                    $clause = match ($form) {
+                        'upsert-noop' => 'status = status',
+                        'upsert-unrelated' => "status = 'running'",
+                        'upsert-profile' => 'runtime_profile = NULL',
+                        'upsert-key' => "id = 'moved-key'",
+                        'upsert-owner' => "workflow_instance_id = 'moved-owner'",
+                        'upsert-namespace' => "namespace = 'moved-namespace'",
+                        default => throw new \LogicException('Unknown native conflict fixture.'),
+                    };
+                    $sql .= ' ON DUPLICATE KEY UPDATE ' . $clause;
+                }
+                DB::statement($sql, array_values($replacement));
+            }
+            $this->fail('A conflict cannot report successful protected-run admission.');
+        } catch (QueryException $error) {
+            if ($form === 'plain' || $form === 'multi') {
+                $this->assertSame('23000', $error->errorInfo[0]);
+                $this->assertSame(1062, (int) $error->errorInfo[1]);
+            } else {
+                $this->assertStringContainsString('runtime_profile_immutable', $error->getMessage());
+            }
+        }
+        $this->assertSame($before, $this->durableRows());
+    }
+
+    public static function mysqlProtectedConflictForms(): iterable
+    {
+        foreach (['plain', 'multi', 'ignore', 'replace-null', 'replace-same', 'upsert-noop',
+            'upsert-unrelated', 'upsert-profile', 'upsert-key', 'upsert-owner', 'upsert-namespace'] as $form) {
+            yield $form => [$form];
+        }
     }
 
     public static function qualifiedTableForms(): iterable
@@ -409,6 +578,34 @@ final class RuntimeProfileStorageBackendTest extends SchemaTestCase
         $this->assertTrue($storage->getSchemaBuilder()->hasColumn('runs', 'runtime_profile'));
         $this->assertEquals($before, $storage->table('runs')->get()->toArray());
         $this->assertTrue(DB::getSchemaBuilder()->hasColumn('workflow_runs', 'runtime_profile'));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function protectedAuthorityWithDependents(): array
+    {
+        $future = $this->identityRow('future');
+        $taskId = (string) \Illuminate\Support\Str::ulid();
+        DB::table('workflow_tasks')->insert([
+            'id' => $taskId,
+            'workflow_run_id' => $future['id'],
+            'namespace' => $future['namespace'],
+            'task_type' => 'workflow',
+            'status' => 'ready',
+            'payload' => '{}',
+        ]);
+        DB::table('workflow_history_events')->insert([
+            'id' => (string) \Illuminate\Support\Str::ulid(),
+            'workflow_run_id' => $future['id'],
+            'workflow_task_id' => $taskId,
+            'sequence' => 1,
+            'event_type' => 'WorkflowStarted',
+            'payload' => '{}',
+            'recorded_at' => now()
+                ->format('Y-m-d H:i:s.u'),
+        ]);
+        return $future;
     }
 
     /**

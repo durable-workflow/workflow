@@ -27,6 +27,7 @@ final class RuntimeProfileRunBuilder extends Builder
             $items,
             fn (): array => $this->model->hydrate($items)
                 ->all(),
+            $this->query->lock,
         );
     }
 

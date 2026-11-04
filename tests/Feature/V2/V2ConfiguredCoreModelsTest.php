@@ -21,6 +21,20 @@ use Workflow\V2\WorkflowStub;
 
 final class V2ConfiguredCoreModelsTest extends SchemaTestCase
 {
+    protected function tearDown(): void
+    {
+        // The canonical reset drops these disposable tables. Do not leave a
+        // configured guard target pointing at one of them during that reset.
+        config()
+            ->set([
+                'workflows.v2.instance_model' => WorkflowInstance::class,
+                'workflows.v2.run_model' => WorkflowRun::class,
+                'workflows.v2.task_model' => WorkflowTask::class,
+                'workflows.v2.command_model' => WorkflowCommand::class,
+            ]);
+        parent::tearDown();
+    }
+
     public function testCoreRuntimeUsesConfiguredInstanceRunAndTaskModels(): void
     {
         $this->createConfiguredInstancesTable();
@@ -37,6 +51,7 @@ final class V2ConfiguredCoreModelsTest extends SchemaTestCase
         foreach ([
             '2026_10_15_000100_add_observability_context_to_workflow_runs.php',
             '2026_10_16_000100_add_observability_context_to_workflow_tasks.php',
+            '2026_11_04_000100_add_runtime_profile_to_workflow_runs.php',
         ] as $migrationFile) {
             $migration = require __DIR__ . '/../../../src/migrations/' . $migrationFile;
             $migration->up();

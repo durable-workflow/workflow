@@ -369,6 +369,19 @@ final class RuntimeProfileSchema
                 $condition = 'OLD.' . $profile . ' IS NOT NULL';
             } elseif ($operation === 'insert') {
                 $key = self::primaryKey($connection, $table);
+                if (in_array($driver, ['mysql', 'mariadb'], true)) {
+                    // A self-read for a missing legacy key takes an InnoDB
+                    // gap lock and can deadlock unrelated concurrent inserts.
+                    // Native duplicate-key checks, DELETE and UPDATE guards
+                    // still refuse conflicts involving an existing profile.
+                    $existing = 'EXISTS (SELECT 1 FROM ' . $connection->getQueryGrammar()->wrapTable($table)
+                        . ' WHERE ' . $key . ' = NEW.' . $key . ')';
+                    $length = self::byteLength($connection, 'NEW.' . $profile);
+                    return "BEGIN IF NEW.{$profile} IS NOT NULL THEN
+                        IF {$length} > 64 OR {$existing} THEN
+                        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'runtime_profile_immutable';
+                        END IF; END IF; END";
+                }
                 $condition = 'EXISTS (SELECT 1 FROM ' . $connection->getQueryGrammar()->wrapTable($table)
                     . ' WHERE ' . $key . ' = NEW.' . $key
                     . ' AND (' . $profile . ' IS NOT NULL OR NEW.' . $profile . ' IS NOT NULL))';
@@ -398,13 +411,6 @@ final class RuntimeProfileSchema
                 $identity
             )
         );
-        $mysqlChanges = implode(
-            ' OR ',
-            array_map(
-                static fn (string $column): string => "NOT (BINARY OLD.{$column} <=> BINARY NEW.{$column})",
-                $identity
-            )
-        );
         $postgresChanges = implode(
             ' OR ',
             array_map(
@@ -420,8 +426,8 @@ final class RuntimeProfileSchema
                 OR CAST(OLD.\"runtime_profile\" AS BLOB) IS NOT CAST(NEW.\"runtime_profile\" AS BLOB)
                 OR (OLD.\"runtime_profile\" IS NOT NULL AND ({$sqliteChanges}))
                 BEGIN SELECT RAISE(ABORT, 'runtime_profile_immutable'); END",
-            'mysql', 'mariadb' => "BEGIN IF {$protectedTarget} OR NOT (BINARY OLD.`runtime_profile` <=> BINARY NEW.`runtime_profile`)
-                OR (OLD.`runtime_profile` IS NOT NULL AND ({$mysqlChanges})) THEN
+            'mysql', 'mariadb' => "BEGIN IF OLD.`runtime_profile` IS NOT NULL OR {$protectedTarget}
+                OR NOT (BINARY OLD.`runtime_profile` <=> BINARY NEW.`runtime_profile`) THEN
                 SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'runtime_profile_immutable'; END IF; END",
             'pgsql' => "BEGIN IF {$protectedTarget} OR convert_to(OLD.\"runtime_profile\", 'UTF8') IS DISTINCT FROM convert_to(NEW.\"runtime_profile\", 'UTF8')
                 OR (OLD.\"runtime_profile\" IS NOT NULL AND ({$postgresChanges})) THEN
