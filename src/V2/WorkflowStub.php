@@ -550,7 +550,8 @@ final class WorkflowStub
 
         while ($processed < $limit) {
             $query = self::taskQuery();
-            $dueAt = $query->getModel()->fromDateTime(now());
+            $dueAt = $query->getModel()
+                ->fromDateTime(now());
 
             /** @var WorkflowTask|null $task */
             $task = $query
