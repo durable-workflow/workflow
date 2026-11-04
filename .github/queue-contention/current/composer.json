@@ -1,5 +1,6 @@
 {
     "name": "durable-workflow/current-queue-consumer",
+    "license": "MIT",
     "require": {
         "php": "^8.3.6",
         "durable-workflow/workflow": "2.5.32",
