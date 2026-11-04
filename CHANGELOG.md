@@ -17,6 +17,10 @@
     run where an earlier release's cursor hid a message keeps the result it
     had, and receives the message at a later step instead of consuming it at
     the old one.
+  - A receive through a stream kept in a property records its consumption
+    at the step the code is at, not the step the stream was opened at, so
+    its replay matches too. Consumptions that earlier releases recorded at
+    the opened step still replay.
 - A redrive moves the failed run's pending inbound messages to the successor
   (#1013). Before, only the message cursor carried over, so a message that
   arrived while the run was failed stayed on the failed run and the successor

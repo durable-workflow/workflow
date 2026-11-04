@@ -120,8 +120,24 @@ final class MessageStream
         $limit = $this->positiveLimit($limit);
 
         if ($this->replayLedger instanceof MessageReplayLedger) {
-            $sequence = $this->consumedBySequence($consumedBySequence);
+            // Without an explicit step, a receive records and finds its
+            // consumption at the step the code is at now, not the step a kept
+            // stream was opened at. Rows written by earlier releases sit at the
+            // opened step, so that step is the fallback.
+            $currentStep = $consumedBySequence === null && $this->currentStep instanceof Closure
+                ? (int) ($this->currentStep)()
+                : null;
+            $sequence = $currentStep ?? $this->consumedBySequence($consumedBySequence);
             $recorded = $this->recordedReceive($sequence, $limit);
+
+            if (
+                $recorded->isEmpty()
+                && $currentStep !== null
+                && $this->defaultConsumedBySequence !== null
+                && $this->defaultConsumedBySequence !== $currentStep
+            ) {
+                $recorded = $this->recordedReceive($this->defaultConsumedBySequence, $limit);
+            }
 
             // A receive this step already made returns what it consumed. A
             // receive at a step history has already passed, with nothing

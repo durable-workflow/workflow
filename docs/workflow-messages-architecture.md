@@ -544,7 +544,7 @@ foreach ($webhooks as $webhook) {
 
 [Receive Phase]  
 8. Receiver calls receiveMessages()
-9. Fetches pending inbound messages after cursor
+9. Fetches the stream's pending inbound messages
 10. Returns messages in sequence order
 
 [Consume Phase]
@@ -635,7 +635,7 @@ Uses index: `correlation_id`.
    - Batch consumption
 
 2. **Cursor Semantics**
-   - Only receive messages after cursor
+   - Receive every pending message of the stream, whatever the cursor says
    - Unconsumed count tracking
    - hasUnconsumedMessages check
 

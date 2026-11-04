@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
+use Workflow\QueryMethod;
 use function Workflow\V2\activity;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
@@ -22,20 +23,32 @@ final class TestInboxKeptStreamWorkflow extends Workflow
     private ?MessageStream $chat = null;
 
     /**
+     * @var list<string|null>
+     */
+    private array $received = [];
+
+    /**
      * @return list<string|null>
      */
     public function handle(int $maxTurns = 2): array
     {
-        $received = [];
-
-        while (count($received) < $maxTurns) {
+        while (count($this->received) < $maxTurns) {
             await('ping');
             $this->chat ??= $this->inbox('chat');
             $message = $this->chat->receiveOne();
-            $received[] = $message?->payload_reference;
+            $this->received[] = $message?->payload_reference;
             activity(TestRedriveFirstActivity::class, (string) $message?->payload_reference);
         }
 
-        return $received;
+        return $this->received;
+    }
+
+    /**
+     * @return list<string|null>
+     */
+    #[QueryMethod('received')]
+    public function received(): array
+    {
+        return $this->received;
     }
 }

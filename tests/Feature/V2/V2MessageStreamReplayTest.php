@@ -7,6 +7,7 @@ namespace Tests\Feature\V2;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestInboxBranchWorkflow;
+use Tests\Fixtures\V2\TestInboxKeptBranchWorkflow;
 use Tests\Fixtures\V2\TestInboxKeptStreamWorkflow;
 use Tests\Fixtures\V2\TestInboxTurnsWorkflow;
 use Tests\Fixtures\V2\TestMessageStreamExactContentWorkflow;
@@ -434,6 +435,87 @@ final class V2MessageStreamReplayTest extends TestCase
 
         $this->assertTrue($workflow->refresh()->completed());
         $this->assertSame(['m1', 'm2'], $workflow->output());
+    }
+
+    /**
+     * A kept inbox whose first turn found nothing records a later turn's
+     * consumption at that later step, so the first turn still replays as
+     * nothing.
+     */
+    public function testAKeptInboxWhoseFirstTurnWasEmptyReplaysThatTurnAsNothing(): void
+    {
+        $workflow = WorkflowStub::make(TestInboxKeptStreamWorkflow::class, 'inbox-kept-empty-first');
+        $workflow->start(2);
+        $this->drainReadyTasks();
+        $run = WorkflowRun::query()->where('workflow_instance_id', 'inbox-kept-empty-first')->sole();
+
+        $workflow->signal('ping');
+        $this->drainReadyTasks();
+        $this->sendToInbox($run, 'm1');
+        $workflow->signal('ping');
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([null, 'm1'], $workflow->output());
+    }
+
+    /**
+     * Rows an earlier release wrote for a kept stream sit at the step the
+     * stream was opened at. A later turn finds its consumption there when
+     * nothing is recorded at its own step.
+     */
+    public function testAKeptInboxStillReplaysConsumptionsRecordedAtItsOpenedStep(): void
+    {
+        $workflow = WorkflowStub::make(TestInboxKeptStreamWorkflow::class, 'inbox-kept-legacy');
+        $workflow->start(3);
+        $this->drainReadyTasks();
+        $run = WorkflowRun::query()->where('workflow_instance_id', 'inbox-kept-legacy')->sole();
+
+        $workflow->signal('ping');
+        $this->sendToInbox($run, 'm1');
+        $this->drainReadyTasks();
+        $workflow->signal('ping');
+        $this->sendToInbox($run, 'm2');
+        $this->drainReadyTasks();
+        $m1 = WorkflowMessage::query()->where('payload_reference', 'm1')->where(
+            'direction',
+            MessageDirection::Inbound->value
+        )->sole();
+        $m2 = WorkflowMessage::query()->where('payload_reference', 'm2')->where(
+            'direction',
+            MessageDirection::Inbound->value
+        )->sole();
+        $this->assertNotSame($m1->consumed_by_sequence, $m2->consumed_by_sequence);
+
+        // As an earlier release recorded it: both at the step the stream opened.
+        $m2->forceFill([
+            'consumed_by_sequence' => $m1->consumed_by_sequence,
+        ])->save();
+
+        $this->assertSame(['m1', 'm2'], $workflow->refresh()->query('received'));
+    }
+
+    /**
+     * The same with a branch and a third turn, whose task replays the first
+     * two turns.
+     */
+    public function testAKeptInboxBranchReplaysAnEmptyFirstTurn(): void
+    {
+        $workflow = WorkflowStub::make(TestInboxKeptBranchWorkflow::class, 'inbox-kept-branch');
+        $workflow->start(3);
+        $this->drainReadyTasks();
+        $run = WorkflowRun::query()->where('workflow_instance_id', 'inbox-kept-branch')->sole();
+
+        $workflow->signal('ping');
+        $this->drainReadyTasks();
+        $this->sendToInbox($run, 'm1');
+        $workflow->signal('ping');
+        $this->drainReadyTasks();
+        $workflow->signal('ping');
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed(), (string) $workflow->refresh()->status());
+        $this->assertSame(['none:Hello, none!', 'got:m1', 'none:Hello, none!'], $workflow->output());
     }
 
     /**
