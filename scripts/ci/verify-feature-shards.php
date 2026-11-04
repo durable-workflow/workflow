@@ -117,6 +117,7 @@ function verify_gate_wiring(string $workflow, string $publicBoundaryWorkflow): v
         'regression-corpus' => [],
         'quality' => [],
         'pr-unit-contracts' => ["github.event_name == 'pull_request'"],
+        'pr-tracing' => ["github.event_name == 'pull_request'"],
         'pr-feature-mysql' => ["github.event_name == 'pull_request'"],
         'feature-mysql' => ["github.event_name != 'pull_request'"],
         'feature-postgresql' => ["github.event_name != 'pull_request'"],

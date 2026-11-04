@@ -398,6 +398,26 @@ class BuildWorkflowTrustTest(unittest.TestCase):
         self.assertIn("--coverage-clover=coverage.xml --testsuite unit", unit)
         self.assertIn("if-no-files-found: error", unit)
 
+    def test_pull_request_tracing_is_independent_and_required(self) -> None:
+        self.assertEqual({"preflight"}, workflow_job_ancestors(self.build, "pr-tracing"))
+        self.assertNotIn("pr-tracing", workflow_job_ancestors(self.build, "pr-unit-contracts"))
+        self.assertIn("github.event_name == 'pull_request'", self.job_source("pr-tracing"))
+        self.assertIn("pr-tracing", workflow_job_needs(self.build, "build"))
+
+        gate = self.job_source("build")
+        for result in ("failure", "cancelled", "skipped"):
+            with self.subTest(result=result):
+                command = 'test "${{ needs.pr-tracing.result }}" = "success"'
+                self.assertIn(command, gate)
+                refused = subprocess.run(
+                    ["sh", "-c", command.replace("${{ needs.pr-tracing.result }}", result)],
+                    check=False,
+                    capture_output=True,
+                )
+                self.assertNotEqual(0, refused.returncode)
+
+        self.assertIn('test "${{ needs.pr-tracing.result }}" = "skipped"', gate)
+
     def test_combined_coverage_waits_for_both_producers_and_requires_every_report(self) -> None:
         self.assertEqual(
             {"preflight", "feature-mysql", "coverage-unit"},
