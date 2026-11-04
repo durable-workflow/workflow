@@ -10,6 +10,9 @@ remain unchanged. This document requests separate General/Security disposition.
 The [guard-first Security disposition](https://github.com/durable-workflow/workflow/pull/1030#issuecomment-6636758952)
 supersedes any one-step task-kind rollout. Security accepts the technical
 boundaries below; General's affirmative product/sequencing decision is pending.
+The [guard-schema checkpoint](https://github.com/durable-workflow/workflow/pull/1030#issuecomment-6637007789)
+accepts the run-level storage shape only subject to that decision and the
+precise constraints below. It is not implementation clearance.
 
 ## Phase one: guard-only compatibility floor
 
@@ -21,15 +24,42 @@ malformed and unknown non-null values must refuse rather than normalize to
 legacy. The guard-only engine supports no protected profile. No configurable
 wildcard, worker compatibility string or capture flag can override that refusal.
 
+Use the exact byte grammar `\A[a-z][a-z0-9._-]{0,63}\z` with no Unicode mode,
+trimming, case folding, normalization or scalar coercion. Compare profile
+constants byte-for-byte, independently of database collation. A valid future
+token is still unsupported in the guard-only phase. The later producer token
+must be a separately reviewed versioned constant, not an operator-defined
+extension of the supported set.
+
 Guard-only admission continues to create legacy runs with null profile. It
 does not accept a caller-supplied protected profile, register a protected task
 kind/event/job, or produce receive observations. Negative fixtures may seed
 future profiles directly to prove refusal. Existing runs are never converted.
+The current run model permits mass assignment, so production create/admission
+and import paths must construct the legacy null value internally. Never copy
+this attribute from caller metadata, generic model-fill arrays, exports or
+request/import input. Model assignment restrictions alone are not sufficient:
+test direct mutation, dirty-model saves and bulk updates, including configured
+models. Fixture-only seeding must use explicit setup helpers rather than a
+production escape hatch.
+
 The discriminator must be read authoritatively with connection, namespace and
 instance/run binding; a stale model, omitted selected column or projection is
 not authority to infer null. It must remain available when every task row is
 missing. It is immutable after admission, and dropping it while non-null
 profiles exist must refuse before schema changes.
+
+Use the repository's configured-model migration pattern for both the actual
+configured run table/connection and the default table. An absent guard column,
+unknown schema coverage or an unreadable/wrong storage lookup is refusal or
+health failure, never legacy. Authoritative reads must bound the raw value
+before casting or traversing it, without trusting accessors or cached models.
+The down migration must preflight the complete in-scope table/connection
+inventory before any DDL; any non-null value or incomplete/unreadable inventory
+refuses the whole operation. Null-to-non-null updates on existing runs,
+non-null changes and clearing a protected value are forbidden; ordinary writes
+cannot erase or switch the admission profile. Immutability needs enforceable
+source/storage controls and backend counterproof, not application convention.
 
 The guard runs before any write or application invocation on all creation,
 dispatch, poll/claim, repair/watchdog, projection, query/replay, continuation,
@@ -45,6 +75,13 @@ this guard-only source, including supported projection roles and deleted task
 rows. A later enum exception is not a substitute. Guard tests and a published
 guard-only artifact are still not evidence that every application executor and
 maintenance process has adopted it.
+
+The negative matrix includes SQLite, MySQL and PostgreSQL; default and
+configured run models, tables and storage connections; missing columns and
+omitted/stale projections; valid future, empty, malformed, non-ASCII and
+overlength values; direct/manual repair and claim paths; and mutation, bulk
+update, down-migration and failure injection. Every non-null value is refused
+with zero durable, application and continuation/cache effects in phase G.
 
 The producer remains absent until a separately reviewed deployment/admission
 policy enforces this minimum floor for every in-scope executor, repairer,
