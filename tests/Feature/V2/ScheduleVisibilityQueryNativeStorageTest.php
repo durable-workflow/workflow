@@ -27,15 +27,21 @@ final class ScheduleVisibilityQueryNativeStorageTest extends TestCase
         $query = new ScheduleVisibilityQuery();
         $this->assertSame(
             ['namespace-0'],
-            $query->query('ops', 'WorkflowType = "orders"')->pluck('schedule_id')->all()
+            $query->query('ops', 'WorkflowType = "orders"')
+                ->pluck('schedule_id')
+                ->all()
         );
         $this->assertSame(
             ['namespace-1'],
-            $query->query('OPS', 'WorkflowType = "orders"')->pluck('schedule_id')->all()
+            $query->query('OPS', 'WorkflowType = "orders"')
+                ->pluck('schedule_id')
+                ->all()
         );
         $this->assertSame(
             ['namespace-2'],
-            $query->query('ops ', 'WorkflowType = "orders"')->pluck('schedule_id')->all()
+            $query->query('ops ', 'WorkflowType = "orders"')
+                ->pluck('schedule_id')
+                ->all()
         );
     }
 

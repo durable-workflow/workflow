@@ -86,13 +86,18 @@ final class ScheduleVisibilityQuery
         foreach ($parts as $part) {
             $this->rejectUnsupportedPredicate($part);
 
-            if (preg_match('/^([A-Za-z][A-Za-z0-9_]*)\s*=\s*(.+)$/s', $part, $matches) !== 1) {
+            if (preg_match('/^([A-Za-z]\w*)\s*=\s*(.+)$/s', $part, $matches) !== 1) {
                 throw new ScheduleVisibilityQueryException(
                     'Schedule visibility predicates must use: Field = literal.',
                 );
             }
 
             $field = $matches[1];
+            if (preg_match('/[^\x00-\x7F]/', $field) === 1) {
+                throw new ScheduleVisibilityQueryException(
+                    'Schedule visibility field names must be ASCII identifiers.'
+                );
+            }
             $literal = $this->parseLiteral(trim($matches[2]));
             $system = self::SYSTEM_FIELDS[$field] ?? null;
 
@@ -165,34 +170,39 @@ final class ScheduleVisibilityQuery
     {
         $result = '';
         $quote = null;
+        $index = 0;
         $length = strlen($value);
 
-        for ($index = 0; $index < $length; $index++) {
+        while ($index < $length) {
             $character = $value[$index];
-
             if ($quote !== null) {
-                if ($character === '\\' && $index + 1 < $length) {
-                    $index++;
-                } elseif ($character === $quote) {
-                    $quote = null;
-                }
-
+                [$index, $quote] = $this->quotedSegment($value, $index, $quote);
                 $result .= ' ';
-
                 continue;
             }
-
+            $index++;
             if ($character === '"' || $character === "'") {
                 $quote = $character;
                 $result .= ' ';
-
-                continue;
+            } else {
+                $result .= $character;
             }
-
-            $result .= $character;
         }
 
         return $result;
+    }
+
+    /**
+     * @return array{int, string|null, string}
+     */
+    private function quotedSegment(string $value, int $index, string $quote): array
+    {
+        $character = $value[$index];
+        if ($character === '\\' && isset($value[$index + 1])) {
+            return [$index + 2, $quote, $character . $value[$index + 1]];
+        }
+
+        return [$index + 1, $character === $quote ? null : $quote, $character];
     }
 
     /**
@@ -204,56 +214,38 @@ final class ScheduleVisibilityQuery
         $current = '';
         $quote = null;
         $length = strlen($query);
+        $index = 0;
 
-        for ($index = 0; $index < $length; $index++) {
+        while ($index < $length) {
             $character = $query[$index];
-
             if ($quote !== null) {
-                $current .= $character;
-
-                if ($character === '\\' && $index + 1 < $length) {
-                    $current .= $query[++$index];
-
-                    continue;
-                }
-
-                if ($character === $quote) {
-                    $quote = null;
-                }
-
+                [$index, $quote, $segment] = $this->quotedSegment($query, $index, $quote);
+                $current .= $segment;
                 continue;
             }
-
             if ($character === '"' || $character === "'") {
                 $quote = $character;
                 $current .= $character;
-
+                $index++;
                 continue;
             }
-
             if ($this->startsAndAt($query, $index)) {
                 $part = trim($current);
-
                 if ($part === '') {
                     return [];
                 }
-
                 $parts[] = $part;
                 $current = '';
-                $index += 2;
-
-                continue;
+                $index += 3;
+            } else {
+                $current .= $character;
+                $index++;
             }
-
-            $current .= $character;
         }
-
         $last = trim($current);
-
         if ($quote !== null || $last === '') {
             return [];
         }
-
         $parts[] = $last;
 
         return $parts;
@@ -299,25 +291,21 @@ final class ScheduleVisibilityQuery
             return str_replace(["\\'", '\\\\'], ["'", '\\'], substr($literal, 1, -1));
         }
 
-        if (strcasecmp($literal, 'true') === 0) {
-            return true;
-        }
+        return $this->parseUnquotedLiteral($literal);
+    }
 
-        if (strcasecmp($literal, 'false') === 0) {
-            return false;
-        }
-
-        if (preg_match('/^-?(?:0|[1-9][0-9]*)$/', $literal) === 1) {
-            return $this->parseIntegerLiteral($literal);
-        }
-
-        if (preg_match('/^-?(?:0|[1-9][0-9]*)\.[0-9]+$/', $literal) === 1) {
-            return $this->parseDecimalLiteral($literal);
-        }
-
-        throw new ScheduleVisibilityQueryException(
-            sprintf('Schedule visibility literal [%s] must be a quoted string, number, or boolean.', $literal),
-        );
+    private function parseUnquotedLiteral(string $literal): bool|float|int
+    {
+        return match (true) {
+            strcasecmp($literal, 'true') === 0 => true,
+            strcasecmp($literal, 'false') === 0 => false,
+            preg_match('/^-?(?:0|[1-9]\d*)$/', $literal) === 1 => $this->parseIntegerLiteral($literal),
+            preg_match('/^-?(?:0|[1-9]\d*)\.\d+$/', $literal) === 1 => $this->parseDecimalLiteral($literal),
+            default => throw new ScheduleVisibilityQueryException(sprintf(
+                'Schedule visibility literal [%s] must be a quoted string, number, or boolean.',
+                $literal
+            )),
+        };
     }
 
     private function parseIntegerLiteral(string $literal): int
