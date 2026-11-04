@@ -8,6 +8,7 @@ use BadMethodCallException;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Date;
 use LogicException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
@@ -356,6 +357,34 @@ final class V2WorkflowStubFakeTest extends TestCase
             ->pluck('event_type')
             ->map(static fn (HistoryEventType $eventType): string => $eventType->value)
             ->all());
+    }
+
+    #[DataProvider('dueTaskTimestampCases')]
+    public function testFakeModePreservesTaskTimestampPrecision(string $startedAt, string $observedAt, bool $due): void
+    {
+        $this->travelTo(CarbonImmutable::parse($startedAt, 'UTC'));
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestTimerWorkflow::class, 'fake-precise-timer');
+        $workflow->start(1);
+        $this->assertFalse($workflow->refresh()->completed());
+
+        $this->travelTo(CarbonImmutable::parse($observedAt, 'UTC'));
+
+        $this->assertSame($due ? 1 : 0, WorkflowStub::runReadyTasks());
+        $this->assertSame($due, $workflow->refresh()->completed());
+        $this->assertSame($due ? TimerStatus::Fired : TimerStatus::Pending, WorkflowTimer::query()->sole()->status);
+    }
+
+    /**
+     * @return iterable<string, array{string, string, bool}>
+     */
+    public static function dueTaskTimestampCases(): iterable
+    {
+        yield 'whole-second equality' => ['2026-01-02 00:00:00.000000', '2026-01-02 00:00:01.000000', true];
+        yield 'fractional equality' => ['2026-01-02 00:00:00.500000', '2026-01-02 00:00:01.500000', true];
+        yield 'elapsed within the same second' => ['2026-01-02 00:00:00.100000', '2026-01-02 00:00:01.400000', true];
+        yield 'future fractional deadline' => ['2026-01-02 00:00:00.500000', '2026-01-02 00:00:01.499999', false];
     }
 
     public function testFakeModeRunsActivityAfterTimerWithImmutableApplicationDates(): void
