@@ -10,6 +10,7 @@ use Tests\Fixtures\V2\TestInboxBranchWorkflow;
 use Tests\Fixtures\V2\TestInboxKeptBranchWorkflow;
 use Tests\Fixtures\V2\TestInboxKeptStreamWorkflow;
 use Tests\Fixtures\V2\TestInboxTurnsWorkflow;
+use Tests\Fixtures\V2\TestInboxUpdateReceiveWorkflow;
 use Tests\Fixtures\V2\TestMessageStreamExactContentWorkflow;
 use Tests\Fixtures\V2\TestMessageStreamKeptStreamWorkflow;
 use Tests\Fixtures\V2\TestMessageStreamRedriveLaterReceiveWorkflow;
@@ -546,6 +547,44 @@ final class V2MessageStreamReplayTest extends TestCase
             )->sole()
 ->consume_state,
         );
+    }
+
+    public function testAnUpdateAppliedAfterLaterStepsStillReceivesAndReplaysWhatItTook(): void
+    {
+        $workflow = WorkflowStub::make(TestInboxUpdateReceiveWorkflow::class, 'inbox-update');
+        $workflow->start();
+        $this->drainReadyTasks();
+        $run = WorkflowRun::query()->where('workflow_instance_id', 'inbox-update')->sole();
+
+        $workflow->signal('go');
+        $this->drainReadyTasks();
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        // The run now waits at a step after the one the update is recorded
+        // at; the handler runs for the first time, so it consumes.
+        $this->sendToInbox($run, 'j1');
+        $update = $workflow->attemptUpdate('take');
+
+        $this->assertTrue($update->completed(), (string) $update->outcome());
+        $this->assertSame('j1', $update->result());
+
+        $this->sendToInbox($run, 'j2');
+        $this->assertSame('j2', $workflow->attemptUpdate('take')->result());
+
+        // A query consumes nothing. What it returns for update handler
+        // receives is tracked separately in #1024.
+        $before = $this->messageRows();
+        $workflow->refresh()
+            ->query('taken');
+        $this->assertSame($before, $this->messageRows());
+
+        $workflow->signal('done');
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed(), (string) $workflow->refresh()->status());
+        // Replays of both handlers return what each one took.
+        $this->assertSame(['j1', 'j2'], $workflow->output());
+        $this->assertSame($before, $this->messageRows());
     }
 
     public function testAWorkflowCodeReceiveReplaysTheMessageItConsumedAndQueriesConsumeNothing(): void

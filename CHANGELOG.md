@@ -16,7 +16,9 @@
     again. It no longer reads the stream at a step history has passed. So a
     run where an earlier release's cursor hid a message keeps the result it
     had, and receives the message at a later step instead of consuming it at
-    the old one.
+    the old one. An update handler that runs for the first time still
+    receives, even when its update is recorded at an earlier step than the
+    one the run waits at.
   - A receive through a stream kept in a property records its consumption
     at the step the code is at, not the step the stream was opened at, so
     its replay matches too. Consumptions that earlier releases recorded at

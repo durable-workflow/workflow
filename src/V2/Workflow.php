@@ -63,6 +63,8 @@ abstract class Workflow
 
     private ?MessageReplayLedger $messageReplayLedger = null;
 
+    private bool $runningLiveUpdate = false;
+
     /**
      * @var list<callable>
      */
@@ -194,6 +196,7 @@ abstract class Workflow
             $this->messageReplayLedger,
             readOnly: fn (): bool => ! $this->commandDispatchEnabled,
             currentStep: fn (): int => $this->visibleSequence,
+            runningLiveUpdate: fn (): bool => $this->runningLiveUpdate,
         );
     }
 
@@ -280,6 +283,25 @@ abstract class Workflow
     public function executionCursor(): int
     {
         return $this->visibleSequence;
+    }
+
+    /**
+     * Run a newly applied update handler. Its code runs for the first time,
+     * at the step the update is recorded at, which history may already have
+     * passed, so its receives may consume.
+     *
+     * @internal
+     */
+    public function runLiveUpdateHandler(callable $handler): mixed
+    {
+        $previous = $this->runningLiveUpdate;
+        $this->runningLiveUpdate = true;
+
+        try {
+            return $handler();
+        } finally {
+            $this->runningLiveUpdate = $previous;
+        }
     }
 
     public function setCommandDispatchEnabled(bool $enabled): void

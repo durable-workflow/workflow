@@ -260,7 +260,9 @@ own identifier and its own durable row.
   messages already consumed at that step. A query or other read-only
   replay never writes or consumes. A replayed receive whose original
   call found nothing returns nothing again; a receive never consumes at a
-  step that history has already passed.
+  step that history has already passed. An update handler that runs for
+  the first time is not a replay, so its receives consume even when its
+  update is recorded at an earlier step.
 
 ## Side effects and version markers
 

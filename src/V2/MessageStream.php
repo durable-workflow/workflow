@@ -32,6 +32,7 @@ final class MessageStream
         private readonly ?MessageReplayLedger $replayLedger = null,
         private readonly bool|Closure $readOnly = false,
         private readonly ?Closure $currentStep = null,
+        private readonly ?Closure $runningLiveUpdate = null,
     ) {
         if ($streamKey === '') {
             throw new InvalidArgumentException('Message stream key must not be empty.');
@@ -68,6 +69,7 @@ final class MessageStream
         MessageReplayLedger $replayLedger,
         Closure $readOnly,
         ?Closure $currentStep = null,
+        ?Closure $runningLiveUpdate = null,
     ): self {
         return new self(
             $run,
@@ -77,6 +79,7 @@ final class MessageStream
             $replayLedger,
             $readOnly,
             $currentStep,
+            $runningLiveUpdate,
         );
     }
 
@@ -371,6 +374,12 @@ final class MessageStream
     private function historyPassedCurrentStep(): bool
     {
         if (! $this->currentStep instanceof Closure || ! $this->replayLedger instanceof MessageReplayLedger) {
+            return false;
+        }
+
+        // A newly applied update handler runs at its recorded step for the
+        // first time, so it isn't replaying even when history has moved on.
+        if ($this->runningLiveUpdate instanceof Closure && ($this->runningLiveUpdate)() === true) {
             return false;
         }
 
