@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestInboxTurnsWorkflow;
 use Tests\Fixtures\V2\TestMessageStreamExactContentWorkflow;
 use Tests\Fixtures\V2\TestMessageStreamKeptStreamWorkflow;
+use Tests\Fixtures\V2\TestMessageStreamRedriveLaterReceiveWorkflow;
 use Tests\Fixtures\V2\TestMessageStreamRedriveWorkflow;
 use Tests\Fixtures\V2\TestMessageStreamTurnsWorkflow;
 use Tests\TestCase;
@@ -223,9 +224,14 @@ final class V2MessageStreamReplayTest extends TestCase
             ->where('direction', MessageDirection::Outbound->value)
             ->pluck('payload_reference')
             ->all());
-        // m1 is consumed once. m2 is left on the source run, because redrive
-        // doesn't move pending messages yet (#1013); this records that, not a
-        // requirement.
+        // m1 is consumed once. m2, still pending when the source failed, moved
+        // to the successor (#1013); this workflow doesn't receive again.
+        $this->assertSame($successor->id, WorkflowMessage::query()
+            ->where('workflow_instance_id', 'message-stream-redrive')
+            ->where('payload_reference', 'm2')
+            ->where('direction', MessageDirection::Inbound->value)
+            ->sole()
+            ->workflow_run_id);
         $this->assertSame(
             [
                 'm1' => MessageConsumeState::Consumed->value,
@@ -275,6 +281,54 @@ final class V2MessageStreamReplayTest extends TestCase
                 ->all(),
             array_column($output, 'id'),
         );
+    }
+
+    /**
+     * A message that arrives while the run is failed belongs to that run. The
+     * redrive moves it to the successor, which receives it at a later step.
+     */
+    public function testARedriveSuccessorReceivesAMessageThatArrivedWhileTheSourceWasFailed(): void
+    {
+        config()
+            ->set('workflows.v2.testing.redrive_failures_before_success', 1);
+        Cache::forget('test:redrive:first-calls');
+        Cache::forget('test:redrive:second-calls');
+        $workflow = WorkflowStub::make(
+            TestMessageStreamRedriveLaterReceiveWorkflow::class,
+            'message-stream-redrive-later'
+        );
+        $workflow->start();
+        $this->drainReadyTasks();
+        $source = WorkflowRun::query()->where('workflow_instance_id', 'message-stream-redrive-later')->sole();
+
+        $workflow->signal('go');
+        $this->sendToInbox($source, 'm1');
+        $this->drainReadyTasks();
+        $this->assertTrue($workflow->refresh()->failed());
+        $this->sendToInbox($source->fresh(), 'm2');
+        $this->assertSame($source->id, WorkflowMessage::query()
+            ->where('payload_reference', 'm2')
+            ->where('direction', MessageDirection::Inbound->value)
+            ->sole()
+            ->workflow_run_id);
+
+        $result = app(WorkflowControlPlane::class)->redrive('message-stream-redrive-later', $source->id);
+        $this->assertTrue($result['accepted'], (string) $result['reason']);
+        $this->drainReadyTasks();
+
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame('completed', $successor->status->value);
+        $this->assertSame([
+            'first' => 'm1',
+            'later' => 'm2',
+            'result' => 'Hello, m1! Redrive completed.',
+        ], $successor->workflowOutput());
+        $m2 = WorkflowMessage::query()
+            ->where('payload_reference', 'm2')
+            ->where('direction', MessageDirection::Inbound->value)
+            ->sole();
+        $this->assertSame($successor->id, $m2->workflow_run_id);
+        $this->assertSame(MessageConsumeState::Consumed, $m2->consume_state);
     }
 
     public function testAWorkflowCodeReceiveReplaysTheMessageItConsumedAndQueriesConsumeNothing(): void

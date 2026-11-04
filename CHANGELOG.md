@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A redrive moves the failed run's pending inbound messages to the successor,
+  as continue-as-new does (#1013). Before, only the message cursor carried
+  over, so a message that arrived while the run was failed stayed on the
+  failed run and the successor never received it.
+
 ## 2.20.1 - 2026-11-04
 
 - Rollback, embedded Workflow package: 2.20.1 changes no schema, history
