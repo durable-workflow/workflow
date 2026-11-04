@@ -21,6 +21,12 @@
   arrived while the run was failed stayed on the failed run and the successor
   never received it. A replayed receive whose original call found nothing can
   now return one of the moved messages.
+- Known limitation, not fixed in 2.20.2 (#1011): stream receives still start
+  after the run's shared message cursor, which signals and receives on other
+  streams also advance. A stream message that is still pending behind that
+  cursor stays hidden from `inbox()->receive()` and `receiveOne()`. A replayed
+  receive whose original call found nothing can also read the stream again
+  and return a message. The fix (#1017) follows in 2.20.3.
 
 ## 2.20.1 - 2026-11-04
 
