@@ -236,6 +236,11 @@
           "literal": "﻿​"
         }
       ]
+    },
+    {
+      "name": "empty-after-request-normalization",
+      "query": "﻿​‎  ",
+      "reason": "invalid_schedule_visibility_query"
     }
   ]
 }
