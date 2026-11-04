@@ -59,6 +59,17 @@ that value globally would expose the new histories to legacy service workers.
 Instead, review every creation, dispatch, poll, claim, repair, resume, timeout,
 cancel, projection and terminal path by execution mode.
 
+**Known incomplete path, not merely an unrun test:** accepted
+`TaskRepair::createMissingTask()` can create a literal plain `workflow` task
+when no task remains and the supplied summary says `repair_needed`. Its final
+fallback does not consult the proposed protected kind or unknown history event.
+A protected kind only on existing task rows therefore cannot be the complete
+repair/downgrade fence. The new-run restriction avoids old in-flight claims,
+but does not solve this missing-row path. Return a reviewed maintenance/run
+admission discriminator or routing isolation for that path before treating the
+task-family proposal as viable. Do not silently add another status, summary
+value, codec or database fence in response.
+
 - Every new workflow task for a protected run must retain the protected kind.
   No repair or recovery path may recreate a plain `workflow` task for that run.
 - Portable SDK polling/claim/fetch/completion remains unable to select the new
@@ -134,8 +145,9 @@ JSON Schema is not that proof.
 
 General/Security need to decide whether to authorize preparation of:
 
-1. the new-run-only protected task family plus history read fence, with the
-   lifecycle and exact-old-source controls above; and
+1. further design of the new-run-only protected task family plus history read
+   fence, including a separately resolved old missing-task-repair boundary,
+   rather than authorization to implement a known incomplete fence; and
 2. the shared 16 MiB raw/decoded-input admission boundary, with the explicitly
    narrower legacy-v2 acceptance, or a different reviewed parser design.
 
