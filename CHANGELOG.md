@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 2.20.2 - 2026-11-04
+
+- Rollback, embedded Workflow package: 2.20.2 changes no schema, history
+  event or API. Rolling back to 2.20.1 or earlier brings back the stranded
+  pending stream messages at redrive (#1013) and at continue-as-new (#1018).
+  Messages that 2.20.2 already moved to a successor or continued run stay
+  there.
 - Continue-as-new moves the run's pending inbound stream messages to the
   continued run (#1018). Before, only the message cursor carried over, so a
   stream message still pending when a run continued as new stayed on the
