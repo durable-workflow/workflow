@@ -10807,6 +10807,42 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         ], MemoPayload::decodeEntries($memoEvent->payload['entries']));
     }
 
+    public function testContinueAsNewMovesPendingStreamMessagesToTheContinuedRun(): void
+    {
+        $run = $this->createWaitingRun();
+        $service = new \Workflow\V2\Support\MessageService();
+        $service->sendMessage(
+            $run,
+            \Workflow\V2\Enums\MessageChannel::WorkflowMessage,
+            $run->workflow_instance_id,
+            'pending-at-continue',
+            'chat',
+        );
+        /** @var WorkflowTask $task */
+        $task = $this->createLeasedTask($run);
+
+        $result = $this->bridge->complete($task->id, [
+            [
+                'type' => 'continue_as_new',
+                'arguments' => Serializer::serialize(['next']),
+            ],
+        ]);
+
+        $this->assertTrue($result['completed']);
+        $continuedRunId = WorkflowRun::query()
+            ->where('workflow_instance_id', $run->workflow_instance_id)
+            ->where('run_number', $run->run_number + 1)
+            ->value('id');
+        $this->assertIsString($continuedRunId);
+        $message = \Workflow\V2\Models\WorkflowMessage::query()
+            ->where('payload_reference', 'pending-at-continue')
+            ->where('direction', \Workflow\V2\Enums\MessageDirection::Inbound->value)
+            ->sole();
+        // Pending stream messages move to the continued run (#1018).
+        $this->assertSame($continuedRunId, $message->workflow_run_id);
+        $this->assertSame(\Workflow\V2\Enums\MessageConsumeState::Pending, $message->consume_state);
+    }
+
     public function testContinueAsNewTransfersInstanceUpdatesAndFailsOnlyRunUpdates(): void
     {
         $run = $this->createWaitingRun();

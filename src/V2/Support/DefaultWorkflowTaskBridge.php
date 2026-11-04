@@ -5370,7 +5370,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'workflow_class' => $workflowType,
         ])->save();
 
-        MessageStreamCursor::transferCursor($run, $continuedRun);
+        // Pending stream messages move with the cursor, so the continued run
+        // receives what this run had not consumed yet (#1018).
+        (new MessageService())->transferMessagesToContinuedRun($run, $continuedRun);
 
         $childCallId = ChildRunHistory::childCallIdForRun($run);
 
