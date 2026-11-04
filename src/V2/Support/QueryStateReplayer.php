@@ -162,13 +162,13 @@ final class QueryStateReplayer
                 }
 
                 if ($this->activityOpenEvent($run, $historySequence) !== null) {
-                    $this->applyRecordedUpdates($run, $workflow, $historySequence);
+                    $this->applyRecordedUpdates($run, $workflow, $historySequence, $current, $sequence);
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
 
                     return new ReplayState($workflow, $sequence, $current);
                 }
 
-                $this->applyRecordedUpdates($run, $workflow, $historySequence);
+                $this->applyRecordedUpdates($run, $workflow, $historySequence, $current, $sequence);
                 $this->syncWorkflowCursor($workflow, $sequence + 1);
 
                 return new ReplayState($workflow, $sequence, $current);
@@ -203,7 +203,7 @@ final class QueryStateReplayer
                 }
 
                 if ($this->activityOpenEvent($run, $historySequence) !== null) {
-                    $this->applyRecordedUpdates($run, $workflow, $historySequence);
+                    $this->applyRecordedUpdates($run, $workflow, $historySequence, $current, $sequence);
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
 
                     return new ReplayState($workflow, $sequence, $current);
@@ -225,7 +225,7 @@ final class QueryStateReplayer
                         );
                     }
 
-                    $this->applyRecordedUpdates($run, $workflow, $historySequence);
+                    $this->applyRecordedUpdates($run, $workflow, $historySequence, $current, $sequence);
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
 
                     return new ReplayState($workflow, $sequence, $current);
@@ -251,7 +251,7 @@ final class QueryStateReplayer
             if ($current instanceof AwaitCall || $current instanceof AwaitWithTimeoutCall) {
                 $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
 
-                $this->applyRecordedUpdates($run, $workflow, $historySequence);
+                $this->applyRecordedUpdates($run, $workflow, $historySequence, $current, $sequence);
                 ConditionWaits::assertReplayCompatible($run, $historySequence, $current);
 
                 $resolutionEvent = $this->conditionWaitResolutionEvent($run, $historySequence);
@@ -289,7 +289,7 @@ final class QueryStateReplayer
                 }
 
                 if ($this->timerScheduledEvent($run, $historySequence) !== null) {
-                    $this->applyRecordedUpdates($run, $workflow, $historySequence);
+                    $this->applyRecordedUpdates($run, $workflow, $historySequence, $current, $sequence);
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
 
                     return new ReplayState($workflow, $sequence, $current);
@@ -306,7 +306,7 @@ final class QueryStateReplayer
                         );
                     }
 
-                    $this->applyRecordedUpdates($run, $workflow, $historySequence);
+                    $this->applyRecordedUpdates($run, $workflow, $historySequence, $current, $sequence);
                     $this->syncWorkflowCursor($workflow, $sequence + 1);
 
                     return new ReplayState($workflow, $sequence, $current);
@@ -325,7 +325,7 @@ final class QueryStateReplayer
             if ($current instanceof SideEffectCall) {
                 $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
 
-                $this->applyRecordedUpdates($run, $workflow, $historySequence);
+                $this->applyRecordedUpdates($run, $workflow, $historySequence, $current, $sequence);
                 WorkflowStepHistory::assertCompatible($run, $historySequence, WorkflowStepHistory::SIDE_EFFECT);
 
                 $sideEffectEvent = $this->sideEffectEvent($run, $historySequence);
@@ -349,7 +349,7 @@ final class QueryStateReplayer
             if ($current instanceof VersionCall) {
                 $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
 
-                $this->applyRecordedUpdates($run, $workflow, $historySequence);
+                $this->applyRecordedUpdates($run, $workflow, $historySequence, $current, $sequence);
                 $versionEvent = $versionDecisions->markerAt($historySequence);
                 $resolution = $versionDecisions->resolve($run, $current, $historySequence);
                 if (! $resolution->advancesSequence) {
@@ -380,7 +380,7 @@ final class QueryStateReplayer
             if ($current instanceof UpsertSearchAttributesCall) {
                 $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
 
-                $this->applyRecordedUpdates($run, $workflow, $historySequence);
+                $this->applyRecordedUpdates($run, $workflow, $historySequence, $current, $sequence);
                 WorkflowStepHistory::assertCompatible(
                     $run,
                     $historySequence,
@@ -411,7 +411,7 @@ final class QueryStateReplayer
             if ($current instanceof UpsertMemoCall) {
                 $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
 
-                $this->applyRecordedUpdates($run, $workflow, $historySequence);
+                $this->applyRecordedUpdates($run, $workflow, $historySequence, $current, $sequence);
                 WorkflowStepHistory::assertCompatible($run, $historySequence, WorkflowStepHistory::MEMO_UPSERT);
 
                 $upsertEvent = $this->memoUpsertedEvent($run, $historySequence);
@@ -438,7 +438,7 @@ final class QueryStateReplayer
             if ($current instanceof SignalCall) {
                 $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
 
-                $this->applyRecordedUpdates($run, $workflow, $historySequence);
+                $this->applyRecordedUpdates($run, $workflow, $historySequence, $current, $sequence);
                 WorkflowStepHistory::assertCompatible($run, $historySequence, WorkflowStepHistory::SIGNAL_WAIT, [
                     'signal_name' => $current->name,
                 ]);
@@ -477,7 +477,7 @@ final class QueryStateReplayer
             if ($current instanceof ServiceOperationCall) {
                 $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
 
-                $this->applyRecordedUpdates($run, $workflow, $historySequence);
+                $this->applyRecordedUpdates($run, $workflow, $historySequence, $current, $sequence);
                 WorkflowStepHistory::assertCompatible($run, $historySequence, WorkflowStepHistory::SERVICE_OPERATION, [
                     'operation_name' => $current->operationName,
                 ]);
@@ -526,7 +526,7 @@ final class QueryStateReplayer
             if ($current instanceof ChildWorkflowCall) {
                 $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
 
-                $this->applyRecordedUpdates($run, $workflow, $historySequence);
+                $this->applyRecordedUpdates($run, $workflow, $historySequence, $current, $sequence);
                 WorkflowStepHistory::assertCompatible($run, $historySequence, WorkflowStepHistory::CHILD_WORKFLOW, [
                     'child_workflow_type' => $current->workflow,
                 ]);
@@ -614,7 +614,7 @@ final class QueryStateReplayer
             if ($current instanceof AllCall) {
                 $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
 
-                $this->applyRecordedUpdates($run, $workflow, $historySequence);
+                $this->applyRecordedUpdates($run, $workflow, $historySequence, $current, $sequence);
 
                 $leafDescriptors = $current->leafDescriptors($historySequence);
                 $groupSize = count($leafDescriptors);
@@ -2135,6 +2135,8 @@ final class QueryStateReplayer
         WorkflowRun $run,
         \Workflow\V2\Workflow $workflow,
         int $sequence,
+        mixed $current,
+        int $replayPosition,
     ): void {
         $events = $run->historyEvents
             ->filter(
@@ -2168,8 +2170,86 @@ final class QueryStateReplayer
                 new ReflectionMethod($workflow, $method),
             );
 
-            $workflow->{$method}(...$parameters);
+            $previousCursor = $workflow->executionCursor();
+            $workflow->syncExecutionCursor($this->updateReplayPosition(
+                $run,
+                $current,
+                $sequence,
+                $replayPosition,
+                $event,
+            ));
+
+            try {
+                $workflow->{$method}(...$parameters);
+            } finally {
+                $workflow->syncExecutionCursor($previousCursor);
+            }
         }
+    }
+
+    /**
+     * UpdateApplied records the command position, while receives used the
+     * position visible when that handler ran. Match that same call's history
+     * before this update: a command opened later must not move an old receive.
+     * Only the handler's in-memory query cursor changes; stored rows do not.
+     */
+    private function updateReplayPosition(
+        WorkflowRun $run,
+        mixed $current,
+        int $historySequence,
+        int $replayPosition,
+        WorkflowHistoryEvent $update,
+    ): int {
+        $prefix = clone $run;
+        $prefix->setRelation('historyEvents', $run->historyEvents->filter(
+            static fn (WorkflowHistoryEvent $event): bool => $event->sequence < $update->sequence,
+        ));
+
+        if ($current instanceof AllCall) {
+            foreach ($current->leafDescriptors($historySequence) as $descriptor) {
+                $leaf = $descriptor['call'];
+                $leafSequence = $historySequence + $descriptor['offset'];
+                $opened = $leaf instanceof ActivityCall
+                    ? $this->activityOpenEvent($prefix, $leafSequence) !== null
+                        || $this->activityCompletionEvent($prefix, $leafSequence) !== null
+                    : $leaf instanceof ChildWorkflowCall && $this->childCallRecorded($prefix, $leafSequence);
+
+                if ($opened) {
+                    return $replayPosition + $current->leafCount();
+                }
+            }
+
+            return $replayPosition;
+        }
+
+        $opened = match (true) {
+            $current instanceof ActivityCall, $current instanceof LocalActivityCall =>
+                $this->activityOpenEvent($prefix, $historySequence) !== null
+                || $this->activityCompletionEvent($prefix, $historySequence) !== null,
+            $current instanceof AwaitCall, $current instanceof AwaitWithTimeoutCall =>
+                $prefix->historyEvents->contains(
+                    static fn (WorkflowHistoryEvent $event): bool =>
+                        $event->event_type === HistoryEventType::ConditionWaitOpened
+                        && ($event->payload['sequence'] ?? null) === $historySequence,
+                ) || $this->conditionWaitResolutionEvent($prefix, $historySequence) !== null,
+            $current instanceof TimerCall => $this->timerScheduledEvent($prefix, $historySequence) !== null
+                || $this->timerFiredEvent($prefix, $historySequence) !== null,
+            $current instanceof SignalCall =>
+                $this->signalWaitIdsForSequence($prefix, $historySequence, $current->name) !== []
+                || $this->appliedSignalEvent($prefix, $historySequence, $current) !== null
+                || $this->receivedSignalEvent($prefix, $historySequence, $current) !== null,
+            $current instanceof ChildWorkflowCall => $this->childCallRecorded($prefix, $historySequence),
+            default => false,
+        };
+
+        return $replayPosition + ($opened ? 1 : 0);
+    }
+
+    private function childCallRecorded(WorkflowRun $run, int $sequence): bool
+    {
+        return ChildRunHistory::scheduledEventForSequence($run, $sequence) !== null
+            || ChildRunHistory::startedEventForSequence($run, $sequence) !== null
+            || ChildRunHistory::resolutionEventForSequence($run, $sequence) !== null;
     }
 
     private function updateMethodName(
