@@ -4,13 +4,15 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\V2\TestRuntimeProfileProbeWorkflow;
-use Tests\TestCase;
+use Tests\SchemaTestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
@@ -27,11 +29,14 @@ use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
+use Workflow\V2\Support\FailedRunRedriveDefinitionCheck;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\MessageService;
+use Workflow\V2\Support\OfflineHistoryRun;
 use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\RuntimeProfileGuard;
 use Workflow\V2\Support\RunWaitProjector;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
@@ -40,7 +45,7 @@ use Workflow\V2\Support\WorkflowContinuationSession;
 use Workflow\V2\Support\WorkflowExecutor;
 use Workflow\V2\TaskWatchdog;
 
-final class RuntimeProfileEntryGuardTest extends TestCase
+final class RuntimeProfileEntryGuardTest extends SchemaTestCase
 {
     #[DataProvider('entryPaths')]
     public function testRefusalHasNoDurableQueueOrThrottleEffects(string $path): void
@@ -65,6 +70,18 @@ final class RuntimeProfileEntryGuardTest extends TestCase
             'poll' => static fn () => $bridge->poll(null, null),
             'watchdog' => static fn () => TaskWatchdog::runPass(),
             'dispatch' => static fn () => TaskDispatcher::dispatch($task),
+            'scalar namespace' => static fn () => WorkflowRun::query()->whereKey($run->id)->value('namespace'),
+            'sole scalar' => static fn () => WorkflowRun::query()->whereKey($run->id)->soleValue('namespace'),
+            'required scalar' => static fn () => WorkflowRun::query()->whereKey($run->id)->valueOrFail('namespace'),
+            'definition check' => static fn () => FailedRunRedriveDefinitionCheck::check(
+                $run,
+                TestRuntimeProfileProbeWorkflow::class,
+                [],
+                [
+                    'resume_step_sequence' => 1,
+                    'reused_steps' => [],
+                ]
+            ),
             'query replay' => static fn () => (new QueryStateReplayer())->replayState($run),
             'executor' => static fn () => (new WorkflowExecutor())->run($run, $task),
             'cached summary' => static fn () => RunSummaryProjector::project($run),
@@ -73,7 +90,11 @@ final class RuntimeProfileEntryGuardTest extends TestCase
             'cached export' => static fn () => HistoryExport::forRun($run),
             'cached stream' => static fn () => (new MessageService())->stream($run),
             'cached repair' => static fn () => TaskRepair::repairRun($run, new WorkflowRunSummary()),
-            'history write' => static fn () => WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowStarted, []),
+            'history write' => static fn () => WorkflowHistoryEvent::record(
+                $run,
+                HistoryEventType::WorkflowStarted,
+                []
+            ),
             'continuation' => static fn () => (new WorkflowContinuationSession(
                 new WorkflowContinuationCache(),
                 DB::connection(),
@@ -107,11 +128,45 @@ final class RuntimeProfileEntryGuardTest extends TestCase
     public static function entryPaths(): iterable
     {
         foreach (['workflow job', 'activity job', 'timer job', 'claim', 'history', 'paged history', 'execute',
-            'failure', 'heartbeat', 'completion', 'poll', 'watchdog', 'dispatch', 'query replay', 'executor',
+            'failure', 'heartbeat', 'completion', 'poll', 'watchdog', 'dispatch', 'scalar namespace', 'sole scalar', 'required scalar', 'definition check', 'query replay', 'executor',
             'cached summary', 'cached waits', 'cached detail', 'cached export', 'cached stream', 'cached repair',
             'history write', 'continuation', 'control start', 'control query'] as $path) {
             yield $path => [$path];
         }
+    }
+
+    public function testExpiredDatabaseThrottleCannotWriteBeforeProfileRefusal(): void
+    {
+        [$run] = $this->protectedRun();
+        Queue::fake();
+        Schema::create('runtime_profile_test_cache', static function (Blueprint $table): void {
+            $table->string('key')
+                ->primary();
+            $table->text('value');
+            $table->integer('expiration');
+        });
+        config()
+            ->set('cache.stores.profile-guard', [
+                'driver' => 'database',
+                'table' => 'runtime_profile_test_cache',
+                'connection' => config('database.default'),
+                'prefix' => 'profile-guard:',
+            ]);
+        config()
+            ->set('cache.default', 'profile-guard');
+        $this->freezeTime();
+        Cache::put(TaskWatchdog::LOOP_THROTTLE_KEY, true, 1);
+        $this->travel(2)
+            ->seconds();
+        $before = $this->rows();
+        try {
+            TaskWatchdog::runPass(respectThrottle: true, runIds: [$run->id]);
+            $this->fail('Expired cache cleanup cannot precede selected-profile validation.');
+        } catch (RuntimeProfileRefusal $error) {
+            $this->assertSame('runtime_profile_unsupported', $error->reason);
+        }
+        $this->assertSame($before, $this->rows());
+        Queue::assertNothingPushed();
     }
 
     public function testMissingTaskRepairRefusesBeforeItsThrottleAndFailurePaths(): void
@@ -145,6 +200,58 @@ final class RuntimeProfileEntryGuardTest extends TestCase
                 $this->assertSame('runtime_profile_unsupported', $error->reason);
             }
         }
+    }
+
+    public function testBatchHydrationRefusesBeforeAnyRetrievedObserverAndDoesNotRetainProof(): void
+    {
+        [$protected] = $this->protectedRun();
+        $ids = DB::table('workflow_runs')->pluck('id')->all();
+        $retrieved = 0;
+        WorkflowRun::retrieved(static function () use (&$retrieved): void {
+            ++$retrieved;
+        });
+        try {
+            WorkflowRun::query()->whereIn('id', $ids)->get();
+            $this->fail('Every row must pass before the first model observer runs.');
+        } catch (RuntimeProfileRefusal $error) {
+            $this->assertSame('runtime_profile_unsupported', $error->reason);
+        }
+        $this->assertSame(0, $retrieved);
+        $legacy = WorkflowRun::query()->where('id', '!=', $protected->id)->firstOrFail();
+        $this->assertSame(1, $retrieved);
+        $forged = (new WorkflowRun())->newInstance([], true);
+        $attributes = $legacy->getRawOriginal();
+        $attributes['id'] = $protected->id;
+        try {
+            $forged->newFromBuilder($attributes);
+            $this->fail('Completed hydration cannot leave a reusable legacy proof.');
+        } catch (RuntimeProfileRefusal $error) {
+            $this->assertSame('runtime_profile_unsupported', $error->reason);
+        }
+        $this->assertSame(1, $retrieved);
+    }
+
+    public function testOfflineRepresentationCannotGrantDurableAuthority(): void
+    {
+        [$run, $task] = $this->protectedRun();
+        $snapshot = new OfflineHistoryRun();
+        $snapshot->setRawAttributes($run->getRawOriginal(), true);
+        $snapshot->exists = true;
+        $before = $this->rows();
+        foreach ([
+            static fn () => $snapshot->save(),
+            static fn () => $snapshot->delete(),
+            static fn () => RuntimeProfileGuard::assertRun($snapshot),
+            static fn () => (new WorkflowExecutor())->run($snapshot, $task),
+        ] as $operation) {
+            try {
+                $operation();
+                $this->fail('An offline representation is not durable authority.');
+            } catch (RuntimeProfileRefusal $error) {
+                $this->assertSame('runtime_profile_identity', $error->reason);
+            }
+        }
+        $this->assertSame($before, $this->rows());
     }
 
     #[DataProvider('lateCandidateFamilies')]

@@ -44,12 +44,12 @@ final class ActivityTaskClaimer
         ?string $leaseOwner = null,
         bool $releaseFutureTasks = false,
     ): array {
-        RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
         return SqliteTransaction::forTask($taskId, static function () use (
             $taskId,
             $leaseOwner,
             $releaseFutureTasks
         ): array {
+            RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
             /** @var WorkflowTask|null $task */
             $task = WorkflowTask::query()
                 ->lockForUpdate()

@@ -19,6 +19,7 @@ use Workflow\V2\Exceptions\WorkflowOutputCodecUnavailableException;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\RuntimeProfileGuard;
+use Workflow\V2\Support\RuntimeProfileRunBuilder;
 use Workflow\V2\Support\UtcScheduleTimestamp;
 
 class WorkflowRun extends Model
@@ -31,7 +32,9 @@ class WorkflowRun extends Model
 
     protected $table = 'workflow_runs';
 
-    protected $guarded = ['runtime_profile'];
+    // fill() rejects engine-owned input, including forceFill(), without making
+    // legacy in-memory replay models query a database column inventory.
+    protected $guarded = [];
 
     protected $hidden = ['runtime_profile'];
 
@@ -64,6 +67,11 @@ class WorkflowRun extends Model
         'import_contract_version' => 'integer',
         'imported_at' => 'datetime',
     ];
+
+    public function newEloquentBuilder($query)
+    {
+        return new RuntimeProfileRunBuilder($query);
+    }
 
     public function fill(array $attributes)
     {
@@ -434,7 +442,7 @@ class WorkflowRun extends Model
             if ($run->isDirty('runtime_profile')) {
                 throw new RuntimeProfileRefusal('runtime_profile_assignment');
             }
-            RuntimeProfileGuard::assertRun($run);
+            RuntimeProfileGuard::assertRunForUpdate($run);
         });
     }
 

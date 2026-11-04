@@ -52,6 +52,7 @@ final class WorkflowReplayer
         $this->assertHistoryExport($historyExport);
 
         $workflow = self::arrayValue($historyExport['workflow'] ?? null);
+        RuntimeProfileGuard::assertNoProfileInput($workflow);
         $payloads = self::arrayValue($historyExport['payloads'] ?? null);
         $arguments = self::arrayValue($payloads['arguments'] ?? null);
         $output = self::arrayValue($payloads['output'] ?? null);
@@ -65,7 +66,7 @@ final class WorkflowReplayer
         $instanceId = self::requiredString($workflow, 'instance_id');
 
         /** @var WorkflowRun $run */
-        $run = $this->existingModel(WorkflowRun::class, [
+        $run = $this->existingModel(OfflineHistoryRun::class, [
             'id' => $runId,
             'workflow_instance_id' => $instanceId,
             'run_number' => self::intValue($workflow['run_number'] ?? null) ?? 1,

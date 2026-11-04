@@ -904,6 +904,8 @@ final class V2RebuildProjectionsCommandTest extends TestCase
                 ->primary();
             $table->string('workflow_instance_id', 191)
                 ->index();
+            $table->string('runtime_profile', 64)
+                ->nullable();
             $table->unsignedInteger('run_number');
             $table->string('workflow_class');
             $table->string('workflow_type');

@@ -18,9 +18,10 @@ final class RedriveReplayClock
             return $run->started_at;
         }
 
-        $event = $run->historyEvents()
-            ->where('event_type', HistoryEventType::WorkflowStarted->value)
-            ->first();
+        $event = $run instanceof OfflineHistoryRun
+            ? $run->historyEvents->firstWhere('event_type', HistoryEventType::WorkflowStarted)
+            : $run->historyEvents()
+                ->where('event_type', HistoryEventType::WorkflowStarted->value)->first();
         $payload = $event instanceof WorkflowHistoryEvent ? $event->payload : null;
 
         return is_array($payload)

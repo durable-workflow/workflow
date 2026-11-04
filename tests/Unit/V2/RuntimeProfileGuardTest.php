@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\DataProvider;
-use Tests\TestCase;
+use Tests\SchemaTestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Exceptions\RuntimeProfileRefusal;
@@ -17,7 +17,7 @@ use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\RuntimeProfileGuard;
 
-final class RuntimeProfileGuardTest extends TestCase
+final class RuntimeProfileGuardTest extends SchemaTestCase
 {
     public function testLegacyNullCanBeReadAndUpdatedWithoutExposingTheField(): void
     {
@@ -29,6 +29,18 @@ final class RuntimeProfileGuardTest extends TestCase
             'last_command_sequence' => 3,
         ])->save();
         $this->assertSame(3, $run->fresh()->last_command_sequence);
+    }
+
+    public function testLegacyScalarReadsAndOrdinaryMetadataUpdatesKeepTheirIdentity(): void
+    {
+        $run = $this->legacyRun();
+        $this->assertSame('profile-tests', WorkflowRun::query()->whereKey($run->id)->value('namespace'));
+        $this->assertSame($run->id, WorkflowRun::query()->whereKey($run->id)->soleValue('id'));
+        $this->assertSame('profile-tests', WorkflowRun::query()->whereKey($run->id)->valueOrFail('namespace'));
+        $run->forceFill([
+            'namespace' => 'updated-profile-tests',
+        ])->save();
+        $this->assertSame('updated-profile-tests', $run->fresh()->namespace);
     }
 
     #[DataProvider('profileValues')]

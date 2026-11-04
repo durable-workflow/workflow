@@ -41,13 +41,12 @@ final class ActivityOutcomeRecorder
         ?string $codec = null,
         ?int $admissionDeadline = null,
     ): array {
-        RuntimeProfileGuard::assertActivityAttempt($attemptId);
-        RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
-
         $sqlite = (new ActivityAttempt())->getConnection()
             ->getDriverName() === 'sqlite';
         $attemptedOutcome = $throwable === null ? 'completed' : 'failed';
         if (! $sqlite) {
+            RuntimeProfileGuard::assertActivityAttempt($attemptId);
+            RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
             $refused = self::refusedExpiredAttempt(
                 $taskId,
                 $attemptId,
@@ -73,6 +72,8 @@ final class ActivityOutcomeRecorder
             $attemptedOutcome,
             $admissionDeadline,
         ): array {
+            RuntimeProfileGuard::assertActivityAttempt($attemptId);
+            RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
             // Even an unlocked SQLite read can wait behind an exclusive writer.
             // Keep the refusal metadata behind the original bounded admission.
             if ($sqlite) {

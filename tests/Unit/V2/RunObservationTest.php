@@ -79,7 +79,8 @@ final class RunObservationTest extends TestCase
             'history' => 1,
             'runs' => 1,
         ], $retrieved);
-        $this->assertCount(17, $queries);
+        // The selected current run gets one authoritative profile check.
+        $this->assertCount(18, $queries);
         foreach ($queries as $query) {
             $this->assertStringStartsWith('select ', strtolower($query['query']));
         }

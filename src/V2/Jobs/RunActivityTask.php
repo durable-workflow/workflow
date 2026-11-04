@@ -50,14 +50,6 @@ final class RunActivityTask implements ShouldQueue
 
     public function handle(): void
     {
-        if (! RuntimeProfileGuard::taskExistsAndIsSupported($this->taskId)) {
-            return;
-        }
-        WorkerCompatibilityFleet::heartbeat(
-            is_string($this->connection ?? null) ? $this->connection : null,
-            is_string($this->queue ?? null) ? $this->queue : null,
-        );
-
         [$claim, $releaseIn] = $this->claimTask();
 
         if ($releaseIn !== null) {
@@ -202,6 +194,15 @@ final class RunActivityTask implements ShouldQueue
      */
     private function claimTask(): array
     {
-        return ActivityTaskClaimer::claim($this->taskId, $this->taskId, releaseFutureTasks: true);
+        return \Workflow\V2\Support\SqliteTransaction::forTask($this->taskId, function (): array {
+            if (! RuntimeProfileGuard::taskExistsAndIsSupported($this->taskId)) {
+                return [null, null];
+            }
+            WorkerCompatibilityFleet::heartbeat(
+                is_string($this->connection ?? null) ? $this->connection : null,
+                is_string($this->queue ?? null) ? $this->queue : null,
+            );
+            return ActivityTaskClaimer::claim($this->taskId, $this->taskId, releaseFutureTasks: true);
+        });
     }
 }

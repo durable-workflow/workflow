@@ -10,6 +10,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\ServiceCallBindingKind;
 use Workflow\V2\Enums\ServiceCallOutcome;
 use Workflow\V2\Enums\ServiceCallStatus;
+use Workflow\V2\Exceptions\RuntimeProfileRefusal;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowServiceCall;
@@ -21,7 +22,17 @@ final class LinkedServiceCallCloser
 
     public static function reconcile(WorkflowServiceCall $call): void
     {
-        RuntimeProfileGuard::assertServiceCall((string) $call->getKey());
+        try {
+            RuntimeProfileGuard::assertServiceCall((string) $call->getKey());
+        } catch (RuntimeProfileRefusal $error) {
+            // Invalid legacy link ownership was already ignored by reconciliation.
+            // Profile validation precedes identity comparison, so an unsupported
+            // retained target still refuses and can never be hidden by this path.
+            if ($error->reason === 'runtime_profile_identity') {
+                return;
+            }
+            throw $error;
+        }
         if (in_array($call->status, ['pending', 'accepted', 'started'], true)) {
             ServiceCallDeadline::expire($call);
         }

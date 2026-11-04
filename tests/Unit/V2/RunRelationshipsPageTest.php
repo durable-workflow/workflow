@@ -65,7 +65,8 @@ final class RunRelationshipsPageTest extends TestCase
             'runs' => 50,
             'history' => 0,
         ], $retrieved);
-        $this->assertCount(3, $queries);
+        // One bounded writer check validates the entire related-run batch before observers.
+        $this->assertCount(4, $queries);
         foreach ($queries as $query) {
             $this->assertStringStartsWith('select ', strtolower($query['query']));
             $this->assertStringNotContainsString('workflow_history_events', $query['query']);

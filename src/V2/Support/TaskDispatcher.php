@@ -50,6 +50,9 @@ final class TaskDispatcher
         WorkflowTask $task,
         bool $boundedWorkflowTaskProjection = false,
     ): void {
+        if (! RuntimeProfileGuard::taskIsSupported($task)) {
+            return;
+        }
         if (! self::isPollMode() || WorkflowStub::faked()) {
             throw new \LogicException('Atomic poll repair cannot publish physical or inline work.');
         }

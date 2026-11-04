@@ -72,7 +72,7 @@ final class WorkflowExecutor
         WorkflowTask $task,
         ?WorkflowContinuationSession $continuation = null,
     ): ?WorkflowTask {
-        RuntimeProfileGuard::assertRun($run);
+        RuntimeProfileGuard::assertTaskRun($task, $run);
         $sample = WorkflowExecutionProfile::begin('executor');
         try {
             return $this->runTask($run, $task, $continuation);

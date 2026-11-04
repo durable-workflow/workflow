@@ -130,8 +130,7 @@ final class ServiceCallWorkflowDelivery
 
     public static function recordForClaim(WorkflowTask $task, WorkflowRun $run): void
     {
-        RuntimeProfileGuard::assertRun($run);
-        RuntimeProfileGuard::assertTask($task);
+        RuntimeProfileGuard::assertTaskRun($task, $run);
         $taskPayload = $task->payload ?? [];
         if (($taskPayload['service_call_terminal_pending'] ?? null) !== true
             || ($taskPayload['resume_source_kind'] ?? null) !== 'service_call') {

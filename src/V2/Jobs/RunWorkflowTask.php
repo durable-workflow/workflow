@@ -53,14 +53,6 @@ final class RunWorkflowTask implements ShouldQueue
 
     public function handle(WorkflowExecutor $executor): void
     {
-        if (! RuntimeProfileGuard::taskExistsAndIsSupported($this->taskId)) {
-            return;
-        }
-        WorkerCompatibilityFleet::heartbeat(
-            is_string($this->connection ?? null) ? $this->connection : null,
-            is_string($this->queue ?? null) ? $this->queue : null,
-        );
-
         [$task, $deferredTask, $claimedAttempt] = $this->claimTask();
 
         if ($deferredTask instanceof WorkflowTask) {
@@ -194,6 +186,13 @@ final class RunWorkflowTask implements ShouldQueue
     private function claimTask(): array
     {
         return SqliteTransaction::forTask($this->taskId, function (): array {
+            if (! RuntimeProfileGuard::taskExistsAndIsSupported($this->taskId)) {
+                return [null, null, 0];
+            }
+            WorkerCompatibilityFleet::heartbeat(
+                is_string($this->connection ?? null) ? $this->connection : null,
+                is_string($this->queue ?? null) ? $this->queue : null,
+            );
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()

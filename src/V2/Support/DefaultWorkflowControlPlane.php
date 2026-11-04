@@ -40,8 +40,6 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
     public function redrive(string $instanceId, string $failedRunId, array $options = []): array
     {
         RuntimeProfileGuard::assertNoProfileInput($options);
-        RuntimeProfileGuard::assertStorage();
-        RuntimeProfileGuard::assertScope(instanceId: $instanceId);
 
         $namespace = $this->namespaceOption($options);
         $requestId = is_string($options['request_id'] ?? null) && $options['request_id'] !== ''
@@ -65,6 +63,9 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
 
             return $result;
         }
+
+        RuntimeProfileGuard::assertStorage();
+        RuntimeProfileGuard::assertScope(instanceId: $instanceId);
 
         ConfiguredV2Models::connection()->transaction(function () use (
             $instanceId,

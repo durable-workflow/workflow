@@ -42,6 +42,7 @@ final class FailedRunRedriveDefinitionCheck
         array $startedPayload,
         array $plan,
     ): ?array {
+        RuntimeProfileGuard::assertRun($source);
         $resumeStep = (int) $plan['resume_step_sequence'];
         unset($startedPayload['definition_changed_from']);
         $started = array_merge($startedPayload, [
@@ -63,7 +64,8 @@ final class FailedRunRedriveDefinitionCheck
             return self::refusal('definition_check_over_budget');
         }
 
-        $candidate = $source->replicate();
+        $candidate = new OfflineHistoryRun();
+        $candidate->setRawAttributes($source->replicate()->getAttributes());
         $candidate->forceFill([
             'id' => (string) Str::ulid(),
             'workflow_class' => $workflowClass,

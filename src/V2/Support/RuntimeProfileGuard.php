@@ -16,6 +16,59 @@ use Workflow\V2\Models\WorkflowTask;
 /** @internal Phase G supports legacy NULL only. No configuration can widen it. */
 final class RuntimeProfileGuard
 {
+    /**
+     * @var list<array{model: WorkflowRun, attributes: array<string, array<string, mixed>>}>
+     */
+    private static array $hydration = [];
+
+    /**
+     * Verify a complete Eloquent batch before any retrieved observer runs.
+     * This lexical proof is never used by a durable actor and is always removed.
+     *
+     * @template T
+     * @param list<object> $items
+     * @param callable(): T $hydrate
+     * @return T
+     */
+    public static function hydrateBatch(WorkflowRun $model, array $items, callable $hydrate): mixed
+    {
+        $key = $model->getKeyName();
+        $attributes = [];
+        foreach ($items as $item) {
+            $row = (array) $item;
+            self::assertLegacySnapshot($row);
+            $id = $row[$key] ?? null;
+            if (! is_string($id) || $id === '') {
+                throw new RuntimeProfileRefusal('runtime_profile_identity');
+            }
+            $attributes[$id] = $row;
+        }
+        foreach (array_chunk(array_map('strval', array_keys($attributes)), 500) as $ids) {
+            try {
+                $rows = $model->getConnection()
+                    ->table($model->getTable())
+                    ->useWritePdo()
+                    ->whereIn($key, $ids)
+                    ->get(self::profileColumns($model->getConnection(), $model->getTable(), $key))
+                    ->keyBy($key);
+            } catch (Throwable $error) {
+                throw new RuntimeProfileRefusal('runtime_profile_storage', $error);
+            }
+            foreach ($ids as $id) {
+                self::assertStoredRow($rows->get($id), $key, $id, $attributes[$id]);
+            }
+        }
+        self::$hydration[] = [
+            'model' => $model,
+            'attributes' => $attributes,
+        ];
+        try {
+            return $hydrate();
+        } finally {
+            array_pop(self::$hydration);
+        }
+    }
+
     public static function assertStorage(): void
     {
         $run = self::runModel();
@@ -109,10 +162,25 @@ final class RuntimeProfileGuard
      */
     public static function assertHydrated(WorkflowRun $run): void
     {
-        self::assertStorageModel($run);
-        // Hydration may come from a projected/stale read connection. Verify the
-        // canonical writer row before any application retrieved callback.
-        self::assertRun($run);
+        $attributes = $run->getAttributes();
+        self::assertLegacySnapshot($attributes);
+        $key = $run->getKeyName();
+        $id = $attributes[$key] ?? null;
+        if (! is_string($id) || $id === '') {
+            throw new RuntimeProfileRefusal('runtime_profile_identity');
+        }
+        foreach (array_reverse(self::$hydration) as $proof) {
+            if ($proof['model']->getConnection() === $run->getConnection()
+                && $proof['model']->getTable() === $run->getTable()
+                && $proof['model']->getKeyName() === $key
+                && ($proof['attributes'][$id] ?? null) === $attributes) {
+                return;
+            }
+        }
+        // Hydration binds the connection/table used by this explicit read,
+        // including supported relationship-local storage. Durable actors still
+        // require the configured authority through assertRun/assertTask.
+        self::assertStored($run->getConnection(), $run->getTable(), $key, $id, $attributes);
     }
 
     public static function assertRun(WorkflowRun $run): void
@@ -126,6 +194,21 @@ final class RuntimeProfileGuard
             throw new RuntimeProfileRefusal('runtime_profile_identity');
         }
         self::assertStored($model->getConnection(), $model->getTable(), $model->getKeyName(), $id, $attributes);
+    }
+
+    /**
+     * Validate the persisted owner before an ordinary legacy metadata update.
+     */
+    public static function assertRunForUpdate(WorkflowRun $run): void
+    {
+        $model = self::assertStorageModel($run);
+        $original = $run->getRawOriginal();
+        $key = $run->getKeyName();
+        $id = $original[$key] ?? null;
+        if (! is_string($id) || $id === '') {
+            throw new RuntimeProfileRefusal('runtime_profile_identity');
+        }
+        self::assertStored($model->getConnection(), $model->getTable(), $key, $id, $original);
     }
 
     /**
@@ -269,6 +352,22 @@ final class RuntimeProfileGuard
         }
     }
 
+    public static function assertTaskRun(WorkflowTask $task, WorkflowRun $run): void
+    {
+        self::assertRun($run);
+        self::assertTask($task);
+        $taskClass = ConfiguredV2Models::resolve('task_model', WorkflowTask::class);
+        $model = new $taskClass();
+        $storedRunId = $model->getConnection()
+            ->table($model->getTable())
+            ->useWritePdo()
+            ->where($model->getKeyName(), $task->getKey())
+            ->value('workflow_run_id');
+        if ($storedRunId !== $run->getKey()) {
+            throw new RuntimeProfileRefusal('runtime_profile_identity');
+        }
+    }
+
     public static function assertTask(WorkflowTask $task): void
     {
         if (! self::taskIsSupported($task)) {
@@ -339,6 +438,9 @@ final class RuntimeProfileGuard
 
     private static function assertStorageModel(WorkflowRun $run): WorkflowRun
     {
+        if ($run instanceof OfflineHistoryRun) {
+            throw new RuntimeProfileRefusal('runtime_profile_identity');
+        }
         $model = self::runModel();
         if ($run->getTable() !== $model->getTable()
             || $run->getConnection() !== $model->getConnection()) {
@@ -346,6 +448,27 @@ final class RuntimeProfileGuard
         }
 
         return $model;
+    }
+
+    /**
+     * @return list<string|\Illuminate\Contracts\Database\Query\Expression>
+     */
+    private static function profileColumns(Connection $connection, string $table, string $key): array
+    {
+        // SQLite treats an unqualified double-quoted missing column as a
+        // string literal. Qualify it so absent schema is a storage failure.
+        $column = $connection->getQueryGrammar()
+            ->wrapTable($table) . '.'
+            . $connection->getQueryGrammar()->wrap('runtime_profile');
+        [$length, $prefix] = match ($connection->getDriverName()) {
+            'sqlite' => ["length(CAST({$column} AS BLOB))", "substr(CAST({$column} AS BLOB), 1, 65)"],
+            'mysql', 'mariadb' => ["OCTET_LENGTH({$column})", "SUBSTRING(CAST({$column} AS BINARY), 1, 65)"],
+            'pgsql' => ["octet_length({$column})", "substring(convert_to({$column}, 'UTF8') from 1 for 65)"],
+            default => throw new RuntimeProfileRefusal('runtime_profile_storage'),
+        };
+        return [$key, 'workflow_instance_id', 'namespace',
+            $connection->raw("{$length} AS runtime_profile_bytes"),
+            $connection->raw("{$prefix} AS runtime_profile_value")];
     }
 
     /**
@@ -358,44 +481,35 @@ final class RuntimeProfileGuard
         string $id,
         array $expected,
     ): void {
-        // SQLite treats an unqualified double-quoted missing column as a
-        // string literal. Qualify it so absent schema is a storage failure.
-        $column = $connection->getQueryGrammar()
-            ->wrapTable($table) . '.'
-            . $connection->getQueryGrammar()->wrap('runtime_profile');
-        [$length, $prefix] = match ($connection->getDriverName()) {
-            'sqlite' => ["length(CAST({$column} AS BLOB))", "substr(CAST({$column} AS BLOB), 1, 65)"],
-            'mysql', 'mariadb' => ["OCTET_LENGTH({$column})", "SUBSTRING(CAST({$column} AS BINARY), 1, 65)"],
-            'pgsql' => ["octet_length({$column})", "substring(convert_to({$column}, 'UTF8') from 1 for 65)"],
-            default => throw new RuntimeProfileRefusal('runtime_profile_storage'),
-        };
         try {
             $row = $connection->table($table)
                 ->useWritePdo()
                 ->where($key, $id)
-                ->first([
-                    $key,
-                    'workflow_instance_id',
-                    'namespace',
-                    $connection->raw("{$length} AS runtime_profile_bytes"),
-                    $connection->raw("{$prefix} AS runtime_profile_value"),
-                ]);
+                ->first(self::profileColumns($connection, $table, $key));
         } catch (Throwable $error) {
             throw new RuntimeProfileRefusal('runtime_profile_storage', $error);
         }
+        self::assertStoredRow($row, $key, $id, $expected);
+    }
+
+    /**
+     * @param array<string, mixed> $expected
+     */
+    private static function assertStoredRow(?object $row, string $key, string $id, array $expected): void
+    {
         if ($row === null || (string) $row->{$key} !== $id) {
             throw new RuntimeProfileRefusal('runtime_profile_identity');
-        }
-        foreach (['workflow_instance_id', 'namespace'] as $field) {
-            if (array_key_exists($field, $expected) && $expected[$field] !== $row->{$field}) {
-                throw new RuntimeProfileRefusal('runtime_profile_identity');
-            }
         }
         $value = $row->runtime_profile_value;
         if (is_resource($value)) {
             $value = stream_get_contents($value, 65);
         }
         self::assertValue($value, $row->runtime_profile_bytes);
+        foreach (['workflow_instance_id', 'namespace'] as $field) {
+            if (array_key_exists($field, $expected) && $expected[$field] !== $row->{$field}) {
+                throw new RuntimeProfileRefusal('runtime_profile_identity');
+            }
+        }
     }
 
     private static function assertValue(mixed $value, mixed $bytes): void

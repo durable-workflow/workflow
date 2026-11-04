@@ -271,9 +271,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
 
     public function claimStatus(string $taskId, ?string $leaseOwner = null): array
     {
-        RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
-
         return ConfiguredV2Models::connection()->transaction(static function () use ($taskId, $leaseOwner): array {
+            RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()
@@ -379,8 +378,6 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
 
     public function claim(string $taskId, ?string $leaseOwner = null): ?array
     {
-        RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
-
         $result = $this->claimStatus($taskId, $leaseOwner);
 
         if ($result['claimed'] !== true) {

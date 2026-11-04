@@ -44,8 +44,7 @@ final class WorkflowContinuationSession
      */
     public function begin(WorkflowRun $run, WorkflowTask $task, string $class): ?WorkflowContinuation
     {
-        RuntimeProfileGuard::assertRun($run);
-        RuntimeProfileGuard::assertTask($task);
+        RuntimeProfileGuard::assertTaskRun($task, $run);
         $this->observe($run);
         $tracing = ExecutionTracing::enabled();
         if ($tracing) {
@@ -91,8 +90,7 @@ final class WorkflowContinuationSession
 
     public function hasAuthority(WorkflowRun $run, WorkflowTask $task): bool
     {
-        RuntimeProfileGuard::assertRun($run);
-        RuntimeProfileGuard::assertTask($task);
+        RuntimeProfileGuard::assertTaskRun($task, $run);
         $this->observe($run);
         return $task->workflow_run_id === $run->id && $task->namespace === $run->namespace
             && $task->status === TaskStatus::Leased && $task->lease_owner === $task->id

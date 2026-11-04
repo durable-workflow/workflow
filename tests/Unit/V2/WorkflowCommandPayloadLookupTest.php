@@ -88,7 +88,8 @@ final class WorkflowCommandPayloadLookupTest extends TestCase
             'name' => ['Required.'],
         ], $command->validationErrors());
         $this->assertSame(['payload-team', 'payload-team'], $policy->namespaces);
-        $this->assertCount(2, DB::getQueryLog());
+        // Each external namespace lookup also validates the writer profile.
+        $this->assertCount(4, DB::getQueryLog());
     }
 
     public function testAbsentPayloadDoesNotQueryTheRun(): void
@@ -122,7 +123,8 @@ final class WorkflowCommandPayloadLookupTest extends TestCase
 
         $this->assertSame([7, 'value'], $configured->payloadArguments());
         $this->assertSame([7, 'value'], $casted->payloadArguments());
-        $this->assertCount(2, DB::getQueryLog());
+        // Each external namespace lookup also validates the writer profile.
+        $this->assertCount(4, DB::getQueryLog());
     }
 
     protected function getPackageProviders($app): array
@@ -148,6 +150,10 @@ final class WorkflowCommandPayloadLookupTest extends TestCase
             $table->string('id')
                 ->primary();
             $table->string('namespace');
+            $table->string('workflow_instance_id')
+                ->nullable();
+            $table->string('runtime_profile', 64)
+                ->nullable();
         });
         DB::table('workflow_runs')->insert([
             'id' => 'payload-run',
