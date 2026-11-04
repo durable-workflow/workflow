@@ -72,6 +72,31 @@ Waterline projections, and the explicit v2.0 support boundaries. This
 stability document freezes the
 public API and event payload rules those mapped features rely on.
 
+## Schedule system-field visibility queries
+
+`Workflow\V2\Support\ScheduleVisibilityQuery` supplies the schedule-only
+equality/AND parser and a fresh namespace-bound Eloquent query. `parse($query)`
+returns typed field/column/literal predicates. `query($namespace, $query)`
+applies them to non-deleted schedules before callers count, order or paginate.
+The namespace is a separate required argument and cannot be selected through
+query text. Literal values remain SQL bindings.
+
+The supported fields are `ScheduleId`, `Status`, `WorkflowType`, `TaskQueue`
+and `Note`. Use quoted strings; status is `active` or `paused`. Single-quoted
+strings support escaped quotes/backslashes; double-quoted strings use JSON
+escaping. Whitespace-delimited `AND` is case-insensitive outside strings.
+Queries are limited to 2048 UTF-8 characters. Unsupported fields/operators,
+invalid types, malformed strings and unavailable attribute queries throw
+`ScheduleVisibilityQueryException` with a typed `reason`. They never become
+unfiltered or fabricated empty results.
+
+This helper does not implement workflow-run DQL, registered attribute queries,
+list counters or a continuation-token protocol. Embedded callers retain their
+existing pagination; a Server schedule cursor has its own namespace/filter
+identity contract. Portable system-field vectors live under
+`tests/Fixtures/ScheduleVisibilityQuery/`. Consumers must check that the helper
+is present in their actual installed package before enabling query controls.
+
 ## Scope
 
 The workflow package is consumed by three distinct audiences:

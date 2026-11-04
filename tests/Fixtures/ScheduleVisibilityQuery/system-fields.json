@@ -1,0 +1,205 @@
+{
+  "schema": "durable-workflow.schedule-visibility-system/v1",
+  "native_reference": "durable-workflow/server@c5777c475f8157ba92bd49789a0bc62ab653fb78:rust/src/runtime/schedule_list.rs",
+  "cases": [
+    {
+      "name": "workflow_type",
+      "query": "WorkflowType = \"orders\"",
+      "predicates": [
+        {
+          "field": "WorkflowType",
+          "column": "action->workflow_type",
+          "type": "keyword",
+          "literal": "orders"
+        }
+      ]
+    },
+    {
+      "name": "status_and_queue",
+      "query": "Status = 'paused' AND TaskQueue = 'slow'",
+      "predicates": [
+        {
+          "field": "Status",
+          "column": "status",
+          "type": "schedule_status",
+          "literal": "paused"
+        },
+        {
+          "field": "TaskQueue",
+          "column": "action->task_queue",
+          "type": "keyword",
+          "literal": "slow"
+        }
+      ]
+    },
+    {
+      "name": "quoted_keywords",
+      "query": "Note = 'x AND y OR z != IN'",
+      "predicates": [
+        {
+          "field": "Note",
+          "column": "note",
+          "type": "text",
+          "literal": "x AND y OR z != IN"
+        }
+      ]
+    },
+    {
+      "name": "escaped_quote",
+      "query": "ScheduleId = 'a\\'b' and Note = 'path\\\\file'",
+      "predicates": [
+        {
+          "field": "ScheduleId",
+          "column": "schedule_id",
+          "type": "keyword",
+          "literal": "a'b"
+        },
+        {
+          "field": "Note",
+          "column": "note",
+          "type": "text",
+          "literal": "path\\file"
+        }
+      ]
+    },
+    {
+      "name": "unicode",
+      "query": "Note = \"注文\"",
+      "predicates": [
+        {
+          "field": "Note",
+          "column": "note",
+          "type": "text",
+          "literal": "注文"
+        }
+      ]
+    },
+    {
+      "name": "json_escape",
+      "query": "Note = \"line\\nquote\\\"\"",
+      "predicates": [
+        {
+          "field": "Note",
+          "column": "note",
+          "type": "text",
+          "literal": "line\nquote\""
+        }
+      ]
+    },
+    {
+      "name": "empty_string",
+      "query": "Note = ''",
+      "predicates": [
+        {
+          "field": "Note",
+          "column": "note",
+          "type": "text",
+          "literal": ""
+        }
+      ]
+    },
+    {
+      "name": "whitespace",
+      "query": "\nStatus = 'active'\tAnD\nWorkflowType='orders' ",
+      "predicates": [
+        {
+          "field": "Status",
+          "column": "status",
+          "type": "schedule_status",
+          "literal": "active"
+        },
+        {
+          "field": "WorkflowType",
+          "column": "action->workflow_type",
+          "type": "keyword",
+          "literal": "orders"
+        }
+      ]
+    },
+    {
+      "name": "not_equal",
+      "query": "Status != 'active'",
+      "reason": "unsupported_schedule_visibility_predicate"
+    },
+    {
+      "name": "or",
+      "query": "Status='active' OR Note='x'",
+      "reason": "unsupported_schedule_visibility_predicate"
+    },
+    {
+      "name": "in",
+      "query": "Status IN ('active')",
+      "reason": "unsupported_schedule_visibility_predicate"
+    },
+    {
+      "name": "not",
+      "query": "NOT Status='active'",
+      "reason": "unsupported_schedule_visibility_predicate"
+    },
+    {
+      "name": "attribute",
+      "query": "Team='gold'",
+      "reason": "unsupported_schedule_visibility_field"
+    },
+    {
+      "name": "wrong_case",
+      "query": "workflowtype='orders'",
+      "reason": "unsupported_schedule_visibility_field"
+    },
+    {
+      "name": "namespace_field",
+      "query": "Namespace='other'",
+      "reason": "unsupported_schedule_visibility_field"
+    },
+    {
+      "name": "bad_status",
+      "query": "Status='deleted'",
+      "reason": "invalid_schedule_visibility_query"
+    },
+    {
+      "name": "wrong_type",
+      "query": "WorkflowType=5",
+      "reason": "invalid_schedule_visibility_query"
+    },
+    {
+      "name": "overflow_integer",
+      "query": "Note=9223372036854775808",
+      "reason": "invalid_schedule_visibility_query"
+    },
+    {
+      "name": "nonfinite_decimal",
+      "query": "Note=9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999.0",
+      "reason": "invalid_schedule_visibility_query"
+    },
+    {
+      "name": "null",
+      "query": "Note=null",
+      "reason": "invalid_schedule_visibility_query"
+    },
+    {
+      "name": "grouping",
+      "query": "(Status='active')",
+      "reason": "invalid_schedule_visibility_query"
+    },
+    {
+      "name": "unterminated",
+      "query": "Note='open",
+      "reason": "invalid_schedule_visibility_query"
+    },
+    {
+      "name": "trailing_and",
+      "query": "Note='x' AND",
+      "reason": "invalid_schedule_visibility_query"
+    },
+    {
+      "name": "empty",
+      "query": "  ",
+      "reason": "invalid_schedule_visibility_query"
+    },
+    {
+      "name": "operator_injection",
+      "query": "Note='x' OR ScheduleId='secret'",
+      "reason": "unsupported_schedule_visibility_predicate"
+    }
+  ]
+}
