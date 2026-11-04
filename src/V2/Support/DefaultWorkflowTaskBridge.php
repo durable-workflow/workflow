@@ -993,8 +993,6 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         bool $shieldParent = false,
         string $protocolVersion = WorkerProtocolVersion::VERSION,
     ): array {
-        RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
-
         return PortableCancellationScopeOpening::open(
             $taskId,
             $leaseOwner,

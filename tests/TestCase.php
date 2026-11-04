@@ -10,8 +10,10 @@ use Illuminate\Console\OutputStyle;
 use Illuminate\Database\Schema\Builder as SchemaBuilder;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Testing\DatabaseTruncation;
+use Illuminate\Foundation\Testing\RefreshDatabaseState;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
@@ -199,6 +201,41 @@ abstract class TestCase extends BaseTestCase
         // migrations. Remove that per-command binding so application commands
         // invoked by a test can write to the output buffer supplied by Artisan.
         $this->app->offsetUnset(OutputStyle::class);
+    }
+
+    protected function beforeTruncatingDatabase(): void
+    {
+        if (! RefreshDatabaseState::$migrated) {
+            $this->preparePostgresTestSchemaReset();
+        }
+    }
+
+    protected function preparePostgresTestSchemaReset(): void
+    {
+        $connection = DB::connection();
+        if ($connection->getDriverName() !== 'pgsql') {
+            return;
+        }
+        $functions = array_filter($connection->select(
+            'SELECT n.nspname, p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = current_schema() AND p.pronargs = 0',
+            [],
+            false,
+        ), static fn ($function): bool => preg_match(
+            '/\Awf_runtime_profile_[a-f0-9]{20}(?:_insert|_delete)?\z/D',
+            $function->proname,
+        ) === 1);
+        if ($functions === []) {
+            return;
+        }
+        // This explicit disposable reset first drops tables and their triggers.
+        // Production up() still refuses any detached pre-existing function.
+        $connection->getSchemaBuilder()
+            ->dropAllTables();
+        $grammar = $connection->getQueryGrammar();
+        foreach ($functions as $function) {
+            $connection->unprepared('DROP FUNCTION ' . $grammar->wrap($function->nspname)
+                . '.' . $grammar->wrap($function->proname) . '()');
+        }
     }
 
     protected function useSqliteWalJournal(): void

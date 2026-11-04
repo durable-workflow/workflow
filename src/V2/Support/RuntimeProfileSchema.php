@@ -24,6 +24,9 @@ final class RuntimeProfileSchema
             }
             self::primaryKey($connection, $table);
             self::assertColumn($connection, $table, allowMissing: true);
+            if ($connection->getSchemaBuilder()->hasColumn($table, 'runtime_profile')) {
+                self::assertStoredByteBound($connection, $table);
+            }
             self::hasIndex($connection, $table);
             $present = array_map(
                 static fn (string $operation): bool => self::hasImmutability($connection, $table, $operation),
@@ -58,6 +61,9 @@ final class RuntimeProfileSchema
                     $connection->unprepared(self::triggerSql($connection, $table, $operation));
                 }
             }
+            // Recheck after the INSERT and immutable UPDATE guards cover new
+            // writes. A failed/partial installation is not an adopted floor.
+            self::assertStoredByteBound($connection, $table);
         }
     }
 
@@ -129,6 +135,26 @@ final class RuntimeProfileSchema
                     $blueprint->dropColumn('runtime_profile');
                 });
         });
+    }
+
+    private static function byteLength(Connection $connection, string $column): string
+    {
+        return match ($connection->getDriverName()) {
+            'sqlite' => "length(CAST({$column} AS BLOB))",
+            'mysql', 'mariadb' => "OCTET_LENGTH({$column})",
+            'pgsql' => "octet_length({$column})",
+            default => throw new RuntimeProfileRefusal('runtime_profile_storage'),
+        };
+    }
+
+    private static function assertStoredByteBound(Connection $connection, string $table): void
+    {
+        $column = $connection->getQueryGrammar()
+            ->wrap('runtime_profile');
+        if ($connection->table($table)->useWritePdo()
+            ->whereRaw(self::byteLength($connection, $column) . ' > 64')->exists()) {
+            throw new RuntimeProfileRefusal('runtime_profile_storage');
+        }
     }
 
     /**
@@ -236,8 +262,16 @@ final class RuntimeProfileSchema
                 [$schema, $name, 'runtime_profile'],
                 false
             );
+            // MariaDB represents DEFAULT NULL as the unquoted string NULL in
+            // this catalog. Its literal 'NULL' default retains the quotes.
+            $maria = $driver === 'mariadb' || str_contains(
+                (string) $connection->getPdo()
+                    ->getAttribute(\PDO::ATTR_SERVER_VERSION),
+                'MariaDB',
+            );
             $valid = $column !== null && $column->type === 'varchar(64)' && $column->nullable === 'YES'
-                && $column->default_value === null && $column->extra === '';
+                && ($column->default_value === null || ($maria && $column->default_value === 'NULL'))
+                && $column->extra === '';
         } elseif ($driver === 'pgsql') {
             $column = $connection->selectOne(
                 'SELECT data_type, character_maximum_length AS length, is_nullable AS nullable, column_default AS default_value, is_generated AS generated FROM information_schema.columns WHERE table_schema = ? AND table_name = ? AND column_name = ?',
@@ -338,6 +372,7 @@ final class RuntimeProfileSchema
                 $condition = 'EXISTS (SELECT 1 FROM ' . $connection->getQueryGrammar()->wrapTable($table)
                     . ' WHERE ' . $key . ' = NEW.' . $key
                     . ' AND (' . $profile . ' IS NOT NULL OR NEW.' . $profile . ' IS NOT NULL))';
+                $condition = '(' . self::byteLength($connection, 'NEW.' . $profile) . ' > 64) OR ' . $condition;
             } else {
                 throw new RuntimeProfileRefusal('runtime_profile_storage');
             }

@@ -42,6 +42,9 @@ final class PortableCancellationScopeOpening
             || strlen($parentScopeId) > 255 || preg_match('//u', $parentScopeId) !== 1) {
             return $refused('invalid_cancellation_scope_open');
         }
+        // Preserve this actor's typed legacy namespace refusal, while checking
+        // the actual profile before any model observer can see the task.
+        RuntimeProfileGuard::taskExistsAndIsSupported($taskId, bindNamespace: false);
         /** @var WorkflowTask|null $snapshot */
         $snapshot = ConfiguredV2Models::query('task_model', WorkflowTask::class)->find($taskId);
         if ($snapshot === null) {

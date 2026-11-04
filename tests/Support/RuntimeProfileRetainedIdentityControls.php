@@ -5,15 +5,70 @@ declare(strict_types=1);
 namespace Tests\Support;
 
 use Illuminate\Database\QueryException;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Workflow\V2\Exceptions\RuntimeProfileRefusal;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Support\RuntimeProfileSchema;
 
 /** Shared native controls run in both SQLite unit and service-DB feature jobs. */
 trait RuntimeProfileRetainedIdentityControls
 {
+    public function testProfileByteBoundaryRefusesNewOversizedRowsWithoutEffects(): void
+    {
+        $this->identityRow(null);
+        $this->identityRow(str_repeat('x', 64));
+        foreach ([str_repeat('x', 65), str_repeat('é', 33)] as $profile) {
+            $before = $this->durableRows();
+            try {
+                $this->identityRow($profile);
+                $this->fail('A fresh row must not bypass the stored byte boundary.');
+            } catch (QueryException) {
+                $this->assertSame($before, $this->durableRows());
+            }
+        }
+    }
+
+    public function testOversizedPreexistingProfileRefusesAdoptionBeforeAnyDdl(): void
+    {
+        DB::getSchemaBuilder()->create('profile_adoption_runs', static function (Blueprint $table): void {
+            $table->string('id')
+                ->primary();
+            $table->string('workflow_instance_id');
+            $table->string('namespace')
+                ->nullable();
+            $table->string('runtime_profile', 64)
+                ->nullable();
+        });
+        DB::table('profile_adoption_runs')->insert([
+            'id' => 'oversized-adoption',
+            'workflow_instance_id' => 'owner',
+            'namespace' => null,
+            'runtime_profile' => str_repeat('é', 33),
+        ]);
+        config()
+            ->set('workflows.v2.run_model', RuntimeProfileAdoptionRun::class);
+        $before = $this->durableRows();
+        $ddl = [];
+        DB::listen(static function ($event) use (&$ddl): void {
+            if (preg_match('/\A\s*(?:create|alter|drop|rename|truncate)\b/i', $event->sql)) {
+                $ddl[] = $event->sql;
+            }
+        });
+        try {
+            RuntimeProfileSchema::up(null);
+            $this->fail('An existing oversized value cannot be adopted as a bounded floor.');
+        } catch (RuntimeProfileRefusal $error) {
+            $this->assertSame('runtime_profile_storage', $error->reason);
+            $this->assertSame([], $ddl);
+            $this->assertSame($before, $this->durableRows());
+        } finally {
+            config()->set('workflows.v2.run_model', WorkflowRun::class);
+        }
+    }
+
     #[DataProvider('retainedProfileConflicts')]
     public function testRetainedIdentityRefusesBackendConflictForms(
         ?string $old,
@@ -167,4 +222,9 @@ trait RuntimeProfileRetainedIdentityControls
         ksort($rows);
         return $rows;
     }
+}
+
+final class RuntimeProfileAdoptionRun extends WorkflowRun
+{
+    protected $table = 'profile_adoption_runs';
 }

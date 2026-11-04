@@ -91,6 +91,13 @@ final class RuntimeProfileStorageBackendTest extends SchemaTestCase
                     ->nullable()
                     ->change();
             });
+        } elseif (in_array($kind, ['default', 'literal-null default'], true)) {
+            DB::getSchemaBuilder()->table('workflow_runs', static function (Blueprint $table) use ($kind): void {
+                $table->string('runtime_profile', 64)
+                    ->nullable()
+                    ->default($kind === 'default' ? 'future' : 'NULL')
+                    ->change();
+            });
         } elseif ($kind === 'function') {
             DB::unprepared('CREATE OR REPLACE FUNCTION ' . $quoted
                 . '() RETURNS trigger AS $$ BEGIN RETURN NEW; END; $$ LANGUAGE plpgsql');
@@ -131,8 +138,29 @@ final class RuntimeProfileStorageBackendTest extends SchemaTestCase
 
     public static function wrongObjectKinds(): iterable
     {
-        foreach (['trigger', 'table', 'index', 'column', 'function'] as $kind) {
+        foreach (['trigger', 'table', 'index', 'column', 'default', 'literal-null default', 'function'] as $kind) {
             yield $kind => [$kind];
+        }
+    }
+
+    public function testExplicitPostgresTestWipePreservesUnrelatedFunctions(): void
+    {
+        if (DB::connection()->getDriverName() !== 'pgsql') {
+            $this->markTestSkipped('PostgreSQL disposable test reset control.');
+        }
+        $before = $this->objectDefinitions();
+        DB::unprepared(
+            'CREATE FUNCTION workflow_guard_reset_sentinel() RETURNS integer AS $$ SELECT 1 $$ LANGUAGE SQL'
+        );
+        try {
+            $this->preparePostgresTestSchemaReset();
+            $this->artisan('migrate:fresh')
+                ->run();
+            RuntimeProfileSchema::up(null);
+            $this->assertEquals($before, $this->objectDefinitions());
+            $this->assertSame(1, (int) DB::scalar('SELECT workflow_guard_reset_sentinel()'));
+        } finally {
+            DB::unprepared('DROP FUNCTION workflow_guard_reset_sentinel()');
         }
     }
 
@@ -177,7 +205,10 @@ final class RuntimeProfileStorageBackendTest extends SchemaTestCase
             $this->markTestSkipped('SQLite proven file aliases have a separate positive control.');
         }
         config()
-            ->set('database.connections.profile_guard_alias', config('database.connections.' . config('database.default')));
+            ->set(
+                'database.connections.profile_guard_alias',
+                config('database.connections.' . config('database.default'))
+            );
         config()
             ->set('workflows.v2.run_model', RuntimeProfileAliasRun::class);
         $this->assertNotSame(DB::connection(), DB::connection('profile_guard_alias'));
@@ -261,7 +292,14 @@ final class RuntimeProfileStorageBackendTest extends SchemaTestCase
         yield 'schema qualified' => [true];
     }
 
-    public function testInvalidNamespaceCannotHideAProtectedProfileBeforeTaskObservers(): void
+    public static function scopeOperations(): iterable
+    {
+        yield 'opening' => [true];
+        yield 'delivery' => [false];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('scopeOperations')]
+    public function testInvalidNamespaceCannotHideAProtectedProfileBeforeTaskObservers(bool $opening): void
     {
         $run = $this->identityRow('future');
         $taskId = (string) \Illuminate\Support\Str::ulid();
@@ -279,20 +317,32 @@ final class RuntimeProfileStorageBackendTest extends SchemaTestCase
         });
         $before = $this->durableRows();
         try {
-            PortableCancellationScopeDelivery::mutate(
-                true,
-                $taskId,
-                'worker',
-                1,
-                'root',
-                'request',
-                1,
-                'activity',
-                1,
-                null,
-                1,
-                '1.20'
-            );
+            if ($opening) {
+                app(\Workflow\V2\Support\DefaultWorkflowTaskBridge::class)->openCancellationScope(
+                    $taskId,
+                    'worker',
+                    1,
+                    1,
+                    'root',
+                    false,
+                    '1.20'
+                );
+            } else {
+                PortableCancellationScopeDelivery::mutate(
+                    true,
+                    $taskId,
+                    'worker',
+                    1,
+                    'root',
+                    'request',
+                    1,
+                    'activity',
+                    1,
+                    null,
+                    1,
+                    '1.20'
+                );
+            }
             $this->fail('Invalid claim binding must not hide an unsupported profile.');
         } catch (RuntimeProfileRefusal $error) {
             $this->assertSame('runtime_profile_unsupported', $error->reason);
