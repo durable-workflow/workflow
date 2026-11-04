@@ -177,7 +177,8 @@ unavailable. No inline payload copy or message-row transport is added.
 
 ## Input bounds before traversal
 
-Let `H` be `StructuralLimits::DEFAULT_HISTORY_TRANSACTION_BYTES` (16 MiB).
+Let `H` be the proposed fixed security constant `HistoryBundleInput::MAX_BYTES`
+(16 MiB), independent of configurable transaction limits and their zero semantics.
 The receipt's `admitted_byte_limit` records `B`, the positive configured
 transaction-byte limit capped at `H`. The builder is additionally constrained
 by that transaction's remaining budget. Raising application limits cannot
@@ -216,6 +217,13 @@ checked arithmetic for totals, byte counts and integer-domain conversions.
 Depth, size, count, scalar length, encoding and overflow errors cannot invoke
 workflow code or cause database lookups. The JSON Schema carries the fixed
 worst-case bounds; the reader must also enforce the tighter `B`-derived limits.
+
+The current discriminator candidate is not sufficient for activation. The
+[guard-first compatibility plan](update-receive-activation-boundaries.md)
+requires a separately reviewed guard-only run profile and enforced minimum
+floor before any protected new-run producer. Unmodified 2.20.3 is not a safe
+rollback for protected runs. Its old unknown-event unit guard is retained as
+limited evidence, not a substitute for that floor.
 
 For version-3 raw bundles, require an `H` byte bound before full decode,
 canonicalization, signature checking or recursive semantic traversal. Large

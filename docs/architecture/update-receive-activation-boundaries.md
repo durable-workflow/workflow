@@ -7,7 +7,57 @@ implemented. The existing unknown-event proposal is insufficient by itself.
 The accepted portions of the [receive contract](update-message-receive-observations.md)
 remain unchanged. This document requests separate General/Security disposition.
 
-## Proposed first scope: newly admitted selected runs
+The [guard-first Security disposition](https://github.com/durable-workflow/workflow/pull/1030#issuecomment-6636758952)
+supersedes any one-step task-kind rollout. Security accepts the technical
+boundaries below; General's affirmative product/sequencing decision is pending.
+
+## Phase one: guard-only compatibility floor
+
+First propose a guard-only source phase with one engine-owned durable run
+discriminator: `workflow_runs.runtime_profile`, a nullable bounded ASCII scalar
+of at most 64 bytes. This storage choice is a **proposed schema contract**, not
+an implemented migration. Null means the existing legacy profile; empty,
+malformed and unknown non-null values must refuse rather than normalize to
+legacy. The guard-only engine supports no protected profile. No configurable
+wildcard, worker compatibility string or capture flag can override that refusal.
+
+Guard-only admission continues to create legacy runs with null profile. It
+does not accept a caller-supplied protected profile, register a protected task
+kind/event/job, or produce receive observations. Negative fixtures may seed
+future profiles directly to prove refusal. Existing runs are never converted.
+The discriminator must be read authoritatively with connection, namespace and
+instance/run binding; a stale model, omitted selected column or projection is
+not authority to infer null. It must remain available when every task row is
+missing. It is immutable after admission, and dropping it while non-null
+profiles exist must refuse before schema changes.
+
+The guard runs before any write or application invocation on all creation,
+dispatch, poll/claim, repair/watchdog, projection, query/replay, continuation,
+redrive and import paths. Include missing-task creation and failure/catch paths.
+The refusal must not become a task/run failure, repair attempt or projection
+update. Perform it before per-job heartbeat, tracing/application construction,
+service-delivery writes or continuation/cache observation when those are
+effects of the rejected operation. SQL candidate filters are an optimization;
+the authoritative no-write guard must also cover direct/manual operations.
+
+Prove the complete pre-job/pre-repair snapshots required by Security against
+this guard-only source, including supported projection roles and deleted task
+rows. A later enum exception is not a substitute. Guard tests and a published
+guard-only artifact are still not evidence that every application executor and
+maintenance process has adopted it.
+
+The producer remains absent until a separately reviewed deployment/admission
+policy enforces this minimum floor for every in-scope executor, repairer,
+watchdog, import/query route and rollback path. A heartbeat inventory, user
+boolean, cooperative shutdown or README instruction is not enforcement proof.
+The profile column cannot make unmodified 2.20.3 honor a future requirement.
+Once protected runs exist, 2.20.3 is **not a safe rollback target**. A safe
+rollback may go only to the proved/adopted guard-only floor, which refuses those
+profiles before effects. If that minimum cannot be enforced, return a reviewed
+storage/routing-isolation design instead. No deployment, credential or isolation
+operation is authorized by this source proposal.
+
+## Phase two: newly admitted selected runs
 
 Reserve observation-aware execution when a **new run is admitted** under
 explicit application/workflow selection. Do not convert an already-started run,
@@ -47,10 +97,11 @@ guard. Countercontrols must cover disabled pinning, configured model casts,
 constructors, entry/update/query calls and every supported query route. No
 application workflow method may run and no logical query state may be returned.
 
-No SQL column migration is proposed, but this **does change task and history
-protocols**. The task-kind enum, queued class and event must remain unregistered
-until that exact expansion is reviewed. No codec identifier is repurposed to
-smuggle a reader requirement.
+Phase one introduces a separately reviewed run-discriminator schema contract;
+phase two additionally changes task and history protocols. The task-kind enum,
+queued class and event must remain unregistered until that exact expansion and
+floor-adoption proof are reviewed. No codec identifier is repurposed to smuggle
+a reader requirement.
 
 ## Required lifecycle and downgrade audit
 
@@ -102,13 +153,16 @@ remains held. An exception after a committed claim is not a passing refusal.
 
 ## Raw ingress: request an explicit shared admission decision
 
-Recommend one fixed raw history-input ceiling for **all versions** at official
-embedded import, verification and simulation entry points, using the existing
-`StructuralLimits::DEFAULT_HISTORY_TRANSACTION_BYTES` value (16 MiB). This is
-separate from runtime capture selection and cannot be disabled by turning
-capture off. A version marker can be anywhere in JSON; it cannot choose the
+Security accepts one fixed raw history-input ceiling for **all versions** at
+official embedded import, verification and simulation entry points. Propose
+the separately named security boundary `HistoryBundleInput::MAX_BYTES`, fixed
+at 16 MiB. Its value happens to match the existing default transaction budget,
+but it is not an alias for that budget and does not inherit its configurable
+or zero/disabling semantics. It is also independent of runtime capture
+selection. A version marker can be anywhere in JSON; it cannot choose the
 pre-decode limit safely. Do not classify a falsely declared or reordered v3
-body as harmless legacy input to bypass the bound.
+body as harmless legacy input to bypass the bound. This is technical acceptance
+only; General still owns the affirmative legacy-admission decision.
 
 For files and request streams, read at most the ceiling plus one detection
 byte before decoding; do not trust file size or Content-Length alone. Handle
@@ -145,11 +199,15 @@ JSON Schema is not that proof.
 
 General/Security need to decide whether to authorize preparation of:
 
-1. further design of the new-run-only protected task family plus history read
-   fence, including a separately resolved old missing-task-repair boundary,
-   rather than authorization to implement a known incomplete fence; and
-2. the shared 16 MiB raw/decoded-input admission boundary, with the explicitly
-   narrower legacy-v2 acceptance, or a different reviewed parser design.
+1. the guard-only run-discriminator/source phase, including its new schema
+   contract and complete no-effects controls, without any producer; and
+2. the independent fixed 16 MiB raw/decoded-input security boundary, with the
+   explicitly narrower legacy-v2 acceptance, or a different reviewed parser
+   design.
+
+Protected new-run production, task/protocol registration and minimum-floor
+deployment/adoption are later, separate decisions. There is no direct jump from
+source guard tests to producer activation or a safe rollback claim for 2.20.3.
 
 These are proposals, not implementation or qualification approvals. Producer
 fields, capture, replay, import writes, runtime qualification, source pushes,
