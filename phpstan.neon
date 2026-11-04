@@ -1,2 +1,4 @@
 parameters:
     level: 0
+    scanFiles:
+        - scripts/ci/check-committed-composer-locks.php
