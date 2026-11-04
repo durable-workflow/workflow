@@ -30,15 +30,19 @@ final class ScheduleVisibilityQueryTest extends TestCase
         }
     }
 
-    public function testQueryLengthCountsUnicodeCharactersBeforeTrimming(): void
+    public function testQueryLengthCountsUnicodeCharactersAfterRequestNormalization(): void
     {
         $query = new ScheduleVisibilityQuery();
         $this->assertSame(
             str_repeat('🙂', 2039),
             $query->parse('Note = "' . str_repeat('🙂', 2039) . '"')[0]['literal']
         );
+        $this->assertSame(
+            str_repeat('🙂', 2039),
+            $query->parse("\u{FEFF}\u{00A0} " . 'Note = "' . str_repeat('🙂', 2039) . '"' . "\u{200B}\u{200E}")[0]['literal']
+        );
         $this->expectException(ScheduleVisibilityQueryException::class);
-        $query->parse(' ' . 'Note = "' . str_repeat('🙂', 2039) . '"');
+        $query->parse('Note = "' . str_repeat('🙂', 2040) . '"');
     }
 
     public function testMalformedUtf8IsRefused(): void

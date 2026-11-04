@@ -200,6 +200,42 @@
       "name": "operator_injection",
       "query": "Note='x' OR ScheduleId='secret'",
       "reason": "unsupported_schedule_visibility_predicate"
+    },
+    {
+      "name": "unicode-space-edges",
+      "query": "  WorkflowType = \"orders\" ",
+      "predicates": [
+        {
+          "field": "WorkflowType",
+          "column": "action->workflow_type",
+          "type": "keyword",
+          "literal": "orders"
+        }
+      ]
+    },
+    {
+      "name": "bom-zero-width-edges",
+      "query": "﻿​‎WorkflowType = \"orders\"‎﻿",
+      "predicates": [
+        {
+          "field": "WorkflowType",
+          "column": "action->workflow_type",
+          "type": "keyword",
+          "literal": "orders"
+        }
+      ]
+    },
+    {
+      "name": "literal-zero-width-preserved",
+      "query": "Note = \"﻿​\"",
+      "predicates": [
+        {
+          "field": "Note",
+          "column": "note",
+          "type": "text",
+          "literal": "﻿​"
+        }
+      ]
     }
   ]
 }

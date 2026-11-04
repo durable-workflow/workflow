@@ -50,14 +50,24 @@ final class ScheduleVisibilityQuery
      */
     public function parse(string $query): array
     {
-        $length = preg_match_all('/./us', $query);
+        // Match the native request normalization before its 1..2048 rule:
+        // Unicode White_Space plus Laravel's BOM/zero-width edge characters.
+        // Quoted literal contents are untouched.
+        $edge = '\x{0009}-\x{000D}\x{0020}\x{0085}\x{00A0}\x{1680}'
+            . '\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}'
+            . '\x{FEFF}\x{200B}\x{200E}';
+        $normalized = preg_replace('/\A[' . $edge . ']+|[' . $edge . ']+\z/u', '', $query);
+        if ($normalized === null) {
+            throw new ScheduleVisibilityQueryException('Schedule visibility query must be valid UTF-8.');
+        }
+        $length = preg_match_all('/./us', $normalized);
         if ($length === false || $length > 2048) {
             throw new ScheduleVisibilityQueryException(
                 'Schedule visibility query must contain at most 2048 UTF-8 characters.'
             );
         }
 
-        $query = trim($query);
+        $query = trim($normalized);
 
         if ($query === '') {
             throw new ScheduleVisibilityQueryException('Schedule visibility query must not be empty.');

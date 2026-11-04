@@ -85,7 +85,9 @@ The supported fields are `ScheduleId`, `Status`, `WorkflowType`, `TaskQueue`
 and `Note`. Use quoted strings; status is `active` or `paused`. Single-quoted
 strings support escaped quotes/backslashes; double-quoted strings use JSON
 escaping. Whitespace-delimited `AND` is case-insensitive outside strings.
-Queries are limited to 2048 UTF-8 characters. Unsupported fields/operators,
+Queries are limited to 2048 UTF-8 characters after native-compatible request
+edge normalization (Unicode whitespace, BOM, zero-width space and left-to-right
+mark). Characters inside quoted literals are preserved. Unsupported fields/operators,
 invalid types, malformed strings and unavailable attribute queries throw
 `ScheduleVisibilityQueryException` with a typed `reason`. They never become
 unfiltered or fabricated empty results.
