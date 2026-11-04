@@ -681,6 +681,69 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertSame($scenario['output'], $stub->output());
     }
 
+    public function testRedrivePendingMessageCorpusReachesTheSuccessor(): void
+    {
+        $path = self::FIXTURE_DIR . '/redrive-pending-message-transfer.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The redrive pending-message evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['redrive_pending_message_transfer'];
+        self::stopWorkers();
+        $this->clearWorkflowState();
+        Queue::fake();
+        config([
+            'workflows.v2.task_dispatch_mode' => 'poll',
+            'workflows.v2.testing.redrive_failures_before_success' => 1,
+        ]);
+        Cache::forget('test:redrive:first-calls');
+        Cache::forget('test:redrive:second-calls');
+        $drain = function (): void {
+            for ($i = 0; $i < 50; ++$i) {
+                $task = \Workflow\V2\Models\WorkflowTask::query()
+                    ->where('status', \Workflow\V2\Enums\TaskStatus::Ready->value)
+                    ->orderBy('created_at')
+                    ->first();
+                if ($task === null) {
+                    return;
+                }
+                $job = match ($task->task_type) {
+                    \Workflow\V2\Enums\TaskType::Workflow => new RunWorkflowTask($task->id),
+                    \Workflow\V2\Enums\TaskType::Activity => new \Workflow\V2\Jobs\RunActivityTask($task->id),
+                    \Workflow\V2\Enums\TaskType::Timer => new \Workflow\V2\Jobs\RunTimerTask($task->id),
+                };
+                $this->app->call([$job, 'handle']);
+            }
+        };
+        $send = static function (WorkflowRun $run, string $reference) use ($scenario): void {
+            (new \Workflow\V2\Support\MessageService())->sendMessage(
+                $run,
+                \Workflow\V2\Enums\MessageChannel::WorkflowMessage,
+                $run->workflow_instance_id,
+                $reference,
+                $scenario['stream'],
+            );
+        };
+
+        $instanceId = 'regression-corpus-redrive-pending-message';
+        $stub = WorkflowStub::make($fixture['workflow']['type'], $instanceId);
+        $stub->start(...$fixture['workflow']['arguments']);
+        $drain();
+        $source = WorkflowRun::query()->where('workflow_instance_id', $instanceId)->sole();
+        $stub->signal($scenario['signal']);
+        $send($source, $scenario['before_failure']);
+        $drain();
+        $this->assertTrue($stub->refresh()->failed());
+        $send($source->fresh(), $scenario['while_failed']);
+
+        $result = app(WorkflowControlPlane::class)->redrive($instanceId, $source->id);
+        $this->assertTrue($result['accepted'], (string) $result['reason']);
+        $drain();
+
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame($scenario['output'], $successor->workflowOutput());
+    }
+
     public function testRedriveTypedLineageCorpusLinksBothRunsFromHistory(): void
     {
         $path = self::FIXTURE_DIR . '/redrive-typed-lineage.json';

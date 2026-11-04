@@ -257,8 +257,9 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 ],
             ), null, $command);
 
-            // Messages the source consumed stay consumed for the successor.
-            MessageStreamCursor::transferCursor($source, $continuedRun);
+            // Messages the source consumed stay consumed for the successor, and
+            // messages still pending on the source move to it (#1013).
+            (new MessageService())->transferMessagesToContinuedRun($source, $continuedRun);
 
             app(MemoUpsertService::class)->copyForRedrive($source, $continuedRun);
             app(SearchAttributeUpsertService::class)->copyForRedrive($source, $continuedRun);

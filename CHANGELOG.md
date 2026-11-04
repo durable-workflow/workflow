@@ -12,6 +12,11 @@
     releases hid. They are the stream's oldest pending messages, so a
     workflow that receives in a loop gets them first.
   - A receive replayed from history still returns what that step consumed.
+- A redrive moves the failed run's pending inbound messages to the successor
+  (#1013). Before, only the message cursor carried over, so a message that
+  arrived while the run was failed stayed on the failed run and the successor
+  never received it. A replayed receive whose original call found nothing can
+  now return one of the moved messages.
 
 ## 2.20.1 - 2026-11-04
 
