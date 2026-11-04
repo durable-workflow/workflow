@@ -6,6 +6,7 @@ namespace Tests\Unit\V2;
 
 use LogicException;
 use PHPUnit\Framework\TestCase;
+use ValueError;
 use Workflow\Exceptions\VersionNotSupportedException;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -14,6 +15,18 @@ use Workflow\V2\Support\VersionDecisions;
 
 final class VersionDecisionsTest extends TestCase
 {
+    public function testTheUnregisteredReceiveCapabilityEventRefusesTheCurrentMarkerScan(): void
+    {
+        $event = new WorkflowHistoryEvent();
+        $event->setRawAttributes([
+            'event_type' => 'UpdateMessageReceiveObservationsRequired',
+        ]);
+
+        $this->expectException(ValueError::class);
+
+        new VersionDecisions([$event]);
+    }
+
     public function testFreshDecisionsAreIndependentAndReuseTheirFirstRange(): void
     {
         $decisions = new VersionDecisions([]);

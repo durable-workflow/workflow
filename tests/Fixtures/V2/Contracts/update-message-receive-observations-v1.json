@@ -35,7 +35,8 @@
           }
         ]
       }
-    ]
+    ],
+    "admitted_byte_limit": "16384"
   },
   "cases": [
     {
@@ -105,7 +106,7 @@
     {
       "name": "thrown-call",
       "shape": "valid",
-      "rule": "retained for audit; applied-handler state replay is unavailable",
+      "rule": "reader must reject when paired to an applied event; valid only on failed/no-applied audit completion",
       "changes": [
         {
           "path": [
@@ -232,6 +233,88 @@
           "value": "not-supported"
         }
       ]
+    },
+    {
+      "name": "oversize-instance-id",
+      "changes": [
+        {
+          "path": [
+            "workflow_instance_id"
+          ],
+          "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        }
+      ],
+      "shape": "invalid",
+      "rule": "storage identifier limit before lookup"
+    },
+    {
+      "name": "oversize-run-id",
+      "changes": [
+        {
+          "path": [
+            "workflow_run_id"
+          ],
+          "value": "rrrrrrrrrrrrrrrrrrrrrrrrrrr"
+        }
+      ],
+      "shape": "invalid",
+      "rule": "storage run identifier limit before lookup"
+    },
+    {
+      "name": "oversize-stream-encoding",
+      "changes": [
+        {
+          "path": [
+            "calls",
+            0,
+            "stream_key_base64"
+          ],
+          "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        }
+      ],
+      "shape": "invalid",
+      "rule": "encoded stream bound before decoding"
+    },
+    {
+      "name": "oversize-admitted-byte-limit",
+      "changes": [
+        {
+          "path": [
+            "admitted_byte_limit"
+          ],
+          "value": "16777217"
+        }
+      ],
+      "shape": "valid",
+      "rule": "reader must reject budget above the hard 16 MiB ceiling before traversal"
+    },
+    {
+      "name": "zero-byte-budget",
+      "changes": [
+        {
+          "path": [
+            "admitted_byte_limit"
+          ],
+          "value": "0"
+        }
+      ],
+      "shape": "invalid",
+      "rule": "selected mode requires a positive byte budget"
+    },
+    {
+      "name": "noncanonical-stream-pad-bits",
+      "changes": [
+        {
+          "path": [
+            "calls",
+            0,
+            "stream_key_base64"
+          ],
+          "value": "YR=="
+        }
+      ],
+      "shape": "valid",
+      "rule": "reader must reject noncanonical base64 round-trip before row lookup"
     }
   ]
 }

@@ -7,6 +7,7 @@
   "additionalProperties": false,
   "required": [
     "version",
+    "admitted_byte_limit",
     "workflow_instance_id",
     "workflow_run_id",
     "workflow_command_id",
@@ -19,16 +20,16 @@
       "const": 1
     },
     "workflow_instance_id": {
-      "$ref": "#/$defs/identifier"
+      "$ref": "#/$defs/instanceId"
     },
     "workflow_run_id": {
-      "$ref": "#/$defs/identifier"
+      "$ref": "#/$defs/runId"
     },
     "workflow_command_id": {
-      "$ref": "#/$defs/identifier"
+      "$ref": "#/$defs/entityId"
     },
     "update_id": {
-      "$ref": "#/$defs/identifier"
+      "$ref": "#/$defs/entityId"
     },
     "applied_event_sequence": {
       "anyOf": [
@@ -44,14 +45,14 @@
       "type": "array",
       "items": {
         "$ref": "#/$defs/call"
-      }
+      },
+      "maxItems": 101680
+    },
+    "admitted_byte_limit": {
+      "$ref": "#/$defs/byteLimit"
     }
   },
   "$defs": {
-    "identifier": {
-      "type": "string",
-      "minLength": 1
-    },
     "integer": {
       "type": "string",
       "pattern": "^(0|-?[1-9][0-9]*)$",
@@ -78,17 +79,18 @@
       ],
       "properties": {
         "workflow_run_id": {
-          "$ref": "#/$defs/identifier"
+          "$ref": "#/$defs/runId"
         },
         "message_id": {
-          "$ref": "#/$defs/identifier"
+          "$ref": "#/$defs/messageId"
         },
         "sequence": {
           "$ref": "#/$defs/positiveInteger"
         },
         "identity_sha256": {
           "type": "string",
-          "pattern": "^sha256:[0-9a-f]{64}$"
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "maxLength": 71
         }
       }
     },
@@ -110,7 +112,8 @@
         },
         "stream_key_base64": {
           "type": "string",
-          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+          "maxLength": 1020
         },
         "requested_limit": {
           "$ref": "#/$defs/integer"
@@ -145,7 +148,8 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/message"
-          }
+          },
+          "maxItems": 10000
         }
       },
       "allOf": [
@@ -182,6 +186,31 @@
           }
         }
       ]
+    },
+    "instanceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 191
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 26
+    },
+    "entityId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 26
+    },
+    "messageId": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,19}$",
+      "maxLength": 20
+    },
+    "byteLimit": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]{0,7}$",
+      "maxLength": 8
     }
   }
 }
