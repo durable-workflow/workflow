@@ -23,6 +23,12 @@
     at the step the code is at, not the step the stream was opened at, so
     its replay matches too. Consumptions that earlier releases recorded at
     the opened step still replay.
+- Continue-as-new moves the run's pending inbound stream messages to the
+  continued run (#1018). Before, only the message cursor carried over, so a
+  stream message still pending when a run continued as new stayed on the
+  closed run and was never received. This covers embedded execution and
+  external workers that complete a task with `continue_as_new`. Signals were
+  not affected.
 - A redrive moves the failed run's pending inbound messages to the successor
   (#1013). Before, only the message cursor carried over, so a message that
   arrived while the run was failed stayed on the failed run and the successor

@@ -11,6 +11,7 @@ use Tests\Fixtures\V2\TestInboxKeptBranchWorkflow;
 use Tests\Fixtures\V2\TestInboxKeptStreamWorkflow;
 use Tests\Fixtures\V2\TestInboxTurnsWorkflow;
 use Tests\Fixtures\V2\TestInboxUpdateReceiveWorkflow;
+use Tests\Fixtures\V2\TestMessageStreamContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestMessageStreamExactContentWorkflow;
 use Tests\Fixtures\V2\TestMessageStreamKeptStreamWorkflow;
 use Tests\Fixtures\V2\TestMessageStreamRedriveLaterReceiveWorkflow;
@@ -585,6 +586,39 @@ final class V2MessageStreamReplayTest extends TestCase
         // Replays of both handlers return what each one took.
         $this->assertSame(['j1', 'j2'], $workflow->output());
         $this->assertSame($before, $this->messageRows());
+    }
+
+    /**
+     * A message still pending when a run continues as new moves to the
+     * continued run, which receives it (#1018).
+     */
+    public function testAContinuedRunReceivesAMessageThatWasPendingAtContinueAsNew(): void
+    {
+        $workflow = WorkflowStub::make(TestMessageStreamContinueAsNewWorkflow::class, 'message-stream-continue');
+        $workflow->start();
+        $this->drainReadyTasks();
+        $first = WorkflowRun::query()->where('workflow_instance_id', 'message-stream-continue')->sole();
+
+        $workflow->signal('ping');
+        $this->sendToInbox($first, 'm1');
+        $this->sendToInbox($first, 'm2');
+        $this->drainReadyTasks();
+
+        $runs = WorkflowRun::query()
+            ->where('workflow_instance_id', 'message-stream-continue')
+            ->orderBy('run_number')
+            ->get();
+        $this->assertCount(2, $runs);
+        $continued = $runs[1];
+        $this->assertSame('completed', $continued->fresh()->status->value);
+        $this->assertSame(['m1', 'm2'], $continued->fresh()->workflowOutput());
+        $m2 = WorkflowMessage::query()
+            ->where('workflow_instance_id', 'message-stream-continue')
+            ->where('payload_reference', 'm2')
+            ->where('direction', MessageDirection::Inbound->value)
+            ->sole();
+        $this->assertSame($continued->id, $m2->workflow_run_id);
+        $this->assertSame(MessageConsumeState::Consumed, $m2->consume_state);
     }
 
     public function testAWorkflowCodeReceiveReplaysTheMessageItConsumedAndQueriesConsumeNothing(): void

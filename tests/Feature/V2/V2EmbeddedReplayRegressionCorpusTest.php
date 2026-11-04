@@ -798,6 +798,57 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertSame($scenario['output'], $stub->output());
     }
 
+    public function testContinueAsNewPendingMessageCorpusReachesTheContinuedRun(): void
+    {
+        $path = self::FIXTURE_DIR . '/continue-as-new-pending-message-transfer.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The continue-as-new pending-message evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['continue_as_new_pending_message_transfer'];
+        self::stopWorkers();
+        $this->clearWorkflowState();
+        Queue::fake();
+        config([
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+        $drain = function (): void {
+            for ($i = 0; $i < 50; ++$i) {
+                $task = \Workflow\V2\Models\WorkflowTask::query()
+                    ->where('status', \Workflow\V2\Enums\TaskStatus::Ready->value)
+                    ->orderBy('created_at')
+                    ->first();
+                if ($task === null) {
+                    return;
+                }
+                $this->app->call([new RunWorkflowTask($task->id), 'handle']);
+            }
+        };
+
+        $instanceId = 'regression-corpus-continue-as-new-pending-message';
+        $stub = WorkflowStub::make($fixture['workflow']['type'], $instanceId);
+        $stub->start(...$fixture['workflow']['arguments']);
+        $drain();
+        $first = WorkflowRun::query()->where('workflow_instance_id', $instanceId)->sole();
+        $stub->signal($scenario['signal']);
+        foreach ($scenario['messages'] as $reference) {
+            (new \Workflow\V2\Support\MessageService())->sendMessage(
+                $first,
+                \Workflow\V2\Enums\MessageChannel::WorkflowMessage,
+                $instanceId,
+                $reference,
+                $scenario['stream'],
+            );
+        }
+        $drain();
+
+        $continued = WorkflowRun::query()
+            ->where('workflow_instance_id', $instanceId)
+            ->where('run_number', 2)
+            ->sole();
+        $this->assertSame($scenario['output'], $continued->workflowOutput());
+    }
+
     public function testRedriveTypedLineageCorpusLinksBothRunsFromHistory(): void
     {
         $path = self::FIXTURE_DIR . '/redrive-typed-lineage.json';
