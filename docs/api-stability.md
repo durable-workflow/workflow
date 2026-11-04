@@ -617,8 +617,10 @@ flows:
 
 - `MessageService::sendMessage()` creates paired outbound and inbound
   `workflow_messages` rows with one reserved instance sequence.
-- `MessageService::peekMessages()` and `receiveMessages()` read pending
-  inbound messages after the run cursor. They are intentionally read-only:
+- `MessageService::peekMessages()` and `receiveMessages()` read every pending
+  inbound message of the stream, in sequence order, whatever the run cursor
+  says. The cursor is shared with signals, updates and other streams, so it
+  doesn't decide what a stream has left. They are intentionally read-only:
   they do not mark messages consumed and do not advance the cursor.
 - `MessageService::consumeMessage()` and `consumeMessages()` are the only
   message-service APIs that mark messages consumed and advance the cursor.

@@ -216,10 +216,12 @@ Returns messages where:
 - `workflow_run_id = $run->id`
 - `stream_key = $streamKey`
 - `consume_state = 'pending'`
-- `sequence > $run->message_cursor_position`
+
+ordered by `sequence`. The run cursor is shared with signals, updates and other
+streams, so it doesn't filter stream reads.
 
 `peekMessages()` and `receiveMessages()` are read-only. They return only
-unconsumed messages after the cursor, but they do not mark messages consumed and
+unconsumed messages, but they do not mark messages consumed and
 they do not advance the cursor. Cursor movement is explicit and happens only
 through `consumeMessage()` or `consumeMessages()` after workflow code has
 durably recorded how it handled the messages.

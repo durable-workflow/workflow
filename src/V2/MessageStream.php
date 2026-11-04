@@ -31,6 +31,7 @@ final class MessageStream
         private readonly ?int $defaultConsumedBySequence = null,
         private readonly ?MessageReplayLedger $replayLedger = null,
         private readonly bool|Closure $readOnly = false,
+        private readonly ?Closure $currentStep = null,
     ) {
         if ($streamKey === '') {
             throw new InvalidArgumentException('Message stream key must not be empty.');
@@ -66,6 +67,7 @@ final class MessageStream
         int $defaultConsumedBySequence,
         MessageReplayLedger $replayLedger,
         Closure $readOnly,
+        ?Closure $currentStep = null,
     ): self {
         return new self(
             $run,
@@ -74,6 +76,7 @@ final class MessageStream
             $defaultConsumedBySequence,
             $replayLedger,
             $readOnly,
+            $currentStep,
         );
     }
 
@@ -120,8 +123,11 @@ final class MessageStream
             $sequence = $this->consumedBySequence($consumedBySequence);
             $recorded = $this->recordedReceive($sequence, $limit);
 
-            // A receive this step already made returns what it consumed.
-            if ($recorded->isNotEmpty() || $this->readOnly()) {
+            // A receive this step already made returns what it consumed. A
+            // receive at a step history has already passed, with nothing
+            // recorded, found nothing the first time, so it consumes nothing
+            // now either.
+            if ($recorded->isNotEmpty() || $this->readOnly() || $this->historyPassedCurrentStep()) {
                 return $recorded;
             }
 
@@ -339,6 +345,20 @@ final class MessageStream
         }
 
         return $messages;
+    }
+
+    /**
+     * Whether history already records a step at or after the step workflow
+     * code is at now, so this code ran in an earlier task. The step is read on
+     * every call, so a stream kept in a property is not mistaken for replay.
+     */
+    private function historyPassedCurrentStep(): bool
+    {
+        if (! $this->currentStep instanceof Closure || ! $this->replayLedger instanceof MessageReplayLedger) {
+            return false;
+        }
+
+        return (int) ($this->currentStep)() <= $this->replayLedger->highestRecordedStep($this->run);
     }
 
     /**

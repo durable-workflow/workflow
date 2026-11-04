@@ -193,6 +193,7 @@ abstract class Workflow
             $this->visibleSequence,
             $this->messageReplayLedger,
             readOnly: fn (): bool => ! $this->commandDispatchEnabled,
+            currentStep: fn (): int => $this->visibleSequence,
         );
     }
 

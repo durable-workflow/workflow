@@ -11,12 +11,16 @@
   - After upgrading, workflow code can receive messages that earlier
     releases hid. They are the stream's oldest pending messages, so a
     workflow that receives in a loop gets them first.
-  - A receive replayed from history still returns what that step consumed.
+  - A receive replayed from history still returns what that step consumed,
+    and a replayed receive whose original call found nothing returns nothing
+    again. It no longer reads the stream at a step history has passed. So a
+    run where an earlier release's cursor hid a message keeps the result it
+    had, and receives the message at a later step instead of consuming it at
+    the old one.
 - A redrive moves the failed run's pending inbound messages to the successor
   (#1013). Before, only the message cursor carried over, so a message that
   arrived while the run was failed stayed on the failed run and the successor
-  never received it. A replayed receive whose original call found nothing can
-  now return one of the moved messages.
+  never received it.
 
 ## 2.20.1 - 2026-11-04
 

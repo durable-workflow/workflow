@@ -259,7 +259,8 @@ own identifier and its own durable row.
   already wrote for the same content, and a receive returns the
   messages already consumed at that step. A query or other read-only
   replay never writes or consumes. A replayed receive whose original
-  call found nothing reads the stream again.
+  call found nothing returns nothing again; a receive never consumes at a
+  step that history has already passed.
 
 ## Side effects and version markers
 
