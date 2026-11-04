@@ -50,6 +50,7 @@ final class HistoryExport
         ?CarbonInterface $exportedAt = null,
         HistoryExportRedactor|callable|null $redactor = null,
     ): array {
+        RuntimeProfileGuard::assertRun($run);
         $exportedAt ??= now();
         $sourceNode = RoleTopologySnapshot::currentNode();
 

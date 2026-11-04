@@ -56,6 +56,22 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         string $operationName,
         array $options = []
     ): array {
+        RuntimeProfileGuard::assertNoProfileInput($options);
+        RuntimeProfileGuard::assertStorage();
+        foreach (['caller_workflow_run_id', 'owning_workflow_run_id'] as $field) {
+            if (is_string($options[$field] ?? null) && $options[$field] !== '') {
+                RuntimeProfileGuard::assertScope(runIds: [$options[$field]]);
+            }
+        }
+        foreach (['caller_workflow_instance_id', 'target_workflow_instance_id', 'workflow_instance_id',
+            'owning_workflow_instance_id', 'bound_workflow_instance_id'] as $field) {
+            if (is_string($options[$field] ?? null) && $options[$field] !== '') {
+                RuntimeProfileGuard::assertScope(instanceId: $options[$field]);
+            }
+        }
+        if (is_string($options['service_call_id'] ?? null)) {
+            RuntimeProfileGuard::assertServiceCall($options['service_call_id']);
+        }
         if (array_key_exists('wait_timeout_seconds', $options)) {
             $options['wait_timeout_seconds'] = UpdateWaitPolicy::serviceOperationTimeoutSeconds(
                 $options['wait_timeout_seconds'],
@@ -66,6 +82,23 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         $serviceKey = $this->contractName($serviceName);
         $operationKey = $this->contractName($operationName);
         CodecRegistry::canonicalize($this->stringOption($options, 'payload_codec'));
+        $guardEndpoint = $this->endpoint($namespace, $endpointKey);
+        $guardService = $guardEndpoint !== null ? $this->service($namespace, $guardEndpoint, $serviceKey) : null;
+        $guardOperation = $guardService !== null ? $this->operation($namespace, $guardService, $operationKey) : null;
+        if ($guardOperation !== null) {
+            $binding = $this->handlerBinding($guardOperation);
+            foreach (['workflow_instance_id', 'instance_id', 'target_instance_id', 'owning_workflow_instance_id',
+                'bound_workflow_instance_id'] as $field) {
+                if (is_string($binding[$field] ?? null) && $binding[$field] !== '') {
+                    RuntimeProfileGuard::assertScope(instanceId: $binding[$field]);
+                }
+            }
+            foreach (['workflow_run_id', 'owning_workflow_run_id'] as $field) {
+                if (is_string($binding[$field] ?? null) && $binding[$field] !== '') {
+                    RuntimeProfileGuard::assertScope(runIds: [$binding[$field]]);
+                }
+            }
+        }
 
         $explicitCallId = $this->stringFrom($options['service_call_id'] ?? null);
         $key = $this->stringOption($options, 'idempotency_key');
@@ -326,6 +359,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
 
     public function executeScheduledAttempt(ServiceCallAttemptClaim $claim): void
     {
+        RuntimeProfileGuard::assertServiceCall((string) $claim->call->getKey());
+
         $effectIdentity = ServiceCallEffectIdentity::forCurrentClaim($claim);
         if (! $effectIdentity instanceof ServiceCallEffectIdentity) {
             return;
@@ -366,6 +401,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
      */
     public function describeCall(string $serviceCallId, array $options = []): array
     {
+        RuntimeProfileGuard::assertServiceCall($serviceCallId);
+
         $call = $this->call($serviceCallId, $options);
 
         if (! $call) {
@@ -386,6 +423,8 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
      */
     public function cancelCall(string $serviceCallId, array $options = []): array
     {
+        RuntimeProfileGuard::assertServiceCall($serviceCallId);
+
         $call = $this->call($serviceCallId, $options);
 
         if (! $call) {
@@ -430,6 +469,9 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
                     ]);
                 $linkedCancel = $this->publicResult($result);
             } catch (Throwable $exception) {
+                if ($exception instanceof \Workflow\V2\Exceptions\RuntimeProfileRefusal) {
+                    throw $exception;
+                }
                 $linkedCancel = [
                     'accepted' => false,
                     'reason' => 'workflow_cancel_exception',
@@ -1381,6 +1423,9 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             $result = $this->workflows()
                 ->start($workflowType, $instanceId, $this->workflowStartOptions($call, $binding, $options));
         } catch (Throwable $exception) {
+            if ($exception instanceof \Workflow\V2\Exceptions\RuntimeProfileRefusal) {
+                throw $exception;
+            }
             return $this->markHandlerFailure(
                 $call,
                 $request,
@@ -1476,6 +1521,9 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             $result = $this->workflows()
                 ->update($instanceId, $updateName, $commandOptions);
         } catch (Throwable $exception) {
+            if ($exception instanceof \Workflow\V2\Exceptions\RuntimeProfileRefusal) {
+                throw $exception;
+            }
             return $this->markHandlerFailure(
                 $call,
                 $request,
@@ -1583,6 +1631,9 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             $result = $this->workflows()
                 ->signal($instanceId, $signalName, $this->workflowCommandOptions($call, $binding, $options));
         } catch (Throwable $exception) {
+            if ($exception instanceof \Workflow\V2\Exceptions\RuntimeProfileRefusal) {
+                throw $exception;
+            }
             return $this->markHandlerFailure(
                 $call,
                 $request,
@@ -1685,6 +1736,9 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
         try {
             $result = $this->workflowQueryHandlerResult($instanceId, $queryName, $queryOptions, $call, $operation);
         } catch (Throwable $exception) {
+            if ($exception instanceof \Workflow\V2\Exceptions\RuntimeProfileRefusal) {
+                throw $exception;
+            }
             return $this->markHandlerFailure(
                 $call,
                 $request,

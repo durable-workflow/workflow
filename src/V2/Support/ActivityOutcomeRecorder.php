@@ -41,6 +41,9 @@ final class ActivityOutcomeRecorder
         ?string $codec = null,
         ?int $admissionDeadline = null,
     ): array {
+        RuntimeProfileGuard::assertActivityAttempt($attemptId);
+        RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
+
         $sqlite = (new ActivityAttempt())->getConnection()
             ->getDriverName() === 'sqlite';
         $attemptedOutcome = $throwable === null ? 'completed' : 'failed';
@@ -552,6 +555,8 @@ final class ActivityOutcomeRecorder
         ?Throwable $throwable,
         ?string $codec = null
     ): array {
+        RuntimeProfileGuard::assertActivityAttempt($attemptId);
+
         /** @var ActivityAttempt|null $attempt */
         $attempt = ActivityAttempt::query()
             ->with('execution')

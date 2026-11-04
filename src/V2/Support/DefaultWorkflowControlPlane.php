@@ -39,6 +39,10 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
 {
     public function redrive(string $instanceId, string $failedRunId, array $options = []): array
     {
+        RuntimeProfileGuard::assertNoProfileInput($options);
+        RuntimeProfileGuard::assertStorage();
+        RuntimeProfileGuard::assertScope(instanceId: $instanceId);
+
         $namespace = $this->namespaceOption($options);
         $requestId = is_string($options['request_id'] ?? null) && $options['request_id'] !== ''
             ? $options['request_id']
@@ -308,6 +312,12 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
 
     public function start(string $workflowType, ?string $instanceId = null, array $options = []): array
     {
+        RuntimeProfileGuard::assertNoProfileInput($options);
+        RuntimeProfileGuard::assertStorage();
+        if ($instanceId !== null) {
+            RuntimeProfileGuard::assertScope(instanceId: $instanceId);
+        }
+
         $resolvedClass = $this->tryResolveWorkflowClass($workflowType);
         $arguments = $options['arguments'] ?? null;
         $payloadCodec = isset($options['payload_codec']) && is_string(
@@ -670,16 +680,28 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
 
     public function signal(string $instanceId, string $name, array $options = []): array
     {
+        RuntimeProfileGuard::assertNoProfileInput($options);
+        RuntimeProfileGuard::assertStorage();
+        RuntimeProfileGuard::assertScope(instanceId: $instanceId);
+
         return $this->deliverSignal($instanceId, $name, $options, false);
     }
 
     public function runtimeSignal(string $instanceId, string $name, array $options = []): array
     {
+        RuntimeProfileGuard::assertNoProfileInput($options);
+        RuntimeProfileGuard::assertStorage();
+        RuntimeProfileGuard::assertScope(instanceId: $instanceId);
+
         return $this->deliverSignal($instanceId, $name, $options, true);
     }
 
     public function query(string $instanceId, string $name, array $options = []): array
     {
+        RuntimeProfileGuard::assertNoProfileInput($options);
+        RuntimeProfileGuard::assertStorage();
+        RuntimeProfileGuard::assertScope(instanceId: $instanceId);
+
         $loaded = $this->loadControlPlaneWorkflow($instanceId, $options);
 
         if (($loaded['error'] ?? null) !== null) {
@@ -782,6 +804,10 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
 
     public function update(string $instanceId, string $name, array $options = []): array
     {
+        RuntimeProfileGuard::assertNoProfileInput($options);
+        RuntimeProfileGuard::assertStorage();
+        RuntimeProfileGuard::assertScope(instanceId: $instanceId);
+
         $loaded = $this->loadControlPlaneWorkflow($instanceId, $options);
         $stub = $loaded['workflow'] ?? null;
         $error = $loaded['error'] ?? null;
@@ -826,6 +852,10 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
 
     public function cancel(string $instanceId, array $options = []): array
     {
+        RuntimeProfileGuard::assertNoProfileInput($options);
+        RuntimeProfileGuard::assertStorage();
+        RuntimeProfileGuard::assertScope(instanceId: $instanceId);
+
         $loaded = $this->loadControlPlaneWorkflow($instanceId, $options);
 
         if (($loaded['error'] ?? null) !== null) {
@@ -859,6 +889,10 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
 
     public function terminate(string $instanceId, array $options = []): array
     {
+        RuntimeProfileGuard::assertNoProfileInput($options);
+        RuntimeProfileGuard::assertStorage();
+        RuntimeProfileGuard::assertScope(instanceId: $instanceId);
+
         $loaded = $this->loadControlPlaneWorkflow($instanceId, $options);
 
         if (($loaded['error'] ?? null) !== null) {
@@ -892,6 +926,10 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
 
     public function repair(string $instanceId, array $options = []): array
     {
+        RuntimeProfileGuard::assertNoProfileInput($options);
+        RuntimeProfileGuard::assertStorage();
+        RuntimeProfileGuard::assertScope(instanceId: $instanceId);
+
         $loaded = $this->loadControlPlaneWorkflow($instanceId, $options);
 
         if (($loaded['error'] ?? null) !== null) {
@@ -923,6 +961,10 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
 
     public function archive(string $instanceId, array $options = []): array
     {
+        RuntimeProfileGuard::assertNoProfileInput($options);
+        RuntimeProfileGuard::assertStorage();
+        RuntimeProfileGuard::assertScope(instanceId: $instanceId);
+
         $loaded = $this->loadControlPlaneWorkflow($instanceId, $options);
 
         if (($loaded['error'] ?? null) !== null) {
@@ -956,6 +998,10 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
 
     public function describe(string $instanceId, array $options = []): array
     {
+        RuntimeProfileGuard::assertNoProfileInput($options);
+        RuntimeProfileGuard::assertStorage();
+        RuntimeProfileGuard::assertScope(instanceId: $instanceId);
+
         $runId = $options['run_id'] ?? null;
         $namespace = $this->namespaceOption($options);
 

@@ -21,6 +21,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\ParallelChildGroup;
+use Workflow\V2\Support\RuntimeProfileGuard;
 use Workflow\V2\Support\SqliteTransaction;
 use Workflow\V2\Support\TaskBackendCapabilities;
 use Workflow\V2\Support\TaskCompatibility;
@@ -80,6 +81,9 @@ final class RunTimerTask implements ShouldQueue
 
     public function handle(): void
     {
+        if (! RuntimeProfileGuard::taskExistsAndIsSupported($this->taskId)) {
+            return;
+        }
         WorkerCompatibilityFleet::heartbeat(
             is_string($this->connection ?? null) ? $this->connection : null,
             is_string($this->queue ?? null) ? $this->queue : null,

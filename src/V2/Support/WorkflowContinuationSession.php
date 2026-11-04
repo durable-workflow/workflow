@@ -44,6 +44,8 @@ final class WorkflowContinuationSession
      */
     public function begin(WorkflowRun $run, WorkflowTask $task, string $class): ?WorkflowContinuation
     {
+        RuntimeProfileGuard::assertRun($run);
+        RuntimeProfileGuard::assertTask($task);
         $this->observe($run);
         $tracing = ExecutionTracing::enabled();
         if ($tracing) {
@@ -89,6 +91,8 @@ final class WorkflowContinuationSession
 
     public function hasAuthority(WorkflowRun $run, WorkflowTask $task): bool
     {
+        RuntimeProfileGuard::assertRun($run);
+        RuntimeProfileGuard::assertTask($task);
         $this->observe($run);
         return $task->workflow_run_id === $run->id && $task->namespace === $run->namespace
             && $task->status === TaskStatus::Leased && $task->lease_owner === $task->id
@@ -125,11 +129,13 @@ final class WorkflowContinuationSession
 
     public function track(WorkflowContinuation $entry): void
     {
+        RuntimeProfileGuard::assertRun($entry->workflow->run);
         $this->active = $this->enabled ? $entry : null;
     }
 
     public function offer(WorkflowTask $task): void
     {
+        RuntimeProfileGuard::assertTask($task);
         $entry = $this->active;
         $this->active = null;
         if ($entry === null) {
@@ -153,6 +159,9 @@ final class WorkflowContinuationSession
     public function committed(): void
     {
         $pending = $this->pending;
+        if ($pending !== null) {
+            RuntimeProfileGuard::assertRun($pending->workflow->run);
+        }
         $this->pending = null;
         if ($pending === null || $this->key === null || $this->database->transactionLevel() !== 0
             || $this->database->getPdo()

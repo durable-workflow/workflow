@@ -107,6 +107,8 @@ final class ServiceCallScheduler
         array $options,
         int $maxAttempts,
     ): void {
+        RuntimeProfileGuard::assertServiceCall((string) $call->getKey());
+
         $hostQuery = self::hasHostQueryAuthority($options);
         if ($hostQuery && ServiceCallBindingKind::tryFromHandlerBindingKind(
             (string) $operation->handler_binding_kind
@@ -145,6 +147,8 @@ final class ServiceCallScheduler
 
     public static function enqueue(string $serviceCallId): bool
     {
+        RuntimeProfileGuard::assertServiceCall($serviceCallId);
+
         $availableAt = self::withLockedDispatch($serviceCallId, static function (
             WorkflowServiceCall $call,
             WorkflowServiceCallDispatch $dispatch,
@@ -189,6 +193,8 @@ final class ServiceCallScheduler
 
     public static function claim(string $serviceCallId): ?ServiceCallAttemptClaim
     {
+        RuntimeProfileGuard::assertServiceCall($serviceCallId);
+
         $callModel = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)->getModel();
         $connection = $callModel->getConnection();
 
@@ -327,6 +333,8 @@ final class ServiceCallScheduler
         bool $retry,
         ?float $backoffSeconds,
     ): bool {
+        RuntimeProfileGuard::assertServiceCall((string) $claim->call->getKey());
+
         $reenqueue = false;
         $recorded = self::withLockedDispatch($claim->call->id, static function (
             WorkflowServiceCall $call,
@@ -389,6 +397,8 @@ final class ServiceCallScheduler
         WorkflowServiceCallDispatch $dispatch,
         ServiceCallAttemptClaim $claim,
     ): bool {
+        RuntimeProfileGuard::assertServiceCall((string) $claim->call->getKey());
+
         $options = is_array($dispatch->dispatch_options) ? $dispatch->dispatch_options : [];
         $effectToken = $options[self::EFFECT_TOKEN_OPTION] ?? null;
 
@@ -404,6 +414,8 @@ final class ServiceCallScheduler
 
     public static function ownsClaim(ServiceCallAttemptClaim $claim): bool
     {
+        RuntimeProfileGuard::assertServiceCall((string) $claim->call->getKey());
+
         return self::withLockedDispatch($claim->call->id, static function (
             WorkflowServiceCall $call,
             WorkflowServiceCallDispatch $dispatch,
@@ -498,8 +510,19 @@ final class ServiceCallScheduler
         ?string $connection = null,
         ?string $queue = null,
     ): array {
-        self::cleanupOrphans($limit);
         $ids = self::dueIds($limit, $runIds, $instanceId, $connection, $queue);
+        return self::repairIds($ids, $limit);
+    }
+
+    /**
+     * @internal Process the fixed set admitted by the maintenance pass.
+     */
+    public static function repairIds(array $ids, int $limit): array
+    {
+        foreach ($ids as $id) {
+            RuntimeProfileGuard::assertServiceCall($id);
+        }
+        self::cleanupOrphans($limit);
         $report = [
             'candidates' => count($ids),
             'enqueued' => 0,
@@ -511,6 +534,9 @@ final class ServiceCallScheduler
                     $report['enqueued']++;
                 }
             } catch (Throwable $failure) {
+                if ($failure instanceof \Workflow\V2\Exceptions\RuntimeProfileRefusal) {
+                    throw $failure;
+                }
                 report($failure);
                 $report['failures'][] = [
                     'call_id' => $id,

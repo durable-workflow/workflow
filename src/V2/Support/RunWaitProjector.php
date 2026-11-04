@@ -25,6 +25,8 @@ final class RunWaitProjector
      */
     public static function projectWorkflowTaskClaim(WorkflowRun $run, WorkflowTask $task, ?string $waitId): void
     {
+        RuntimeProfileGuard::assertRun($run);
+
         $waitModel = self::waitModel();
         $values = [
             'task_backed' => true,
@@ -59,6 +61,8 @@ final class RunWaitProjector
         WorkflowTask $task,
         WorkflowHistoryEvent $event,
     ): void {
+        RuntimeProfileGuard::assertRun($run);
+
         if (
             $event->workflow_run_id !== $run->id
             || ! in_array($event->event_type, ChildRunHistory::resolutionEventTypes(), true)
@@ -122,6 +126,8 @@ final class RunWaitProjector
 
     public static function hasPendingChildResolutionForTask(WorkflowRun $run, WorkflowTask $task): bool
     {
+        RuntimeProfileGuard::assertRun($run);
+
         $waitModel = self::waitModel();
 
         return $waitModel::query()
@@ -139,6 +145,8 @@ final class RunWaitProjector
      */
     public static function project(WorkflowRun $run, ?array $waits = null, bool $collectRows = true): array
     {
+        RuntimeProfileGuard::assertRun($run);
+
         $waits ??= RunWaitView::forRun($run);
         $waitModel = self::waitModel();
         $seen = [];
@@ -220,6 +228,8 @@ final class RunWaitProjector
      */
     public static function snapshotForRun(WorkflowRun $run): array
     {
+        RuntimeProfileGuard::assertRun($run);
+
         $projected = self::projectedRows($run);
         $canonicalWaits = RunWaitView::forRun($run);
 
@@ -261,6 +271,8 @@ final class RunWaitProjector
      */
     public static function driftStatusForRun(WorkflowRun $run): array
     {
+        RuntimeProfileGuard::assertRun($run);
+
         $projected = self::projectedRows($run);
         $canonicalWaits = RunWaitView::forRun($run);
         $hasProjection = $projected->isNotEmpty();

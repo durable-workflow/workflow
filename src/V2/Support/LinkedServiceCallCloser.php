@@ -21,6 +21,7 @@ final class LinkedServiceCallCloser
 
     public static function reconcile(WorkflowServiceCall $call): void
     {
+        RuntimeProfileGuard::assertServiceCall((string) $call->getKey());
         if (in_array($call->status, ['pending', 'accepted', 'started'], true)) {
             ServiceCallDeadline::expire($call);
         }
@@ -68,6 +69,7 @@ final class LinkedServiceCallCloser
 
     public static function closeForTerminalEvent(WorkflowRun $run, WorkflowHistoryEvent $event): void
     {
+        RuntimeProfileGuard::assertRun($run);
         if ($event->workflow_run_id !== $run->id) {
             return;
         }
@@ -220,6 +222,19 @@ final class LinkedServiceCallCloser
         ?string $connection = null,
         ?string $queue = null
     ): array {
+        return self::repairIds(self::candidateIds($limit, $runIds, $instanceId, $connection, $queue));
+    }
+
+    /**
+     * @internal Read-only candidate materialization. @return list<string>
+     */
+    public static function candidateIds(
+        int $limit,
+        array $runIds = [],
+        ?string $instanceId = null,
+        ?string $connection = null,
+        ?string $queue = null
+    ): array {
         $query = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
             ->where('resolved_binding_kind', ServiceCallBindingKind::WorkflowRun->value)
             ->whereIn('status', ['pending', 'accepted', 'started'])
@@ -257,9 +272,25 @@ final class LinkedServiceCallCloser
                     ->orWhereHas('linkedRun', $runScope);
             });
         }
-        $calls = $query->orderBy('updated_at')
+        return $query->orderBy('updated_at')
             ->orderBy('id')
             ->limit(max(1, $limit))
+            ->pluck('id')
+            ->all();
+    }
+
+    /**
+     * @internal Process only the previously materialized and validated set.
+     */
+    public static function repairIds(array $ids): array
+    {
+        foreach ($ids as $id) {
+            RuntimeProfileGuard::assertServiceCall($id);
+        }
+        $calls = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
+            ->whereKey($ids)
+            ->orderBy('updated_at')
+            ->orderBy('id')
             ->get();
         $report = [
             'candidates' => $calls->count(),
@@ -277,6 +308,9 @@ final class LinkedServiceCallCloser
                     $report['reconciled']++;
                 }
             } catch (Throwable $failure) {
+                if ($failure instanceof \Workflow\V2\Exceptions\RuntimeProfileRefusal) {
+                    throw $failure;
+                }
                 report($failure);
                 $report['failures'][] = [
                     'call_id' => $call->id,

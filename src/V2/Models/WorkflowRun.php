@@ -39,40 +39,6 @@ class WorkflowRun extends Model
 
     protected $dateFormat = 'Y-m-d H:i:s.u';
 
-    public function fill(array $attributes)
-    {
-        RuntimeProfileGuard::assertNoProfileInput($attributes);
-
-        return parent::fill($attributes);
-    }
-
-    /** Guard before application retrieved observers can see the run. */
-    public function newFromBuilder($attributes = [], $connection = null)
-    {
-        $model = $this->newInstance([], true);
-        $model->setRawAttributes((array) $attributes, true);
-        $model->setConnection($connection ?? $this->getConnectionName());
-        RuntimeProfileGuard::assertHydrated($model);
-        $model->fireModelEvent('retrieved', false);
-
-        return $model;
-    }
-
-    protected static function boot(): void
-    {
-        parent::boot();
-        static::creating(static function (self $run): void {
-            RuntimeProfileGuard::assertLegacySnapshot($run->getAttributes());
-            $run->attributes['runtime_profile'] = null;
-        });
-        static::updating(static function (self $run): void {
-            if ($run->isDirty('runtime_profile')) {
-                throw new RuntimeProfileRefusal('runtime_profile_assignment');
-            }
-            RuntimeProfileGuard::assertRun($run);
-        });
-    }
-
     protected $casts = [
         'status' => RunStatus::class,
         'observability_context' => 'array',
@@ -98,6 +64,27 @@ class WorkflowRun extends Model
         'import_contract_version' => 'integer',
         'imported_at' => 'datetime',
     ];
+
+    public function fill(array $attributes)
+    {
+        RuntimeProfileGuard::assertNoProfileInput($attributes);
+
+        return parent::fill($attributes);
+    }
+
+    /**
+     * Guard before application retrieved observers can see the run.
+     */
+    public function newFromBuilder($attributes = [], $connection = null)
+    {
+        $model = $this->newInstance([], true);
+        $model->setRawAttributes((array) $attributes, true);
+        $model->setConnection($connection ?? $this->getConnectionName());
+        RuntimeProfileGuard::assertHydrated($model);
+        $model->fireModelEvent('retrieved', false);
+
+        return $model;
+    }
 
     public function getDetailsPrunedAtAttribute(?string $value): ?Carbon
     {
@@ -434,6 +421,21 @@ class WorkflowRun extends Model
             })
             ->sortKeys()
             ->toArray();
+    }
+
+    protected static function boot(): void
+    {
+        parent::boot();
+        static::creating(static function (self $run): void {
+            RuntimeProfileGuard::assertLegacySnapshot($run->getAttributes());
+            $run->attributes['runtime_profile'] = null;
+        });
+        static::updating(static function (self $run): void {
+            if ($run->isDirty('runtime_profile')) {
+                throw new RuntimeProfileRefusal('runtime_profile_assignment');
+            }
+            RuntimeProfileGuard::assertRun($run);
+        });
     }
 
     /**

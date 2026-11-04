@@ -157,6 +157,9 @@ final class FailureFactory
      */
     public static function payload(Throwable $throwable): array
     {
+        if ($throwable instanceof \Workflow\V2\Exceptions\RuntimeProfileRefusal) {
+            throw $throwable;
+        }
         if ($throwable instanceof RestoredWorkflowException) {
             /** @var array{
              *     class: class-string<Throwable>|string,

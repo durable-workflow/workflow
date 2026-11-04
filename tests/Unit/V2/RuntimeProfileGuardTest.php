@@ -25,7 +25,9 @@ final class RuntimeProfileGuardTest extends TestCase
         RuntimeProfileGuard::assertRun($run);
         $this->assertNull($run->fresh()->getRawOriginal('runtime_profile'));
         $this->assertArrayNotHasKey('runtime_profile', $run->fresh()->toArray());
-        $run->forceFill(['last_command_sequence' => 3])->save();
+        $run->forceFill([
+            'last_command_sequence' => 3,
+        ])->save();
         $this->assertSame(3, $run->fresh()->last_command_sequence);
     }
 
@@ -39,7 +41,7 @@ final class RuntimeProfileGuardTest extends TestCase
         $attributes['runtime_profile'] = $profile;
         // Explicit fixture admission, never a production setter or update.
         DB::table('workflow_runs')->insert($attributes);
-        $before = DB::table('workflow_runs')->orderBy('id')->get()->map(fn ($row) => (array) $row)->all();
+        $before = DB::table('workflow_runs')->orderBy('id')->get()->map(static fn ($row) => (array) $row)->all();
         $calls = 0;
         WorkflowRun::retrieved(static function () use (&$calls): void {
             ++$calls;
@@ -51,11 +53,16 @@ final class RuntimeProfileGuardTest extends TestCase
         } catch (RuntimeProfileRefusal $error) {
             $this->assertSame($reason, $error->reason);
             $this->assertSame(0, $calls);
-            $this->assertSame($before, DB::table('workflow_runs')->orderBy('id')->get()->map(fn ($row) => (array) $row)->all());
+            $this->assertSame(
+                $before,
+                DB::table('workflow_runs')->orderBy('id')->get()->map(static fn ($row) => (array) $row)->all()
+            );
         }
     }
 
-    /** @return iterable<string, array{string, string}> */
+    /**
+     * @return iterable<string, array{string, string}>
+     */
     public static function profileValues(): iterable
     {
         yield 'future token' => ['future.profile-v1', 'runtime_profile_unsupported'];
@@ -71,8 +78,12 @@ final class RuntimeProfileGuardTest extends TestCase
         $run = $this->legacyRun();
         $before = $run->getRawOriginal();
         foreach ([
-            static fn () => $run->fill(['runtime_profile' => 'future']),
-            static fn () => $run->forceFill(['runtime_profile' => null]),
+            static fn () => $run->fill([
+                'runtime_profile' => 'future',
+            ]),
+            static fn () => $run->forceFill([
+                'runtime_profile' => null,
+            ]),
             static function () use ($run): void {
                 $run->runtime_profile = 'future';
                 $run->save();
@@ -93,7 +104,9 @@ final class RuntimeProfileGuardTest extends TestCase
         $run = $this->legacyRun();
         $before = $run->getRawOriginal();
         try {
-            DB::table('workflow_runs')->where('id', $run->id)->update(['runtime_profile' => 'future']);
+            DB::table('workflow_runs')->where('id', $run->id)->update([
+                'runtime_profile' => 'future',
+            ]);
             $this->fail('Bulk writes must not convert a legacy run.');
         } catch (QueryException $error) {
             $this->assertStringContainsString('runtime_profile_immutable', $error->getMessage());
@@ -110,13 +123,16 @@ final class RuntimeProfileGuardTest extends TestCase
         $attributes['runtime_profile'] = 'future';
         DB::table('workflow_runs')->insert($attributes);
         $migration = require __DIR__ . '/../../../src/migrations/2026_11_04_000100_add_runtime_profile_to_workflow_runs.php';
-        $before = DB::table('workflow_runs')->orderBy('id')->get()->map(fn ($row) => (array) $row)->all();
+        $before = DB::table('workflow_runs')->orderBy('id')->get()->map(static fn ($row) => (array) $row)->all();
         try {
             $migration->down();
             $this->fail('A protected discriminator cannot be dropped.');
         } catch (RuntimeProfileRefusal) {
             $this->assertTrue(Schema::hasColumn('workflow_runs', 'runtime_profile'));
-            $this->assertSame($before, DB::table('workflow_runs')->orderBy('id')->get()->map(fn ($row) => (array) $row)->all());
+            $this->assertSame(
+                $before,
+                DB::table('workflow_runs')->orderBy('id')->get()->map(static fn ($row) => (array) $row)->all()
+            );
         }
     }
 

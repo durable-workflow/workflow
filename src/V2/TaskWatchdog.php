@@ -15,6 +15,7 @@ use Workflow\V2\Contracts\WorkflowTaskRepairProjectionRole;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\RuntimeProfileRefusal;
 use Workflow\V2\Exceptions\SqliteWriteAdmissionUnavailableException;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkerCompatibilityHeartbeat;
@@ -27,6 +28,7 @@ use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\LinkedServiceCallCloser;
 use Workflow\V2\Support\RequestedTaskScope;
+use Workflow\V2\Support\RuntimeProfileGuard;
 use Workflow\V2\Support\ServiceCallDeadline;
 use Workflow\V2\Support\ServiceCallScheduler;
 use Workflow\V2\Support\SqliteMaintenanceYield;
@@ -57,6 +59,9 @@ final class TaskWatchdog
         try {
             self::runPass($connection, $queue, respectThrottle: true);
         } catch (Throwable $throwable) {
+            if ($throwable instanceof RuntimeProfileRefusal) {
+                throw $throwable;
+            }
             // Queue workers call wake() on every poll; a transient table-not-found
             // error during test migrate:fresh windows or a deadlock under heavy
             // contention must not kill the worker. The next poll re-enters the
@@ -110,6 +115,62 @@ final class TaskWatchdog
             return self::emptyReport($connection, $queue, $respectThrottle, $runIds, $instanceId);
         }
 
+        RuntimeProfileGuard::assertScope($connection, $queue, $runIds, $instanceId);
+
+        $taskPlan = TaskRepairCandidates::planTaskIds(
+            runIds: $runIds,
+            instanceId: $instanceId,
+            connection: $connection,
+            queue: $queue,
+        );
+        $missingRunIds = TaskRepairCandidates::runIds(
+            runIds: $runIds,
+            instanceId: $instanceId,
+            connection: $connection,
+            queue: $queue,
+        );
+        $existingTaskCandidateIds = $taskPlan['ids'];
+        $deadlineExpiredRunIds = self::deadlineExpiredRunIds($runIds, $instanceId, $connection, $queue);
+        $serviceCallIds = ServiceCallDeadline::expiredCallIds(
+            TaskRepairPolicy::scanLimit(),
+            $runIds,
+            $instanceId,
+            $connection,
+            $queue
+        );
+        $serviceDispatchIds = ServiceCallScheduler::dueIds(
+            TaskRepairPolicy::scanLimit(),
+            $runIds,
+            $instanceId,
+            $connection,
+            $queue
+        );
+        $linkedCallIds = LinkedServiceCallCloser::candidateIds(
+            TaskRepairPolicy::scanLimit(),
+            $runIds,
+            $instanceId,
+            $connection,
+            $queue
+        );
+        $activityTimeoutIds = ActivityTimeoutEnforcer::expiredExecutionIds(
+            TaskRepairPolicy::scanLimit(),
+            $connection,
+            $queue
+        );
+        foreach ($existingTaskCandidateIds as $id) {
+            RuntimeProfileGuard::taskExistsAndIsSupported($id);
+        }
+        $selectedRunIds = array_values(array_unique([...$missingRunIds, ...$deadlineExpiredRunIds]));
+        if ($selectedRunIds !== []) {
+            RuntimeProfileGuard::assertScope(runIds: $selectedRunIds);
+        }
+        foreach (array_unique([...$serviceCallIds, ...$serviceDispatchIds, ...$linkedCallIds]) as $id) {
+            RuntimeProfileGuard::assertServiceCall($id);
+        }
+        foreach ($activityTimeoutIds as $id) {
+            RuntimeProfileGuard::assertActivityExecution($id);
+        }
+
         if ($respectThrottle) {
             if (! CacheThrottle::acquire(self::LOOP_THROTTLE_KEY, true, TaskRepairPolicy::loopThrottleSeconds())) {
                 return self::emptyReport(
@@ -127,18 +188,7 @@ final class TaskWatchdog
 
         WorkerCompatibilityFleet::heartbeat($connection, $queue);
 
-        $existingTaskCandidateIds = TaskRepairCandidates::taskIds(
-            runIds: $runIds,
-            instanceId: $instanceId,
-            connection: $connection,
-            queue: $queue,
-        );
-        $missingRunIds = TaskRepairCandidates::runIds(
-            runIds: $runIds,
-            instanceId: $instanceId,
-            connection: $connection,
-            queue: $queue,
-        );
+        TaskRepairCandidates::commitTaskPlan($taskPlan);
         $report = self::emptyReport($connection, $queue, $respectThrottle, $runIds, $instanceId);
         $report['selected_existing_task_candidates'] = count($existingTaskCandidateIds);
         $report['selected_missing_task_candidates'] = count($missingRunIds);
@@ -185,7 +235,6 @@ final class TaskWatchdog
             SqliteMaintenanceYield::pause((new WorkflowRun())->getConnection());
         }
 
-        $deadlineExpiredRunIds = self::deadlineExpiredRunIds($runIds, $instanceId, $connection, $queue);
         $report['deadline_expired_candidates'] = count($deadlineExpiredRunIds);
 
         foreach ($deadlineExpiredRunIds as $deadlineRunId) {
@@ -209,13 +258,6 @@ final class TaskWatchdog
             SqliteMaintenanceYield::pause((new WorkflowRun())->getConnection());
         }
 
-        $serviceCallIds = ServiceCallDeadline::expiredCallIds(
-            TaskRepairPolicy::scanLimit(),
-            $runIds,
-            $instanceId,
-            $connection,
-            $queue,
-        );
         $report['service_call_timeout_candidates'] = count($serviceCallIds);
         foreach ($serviceCallIds as $callId) {
             try {
@@ -227,6 +269,9 @@ final class TaskWatchdog
                     $report['service_call_timeouts_enforced']++;
                 }
             } catch (Throwable $failure) {
+                if ($failure instanceof RuntimeProfileRefusal) {
+                    throw $failure;
+                }
                 report($failure);
                 $report['service_call_timeout_failures'][] = [
                     'call_id' => $callId,
@@ -238,33 +283,16 @@ final class TaskWatchdog
             );
         }
 
-        $serviceCallDispatch = ServiceCallScheduler::repairDue(
-            TaskRepairPolicy::scanLimit(),
-            $runIds,
-            $instanceId,
-            $connection,
-            $queue,
-        );
+        $serviceCallDispatch = ServiceCallScheduler::repairIds($serviceDispatchIds, TaskRepairPolicy::scanLimit());
         $report['service_call_dispatch_candidates'] = $serviceCallDispatch['candidates'];
         $report['service_call_dispatches_enqueued'] = $serviceCallDispatch['enqueued'];
         $report['service_call_dispatch_failures'] = $serviceCallDispatch['failures'];
 
-        $linkedCalls = LinkedServiceCallCloser::repairDue(
-            TaskRepairPolicy::scanLimit(),
-            $runIds,
-            $instanceId,
-            $connection,
-            $queue
-        );
+        $linkedCalls = LinkedServiceCallCloser::repairIds($linkedCallIds);
         $report['service_call_linked_candidates'] = $linkedCalls['candidates'];
         $report['service_call_links_reconciled'] = $linkedCalls['reconciled'];
         $report['service_call_linked_failures'] = $linkedCalls['failures'];
 
-        $activityTimeoutIds = ActivityTimeoutEnforcer::expiredExecutionIds(
-            TaskRepairPolicy::scanLimit(),
-            $connection,
-            $queue,
-        );
         $report['activity_timeout_candidates'] = count($activityTimeoutIds);
 
         foreach ($activityTimeoutIds as $activityExecutionId) {
@@ -287,6 +315,9 @@ final class TaskWatchdog
                     ];
                 }
             } catch (Throwable $throwable) {
+                if ($throwable instanceof RuntimeProfileRefusal) {
+                    throw $throwable;
+                }
                 report($throwable);
 
                 $report['activity_timeout_failures'][] = [
@@ -398,6 +429,9 @@ final class TaskWatchdog
                 'deferred' => 'repair',
             ];
         } catch (Throwable $throwable) {
+            if ($throwable instanceof RuntimeProfileRefusal) {
+                throw $throwable;
+            }
             return self::failedExistingTask($candidateId, $throwable, $acquiringTask);
         }
 
@@ -412,6 +446,9 @@ final class TaskWatchdog
      */
     private static function failedExistingTask(string $candidateId, Throwable $throwable, bool $acquiringTask): array
     {
+        if ($throwable instanceof RuntimeProfileRefusal) {
+            throw $throwable;
+        }
         if ($acquiringTask && self::taskLockUnavailable($throwable)) {
             // The transaction rolled back; a later pass rechecks durable state.
             return [
@@ -425,6 +462,9 @@ final class TaskWatchdog
                 'last_error' => $throwable->getMessage(),
             ]);
         } catch (Throwable $diagnosticFailure) {
+            if ($diagnosticFailure instanceof RuntimeProfileRefusal) {
+                throw $diagnosticFailure;
+            }
             // Diagnostics must not abort the scan or replace its original failure.
             report($diagnosticFailure);
         }
@@ -464,6 +504,9 @@ final class TaskWatchdog
                 TaskDispatcher::dispatch($task);
             }
         } catch (Throwable $throwable) {
+            if ($throwable instanceof RuntimeProfileRefusal) {
+                throw $throwable;
+            }
             report($throwable);
 
             return [
@@ -737,6 +780,9 @@ final class TaskWatchdog
                 TaskDispatcher::dispatch($task);
             }
         } catch (Throwable $throwable) {
+            if ($throwable instanceof RuntimeProfileRefusal) {
+                throw $throwable;
+            }
             if ($acquiringTask && self::taskLockUnavailable($throwable)) {
                 // A locked existing task is not an absent task. Roll back the
                 // pass instead of creating a second deadline-control task.

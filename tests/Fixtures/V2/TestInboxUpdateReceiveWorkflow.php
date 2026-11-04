@@ -33,7 +33,8 @@ final class TestInboxUpdateReceiveWorkflow extends Workflow
     {
         await('go');
         if ($receiveAfterGo) {
-            $this->inbox('chat')->receiveOne();
+            $this->inbox('chat')
+                ->receiveOne();
         }
         activity(TestRedriveFirstActivity::class, 'step');
         await('done');

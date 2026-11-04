@@ -28,6 +28,8 @@ final class RunLineageProjector
         ?array $parents = null,
         ?array $continuedWorkflows = null,
     ): array {
+        RuntimeProfileGuard::assertRun($run);
+
         $parents ??= RunLineageView::parentsForRun($run);
         $continuedWorkflows ??= RunLineageView::continuedWorkflowsForRun($run);
 
@@ -62,6 +64,8 @@ final class RunLineageProjector
         WorkflowRun $run,
         WorkflowHistoryEvent $event,
     ): WorkflowRunLineageEntry {
+        RuntimeProfileGuard::assertRun($run);
+
         if (
             $event->workflow_run_id !== $run->id
             || ! in_array($event->event_type, ChildRunHistory::resolutionEventTypes(), true)
@@ -167,6 +171,8 @@ final class RunLineageProjector
      */
     public static function snapshotForRun(WorkflowRun $run): array
     {
+        RuntimeProfileGuard::assertRun($run);
+
         $projected = self::projectedRows($run);
         $parents = RunLineageView::parentsForRun($run);
         $continuedWorkflows = RunLineageView::continuedWorkflowsForRun($run);
@@ -204,6 +210,8 @@ final class RunLineageProjector
      */
     public static function driftStatusForRun(WorkflowRun $run): array
     {
+        RuntimeProfileGuard::assertRun($run);
+
         $projected = self::projectedRows($run);
         $parents = RunLineageView::parentsForRun($run);
         $continuedWorkflows = RunLineageView::continuedWorkflowsForRun($run);

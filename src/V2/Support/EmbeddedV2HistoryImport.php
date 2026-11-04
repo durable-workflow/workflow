@@ -133,6 +133,10 @@ final class EmbeddedV2HistoryImport
      */
     public static function import(array $bundle, array $options = []): array
     {
+        RuntimeProfileGuard::assertNoProfileInput($options);
+        if (is_array($bundle['workflow'] ?? null)) {
+            RuntimeProfileGuard::assertNoProfileInput($bundle['workflow']);
+        }
         $dryRun = (bool) ($options['dry_run'] ?? false);
         $workflow = self::workflowSummary($bundle, self::stringValue($options['namespace'] ?? null));
         $integrity = BundleIntegrityVerifier::verify($bundle, self::stringValue($options['signing_key'] ?? null));
@@ -147,6 +151,8 @@ final class EmbeddedV2HistoryImport
             ];
         }
 
+        RuntimeProfileGuard::assertStorage();
+        RuntimeProfileGuard::assertScope(instanceId: $workflow['instance_id']);
         $namespace = self::stringValue($workflow['namespace'] ?? null);
         $connection = ConfiguredV2Models::connection();
         $existing = self::existingRunOutcome(

@@ -20,7 +20,9 @@ final class HistoryEventPayloadContractTest extends TestCase
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('undocumented key(s): ' . $field);
 
-        HistoryEventPayloadContract::assertKnownPayloadKeys($type, [$field => []]);
+        HistoryEventPayloadContract::assertKnownPayloadKeys($type, [
+            $field => [],
+        ]);
     }
 
     public static function unreviewedUpdateReceiveObservationFields(): array

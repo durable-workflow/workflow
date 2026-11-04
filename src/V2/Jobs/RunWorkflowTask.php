@@ -13,10 +13,12 @@ use Throwable;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\RuntimeProfileRefusal;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\ExecutionTracing;
+use Workflow\V2\Support\RuntimeProfileGuard;
 use Workflow\V2\Support\ServiceCallWorkflowDelivery;
 use Workflow\V2\Support\SqliteTransaction;
 use Workflow\V2\Support\StickyExecution;
@@ -51,6 +53,9 @@ final class RunWorkflowTask implements ShouldQueue
 
     public function handle(WorkflowExecutor $executor): void
     {
+        if (! RuntimeProfileGuard::taskExistsAndIsSupported($this->taskId)) {
+            return;
+        }
         WorkerCompatibilityFleet::heartbeat(
             is_string($this->connection ?? null) ? $this->connection : null,
             is_string($this->queue ?? null) ? $this->queue : null,
@@ -136,6 +141,9 @@ final class RunWorkflowTask implements ShouldQueue
                 return $nextTask;
             });
         } catch (Throwable $throwable) {
+            if ($throwable instanceof RuntimeProfileRefusal) {
+                throw $throwable;
+            }
             $continuation?->disable('transaction_failure');
             SqliteTransaction::forTask($this->taskId, function () use ($throwable): void {
                 /** @var WorkflowTask|null $task */

@@ -48,6 +48,7 @@ final class QueryStateReplayer
 
     public function replayState(WorkflowRun $run): ReplayState
     {
+        RuntimeProfileGuard::assertRun($run);
         $this->loadReplayRelations($run);
 
         $workflowClass = WorkflowDefinitionFingerprint::resolveClassForRun($run);

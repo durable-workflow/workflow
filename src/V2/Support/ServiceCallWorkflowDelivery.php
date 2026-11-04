@@ -18,6 +18,7 @@ final class ServiceCallWorkflowDelivery
 {
     public static function forAdmission(WorkflowRun $run, WorkflowHistoryEvent $event): void
     {
+        RuntimeProfileGuard::assertRun($run);
         if (! in_array($event->event_type, [
             HistoryEventType::ServiceOperationScheduled,
             HistoryEventType::ServiceCallStarted,
@@ -39,6 +40,8 @@ final class ServiceCallWorkflowDelivery
 
     public static function enqueue(WorkflowServiceCall $call): void
     {
+        RuntimeProfileGuard::assertServiceCall((string) $call->getKey());
+
         if (! self::isTerminal($call)
             || ! is_string($call->caller_workflow_instance_id)
             || ! is_string($call->caller_workflow_run_id)) {
@@ -127,6 +130,8 @@ final class ServiceCallWorkflowDelivery
 
     public static function recordForClaim(WorkflowTask $task, WorkflowRun $run): void
     {
+        RuntimeProfileGuard::assertRun($run);
+        RuntimeProfileGuard::assertTask($task);
         $taskPayload = $task->payload ?? [];
         if (($taskPayload['service_call_terminal_pending'] ?? null) !== true
             || ($taskPayload['resume_source_kind'] ?? null) !== 'service_call') {

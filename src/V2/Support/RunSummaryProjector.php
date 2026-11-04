@@ -33,6 +33,8 @@ final class RunSummaryProjector
 
     public static function bufferedSignalSummary(WorkflowRun $run): ?WorkflowRunSummary
     {
+        RuntimeProfileGuard::assertRun($run);
+
         if ($run->status->isTerminal()) {
             return null;
         }
@@ -57,6 +59,8 @@ final class RunSummaryProjector
         WorkflowHistoryEvent $event,
         WorkflowRunSummary $summary,
     ): WorkflowRunSummary {
+        RuntimeProfileGuard::assertRun($run);
+
         if (
             $event->workflow_run_id !== $run->id
             || $event->event_type !== HistoryEventType::SignalReceived
@@ -98,6 +102,8 @@ final class RunSummaryProjector
 
     public static function projectActivityOutcomeRejection(WorkflowRun $run, WorkflowHistoryEvent $event): void
     {
+        RuntimeProfileGuard::assertRun($run);
+
         if ($event->workflow_run_id !== $run->id
             || $event->event_type !== HistoryEventType::ActivityOutcomeRejected) {
             throw new \LogicException('Rejection counters must belong to the original workflow run.');
@@ -127,6 +133,8 @@ final class RunSummaryProjector
 
     public static function project(WorkflowRun $run): WorkflowRunSummary
     {
+        RuntimeProfileGuard::assertRun($run);
+
         if (ImportedLineageReferences::imported($run)) {
             RunInstanceMetadata::detachForeign($run);
         }
@@ -530,6 +538,8 @@ final class RunSummaryProjector
 
     public static function projectRepairedWorkflowTask(WorkflowRun $run, WorkflowTask $task): WorkflowRunSummary
     {
+        RuntimeProfileGuard::assertRun($run);
+
         if (($task->payload['workflow_wait_kind'] ?? null) === 'activity') {
             $summaryModel = self::summaryModel();
             /** @var WorkflowRunSummary|null $summary */

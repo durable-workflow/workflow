@@ -27,6 +27,9 @@ final class TaskDispatcher
         bool $queueTimerWakeup = false,
         bool $boundedWorkflowTaskProjection = false,
     ): void {
+        if (! RuntimeProfileGuard::taskIsSupported($task)) {
+            return;
+        }
         $connection = $task->getConnection();
         if ($connection->transactionLevel() > 0) {
             AfterCommit::on(
@@ -67,6 +70,9 @@ final class TaskDispatcher
         bool $queueTimerWakeup = false,
         bool $boundedWorkflowTaskProjection = false,
     ): void {
+        if (! RuntimeProfileGuard::taskExistsAndIsSupported($taskId)) {
+            return;
+        }
         /** @var WorkflowTask|null $task */
         $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)->find($taskId);
 
