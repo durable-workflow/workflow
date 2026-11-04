@@ -110,6 +110,9 @@ jobs:
     - name: Validate Laravel dependency security policy
       run: php scripts/ci/check-laravel-dependency-security.php --policy-only
 
+    - name: Validate committed Composer lock inventory
+      run: php scripts/ci/check-committed-composer-locks.php --inventory-only
+
     - name: Install payload consumer dependencies
       run: composer install --prefer-dist --no-progress --no-dev --no-scripts
 
