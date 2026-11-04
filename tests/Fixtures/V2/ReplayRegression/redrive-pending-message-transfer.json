@@ -1,0 +1,39 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "redrive-pending-message-transfer",
+  "protocol_version": "1.0",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestMessageStreamRedriveLaterReceiveWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "redrive_pending_message_transfer": {
+    "issue": "durable-workflow/workflow#1013",
+    "stream": "chat",
+    "signal": "go",
+    "before_failure": "m1",
+    "while_failed": "m2",
+    "output": {
+      "first": "m1",
+      "later": "m2",
+      "result": "Hello, m1! Redrive completed."
+    }
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-04T00:00:00+00:00",
+      "payload": {}
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {"type": "open_signal_wait", "signal_name": "go"}
+    ]
+  }
+}
