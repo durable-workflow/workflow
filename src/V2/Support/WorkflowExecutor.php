@@ -6595,7 +6595,9 @@ final class WorkflowExecutor
                 if ($command instanceof WorkflowCommand && ExecutionTracing::enabled()) {
                     ExecutionTracing::linkUpdate($run, $command);
                 }
-                $result = $workflow->{$resolvedTarget['method']}(...$parameters);
+                $result = $workflow->runLiveUpdateHandler(
+                    static fn (): mixed => $workflow->{$resolvedTarget['method']}(...$parameters),
+                );
 
                 $appliedEvent = WorkflowHistoryEvent::record($run, HistoryEventType::UpdateApplied, [
                     'workflow_command_id' => $command?->id,

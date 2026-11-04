@@ -1,0 +1,34 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "message-stream-empty-receive-replays-empty",
+  "protocol_version": "1.0",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestInboxBranchWorkflow",
+    "arguments": [2],
+    "payload_codec": "avro"
+  },
+  "message_stream_empty_receive_replays_empty": {
+    "issue": "durable-workflow/workflow#1011",
+    "stream": "chat",
+    "signal": "ping",
+    "arrives_after_first_turn": "m1",
+    "output": ["none:Hello, none!", "got:m1"]
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-04T00:00:00+00:00",
+      "payload": {}
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {"type": "open_signal_wait", "signal_name": "ping"}
+    ]
+  }
+}

@@ -6,7 +6,11 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
+use Tests\Fixtures\V2\TestInboxBranchWorkflow;
+use Tests\Fixtures\V2\TestInboxKeptBranchWorkflow;
+use Tests\Fixtures\V2\TestInboxKeptStreamWorkflow;
 use Tests\Fixtures\V2\TestInboxTurnsWorkflow;
+use Tests\Fixtures\V2\TestInboxUpdateReceiveWorkflow;
 use Tests\Fixtures\V2\TestMessageStreamContinueAsNewWorkflow;
 use Tests\Fixtures\V2\TestMessageStreamExactContentWorkflow;
 use Tests\Fixtures\V2\TestMessageStreamKeptStreamWorkflow;
@@ -285,6 +289,59 @@ final class V2MessageStreamReplayTest extends TestCase
     }
 
     /**
+     * A signal advances the run's message cursor past an older message that is
+     * still pending on a stream. The message stays receivable (#1011).
+     */
+    public function testASignalDoesNotHideAnOlderPendingStreamMessage(): void
+    {
+        $workflow = WorkflowStub::make(TestInboxTurnsWorkflow::class, 'inbox-before-signal');
+        $workflow->start(1);
+        $this->drainReadyTasks();
+        $run = WorkflowRun::query()->where('workflow_instance_id', 'inbox-before-signal')->sole();
+
+        // The message arrives before the ping that wakes the receive.
+        $this->sendToInbox($run, 'm1');
+        $workflow->signal('ping');
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame(['m1'], $workflow->output());
+    }
+
+    /**
+     * Consuming a newer message on one stream doesn't hide an older pending
+     * message on another stream of the same run.
+     */
+    public function testAReceiveOnOneStreamDoesNotHideAnotherStreamsOlderMessage(): void
+    {
+        $workflow = WorkflowStub::make(TestInboxTurnsWorkflow::class, 'inbox-two-streams');
+        $workflow->start(1);
+        $this->drainReadyTasks();
+        $run = WorkflowRun::query()->where('workflow_instance_id', 'inbox-two-streams')->sole();
+        $service = new MessageService();
+        $service->sendMessage($run, MessageChannel::WorkflowMessage, $run->workflow_instance_id, 'b1', 'b');
+        $service->sendMessage($run, MessageChannel::WorkflowMessage, $run->workflow_instance_id, 'a1', 'a');
+
+        $a1 = $service->peekMessages($run->fresh(), 'a')
+            ->sole();
+        $service->consumeMessage($run->fresh(), $a1, 1);
+        $this->assertGreaterThan(
+            (int) WorkflowMessage::query()->where('payload_reference', 'b1')->where(
+                'direction',
+                MessageDirection::Inbound->value
+            )->sole()
+->sequence,
+            (int) $run->fresh()
+->message_cursor_position,
+        );
+
+        $this->assertSame(['b1'], $service->peekMessages($run->fresh(), 'b')->pluck('payload_reference')->all());
+        $this->assertSame(1, $service->getUnconsumedCount($run->fresh(), 'b'));
+        $this->assertTrue($service->hasUnconsumedMessages($run->fresh(), 'b'));
+        $this->assertSame([], $service->peekMessages($run->fresh(), 'a')->pluck('payload_reference')->all());
+    }
+
+    /**
      * A message that arrives while the run is failed belongs to that run. The
      * redrive moves it to the successor, which receives it at a later step.
      */
@@ -330,6 +387,205 @@ final class V2MessageStreamReplayTest extends TestCase
             ->sole();
         $this->assertSame($successor->id, $m2->workflow_run_id);
         $this->assertSame(MessageConsumeState::Consumed, $m2->consume_state);
+    }
+
+    /**
+     * A receive that found nothing replays as nothing, even when a message
+     * has arrived since. The message waits for a receive the run hasn't made
+     * yet (#1011 review): a history where an earlier release's cursor hid a
+     * message must not consume it at the old step after upgrading.
+     */
+    public function testAReceiveThatFoundNothingReplaysAsNothingAndTheMessageWaitsForTheNextTurn(): void
+    {
+        $workflow = WorkflowStub::make(TestInboxTurnsWorkflow::class, 'inbox-empty-first');
+        $workflow->start(2);
+        $this->drainReadyTasks();
+        $run = WorkflowRun::query()->where('workflow_instance_id', 'inbox-empty-first')->sole();
+
+        // Turn 1 finds the inbox empty.
+        $workflow->signal('ping');
+        $this->drainReadyTasks();
+        $this->sendToInbox($run, 'm1');
+        $before = $this->messageRows();
+        $this->assertSame([null], $workflow->refresh()->query('received'));
+        $this->assertSame($before, $this->messageRows());
+
+        $workflow->signal('ping');
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([null, 'm1'], $workflow->output());
+    }
+
+    /**
+     * A stream kept from an earlier step still consumes at the step the code
+     * is at now: the replay check reads the current step on every call.
+     */
+    public function testAKeptInboxStillReceivesAtLaterTurns(): void
+    {
+        $workflow = WorkflowStub::make(TestInboxKeptStreamWorkflow::class, 'inbox-kept');
+        $workflow->start(2);
+        $this->drainReadyTasks();
+        $run = WorkflowRun::query()->where('workflow_instance_id', 'inbox-kept')->sole();
+
+        $workflow->signal('ping');
+        $this->sendToInbox($run, 'm1');
+        $this->drainReadyTasks();
+        $workflow->signal('ping');
+        $this->sendToInbox($run, 'm2');
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame(['m1', 'm2'], $workflow->output());
+    }
+
+    /**
+     * A kept inbox whose first turn found nothing records a later turn's
+     * consumption at that later step, so the first turn still replays as
+     * nothing.
+     */
+    public function testAKeptInboxWhoseFirstTurnWasEmptyReplaysThatTurnAsNothing(): void
+    {
+        $workflow = WorkflowStub::make(TestInboxKeptStreamWorkflow::class, 'inbox-kept-empty-first');
+        $workflow->start(2);
+        $this->drainReadyTasks();
+        $run = WorkflowRun::query()->where('workflow_instance_id', 'inbox-kept-empty-first')->sole();
+
+        $workflow->signal('ping');
+        $this->drainReadyTasks();
+        $this->sendToInbox($run, 'm1');
+        $workflow->signal('ping');
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([null, 'm1'], $workflow->output());
+    }
+
+    /**
+     * Rows an earlier release wrote for a kept stream sit at the step the
+     * stream was opened at. A later turn finds its consumption there when
+     * nothing is recorded at its own step.
+     */
+    public function testAKeptInboxStillReplaysConsumptionsRecordedAtItsOpenedStep(): void
+    {
+        $workflow = WorkflowStub::make(TestInboxKeptStreamWorkflow::class, 'inbox-kept-legacy');
+        $workflow->start(3);
+        $this->drainReadyTasks();
+        $run = WorkflowRun::query()->where('workflow_instance_id', 'inbox-kept-legacy')->sole();
+
+        $workflow->signal('ping');
+        $this->sendToInbox($run, 'm1');
+        $this->drainReadyTasks();
+        $workflow->signal('ping');
+        $this->sendToInbox($run, 'm2');
+        $this->drainReadyTasks();
+        $m1 = WorkflowMessage::query()->where('payload_reference', 'm1')->where(
+            'direction',
+            MessageDirection::Inbound->value
+        )->sole();
+        $m2 = WorkflowMessage::query()->where('payload_reference', 'm2')->where(
+            'direction',
+            MessageDirection::Inbound->value
+        )->sole();
+        $this->assertNotSame($m1->consumed_by_sequence, $m2->consumed_by_sequence);
+
+        // As an earlier release recorded it: both at the step the stream opened.
+        $m2->forceFill([
+            'consumed_by_sequence' => $m1->consumed_by_sequence,
+        ])->save();
+
+        $this->assertSame(['m1', 'm2'], $workflow->refresh()->query('received'));
+    }
+
+    /**
+     * The same with a branch and a third turn, whose task replays the first
+     * two turns.
+     */
+    public function testAKeptInboxBranchReplaysAnEmptyFirstTurn(): void
+    {
+        $workflow = WorkflowStub::make(TestInboxKeptBranchWorkflow::class, 'inbox-kept-branch');
+        $workflow->start(3);
+        $this->drainReadyTasks();
+        $run = WorkflowRun::query()->where('workflow_instance_id', 'inbox-kept-branch')->sole();
+
+        $workflow->signal('ping');
+        $this->drainReadyTasks();
+        $this->sendToInbox($run, 'm1');
+        $workflow->signal('ping');
+        $this->drainReadyTasks();
+        $workflow->signal('ping');
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed(), (string) $workflow->refresh()->status());
+        $this->assertSame(['none:Hello, none!', 'got:m1', 'none:Hello, none!'], $workflow->output());
+    }
+
+    /**
+     * The same history when workflow code branches on the receive: replay
+     * takes the branch the original run took, so the run doesn't fail with a
+     * history mismatch.
+     */
+    public function testABranchOnAnEmptyReceiveReplaysTheBranchTheRunTook(): void
+    {
+        $workflow = WorkflowStub::make(TestInboxBranchWorkflow::class, 'inbox-branch');
+        $workflow->start(2);
+        $this->drainReadyTasks();
+        $run = WorkflowRun::query()->where('workflow_instance_id', 'inbox-branch')->sole();
+
+        $workflow->signal('ping');
+        $this->drainReadyTasks();
+        $this->sendToInbox($run, 'm1');
+        $workflow->signal('ping');
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed(), (string) $workflow->refresh()->status());
+        $this->assertSame(['none:Hello, none!', 'got:m1'], $workflow->output());
+        $this->assertSame(
+            MessageConsumeState::Consumed,
+            WorkflowMessage::query()->where('payload_reference', 'm1')->where(
+                'direction',
+                MessageDirection::Inbound->value
+            )->sole()
+->consume_state,
+        );
+    }
+
+    public function testAnUpdateAppliedAfterLaterStepsStillReceivesAndReplaysWhatItTook(): void
+    {
+        $workflow = WorkflowStub::make(TestInboxUpdateReceiveWorkflow::class, 'inbox-update');
+        $workflow->start();
+        $this->drainReadyTasks();
+        $run = WorkflowRun::query()->where('workflow_instance_id', 'inbox-update')->sole();
+
+        $workflow->signal('go');
+        $this->drainReadyTasks();
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        // The run now waits at a step after the one the update is recorded
+        // at; the handler runs for the first time, so it consumes.
+        $this->sendToInbox($run, 'j1');
+        $update = $workflow->attemptUpdate('take');
+
+        $this->assertTrue($update->completed(), (string) $update->outcome());
+        $this->assertSame('j1', $update->result());
+
+        $this->sendToInbox($run, 'j2');
+        $this->assertSame('j2', $workflow->attemptUpdate('take')->result());
+
+        // A query consumes nothing. What it returns for update handler
+        // receives is tracked separately in #1024.
+        $before = $this->messageRows();
+        $workflow->refresh()
+            ->query('taken');
+        $this->assertSame($before, $this->messageRows());
+
+        $workflow->signal('done');
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed(), (string) $workflow->refresh()->status());
+        // Replays of both handlers return what each one took.
+        $this->assertSame(['j1', 'j2'], $workflow->output());
+        $this->assertSame($before, $this->messageRows());
     }
 
     /**

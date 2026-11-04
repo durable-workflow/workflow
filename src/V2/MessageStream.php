@@ -31,6 +31,8 @@ final class MessageStream
         private readonly ?int $defaultConsumedBySequence = null,
         private readonly ?MessageReplayLedger $replayLedger = null,
         private readonly bool|Closure $readOnly = false,
+        private readonly ?Closure $currentStep = null,
+        private readonly ?Closure $runningLiveUpdate = null,
     ) {
         if ($streamKey === '') {
             throw new InvalidArgumentException('Message stream key must not be empty.');
@@ -66,6 +68,8 @@ final class MessageStream
         int $defaultConsumedBySequence,
         MessageReplayLedger $replayLedger,
         Closure $readOnly,
+        ?Closure $currentStep = null,
+        ?Closure $runningLiveUpdate = null,
     ): self {
         return new self(
             $run,
@@ -74,6 +78,8 @@ final class MessageStream
             $defaultConsumedBySequence,
             $replayLedger,
             $readOnly,
+            $currentStep,
+            $runningLiveUpdate,
         );
     }
 
@@ -117,11 +123,30 @@ final class MessageStream
         $limit = $this->positiveLimit($limit);
 
         if ($this->replayLedger instanceof MessageReplayLedger) {
-            $sequence = $this->consumedBySequence($consumedBySequence);
+            // Without an explicit step, a receive records and finds its
+            // consumption at the step the code is at now, not the step a kept
+            // stream was opened at. Rows written by earlier releases sit at the
+            // opened step, so that step is the fallback.
+            $currentStep = $consumedBySequence === null && $this->currentStep instanceof Closure
+                ? (int) ($this->currentStep)()
+                : null;
+            $sequence = $currentStep ?? $this->consumedBySequence($consumedBySequence);
             $recorded = $this->recordedReceive($sequence, $limit);
 
-            // A receive this step already made returns what it consumed.
-            if ($recorded->isNotEmpty() || $this->readOnly()) {
+            if (
+                $recorded->isEmpty()
+                && $currentStep !== null
+                && $this->defaultConsumedBySequence !== null
+                && $this->defaultConsumedBySequence !== $currentStep
+            ) {
+                $recorded = $this->recordedReceive($this->defaultConsumedBySequence, $limit);
+            }
+
+            // A receive this step already made returns what it consumed. A
+            // receive at a step history has already passed, with nothing
+            // recorded, found nothing the first time, so it consumes nothing
+            // now either.
+            if ($recorded->isNotEmpty() || $this->readOnly() || $this->historyPassedCurrentStep()) {
                 return $recorded;
             }
 
@@ -339,6 +364,26 @@ final class MessageStream
         }
 
         return $messages;
+    }
+
+    /**
+     * Whether history already records a step at or after the step workflow
+     * code is at now, so this code ran in an earlier task. The step is read on
+     * every call, so a stream kept in a property is not mistaken for replay.
+     */
+    private function historyPassedCurrentStep(): bool
+    {
+        if (! $this->currentStep instanceof Closure || ! $this->replayLedger instanceof MessageReplayLedger) {
+            return false;
+        }
+
+        // A newly applied update handler runs at its recorded step for the
+        // first time, so it isn't replaying even when history has moved on.
+        if ($this->runningLiveUpdate instanceof Closure && ($this->runningLiveUpdate)() === true) {
+            return false;
+        }
+
+        return (int) ($this->currentStep)() <= $this->replayLedger->highestRecordedStep($this->run);
     }
 
     /**

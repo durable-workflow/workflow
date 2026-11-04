@@ -42,6 +42,8 @@ final class MessageReplayLedger
      */
     private ?array $runIds = null;
 
+    private ?int $highestRecordedStep = null;
+
     /**
      * This run and the runs it was redriven from, newest first. A send or
      * receive in a reused prefix was made by one of them.
@@ -84,6 +86,45 @@ final class MessageReplayLedger
         }
 
         return $this->runIds = $runIds;
+    }
+
+    /**
+     * The highest step sequence this run's history recorded when this
+     * execution first asked. Steps this execution records later are at or
+     * past the step it runs, so a stale answer only ever errs toward "not
+     * passed yet" for them.
+     */
+    public function highestRecordedStep(WorkflowRun $run): int
+    {
+        if ($this->highestRecordedStep !== null) {
+            return $this->highestRecordedStep;
+        }
+
+        $highest = 0;
+        // The executor usually has the run's history loaded already.
+        $payloads = $run->relationLoaded('historyEvents')
+            ? $run->historyEvents->pluck('payload')
+            : WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->pluck('payload');
+
+        foreach ($payloads as $payload) {
+            if (is_string($payload)) {
+                $payload = json_decode($payload, true);
+            }
+            $sequence = is_array($payload) ? ($payload['sequence'] ?? null) : null;
+
+            // Imported histories can carry the step as a numeric string.
+            if (is_string($sequence) && ctype_digit($sequence)) {
+                $sequence = (int) $sequence;
+            }
+
+            if (is_int($sequence) && $sequence > $highest) {
+                $highest = $sequence;
+            }
+        }
+
+        return $this->highestRecordedStep = $highest;
     }
 
     public function sendOffset(string $identity): int
