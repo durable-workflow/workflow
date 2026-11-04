@@ -395,10 +395,17 @@ final class RuntimeProfileSchema
         };
     }
 
+    private static function quotedName(Connection $connection, string $name): string
+    {
+        // Grammar::wrap on a dotted identifier prefixes its first segment as
+        // a table. Generated object names need literal schema/name segments.
+        return implode('.', array_map($connection->getQueryGrammar()->wrap(...), explode('.', $name)));
+    }
+
     private static function triggerSql(Connection $connection, string $table, string $operation = 'update'): string
     {
         $grammar = $connection->getQueryGrammar();
-        $name = $grammar->wrap(self::name($connection, $table, $operation));
+        $name = self::quotedName($connection, self::name($connection, $table, $operation));
         $quotedTable = $grammar->wrapTable($table);
         $event = strtoupper($operation);
         $columns = '';
@@ -424,7 +431,7 @@ final class RuntimeProfileSchema
 
     private static function functionSql(Connection $connection, string $table, string $operation = 'update'): string
     {
-        return 'CREATE FUNCTION ' . $connection->getQueryGrammar()->wrap(self::name($connection, $table, $operation))
+        return 'CREATE FUNCTION ' . self::quotedName($connection, self::name($connection, $table, $operation))
             . '() RETURNS trigger AS $guard$ ' . self::body(
                 'pgsql',
                 $operation,
@@ -446,9 +453,8 @@ final class RuntimeProfileSchema
         switch ($connection->getDriverName()) {
             case 'sqlite':
                 $row = $connection->selectOne(
-                    'SELECT tbl_name, sql FROM ' . $grammar->wrap(
-                        $schema . '.sqlite_master'
-                    ) . ' WHERE type = ? AND name = ?',
+                    'SELECT tbl_name, sql FROM ' . $grammar->wrap($schema)
+                        . '.' . $grammar->wrap('sqlite_master') . ' WHERE type = ? AND name = ?',
                     ['trigger', $name],
                     false
                 );
@@ -457,7 +463,7 @@ final class RuntimeProfileSchema
                 }
                 $expected = self::triggerSql($connection, $table, $operation);
                 $expected = str_replace(
-                    $grammar->wrap(self::name($connection, $table, $operation)),
+                    self::quotedName($connection, self::name($connection, $table, $operation)),
                     $grammar->wrap($name),
                     $expected
                 );
@@ -520,7 +526,7 @@ final class RuntimeProfileSchema
     private static function dropImmutability(Connection $connection, string $table, string $operation = 'update'): void
     {
         $grammar = $connection->getQueryGrammar();
-        $name = $grammar->wrap(self::name($connection, $table, $operation));
+        $name = self::quotedName($connection, self::name($connection, $table, $operation));
         if ($connection->getDriverName() === 'pgsql') {
             $connection->unprepared(
                 'DROP TRIGGER ' . $grammar->wrap(

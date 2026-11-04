@@ -1019,8 +1019,6 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         int $operationSequenceSpan = 1,
         string $protocolVersion = WorkerProtocolVersion::VERSION,
     ): array {
-        RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
-
         return PortableCancellationScopeDelivery::mutate(
             true,
             $taskId,
@@ -1050,8 +1048,6 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         int $operationSequenceSpan = 1,
         string $protocolVersion = WorkerProtocolVersion::VERSION,
     ): array {
-        RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
-
         return PortableCancellationScopeDelivery::mutate(
             false,
             $taskId,

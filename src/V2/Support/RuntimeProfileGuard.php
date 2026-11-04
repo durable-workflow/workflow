@@ -214,7 +214,7 @@ final class RuntimeProfileGuard
     /**
      * Refuse before the queued job's heartbeat, claim, cache or failure path.
      */
-    public static function taskExistsAndIsSupported(string $taskId): bool
+    public static function taskExistsAndIsSupported(string $taskId, bool $bindNamespace = true): bool
     {
         $taskModel = ConfiguredV2Models::resolve('task_model', WorkflowTask::class);
         $model = new $taskModel();
@@ -236,7 +236,7 @@ final class RuntimeProfileGuard
             || ! is_string($task->workflow_run_id) || $task->workflow_run_id === '') {
             throw new RuntimeProfileRefusal('runtime_profile_identity');
         }
-        $expected = $task->namespace === null ? [] : [
+        $expected = ! $bindNamespace || $task->namespace === null ? [] : [
             'namespace' => $task->namespace,
         ];
         self::assertStored(
