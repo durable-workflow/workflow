@@ -27,6 +27,7 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowMessage;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
@@ -569,15 +570,23 @@ final class V2MessageStreamReplayTest extends TestCase
         $this->assertTrue($update->completed(), (string) $update->outcome());
         $this->assertSame('j1', $update->result());
 
+        $beforeQuery = $this->queryReplayRows($run);
+        $taken = $workflow->refresh()->query('taken');
+        $this->assertSame($beforeQuery, $this->queryReplayRows($run));
+        $this->assertSame(['j1'], $taken);
+
         $this->sendToInbox($run, 'j2');
         $this->assertSame('j2', $workflow->attemptUpdate('take')->result());
 
-        // A query consumes nothing. What it returns for update handler
-        // receives is tracked separately in #1024.
+        $this->sendToInbox($run, 'still-pending');
+        $beforeQuery = $this->queryReplayRows($run);
+        for ($query = 0; $query < 2; ++$query) {
+            $taken = $workflow->refresh()->query('taken');
+            $this->assertSame($beforeQuery, $this->queryReplayRows($run));
+            $this->assertSame(['j1', 'j2'], $taken);
+        }
+
         $before = $this->messageRows();
-        $workflow->refresh()
-            ->query('taken');
-        $this->assertSame($before, $this->messageRows());
 
         $workflow->signal('done');
         $this->drainReadyTasks();
@@ -697,6 +706,23 @@ final class V2MessageStreamReplayTest extends TestCase
             ->get()
             ->map(static fn (WorkflowMessage $message): array => $message->getRawOriginal())
             ->all();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function queryReplayRows(WorkflowRun $run): array
+    {
+        return [
+            'messages' => $this->messageRows(),
+            'history' => WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->orderBy('sequence')
+                ->get()
+                ->map(static fn (WorkflowHistoryEvent $event): array => $event->getRawOriginal())
+                ->all(),
+            'cursor' => $run->fresh()->getRawOriginal('message_cursor_position'),
+        ];
     }
 
     private function sendToInbox(WorkflowRun $run, string $reference): void
