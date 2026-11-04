@@ -597,6 +597,32 @@ final class V2MessageStreamReplayTest extends TestCase
         $this->assertSame($before, $this->messageRows());
     }
 
+    public function testAnEmptyUpdateReceiveDoesNotBorrowALaterWorkflowConsumption(): void
+    {
+        $workflow = WorkflowStub::make(TestInboxUpdateReceiveWorkflow::class, 'inbox-empty-update');
+        $workflow->start(true);
+        $this->drainReadyTasks();
+        $run = WorkflowRun::query()->where('workflow_instance_id', 'inbox-empty-update')->sole();
+
+        $update = $workflow->attemptUpdate('take');
+        $this->assertTrue($update->completed(), (string) $update->outcome());
+        $this->assertNull($update->result());
+
+        $this->sendToInbox($run, 'later-body-message');
+        $workflow->signal('go');
+        $this->drainReadyTasks();
+
+        $this->assertSame(
+            MessageConsumeState::Consumed,
+            WorkflowMessage::query()->where('payload_reference', 'later-body-message')
+                ->where('direction', MessageDirection::Inbound->value)->sole()->consume_state,
+        );
+        $before = $this->queryReplayRows($run);
+        $taken = $workflow->refresh()->query('taken');
+        $this->assertSame($before, $this->queryReplayRows($run));
+        $this->assertSame([null], $taken);
+    }
+
     /**
      * A message still pending when a run continues as new moves to the
      * continued run, which receives it (#1018).
