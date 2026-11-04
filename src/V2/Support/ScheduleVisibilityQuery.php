@@ -136,8 +136,8 @@ final class ScheduleVisibilityQuery
         }
 
         $predicates = $this->parse($query);
-        $builder = WorkflowSchedule::query()
-            ->where('namespace', $namespace)
+        $model = ConfiguredV2Models::resolve('schedule_model', WorkflowSchedule::class);
+        $builder = NamespaceIdentity::constrain($model::query(), $namespace)
             ->where('status', '!=', 'deleted');
 
         foreach ($predicates as $predicate) {

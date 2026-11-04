@@ -79,7 +79,9 @@ equality/AND parser and a fresh namespace-bound Eloquent query. `parse($query)`
 returns typed field/column/literal predicates. `query($namespace, $query)`
 applies them to non-deleted schedules before callers count, order or paginate.
 The namespace is a separate required argument and cannot be selected through
-query text. Literal values remain SQL bindings.
+query text. Literal values remain SQL bindings. The planner resolves
+`workflows.v2.schedule_model` and uses Core’s exact namespace identity predicate
+on its configured table and connection, including case/space-folding databases.
 
 The supported fields are `ScheduleId`, `Status`, `WorkflowType`, `TaskQueue`
 and `Note`. Use quoted strings; status is `active` or `paused`. Single-quoted
