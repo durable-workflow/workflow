@@ -42,12 +42,12 @@ final class ExporterExecutionTracingTest extends TestCase
             $server->stop();
         }
         try {
-            $admitted = $this->worker($directory, 'admit', $address);
+            $admitted = $this->worker($directory, 'admit', $address, $mode === 'refused' ? 0 : 1);
             $workers = [];
             for ($i = 0; $i < 3; ++$i) {
-                $workers[] = $this->worker($directory, 'work', $address);
+                $workers[] = $this->worker($directory, 'work', $address, $mode === 'refused' ? 0 : $i + 2);
             }
-            $finished = $this->worker($directory, 'inspect', $address);
+            $finished = $this->worker($directory, 'inspect', $address, $mode === 'refused' ? 0 : 4);
             self::assertSame('completed', $finished['status']);
             self::assertSame([9007199254740993, null, '雪'], $finished['output']);
             self::assertSame(3, $finished['tasks']);
@@ -230,7 +230,22 @@ final class ExporterExecutionTracingTest extends TestCase
         ) : [];
     }
 
-    private function worker(string $directory, string $mode, string $address): array
+    private function awaitRequests(string $directory, int $count): array
+    {
+        $deadline = hrtime(true) + 1_000_000_000;
+
+        do {
+            $requests = $this->requests($directory);
+            if (count($requests) >= $count) {
+                return $requests;
+            }
+            usleep(1_000);
+        } while (hrtime(true) < $deadline);
+
+        return $this->requests($directory);
+    }
+
+    private function worker(string $directory, string $mode, string $address, int $expectedRequestCount): array
     {
         $process = new Process([
             PHP_BINARY, __DIR__ . '/../../Fixtures/V2/tracing-process.php', $directory, $mode, 'once',
@@ -249,6 +264,9 @@ final class ExporterExecutionTracingTest extends TestCase
         if ($mode === 'work') {
             self::assertStringContainsString('Export failure', $process->getErrorOutput());
         }
+        // Settle this worker's timed-out export before the next worker
+        // snapshots the shared journal to detect premature exports.
+        self::assertCount($expectedRequestCount, $this->awaitRequests($directory, $expectedRequestCount));
 
         return $result;
     }

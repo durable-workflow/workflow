@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 2.20.3 - 2026-11-04
+
+- Rollback, embedded Workflow package: 2.20.3 changes no schema, history
+  event or public API. Rolling back restores the shared-cursor, empty
+  receive replay and fake task-drain precision bugs. A kept stream now
+  records receives at the current step. Earlier versions look them up at the opening step and can replay
+  those runs differently after rollback.
 - A message on one stream stays receivable until it is consumed or expires
   (#1011). The run's message cursor is shared by signals, updates and every
   stream, so a signal, an update or a receive on another stream used to move
@@ -23,6 +30,18 @@
     at the step the code is at, not the step the stream was opened at, so
     its replay matches too. Consumptions that earlier releases recorded at
     the opened step still replay.
+
+- `WorkflowStub::runReadyTasks()` now drains fake-workflow tasks at their
+  exact due time, including fractional seconds (#1026). It compares the
+  sampled clock using the configured task model's persisted precision.
+  SQLite previously skipped tasks due at that instant because it compared
+  their fractional timestamps with a whole-second query value. Future
+  fractional deadlines remain pending until they are due.
+- Known limitation (#1024): a query can return nothing for a message an
+  update handler received, because the query replays the handler at the
+  wrong step. The query changes no message rows. The workflow's own replay
+  and completed output still return what the handler received. This issue
+  predates 2.20.3 and remains open.
 
 ## 2.20.2 - 2026-11-04
 
