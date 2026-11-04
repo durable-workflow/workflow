@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:durable-workflow:embedded:update-message-receive-observations:1",
+  "title": "PROPOSED update message receive observations v1 (writer disabled)",
+  "$comment": "Review artifact only. Shape validation does not replace the semantic, retained-row, transaction and compatibility checks in docs/architecture/update-message-receive-observations.md. No runtime currently emits or reads this contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "workflow_instance_id",
+    "workflow_run_id",
+    "workflow_command_id",
+    "update_id",
+    "applied_event_sequence",
+    "calls"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "workflow_instance_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "workflow_run_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "workflow_command_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "update_id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "applied_event_sequence": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "calls": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/call"
+      }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1
+    },
+    "integer": {
+      "type": "string",
+      "pattern": "^(0|-?[1-9][0-9]*)$",
+      "maxLength": 20
+    },
+    "unsignedInteger": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)$",
+      "maxLength": 19
+    },
+    "positiveInteger": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "maxLength": 19
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workflow_run_id",
+        "message_id",
+        "sequence",
+        "identity_sha256"
+      ],
+      "properties": {
+        "workflow_run_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "message_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "sequence": {
+          "$ref": "#/$defs/positiveInteger"
+        },
+        "identity_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "call": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ordinal",
+        "stream_key_base64",
+        "requested_limit",
+        "consumed_by_sequence_override",
+        "effective_consumed_by_sequence",
+        "outcome",
+        "messages"
+      ],
+      "properties": {
+        "ordinal": {
+          "$ref": "#/$defs/unsignedInteger"
+        },
+        "stream_key_base64": {
+          "type": "string",
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+        },
+        "requested_limit": {
+          "$ref": "#/$defs/integer"
+        },
+        "consumed_by_sequence_override": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effective_consumed_by_sequence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "returned",
+            "threw"
+          ]
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/message"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "returned"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "effective_consumed_by_sequence": {
+                "$ref": "#/$defs/integer"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "threw"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "messages": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
