@@ -1,0 +1,47 @@
+{
+  "schema": "durable-workflow.committed-composer-lock-audit/v1",
+  "locks": {
+    ".github/queue-contention/composer.lock": {
+      "workflow_reference": "31cc009e24f2282b59ca3cff00d389f1cafe0171",
+      "accepted_advisories": [
+        {
+          "id": "PKSA-wtxr-p26d-nn42",
+          "package": "symfony/mime",
+          "version": "v8.1.7",
+          "cve": "CVE-2026-45070",
+          "owner": "https://github.com/durable-workflow/workflow/issues/809",
+          "reason": "Preserved exact historical diagnostic/study input; this bounded workload does not construct MIME parameter names from untrusted input. This exception does not authorize production use.",
+          "review_condition": "Owning issue must review before any dependency refresh or experiment rerun, or if advisory reachability changes."
+        }
+      ],
+      "preserved_sha256": "1aec0da263ce013e1b580125c544bd2e189d45edbfc323ab5ea8661a9c2cacb2"
+    },
+    ".github/queue-contention/current/composer.lock": {
+      "workflow_reference": "78075b6f7e513a93db7d613bdd09b9e777fbb58a",
+      "accepted_advisories": []
+    },
+    ".github/tracing-performance/composer.lock": {
+      "workflow_reference": "dda951d93f58b82447348f1b3b4e4e17dba149fb",
+      "accepted_advisories": [
+        {
+          "id": "PKSA-wtxr-p26d-nn42",
+          "package": "symfony/mime",
+          "version": "v7.4.19",
+          "cve": "CVE-2026-45070",
+          "owner": "https://github.com/durable-workflow/workflow/issues/773",
+          "reason": "Preserved exact historical diagnostic/study input; this bounded workload does not construct MIME parameter names from untrusted input. This exception does not authorize production use.",
+          "review_condition": "Owning issue must review before any dependency refresh or experiment rerun, or if advisory reachability changes."
+        }
+      ],
+      "preserved_sha256": "e286fa13c130ea7a53715892bea590f58b4634d419b5ef8aa999e7c084201673"
+    },
+    "benchmarks/embedded-replay/composer.lock": {
+      "workflow_reference": "592dee305f46ac707baadf55324407c43aeb2dc5",
+      "accepted_advisories": []
+    },
+    "examples/embedded-http/composer.lock": {
+      "workflow_reference": "d4bc406274b3138dea10d9f1ea23e7c1e1bcfc00",
+      "accepted_advisories": []
+    }
+  }
+}
