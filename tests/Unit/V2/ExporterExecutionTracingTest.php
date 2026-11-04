@@ -64,7 +64,11 @@ final class ExporterExecutionTracingTest extends TestCase
                 self::assertSame('4bf92f3577b34da6a3ce929d0e0e4736', $span['trace_id']);
                 self::assertSame($admitted['run_id'], $span['fields']['workflow_run_id']);
             }
-            $requests = $this->requests($directory);
+            // A timed-out exporter can return before the stalled collector
+            // has journaled every accepted request.
+            $requests = $mode === 'refused'
+                ? $this->requests($directory)
+                : $this->awaitRequests($directory, 4);
             self::assertCount($mode === 'refused' ? 0 : 4, $requests);
             foreach ($requests as $index => $request) {
                 self::assertSame('POST', $request['method']);
@@ -228,6 +232,21 @@ final class ExporterExecutionTracingTest extends TestCase
             static fn (string $line): array => json_decode($line, true, flags: JSON_THROW_ON_ERROR),
             file($journal, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)
         ) : [];
+    }
+
+    private function awaitRequests(string $directory, int $count): array
+    {
+        $deadline = hrtime(true) + 1_000_000_000;
+
+        do {
+            $requests = $this->requests($directory);
+            if (count($requests) >= $count) {
+                return $requests;
+            }
+            usleep(1_000);
+        } while (hrtime(true) < $deadline);
+
+        return $this->requests($directory);
     }
 
     private function worker(string $directory, string $mode, string $address): array
