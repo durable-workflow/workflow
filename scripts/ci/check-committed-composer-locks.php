@@ -70,6 +70,19 @@ function assertReportShape(array $result, int $exit): void
 }
 
 /**
+ * @return non-empty-string
+ */
+function packageName(mixed $package): string
+{
+    $name = is_array($package) ? ($package['name'] ?? null) : null;
+    if (! is_string($name) || $name === '') {
+        throw new LockAuditFailure('Malformed or duplicate Composer package record.');
+    }
+
+    return $name;
+}
+
+/**
  * @return array<string, array<string, mixed>>
  */
 function packageRecords(mixed $lock): array
@@ -84,8 +97,8 @@ function packageRecords(mixed $lock): array
             throw new LockAuditFailure('Invalid Composer lock package section.');
         }
         foreach ($records as $package) {
-            $name = is_array($package) ? ($package['name'] ?? null) : null;
-            if (! is_string($name) || $name === '' || array_key_exists($name, $packages)) {
+            $name = packageName($package);
+            if (array_key_exists($name, $packages)) {
                 throw new LockAuditFailure('Malformed or duplicate Composer package record.');
             }
             $packages[$name] = $package;
@@ -116,6 +129,10 @@ function assertPublishedWorkflow(array $package, string $reference): void
         $actual = $package[$section] ?? null;
         if (! is_array($actual)) {
             throw new LockAuditFailure('Missing published Workflow source or download identity.');
+        }
+        $allowed = $section === 'dist' ? [...array_keys($fields), 'shasum'] : array_keys($fields);
+        if (array_diff(array_keys($actual), $allowed) !== []) {
+            throw new LockAuditFailure('Unreviewed published Workflow source or download authority.');
         }
         foreach ($fields as $field => $value) {
             if (($actual[$field] ?? null) !== $value) {

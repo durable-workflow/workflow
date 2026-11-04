@@ -215,6 +215,7 @@ final class CommittedComposerLockAuditTest extends TestCase
         yield 'different source type' => ['source', 'type', 'svn'];
         yield 'different source URL' => ['source', 'url', 'https://github.com/other/workflow.git'];
         yield 'source URL user info' => ['source', 'url', 'https://user@github.com/durable-workflow/workflow.git'];
+        yield 'unreviewed source mirror' => ['source', 'mirrors', ['https://example.com/workflow.git']];
         yield 'different dist type' => ['dist', 'type', 'tar'];
         yield 'dist-only reference change' => ['dist', 'reference', str_repeat('b', 40)];
         yield 'alternate dist authority' => ['dist', 'url', 'https://example.com/' . str_repeat('a', 40)];
@@ -230,6 +231,7 @@ final class CommittedComposerLockAuditTest extends TestCase
         ];
         yield 'different dist checksum' => ['dist', 'shasum', str_repeat('c', 40)];
         yield 'null dist checksum' => ['dist', 'shasum', null];
+        yield 'unreviewed download mirror' => ['dist', 'mirrors', ['https://example.com/workflow.zip']];
     }
 
     #[DataProvider('changedPackageAuthority')]
