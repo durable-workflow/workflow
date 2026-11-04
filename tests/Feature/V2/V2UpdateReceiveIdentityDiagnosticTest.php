@@ -38,7 +38,8 @@ final class V2UpdateReceiveIdentityDiagnosticTest extends TestCase
         $observations = [];
         $snapshots = [];
 
-        foreach ([0, 1] as $arrivalBeforeCall) {
+        // Warm lazy model/codec initialization before comparing identifiers.
+        foreach ([0, 0, 1] as $round => $arrivalBeforeCall) {
             foreach (['workflow_run_summaries', 'workflow_run_timeline_entries', 'workflow_run_timer_entries',
                 'workflow_run_lineage_entries', 'workflow_history_events', 'workflow_tasks', 'workflow_updates', 'workflow_commands',
                 'workflow_messages', 'workflow_run_waits', 'workflow_runs', 'workflow_instances'] as $table) {
@@ -62,7 +63,9 @@ final class V2UpdateReceiveIdentityDiagnosticTest extends TestCase
             $receipt = $stub->submitUpdate('take');
             $this->drainTasks();
             $this->assertSame('ack', $stub->inspectUpdate($receipt->updateId())->result());
-            $observations[] = TestUpdateReceiveOrdinalProofWorkflow::$observed;
+            if ($round > 0) {
+                $observations[] = TestUpdateReceiveOrdinalProofWorkflow::$observed;
+            }
             $applied = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)
                 ->where('event_type', HistoryEventType::UpdateApplied->value)->sole();
             $command = WorkflowCommand::query()->findOrFail($applied->workflow_command_id);
@@ -83,17 +86,19 @@ final class V2UpdateReceiveIdentityDiagnosticTest extends TestCase
                     ->where('event_type', HistoryEventType::UpdateCompleted->value)->sole()
                     ->only(['sequence', 'payload', 'recorded_at']),
             ];
-            $snapshots[] = json_decode(json_encode($snapshot, JSON_THROW_ON_ERROR), true, flags: JSON_THROW_ON_ERROR);
+            if ($round > 0) {
+                $snapshots[] = json_decode(json_encode($snapshot, JSON_THROW_ON_ERROR), true, flags: JSON_THROW_ON_ERROR);
+            }
             Str::createUlidsNormally();
         }
 
         $this->assertSame([['j1', null], [null, 'j1']], $observations);
-        $this->assertSame($snapshots[0], $snapshots[1]);
         file_put_contents('/results/identity-proof.json', json_encode([
             'live_receive_observations' => $observations,
             'durable_mapping_inputs' => $snapshots,
             'mapping_inputs_identical' => $snapshots[0] === $snapshots[1],
         ], JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR));
+        $this->assertSame($snapshots[0], $snapshots[1]);
     }
 
     private function drainTasks(): void
