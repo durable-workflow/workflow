@@ -277,6 +277,59 @@ final class V2MessageStreamReplayTest extends TestCase
         );
     }
 
+    /**
+     * A signal advances the run's message cursor past an older message that is
+     * still pending on a stream. The message stays receivable (#1011).
+     */
+    public function testASignalDoesNotHideAnOlderPendingStreamMessage(): void
+    {
+        $workflow = WorkflowStub::make(TestInboxTurnsWorkflow::class, 'inbox-before-signal');
+        $workflow->start(1);
+        $this->drainReadyTasks();
+        $run = WorkflowRun::query()->where('workflow_instance_id', 'inbox-before-signal')->sole();
+
+        // The message arrives before the ping that wakes the receive.
+        $this->sendToInbox($run, 'm1');
+        $workflow->signal('ping');
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame(['m1'], $workflow->output());
+    }
+
+    /**
+     * Consuming a newer message on one stream doesn't hide an older pending
+     * message on another stream of the same run.
+     */
+    public function testAReceiveOnOneStreamDoesNotHideAnotherStreamsOlderMessage(): void
+    {
+        $workflow = WorkflowStub::make(TestInboxTurnsWorkflow::class, 'inbox-two-streams');
+        $workflow->start(1);
+        $this->drainReadyTasks();
+        $run = WorkflowRun::query()->where('workflow_instance_id', 'inbox-two-streams')->sole();
+        $service = new MessageService();
+        $service->sendMessage($run, MessageChannel::WorkflowMessage, $run->workflow_instance_id, 'b1', 'b');
+        $service->sendMessage($run, MessageChannel::WorkflowMessage, $run->workflow_instance_id, 'a1', 'a');
+
+        $a1 = $service->peekMessages($run->fresh(), 'a')
+            ->sole();
+        $service->consumeMessage($run->fresh(), $a1, 1);
+        $this->assertGreaterThan(
+            (int) WorkflowMessage::query()->where('payload_reference', 'b1')->where(
+                'direction',
+                MessageDirection::Inbound->value
+            )->sole()
+->sequence,
+            (int) $run->fresh()
+->message_cursor_position,
+        );
+
+        $this->assertSame(['b1'], $service->peekMessages($run->fresh(), 'b')->pluck('payload_reference')->all());
+        $this->assertSame(1, $service->getUnconsumedCount($run->fresh(), 'b'));
+        $this->assertTrue($service->hasUnconsumedMessages($run->fresh(), 'b'));
+        $this->assertSame([], $service->peekMessages($run->fresh(), 'a')->pluck('payload_reference')->all());
+    }
+
     public function testAWorkflowCodeReceiveReplaysTheMessageItConsumedAndQueriesConsumeNothing(): void
     {
         $workflow = WorkflowStub::make(TestInboxTurnsWorkflow::class, 'inbox-turns');

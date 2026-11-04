@@ -153,7 +153,10 @@ class MessageService
         int $limit = 100,
     ): \Illuminate\Database\Eloquent\Collection {
         $streamKey = $streamKey ?? "instance:{$run->workflow_instance_id}";
-        $afterSequence = MessageStreamCursor::positionForRun($run);
+        // A stream message stays receivable until it is consumed or expires.
+        // The run's message cursor is shared with signals, updates and other
+        // streams, so it doesn't decide what this stream has left (#1011).
+        $afterSequence = 0;
 
         return WorkflowMessage::getUnconsumedForStream($run, $streamKey, $afterSequence, $limit);
     }
@@ -306,7 +309,10 @@ class MessageService
     public function getUnconsumedCount(WorkflowRun $run, ?string $streamKey = null): int
     {
         $streamKey = $streamKey ?? "instance:{$run->workflow_instance_id}";
-        $afterSequence = MessageStreamCursor::positionForRun($run);
+        // A stream message stays receivable until it is consumed or expires.
+        // The run's message cursor is shared with signals, updates and other
+        // streams, so it doesn't decide what this stream has left (#1011).
+        $afterSequence = 0;
 
         return WorkflowMessage::getUnconsumedCountForStream($run, $streamKey, $afterSequence);
     }
@@ -322,7 +328,10 @@ class MessageService
     public function hasUnconsumedMessages(WorkflowRun $run, ?string $streamKey = null): bool
     {
         $streamKey = $streamKey ?? "instance:{$run->workflow_instance_id}";
-        $afterSequence = MessageStreamCursor::positionForRun($run);
+        // A stream message stays receivable until it is consumed or expires.
+        // The run's message cursor is shared with signals, updates and other
+        // streams, so it doesn't decide what this stream has left (#1011).
+        $afterSequence = 0;
 
         return WorkflowMessage::hasUnconsumedMessages($run, $streamKey, $afterSequence);
     }

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- A message on one stream stays receivable until it is consumed or expires
+  (#1011). The run's message cursor is shared by signals, updates and every
+  stream, so a signal, an update or a receive on another stream used to move
+  it past older pending messages, and `inbox()->receive()`, `peek()`,
+  `pendingCount()` and `hasPending()` no longer returned them. They now read
+  every pending message of the stream, in sequence order.
+  - After upgrading, workflow code can receive messages that earlier
+    releases hid. They are the stream's oldest pending messages, so a
+    workflow that receives in a loop gets them first.
+  - A receive replayed from history still returns what that step consumed.
+
 ## 2.20.1 - 2026-11-04
 
 - Rollback, embedded Workflow package: 2.20.1 changes no schema, history
