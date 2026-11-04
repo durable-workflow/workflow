@@ -250,10 +250,16 @@ own identifier and its own durable row.
   cursor, and each `MessageCursorAdvanced` event names exactly one
   `stream_key`. Cursor advance is monotonic; a consumed message cannot
   be un-consumed.
-- External senders that may retry the same logical message should
-  populate the optional `idempotencyKey` on `sendReference()` so the
-  durable message stream can recognise and drop duplicates at the
-  ingress layer.
+- `idempotencyKey` on `sendReference()` is stored on both rows. Ingress
+  does not drop duplicates, so a consumer that can see a retried send
+  should deduplicate by the key.
+- In workflow code, `outbox()->sendReference()` and
+  `inbox()->receive()` / `receiveOne()` run again on every replay. A
+  send returns the row this run (or the run it was redriven from)
+  already wrote for the same content, and a receive returns the
+  messages already consumed at that step. A query or other read-only
+  replay never writes or consumes. A replayed receive whose original
+  call found nothing reads the stream again.
 
 ## Side effects and version markers
 
