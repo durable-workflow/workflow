@@ -245,12 +245,8 @@ final class ExporterExecutionTracingTest extends TestCase
         return $this->requests($directory);
     }
 
-    private function worker(
-        string $directory,
-        string $mode,
-        string $address,
-        int $expectedRequestCount
-    ): array {
+    private function worker(string $directory, string $mode, string $address, int $expectedRequestCount): array
+    {
         $process = new Process([
             PHP_BINARY, __DIR__ . '/../../Fixtures/V2/tracing-process.php', $directory, $mode, 'once',
             ...$this->autoloads(),
