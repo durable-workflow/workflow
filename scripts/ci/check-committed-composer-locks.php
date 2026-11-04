@@ -70,6 +70,65 @@ function assertReportShape(array $result, int $exit): void
 }
 
 /**
+ * @return array<string, array<string, mixed>>
+ */
+function packageRecords(mixed $lock): array
+{
+    if (! is_array($lock) || ! array_key_exists('packages', $lock)) {
+        throw new LockAuditFailure('Invalid Composer lock package sections.');
+    }
+    $packages = [];
+    foreach (['packages', 'packages-dev'] as $section) {
+        $records = array_key_exists($section, $lock) ? $lock[$section] : [];
+        if (! is_array($records) || ! array_is_list($records)) {
+            throw new LockAuditFailure('Invalid Composer lock package section.');
+        }
+        foreach ($records as $package) {
+            $name = is_array($package) ? ($package['name'] ?? null) : null;
+            if (! is_string($name) || $name === '' || array_key_exists($name, $packages)) {
+                throw new LockAuditFailure('Malformed or duplicate Composer package record.');
+            }
+            $packages[$name] = $package;
+        }
+    }
+
+    return $packages;
+}
+
+/**
+ * @param array<string, mixed> $package
+ */
+function assertPublishedWorkflow(array $package, string $reference): void
+{
+    $expected = [
+        'source' => [
+            'type' => 'git',
+            'url' => 'https://github.com/durable-workflow/workflow.git',
+            'reference' => $reference,
+        ],
+        'dist' => [
+            'type' => 'zip',
+            'url' => 'https://api.github.com/repos/durable-workflow/workflow/zipball/' . $reference,
+            'reference' => $reference,
+        ],
+    ];
+    foreach ($expected as $section => $fields) {
+        $actual = $package[$section] ?? null;
+        if (! is_array($actual)) {
+            throw new LockAuditFailure('Missing published Workflow source or download identity.');
+        }
+        foreach ($fields as $field => $value) {
+            if (($actual[$field] ?? null) !== $value) {
+                throw new LockAuditFailure('Published Workflow source or download identity changed.');
+            }
+        }
+    }
+    if (array_key_exists('shasum', $package['dist']) && $package['dist']['shasum'] !== '') {
+        throw new LockAuditFailure('Unexpected published Workflow download checksum.');
+    }
+}
+
+/**
  * @param array<string, mixed> $entry
  * @return array<string, array<string, mixed>>
  */
@@ -218,14 +277,14 @@ function reviewedPackages(string $file, array $entry): array
         throw new LockAuditFailure('Historical lock identity changed: ' . $file);
     }
     $lock = json_decode((string) file_get_contents($file), true, 512, JSON_THROW_ON_ERROR);
-    $packages = [];
-    foreach (array_merge($lock['packages'] ?? [], $lock['packages-dev'] ?? []) as $package) {
-        $packages[$package['name']] = $package;
-    }
-    if (($entry['workflow_reference'] === null && isset($packages['durable-workflow/workflow']))
-        || ($packages['durable-workflow/workflow']['source']['reference'] ?? null) !== $entry['workflow_reference']
-    ) {
+    $packages = packageRecords($lock);
+    $workflow = $packages['durable-workflow/workflow'] ?? null;
+    $reference = $entry['workflow_reference'];
+    if ($reference === null && $workflow !== null || $reference !== null && $workflow === null) {
         throw new LockAuditFailure('Published Workflow reference changed without inventory review: ' . $file);
+    }
+    if ($reference !== null) {
+        assertPublishedWorkflow($workflow, $reference);
     }
 
     return $packages;

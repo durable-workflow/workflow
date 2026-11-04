@@ -11,6 +11,7 @@ use RuntimeException;
 use function Workflow\Ci\CommittedLocks\acceptedResults;
 use function Workflow\Ci\CommittedLocks\command;
 use function Workflow\Ci\CommittedLocks\main;
+use function Workflow\Ci\CommittedLocks\reviewedPackages;
 
 final class CommittedComposerLockAuditTest extends TestCase
 {
@@ -207,6 +208,165 @@ final class CommittedComposerLockAuditTest extends TestCase
             putenv($oldVerifier === false ? 'COMPOSER_AUDIT_VERIFIER' : 'COMPOSER_AUDIT_VERIFIER=' . $oldVerifier);
             putenv($oldComposer === false ? 'COMPOSER_AUDIT_BINARY' : 'COMPOSER_AUDIT_BINARY=' . $oldComposer);
         }
+    }
+
+    public static function changedPackageAuthority(): iterable
+    {
+        yield 'different source type' => ['source', 'type', 'svn'];
+        yield 'different source URL' => ['source', 'url', 'https://github.com/other/workflow.git'];
+        yield 'source URL user info' => ['source', 'url', 'https://user@github.com/durable-workflow/workflow.git'];
+        yield 'different dist type' => ['dist', 'type', 'tar'];
+        yield 'dist-only reference change' => ['dist', 'reference', str_repeat('b', 40)];
+        yield 'alternate dist authority' => ['dist', 'url', 'https://example.com/' . str_repeat('a', 40)];
+        yield 'other GitHub repository' => [
+            'dist',
+            'url',
+            'https://api.github.com/repos/other/workflow/zipball/' . str_repeat('a', 40),
+        ];
+        yield 'dist URL user info' => [
+            'dist',
+            'url',
+            'https://user@api.github.com/repos/durable-workflow/workflow/zipball/' . str_repeat('a', 40),
+        ];
+        yield 'different dist checksum' => ['dist', 'shasum', str_repeat('c', 40)];
+        yield 'null dist checksum' => ['dist', 'shasum', null];
+    }
+
+    #[DataProvider('changedPackageAuthority')]
+    public function testChangedDownloadAuthorityFailsClosed(string $section, string $field, mixed $value): void
+    {
+        $package = self::workflowPackage();
+        $package[$section][$field] = $value;
+        $file = $this->packageLock([
+            'packages' => [$package],
+        ]);
+        $this->expectException(RuntimeException::class);
+        reviewedPackages($file, [
+            'workflow_reference' => str_repeat('a', 40),
+            'accepted_advisories' => [],
+        ]);
+    }
+
+    public static function invalidPackageRecords(): iterable
+    {
+        $package = self::workflowPackage();
+        yield 'missing Workflow' => [[
+            'packages' => [],
+        ]];
+        yield 'duplicate in section' => [[
+            'packages' => [$package, $package],
+        ]];
+        yield 'duplicate across sections' => [[
+            'packages' => [$package],
+            'packages-dev' => [$package],
+        ]];
+        yield 'duplicate unrelated package' => [[
+            'packages' => [
+                $package, [
+                    'name' => 'other/package',
+                ]],
+            'packages-dev' => [[
+                'name' => 'other/package',
+            ]],
+        ]];
+        yield 'missing packages section' => [[]];
+        yield 'scalar packages section' => [[
+            'packages' => false,
+        ]];
+        yield 'null dev section' => [[
+            'packages' => [$package],
+            'packages-dev' => null,
+        ]];
+        yield 'non-list section' => [[
+            'packages' => [
+                'named' => $package,
+            ],
+        ]];
+        yield 'scalar package' => [[
+            'packages' => [$package, false],
+        ]];
+        yield 'nameless package' => [[
+            'packages' => [$package, []],
+        ]];
+        yield 'non-string package name' => [[
+            'packages' => [
+                $package, [
+                    'name' => 12,
+                ]],
+        ]];
+        yield 'empty package name' => [[
+            'packages' => [
+                $package, [
+                    'name' => '',
+                ]],
+        ]];
+    }
+
+    #[DataProvider('invalidPackageRecords')]
+    public function testMalformedOrDuplicatePackagesFailClosed(array $lock): void
+    {
+        $file = $this->packageLock($lock);
+        $this->expectException(RuntimeException::class);
+        reviewedPackages($file, [
+            'workflow_reference' => str_repeat('a', 40),
+            'accepted_advisories' => [],
+        ]);
+    }
+
+    public function testExactPublishedPackageAndNullAbsenceAreAccepted(): void
+    {
+        $package = self::workflowPackage();
+        $file = $this->packageLock([
+            'packages' => [],
+            'packages-dev' => [$package],
+        ]);
+        $this->assertSame([
+            'durable-workflow/workflow' => $package,
+        ], reviewedPackages($file, [
+            'workflow_reference' => str_repeat('a', 40),
+            'accepted_advisories' => [],
+        ]));
+        file_put_contents($file, '{"packages":[]}');
+        $this->assertSame([], reviewedPackages($file, [
+            'workflow_reference' => null,
+            'accepted_advisories' => [],
+        ]));
+        file_put_contents($file, json_encode([
+            'packages' => [$package],
+        ], JSON_THROW_ON_ERROR));
+        $this->expectException(RuntimeException::class);
+        reviewedPackages($file, [
+            'workflow_reference' => null,
+            'accepted_advisories' => [],
+        ]);
+    }
+
+    private function packageLock(array $lock): string
+    {
+        $this->fixture = sys_get_temp_dir() . '/workflow-lock-audit-' . bin2hex(random_bytes(8));
+        mkdir($this->fixture, 0700);
+        $file = $this->fixture . '/composer.lock';
+        file_put_contents($file, json_encode($lock, JSON_THROW_ON_ERROR));
+
+        return $file;
+    }
+
+    private static function workflowPackage(): array
+    {
+        return [
+            'name' => 'durable-workflow/workflow',
+            'source' => [
+                'type' => 'git',
+                'url' => 'https://github.com/durable-workflow/workflow.git',
+                'reference' => str_repeat('a', 40),
+            ],
+            'dist' => [
+                'type' => 'zip',
+                'url' => 'https://api.github.com/repos/durable-workflow/workflow/zipball/' . str_repeat('a', 40),
+                'reference' => str_repeat('a', 40),
+                'shasum' => '',
+            ],
+        ];
     }
 
     private static function evidence(): array
