@@ -1,7 +1,7 @@
 # Guard-only runtime profile floor
 
 Phase G is the [approved prerequisite](https://github.com/durable-workflow/workflow/pull/1030#issuecomment-6637201487)
-for the prospective receive work in #1024. It does not repair historical query
+for prospective receive observations. It does not repair historical query
 results. No active profile, task kind, queued job, history observation field or
 receive writer is part of this phase.
 
@@ -16,8 +16,13 @@ worker compatibility wildcards cannot extend the supported set.
 
 New legacy runs receive null internally. Caller metadata, generic mass
 assignment and request/import data cannot set or clear this field. Existing
-runs are not converted. The profile is immutable after admission, including
-through dirty-model saves and bulk updates.
+runs are not converted. For a retained row, its profile cannot be converted or
+replaced through dirty model saves, bulk updates, upserts or replacement inserts. Unsupported non-null
+rows cannot be deleted or replaced, including replacement with the same token.
+Legacy null-row deletion remains unchanged. This is not a universal never-reuse
+claim after a legacy row has been purged, and no tombstone is added in phase G.
+A future producer needs a separate admission, identity, retention, import and
+restore design before it can create any protected run.
 
 The expand-only migration and guard must cover the actual configured run
 model/table/storage connection as well as the default table. Before dropping
@@ -28,8 +33,10 @@ schema is a refusal/health failure, never evidence of legacy null.
 
 Existing column type/nullability/default, index columns and trigger/function
 semantics must match the guard contract before adoption. A deterministic object
-name alone is insufficient. Connection aliases for the same physical table are
-one migration target.
+name alone is insufficient. SQLite aliases are one target only when their
+physical file or live in-memory connection proves equality. Other distinct
+connection objects remain separate targets; ambiguous server metadata cannot
+authorize deduplication or automatic down migration.
 
 Automatic down is limited to one physical SQLite or PostgreSQL table inside a
 single DDL transaction after complete validation. Nontransactional drivers or

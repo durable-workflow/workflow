@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Schema;
 use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Tests\SchemaTestCase;
+use Tests\Support\RuntimeProfileRetainedIdentityControls;
 use Workflow\V2\Exceptions\RuntimeProfileRefusal;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\RuntimeProfileGuard;
@@ -18,12 +19,56 @@ use Workflow\V2\Support\RuntimeProfileSchema;
 
 final class RuntimeProfileStorageGuardTest extends SchemaTestCase
 {
+    use RuntimeProfileRetainedIdentityControls;
+
     protected function tearDown(): void
     {
         config()->set('workflows.v2.run_model', WorkflowRun::class);
         DB::purge('profile_guard_storage');
         DB::purge('profile_guard_alias');
         parent::tearDown();
+    }
+
+    #[DataProvider('invalidAuthorityShapes')]
+    public function testUnverifiableAuthorityRefusesBeforeAnyDdl(string $shape): void
+    {
+        $this->configuredStorage();
+        $storage = DB::connection('profile_guard_storage');
+        $schema = $storage->getSchemaBuilder();
+        $schema->drop('guard_runs');
+        $schema->create('guard_runs', static function (Blueprint $table) use ($shape): void {
+            $table->string('id');
+            $table->string('workflow_instance_id');
+            if ($shape !== 'missing namespace') {
+                $table->string('namespace')
+                    ->nullable();
+            }
+            if ($shape === 'composite primary') {
+                $table->primary(['id', 'workflow_instance_id']);
+            } elseif ($shape !== 'missing primary') {
+                $table->primary('id');
+            }
+        });
+        $before = $this->schemaObjects();
+        $target = $storage->select('SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name');
+        try {
+            RuntimeProfileSchema::up(null);
+            $this->fail('Incomplete authority must refuse before expanding any target.');
+        } catch (RuntimeProfileRefusal $error) {
+            $this->assertSame('runtime_profile_storage', $error->reason);
+        }
+        $this->assertSame($before, $this->schemaObjects());
+        $this->assertEquals(
+            $target,
+            $storage->select('SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name')
+        );
+    }
+
+    public static function invalidAuthorityShapes(): iterable
+    {
+        foreach (['missing primary', 'composite primary', 'missing namespace'] as $shape) {
+            yield $shape => [$shape];
+        }
     }
 
     public function testMigrationAndRefusalUseTheConfiguredTableAndConnection(): void
@@ -128,6 +173,31 @@ final class RuntimeProfileStorageGuardTest extends SchemaTestCase
         RuntimeProfileSchema::up(null);
         RuntimeProfileSchema::up(null);
         $this->assertTrue(Schema::hasColumn('workflow_runs', 'runtime_profile'));
+    }
+
+    #[DataProvider('migrationDirections')]
+    public function testMissingConfiguredTableRefusesBeforeAnyDdl(string $direction): void
+    {
+        $this->configuredStorage();
+        RuntimeProfileSchema::up(null);
+        DB::connection('profile_guard_storage')->getSchemaBuilder()->drop('guard_runs');
+        $before = $this->schemaObjects();
+        try {
+            RuntimeProfileSchema::{$direction}(null);
+            $this->fail('Missing configured inventory must not be skipped.');
+        } catch (RuntimeProfileRefusal $error) {
+            $this->assertSame('runtime_profile_storage', $error->reason);
+        }
+        $this->assertSame($before, $this->schemaObjects());
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function migrationDirections(): iterable
+    {
+        yield 'up' => ['up'];
+        yield 'down' => ['down'];
     }
 
     public function testAliasesForOnePhysicalTableAreDroppedOnlyOnce(): void
@@ -281,6 +351,16 @@ final class RuntimeProfileStorageGuardTest extends SchemaTestCase
         ]);
         DB::connection('profile_guard_storage')->getSchemaBuilder()->create(
             'guard_runs',
+            static function (Blueprint $table): void {
+                $table->string('id')
+                    ->primary();
+                $table->string('workflow_instance_id');
+                $table->string('namespace')
+                    ->nullable();
+            }
+        );
+        DB::connection('profile_guard_storage')->getSchemaBuilder()->create(
+            'workflow_runs',
             static function (Blueprint $table): void {
                 $table->string('id')
                     ->primary();

@@ -20,16 +20,23 @@ final class RuntimeProfileSchema
         // Validate every pre-existing object before changing any target.
         foreach ($targets as [$connection, $table]) {
             if (! $connection->getSchemaBuilder()->hasTable($table)) {
-                continue;
+                throw new RuntimeProfileRefusal('runtime_profile_storage');
             }
+            self::primaryKey($connection, $table);
             self::assertColumn($connection, $table, allowMissing: true);
             self::hasIndex($connection, $table);
-            self::hasImmutability($connection, $table);
+            $present = array_map(
+                static fn (string $operation): bool => self::hasImmutability($connection, $table, $operation),
+                ['update', 'insert', 'delete']
+            );
+            if (count(array_filter($present)) !== 0 && count(array_filter($present)) !== 3) {
+                throw new RuntimeProfileRefusal('runtime_profile_storage');
+            }
         }
         foreach ($targets as [$connection, $table]) {
             $schema = $connection->getSchemaBuilder();
             if (! $schema->hasTable($table)) {
-                continue;
+                throw new RuntimeProfileRefusal('runtime_profile_storage');
             }
             if (! $schema->hasColumn($table, 'runtime_profile')) {
                 $schema->table($table, static function (Blueprint $blueprint): void {
@@ -43,12 +50,13 @@ final class RuntimeProfileSchema
                     $blueprint->index('runtime_profile', $index);
                 });
             }
-            if (! self::hasImmutability($connection, $table)) {
-                if ($connection->getDriverName() === 'pgsql') {
-                    // A same-name function is checked before this CREATE, never replaced.
-                    $connection->unprepared(self::functionSql($connection, $table));
+            foreach (['update', 'insert', 'delete'] as $operation) {
+                if (! self::hasImmutability($connection, $table, $operation)) {
+                    if ($connection->getDriverName() === 'pgsql') {
+                        $connection->unprepared(self::functionSql($connection, $table, $operation));
+                    }
+                    $connection->unprepared(self::triggerSql($connection, $table, $operation));
                 }
-                $connection->unprepared(self::triggerSql($connection, $table));
             }
         }
     }
@@ -60,10 +68,13 @@ final class RuntimeProfileSchema
         try {
             foreach ($targets as [$connection, $table]) {
                 if (! $connection->getSchemaBuilder()->hasTable($table)) {
-                    continue;
+                    throw new RuntimeProfileRefusal('runtime_profile_storage');
                 }
                 self::assertColumn($connection, $table);
-                if (! self::hasIndex($connection, $table) || ! self::hasImmutability($connection, $table)
+                if (! self::hasIndex($connection, $table)
+                    || ! self::hasImmutability($connection, $table, 'update')
+                    || ! self::hasImmutability($connection, $table, 'insert')
+                    || ! self::hasImmutability($connection, $table, 'delete')
                     || $connection->table($table)
                         ->useWritePdo()
                         ->whereNotNull('runtime_profile')
@@ -88,12 +99,27 @@ final class RuntimeProfileSchema
         }
         [$connection, $table] = $plans[0];
         $connection->transaction(static function () use ($connection, $table): void {
+            if ($connection->getDriverName() === 'pgsql') {
+                // Prevent a new protected INSERT between inventory and DDL.
+                $connection->statement(
+                    'LOCK TABLE ' . $connection->getQueryGrammar()->wrapTable($table) . ' IN ACCESS EXCLUSIVE MODE'
+                );
+            }
             // The immutability trigger prevents profile conversion. The complete
             // inventory is checked again in the same transaction as the DDL.
+            self::assertColumn($connection, $table);
+            if (! self::hasIndex($connection, $table)
+                || ! self::hasImmutability($connection, $table, 'update')
+                || ! self::hasImmutability($connection, $table, 'insert')
+                || ! self::hasImmutability($connection, $table, 'delete')) {
+                throw new RuntimeProfileRefusal('runtime_profile_storage');
+            }
             if ($connection->table($table)->useWritePdo()->whereNotNull('runtime_profile')->exists()) {
                 throw new RuntimeProfileRefusal('runtime_profile_storage');
             }
-            self::dropImmutability($connection, $table);
+            foreach (['delete', 'insert', 'update'] as $operation) {
+                self::dropImmutability($connection, $table, $operation);
+            }
             $connection->getSchemaBuilder()
                 ->table($table, static function (Blueprint $blueprint) use ($connection, $table): void {
                     $blueprint->dropIndex(self::indexName($connection, $table));
@@ -137,21 +163,19 @@ final class RuntimeProfileSchema
     {
         [$schema, $physicalTable] = self::tableParts($connection, $table);
         $driver = $connection->getDriverName();
-        $server = match ($driver) {
-            'sqlite' => self::sqliteDatabaseIdentity($connection, $schema),
-            'mysql', 'mariadb' => (array) $connection->selectOne(
-                'SELECT @@hostname AS host, @@port AS port, @@server_id AS server_id',
-                [],
-                false
-            ),
-            'pgsql' => (array) $connection->selectOne(
-                "SELECT inet_server_addr()::text AS host, current_setting('port') AS port, current_database() AS database",
-                [],
-                false
-            ),
-            default => throw new RuntimeProfileRefusal('runtime_profile_storage'),
-        };
-        return hash('sha256', serialize([$driver === 'mariadb' ? 'mysql' : $driver, $server, $schema, $physicalTable]));
+        if ($driver === 'sqlite') {
+            return hash(
+                'sha256',
+                serialize([$driver, self::sqliteDatabaseIdentity($connection, $schema), $physicalTable])
+            );
+        }
+        if (! in_array($driver, ['mysql', 'mariadb', 'pgsql'], true)) {
+            throw new RuntimeProfileRefusal('runtime_profile_storage');
+        }
+        // Server-reported hostname/port are not unique endpoint authority,
+        // especially over sockets. Keep different connections distinct unless
+        // equivalence is proven. Automatic down then refuses before any DDL.
+        return hash('sha256', serialize([$driver, spl_object_id($connection), $schema, $physicalTable]));
     }
 
     /**
@@ -231,9 +255,10 @@ final class RuntimeProfileSchema
         throw new RuntimeProfileRefusal('runtime_profile_storage');
     }
 
-    private static function name(Connection $connection, string $table): string
+    private static function name(Connection $connection, string $table, string $operation = 'update'): string
     {
         $name = 'wf_runtime_profile_' . substr(hash('sha256', $connection->getTablePrefix() . $table), 0, 20);
+        $name .= $operation === 'update' ? '' : '_' . $operation;
         $separator = strrpos($table, '.');
         return $separator === false ? $name : substr($table, 0, $separator + 1) . $name;
     }
@@ -258,15 +283,11 @@ final class RuntimeProfileSchema
                         [$physicalTable, $schema, $name],
                         false
                     )->partial === 0,
-                    'mysql', 'mariadb' => ! $connection->table('information_schema.STATISTICS')
-                        ->useWritePdo()
-                        ->where('TABLE_SCHEMA', $schema)
-                        ->where('TABLE_NAME', $physicalTable)
-                        ->where('INDEX_NAME', $name)
-                        ->where(static function ($query): void {
-                            $query->whereNotNull('SUB_PART')
-                                ->orWhere('INDEX_TYPE', '!=', 'BTREE');
-                        })->exists(),
+                    'mysql', 'mariadb' => $connection->selectOne(
+                        "SELECT 1 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND INDEX_NAME = ? AND (SUB_PART IS NOT NULL OR INDEX_TYPE != 'BTREE') LIMIT 1",
+                        [$schema, $physicalTable, $name],
+                        false,
+                    ) === null,
                     'pgsql' => (bool) $connection->selectOne(
                         'SELECT (i.indpred IS NULL AND i.indexprs IS NULL AND i.indisvalid AND i.indisready) AS valid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = ? AND c.relname = ?',
                         [$schema, $name],
@@ -283,45 +304,133 @@ final class RuntimeProfileSchema
         return false;
     }
 
-    private static function body(string $driver): string
+    private static function primaryKey(Connection $connection, string $table): string
     {
+        $indexes = array_values(array_filter(
+            $connection->getSchemaBuilder()
+                ->getIndexes($table),
+            static fn (array $index): bool => $index['primary'],
+        ));
+        if (count($indexes) !== 1 || count($indexes[0]['columns']) !== 1
+            || ! is_string($indexes[0]['columns'][0])) {
+            throw new RuntimeProfileRefusal('runtime_profile_storage');
+        }
+        $key = $indexes[0]['columns'][0];
+        $columns = array_column($connection->getSchemaBuilder()->getColumns($table), 'name');
+        foreach ([$key, 'workflow_instance_id', 'namespace'] as $authority) {
+            if (! in_array($authority, $columns, true)) {
+                throw new RuntimeProfileRefusal('runtime_profile_storage');
+            }
+        }
+        return $connection->getQueryGrammar()
+            ->wrap($key);
+    }
+
+    private static function body(string $driver, string $operation, Connection $connection, string $table): string
+    {
+        if ($operation !== 'update') {
+            $profile = $connection->getQueryGrammar()
+                ->wrap('runtime_profile');
+            if ($operation === 'delete') {
+                $condition = 'OLD.' . $profile . ' IS NOT NULL';
+            } elseif ($operation === 'insert') {
+                $key = self::primaryKey($connection, $table);
+                $condition = 'EXISTS (SELECT 1 FROM ' . $connection->getQueryGrammar()->wrapTable($table)
+                    . ' WHERE ' . $key . ' = NEW.' . $key
+                    . ' AND (' . $profile . ' IS NOT NULL OR NEW.' . $profile . ' IS NOT NULL))';
+            } else {
+                throw new RuntimeProfileRefusal('runtime_profile_storage');
+            }
+            return match ($driver) {
+                'sqlite' => "FOR EACH ROW WHEN {$condition} BEGIN SELECT RAISE(ABORT, 'runtime_profile_immutable'); END",
+                'mysql', 'mariadb' => "BEGIN IF {$condition} THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'runtime_profile_immutable'; END IF; END",
+                'pgsql' => "BEGIN IF {$condition} THEN RAISE EXCEPTION 'runtime_profile_immutable' USING ERRCODE = '23514'; END IF; RETURN " . ($operation === 'delete' ? 'OLD' : 'NEW') . '; END;',
+                default => throw new RuntimeProfileRefusal('runtime_profile_storage'),
+            };
+        }
+        $key = self::primaryKey($connection, $table);
+        $identity = [
+            $key,
+            $connection->getQueryGrammar()
+                ->wrap('workflow_instance_id'),
+            $connection->getQueryGrammar()
+                ->wrap('namespace'),
+        ];
+        $sqliteChanges = implode(
+            ' OR ',
+            array_map(
+                static fn (string $column): string => "CAST(OLD.{$column} AS BLOB) IS NOT CAST(NEW.{$column} AS BLOB)",
+                $identity
+            )
+        );
+        $mysqlChanges = implode(
+            ' OR ',
+            array_map(
+                static fn (string $column): string => "NOT (BINARY OLD.{$column} <=> BINARY NEW.{$column})",
+                $identity
+            )
+        );
+        $postgresChanges = implode(
+            ' OR ',
+            array_map(
+                static fn (string $column): string => "convert_to(OLD.{$column}::text, 'UTF8') IS DISTINCT FROM convert_to(NEW.{$column}::text, 'UTF8')",
+                $identity
+            )
+        );
+        $protectedTarget = 'EXISTS (SELECT 1 FROM ' . $connection->getQueryGrammar()->wrapTable($table)
+            . ' WHERE ' . $key . ' = NEW.' . $key . ' AND ' . $key . ' <> OLD.' . $key . ' AND runtime_profile IS NOT NULL)';
         return match ($driver) {
             'sqlite' => "FOR EACH ROW WHEN
-                (OLD.\"runtime_profile\" IS NULL AND NEW.\"runtime_profile\" IS NOT NULL)
-                OR (OLD.\"runtime_profile\" IS NOT NULL AND NEW.\"runtime_profile\" IS NULL)
-                OR (CAST(OLD.\"runtime_profile\" AS BLOB) != CAST(NEW.\"runtime_profile\" AS BLOB))
+                {$protectedTarget}
+                OR CAST(OLD.\"runtime_profile\" AS BLOB) IS NOT CAST(NEW.\"runtime_profile\" AS BLOB)
+                OR (OLD.\"runtime_profile\" IS NOT NULL AND ({$sqliteChanges}))
                 BEGIN SELECT RAISE(ABORT, 'runtime_profile_immutable'); END",
-            'mysql', 'mariadb' => "BEGIN IF NOT (BINARY OLD.`runtime_profile` <=> BINARY NEW.`runtime_profile`) THEN
+            'mysql', 'mariadb' => "BEGIN IF {$protectedTarget} OR NOT (BINARY OLD.`runtime_profile` <=> BINARY NEW.`runtime_profile`)
+                OR (OLD.`runtime_profile` IS NOT NULL AND ({$mysqlChanges})) THEN
                 SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'runtime_profile_immutable'; END IF; END",
-            'pgsql' => "BEGIN IF convert_to(OLD.\"runtime_profile\", 'UTF8') IS DISTINCT FROM convert_to(NEW.\"runtime_profile\", 'UTF8') THEN
+            'pgsql' => "BEGIN IF {$protectedTarget} OR convert_to(OLD.\"runtime_profile\", 'UTF8') IS DISTINCT FROM convert_to(NEW.\"runtime_profile\", 'UTF8')
+                OR (OLD.\"runtime_profile\" IS NOT NULL AND ({$postgresChanges})) THEN
                 RAISE EXCEPTION 'runtime_profile_immutable' USING ERRCODE = '23514'; END IF; RETURN NEW; END;",
             default => throw new RuntimeProfileRefusal('runtime_profile_storage'),
         };
     }
 
-    private static function triggerSql(Connection $connection, string $table): string
+    private static function triggerSql(Connection $connection, string $table, string $operation = 'update'): string
     {
         $grammar = $connection->getQueryGrammar();
-        $name = $grammar->wrap(self::name($connection, $table));
+        $name = $grammar->wrap(self::name($connection, $table, $operation));
         $quotedTable = $grammar->wrapTable($table);
+        $event = strtoupper($operation);
+        $columns = '';
         return match ($connection->getDriverName()) {
-            'sqlite' => 'CREATE TRIGGER ' . $name . ' BEFORE UPDATE OF "runtime_profile" ON ' . $quotedTable . ' ' . self::body(
-                'sqlite'
+            'sqlite' => 'CREATE TRIGGER ' . $name . ' BEFORE ' . $event . $columns . ' ON ' . $quotedTable . ' ' . self::body(
+                'sqlite',
+                $operation,
+                $connection,
+                $table
             ),
-            'mysql', 'mariadb' => 'CREATE TRIGGER ' . $name . ' BEFORE UPDATE ON ' . $quotedTable . ' FOR EACH ROW ' . self::body(
-                $connection->getDriverName()
+            'mysql', 'mariadb' => 'CREATE TRIGGER ' . $name . ' BEFORE ' . $event . ' ON ' . $quotedTable . ' FOR EACH ROW ' . self::body(
+                $connection->getDriverName(),
+                $operation,
+                $connection,
+                $table
             ),
             'pgsql' => 'CREATE TRIGGER ' . $grammar->wrap(
-                self::unqualifiedName($connection, $table)
-            ) . ' BEFORE UPDATE OF "runtime_profile" ON ' . $quotedTable . ' FOR EACH ROW EXECUTE FUNCTION ' . $name . '()',
+                self::unqualifiedName($connection, $table, $operation)
+            ) . ' BEFORE ' . $event . $columns . ' ON ' . $quotedTable . ' FOR EACH ROW EXECUTE FUNCTION ' . $name . '()',
             default => throw new RuntimeProfileRefusal('runtime_profile_storage'),
         };
     }
 
-    private static function functionSql(Connection $connection, string $table): string
+    private static function functionSql(Connection $connection, string $table, string $operation = 'update'): string
     {
-        return 'CREATE FUNCTION ' . $connection->getQueryGrammar()->wrap(self::name($connection, $table))
-            . '() RETURNS trigger AS $guard$ ' . self::body('pgsql') . ' $guard$ LANGUAGE plpgsql';
+        return 'CREATE FUNCTION ' . $connection->getQueryGrammar()->wrap(self::name($connection, $table, $operation))
+            . '() RETURNS trigger AS $guard$ ' . self::body(
+                'pgsql',
+                $operation,
+                $connection,
+                $table
+            ) . ' $guard$ LANGUAGE plpgsql';
     }
 
     private static function normalize(string $sql): string
@@ -329,9 +438,9 @@ final class RuntimeProfileSchema
         return trim((string) preg_replace('/\s+/', ' ', $sql));
     }
 
-    private static function hasImmutability(Connection $connection, string $table): bool
+    private static function hasImmutability(Connection $connection, string $table, string $operation = 'update'): bool
     {
-        $name = self::unqualifiedName($connection, $table);
+        $name = self::unqualifiedName($connection, $table, $operation);
         [$schema, $physicalTable] = self::tableParts($connection, $table);
         $grammar = $connection->getQueryGrammar();
         switch ($connection->getDriverName()) {
@@ -346,9 +455,9 @@ final class RuntimeProfileSchema
                 if ($row === null) {
                     return false;
                 }
-                $expected = self::triggerSql($connection, $table);
+                $expected = self::triggerSql($connection, $table, $operation);
                 $expected = str_replace(
-                    $grammar->wrap(self::name($connection, $table)),
+                    $grammar->wrap(self::name($connection, $table, $operation)),
                     $grammar->wrap($name),
                     $expected
                 );
@@ -364,8 +473,12 @@ final class RuntimeProfileSchema
                 if ($row === null) {
                     return false;
                 }
-                $valid = $row->table_name === $physicalTable && $row->event === 'UPDATE' && $row->timing === 'BEFORE' && $row->orientation === 'ROW'
-                    && self::normalize($row->body) === self::normalize(self::body($connection->getDriverName()));
+                $valid = $row->table_name === $physicalTable && $row->event === strtoupper(
+                    $operation
+                ) && $row->timing === 'BEFORE' && $row->orientation === 'ROW'
+                    && self::normalize($row->body) === self::normalize(
+                        self::body($connection->getDriverName(), $operation, $connection, $table)
+                    );
                 break;
             case 'pgsql':
                 $function = $connection->selectOne(
@@ -380,9 +493,7 @@ final class RuntimeProfileSchema
                 );
                 if ($function !== null && ($function->return_type !== 'trigger' || $function->lanname !== 'plpgsql' || $function->prosecdef || $function->proconfig !== null || (int) $function->pronargs !== 0 || self::normalize(
                     $function->prosrc
-                ) !== self::normalize(
-                    self::body('pgsql')
-                ))) {
+                ) !== self::normalize(self::body('pgsql', $operation, $connection, $table)))) {
                     throw new RuntimeProfileRefusal('runtime_profile_storage');
                 }
                 // A detached pre-existing function is not ours to adopt or replace.
@@ -392,8 +503,10 @@ final class RuntimeProfileSchema
                 if ($row === null) {
                     return false;
                 }
-                $valid = $function !== null && (string) $row->tgfoid === (string) $function->oid && (int) $row->tgtype === 19
-                    && $row->tgenabled === 'O' && $row->tgqual === null && (int) $row->tgconstraint === 0 && $row->columns === $row->profile_column;
+                $valid = $function !== null && (string) $row->tgfoid === (string) $function->oid && (int) $row->tgtype === match ($operation) {
+                    'update' => 19, 'insert' => 7, 'delete' => 11
+                }
+                    && $row->tgenabled === 'O' && $row->tgqual === null && (int) $row->tgconstraint === 0 && $row->columns === '';
                 break;
             default:
                 throw new RuntimeProfileRefusal('runtime_profile_storage');
@@ -404,14 +517,14 @@ final class RuntimeProfileSchema
         return true;
     }
 
-    private static function dropImmutability(Connection $connection, string $table): void
+    private static function dropImmutability(Connection $connection, string $table, string $operation = 'update'): void
     {
         $grammar = $connection->getQueryGrammar();
-        $name = $grammar->wrap(self::name($connection, $table));
+        $name = $grammar->wrap(self::name($connection, $table, $operation));
         if ($connection->getDriverName() === 'pgsql') {
             $connection->unprepared(
                 'DROP TRIGGER ' . $grammar->wrap(
-                    self::unqualifiedName($connection, $table)
+                    self::unqualifiedName($connection, $table, $operation)
                 ) . ' ON ' . $grammar->wrapTable($table)
             );
             $connection->unprepared('DROP FUNCTION ' . $name . '()');
@@ -420,9 +533,9 @@ final class RuntimeProfileSchema
         $connection->unprepared('DROP TRIGGER ' . $name);
     }
 
-    private static function unqualifiedName(Connection $connection, string $table): string
+    private static function unqualifiedName(Connection $connection, string $table, string $operation = 'update'): string
     {
-        $parts = explode('.', self::name($connection, $table));
+        $parts = explode('.', self::name($connection, $table, $operation));
         return $parts[count($parts) - 1];
     }
 }

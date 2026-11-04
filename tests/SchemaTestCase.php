@@ -6,6 +6,7 @@ namespace Tests;
 
 use Illuminate\Console\OutputStyle;
 use Illuminate\Contracts\Console\Kernel;
+use Illuminate\Support\Facades\DB;
 
 abstract class SchemaTestCase extends TestCase
 {
@@ -46,6 +47,29 @@ abstract class SchemaTestCase extends TestCase
     {
         $this->app->make('migrator')
             ->path(\Orchestra\Testbench\default_migration_path());
+        $connection = DB::connection();
+        if ($connection->getDriverName() === 'pgsql') {
+            // PostgreSQL DROP TABLE removes triggers but retains their functions.
+            // This is a privileged reset of a disposable Testbench database, not
+            // permission for production migrations to adopt detached objects.
+            $functions = array_filter($connection->select(
+                'SELECT n.nspname, p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = current_schema() AND p.pronargs = 0',
+                [],
+                false,
+            ), static fn ($function): bool => preg_match(
+                '/\Awf_runtime_profile_[a-f0-9]{20}(?:_insert|_delete)?\z/D',
+                $function->proname,
+            ) === 1);
+            if ($functions !== []) {
+                $connection->getSchemaBuilder()
+                    ->dropAllTables();
+                $grammar = $connection->getQueryGrammar();
+                foreach ($functions as $function) {
+                    $connection->unprepared('DROP FUNCTION ' . $grammar->wrap($function->nspname)
+                        . '.' . $grammar->wrap($function->proname) . '()');
+                }
+            }
+        }
         $this->artisan('migrate:fresh')
             ->run();
         $this->app[Kernel::class]->setArtisan(null);
