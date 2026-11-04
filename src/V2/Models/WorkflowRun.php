@@ -14,9 +14,11 @@ use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\RunStatus;
+use Workflow\V2\Exceptions\RuntimeProfileRefusal;
 use Workflow\V2\Exceptions\WorkflowOutputCodecUnavailableException;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\ExternalPayloads;
+use Workflow\V2\Support\RuntimeProfileGuard;
 use Workflow\V2\Support\UtcScheduleTimestamp;
 
 class WorkflowRun extends Model
@@ -29,11 +31,47 @@ class WorkflowRun extends Model
 
     protected $table = 'workflow_runs';
 
-    protected $guarded = [];
+    protected $guarded = ['runtime_profile'];
+
+    protected $hidden = ['runtime_profile'];
 
     protected $keyType = 'string';
 
     protected $dateFormat = 'Y-m-d H:i:s.u';
+
+    public function fill(array $attributes)
+    {
+        RuntimeProfileGuard::assertNoProfileInput($attributes);
+
+        return parent::fill($attributes);
+    }
+
+    /** Guard before application retrieved observers can see the run. */
+    public function newFromBuilder($attributes = [], $connection = null)
+    {
+        $model = $this->newInstance([], true);
+        $model->setRawAttributes((array) $attributes, true);
+        $model->setConnection($connection ?? $this->getConnectionName());
+        RuntimeProfileGuard::assertHydrated($model);
+        $model->fireModelEvent('retrieved', false);
+
+        return $model;
+    }
+
+    protected static function boot(): void
+    {
+        parent::boot();
+        static::creating(static function (self $run): void {
+            RuntimeProfileGuard::assertLegacySnapshot($run->getAttributes());
+            $run->attributes['runtime_profile'] = null;
+        });
+        static::updating(static function (self $run): void {
+            if ($run->isDirty('runtime_profile')) {
+                throw new RuntimeProfileRefusal('runtime_profile_assignment');
+            }
+            RuntimeProfileGuard::assertRun($run);
+        });
+    }
 
     protected $casts = [
         'status' => RunStatus::class,
