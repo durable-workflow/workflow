@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2;
 
+use Closure;
 use DateTimeInterface;
 use Illuminate\Database\Eloquent\Collection;
 use InvalidArgumentException;
@@ -29,7 +30,7 @@ final class MessageStream
         private readonly MessageService $messages = new MessageService(),
         private readonly ?int $defaultConsumedBySequence = null,
         private readonly ?MessageReplayLedger $replayLedger = null,
-        private readonly bool $readOnly = false,
+        private readonly bool|Closure $readOnly = false,
     ) {
         if ($streamKey === '') {
             throw new InvalidArgumentException('Message stream key must not be empty.');
@@ -64,7 +65,7 @@ final class MessageStream
         ?MessageService $messages,
         int $defaultConsumedBySequence,
         MessageReplayLedger $replayLedger,
-        bool $readOnly,
+        Closure $readOnly,
     ): self {
         return new self(
             $run,
@@ -120,7 +121,7 @@ final class MessageStream
             $recorded = $this->recordedReceive($sequence, $limit);
 
             // A receive this step already made returns what it consumed.
-            if ($recorded->isNotEmpty() || $this->readOnly) {
+            if ($recorded->isNotEmpty() || $this->readOnly()) {
                 return $recorded;
             }
 
@@ -175,9 +176,23 @@ final class MessageStream
         array $metadata = [],
         ?DateTimeInterface $expiresAt = null,
     ): WorkflowMessage {
+        $identity = null;
+
         if ($this->replayLedger instanceof MessageReplayLedger) {
             $channelValue = is_string($channel) ? $channel : $channel->value;
+            $identity = json_encode(
+                [
+                    $channelValue,
+                    $this->streamKey,
+                    $targetInstanceId,
+                    $payloadReference,
+                    $correlationId,
+                    $idempotencyKey,
+                ],
+                JSON_THROW_ON_ERROR,
+            );
             $sent = $this->recordedSend(
+                $identity,
                 $channelValue,
                 $targetInstanceId,
                 $payloadReference,
@@ -185,15 +200,16 @@ final class MessageStream
                 $idempotencyKey
             );
 
-            // A send this run already made returns the row it wrote.
+            // A send this run, or a run it was redriven from, already made
+            // returns the row it wrote.
             if ($sent instanceof WorkflowMessage) {
-                $this->replayLedger->claim($sent->getKey());
+                $this->replayLedger->advanceSend($identity);
 
                 return $sent;
             }
 
             // A read-only replay describes the send without writing it.
-            if ($this->readOnly) {
+            if ($this->readOnly()) {
                 return new WorkflowMessage([
                     'workflow_instance_id' => $this->run->workflow_instance_id,
                     'workflow_run_id' => $this->run->id,
@@ -224,16 +240,20 @@ final class MessageStream
             $metadata,
             $expiresAt,
         );
-        $this->replayLedger?->claim($message->getKey());
+        if ($identity !== null) {
+            $this->replayLedger?->advanceSend($identity);
+        }
 
         return $message;
     }
 
     /**
-     * The earliest outbound row this run wrote for the same send that this
-     * execution has not matched yet.
+     * The next outbound row for the same send, in sequence order, that this
+     * run or a run it was redriven from wrote and this execution has not
+     * matched yet.
      */
     private function recordedSend(
+        string $identity,
         string $channel,
         string $targetInstanceId,
         ?string $payloadReference,
@@ -242,7 +262,7 @@ final class MessageStream
     ): ?WorkflowMessage {
         $query = WorkflowMessage::query()
             ->where('workflow_instance_id', $this->run->workflow_instance_id)
-            ->where('source_workflow_run_id', $this->run->id)
+            ->whereIn('source_workflow_run_id', $this->runIds())
             ->where('direction', MessageDirection::Outbound->value)
             ->where('channel', $channel)
             ->where('stream_key', $this->streamKey)
@@ -256,23 +276,18 @@ final class MessageStream
             $value === null ? $query->whereNull($column) : $query->where($column, $value);
         }
 
-        $claimed = $this->replayLedger?->claimedOutboundIds() ?? [];
-
-        if ($claimed !== []) {
-            $query->whereNotIn('id', $claimed);
-        }
-
         /** @var WorkflowMessage|null $message */
         $message = $query->orderBy('sequence')
             ->orderBy('id')
+            ->skip($this->replayLedger?->sendOffset($identity) ?? 0)
             ->first();
 
         return $message;
     }
 
     /**
-     * The messages this run consumed at this step for this stream that this
-     * execution has not returned yet.
+     * The messages this run, or a run it was redriven from, consumed at this
+     * step for this stream that this execution has not returned yet.
      *
      * @return Collection<int, WorkflowMessage>
      */
@@ -282,7 +297,7 @@ final class MessageStream
 
         /** @var Collection<int, WorkflowMessage> $messages */
         $messages = WorkflowMessage::query()
-            ->where('workflow_run_id', $this->run->id)
+            ->whereIn('workflow_run_id', $this->runIds())
             ->where('stream_key', $this->streamKey)
             ->where('direction', MessageDirection::Inbound->value)
             ->where('consume_state', MessageConsumeState::Consumed->value)
@@ -297,6 +312,23 @@ final class MessageStream
         }
 
         return $messages;
+    }
+
+    /**
+     * Checked on every call: a stream kept across a replayed update handler,
+     * where dispatch is off, must still write once dispatch is back on.
+     */
+    private function readOnly(): bool
+    {
+        return $this->readOnly instanceof Closure ? (bool) ($this->readOnly)() : $this->readOnly;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function runIds(): array
+    {
+        return $this->replayLedger?->runIds($this->run) ?? [$this->run->id];
     }
 
     private function consumedBySequence(?int $override): int

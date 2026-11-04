@@ -4,10 +4,14 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestInboxTurnsWorkflow;
+use Tests\Fixtures\V2\TestMessageStreamKeptStreamWorkflow;
+use Tests\Fixtures\V2\TestMessageStreamRedriveWorkflow;
 use Tests\Fixtures\V2\TestMessageStreamTurnsWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\MessageChannel;
 use Workflow\V2\Enums\MessageConsumeState;
 use Workflow\V2\Enums\MessageDirection;
@@ -148,6 +152,92 @@ final class V2MessageStreamReplayTest extends TestCase
         $this->drainReadyTasks();
         $this->assertSame([5, 5], $this->replyRows('message-stream-legacy'));
         $this->assertSame(['ref:1', 'ref:2', 'ref:3'], $workflow->refresh()->output()['sent']);
+    }
+
+    /**
+     * A stream kept in a property and first opened by an update handler that
+     * replays with dispatch off still writes the workflow's later sends.
+     */
+    public function testAStreamFirstOpenedInAReplayedUpdateHandlerStillWritesLaterSends(): void
+    {
+        $workflow = WorkflowStub::make(TestMessageStreamKeptStreamWorkflow::class, 'message-stream-kept');
+        $workflow->start();
+        $this->drainReadyTasks();
+
+        $this->assertSame('noted a', $workflow->attemptUpdate('note', 'a')->result());
+        $this->drainReadyTasks();
+        $workflow->signal('go');
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([
+            'sent' => 'ref:main',
+        ], $workflow->output());
+        $this->assertSame(
+            ['note:a', 'ref:main'],
+            WorkflowMessage::query()
+                ->where('workflow_instance_id', 'message-stream-kept')
+                ->where('stream_key', 'replies')
+                ->where('direction', MessageDirection::Outbound->value)
+                ->orderBy('sequence')
+                ->pluck('payload_reference')
+                ->all(),
+        );
+    }
+
+    /**
+     * A redrive successor runs the source's receive and send again over the
+     * reused prefix. It returns what the source consumed and wrote.
+     */
+    public function testARedriveSuccessorReturnsTheSourcesReceiveAndSend(): void
+    {
+        config()
+            ->set('workflows.v2.testing.redrive_failures_before_success', 1);
+        Cache::forget('test:redrive:first-calls');
+        Cache::forget('test:redrive:second-calls');
+        $workflow = WorkflowStub::make(TestMessageStreamRedriveWorkflow::class, 'message-stream-redrive');
+        $workflow->start();
+        $this->drainReadyTasks();
+        $source = WorkflowRun::query()->where('workflow_instance_id', 'message-stream-redrive')->sole();
+
+        $workflow->signal('go');
+        $this->sendToInbox($source, 'm1');
+        $this->drainReadyTasks();
+        $this->assertTrue($workflow->refresh()->failed());
+        $this->sendToInbox($source->fresh(), 'm2');
+
+        $result = app(WorkflowControlPlane::class)->redrive('message-stream-redrive', $source->id);
+        $this->assertTrue($result['accepted'], (string) $result['reason']);
+        $this->drainReadyTasks();
+
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame([
+            'received' => 'm1',
+            'sent' => 'ref:m1',
+            'result' => 'Hello, m1! Redrive completed.',
+        ], $successor->workflowOutput());
+        $this->assertSame(['ref:m1'], WorkflowMessage::query()
+            ->where('workflow_instance_id', 'message-stream-redrive')
+            ->where('stream_key', 'replies')
+            ->where('direction', MessageDirection::Outbound->value)
+            ->pluck('payload_reference')
+            ->all());
+        $this->assertSame(
+            [
+                'm1' => MessageConsumeState::Consumed->value,
+                'm2' => MessageConsumeState::Pending->value,
+            ],
+            WorkflowMessage::query()
+                ->where('workflow_instance_id', 'message-stream-redrive')
+                ->where('stream_key', 'chat')
+                ->where('direction', MessageDirection::Inbound->value)
+                ->orderBy('sequence')
+                ->get()
+                ->mapWithKeys(static fn (WorkflowMessage $message): array => [
+                    (string) $message->payload_reference => $message->consume_state->value,
+                ])
+                ->all(),
+        );
     }
 
     public function testAWorkflowCodeReceiveReplaysTheMessageItConsumedAndQueriesConsumeNothing(): void

@@ -3,23 +3,36 @@
 ## Unreleased
 
 - Message stream calls in workflow code act once instead of on every replay
-  (#1010). Workflow code runs again on each later workflow task and on every
-  query.
+  (#1010). Workflow code runs again on each later workflow task, on every
+  query and in a redrive successor's reused prefix.
   - `outbox()->sendReference()` used to write a new outbound and inbound
-    message each time. A replay now returns the row the original send wrote.
+    message each time. A replay now returns the row the original send wrote,
+    including a row written by the run a successor was redriven from.
   - `inbox()->receive()` and `receiveOne()` now return the messages that call
-    consumed at that step. Before, a replay could return different messages
-    or none, and could consume a newer message under the earlier step.
+    consumed at that step, by this run or by the run it was redriven from.
+    Before, a replay could return different messages or none, and could
+    consume a newer message under the earlier step.
   - A query, a replay check or a redrive definition check never writes or
-    consumes a message.
+    consumes a message. A stream kept across a replayed update handler checks
+    this on every call, so later sends still write.
   - Rows that earlier releases duplicated are not removed. Reads don't
     deduplicate them, and no migration can tell a replay duplicate from an
     intended identical send. A consumer that read the stream on an affected
     release should deduplicate by `idempotency_key`. A run with such rows
     matches its sends to the earliest rows and writes only new sends.
+  - Messages that a replay or query on an affected release (2.20.0 and
+    earlier) consumed under the wrong step stay consumed, and workflow code
+    won't receive them again. Check streams that workflow code receives from
+    for consumed messages the workflow never handled.
   - A replayed receive whose original call found no message still reads the
     stream again, because nothing records an empty receive. Receive only after
-    a signal or condition says a message is there.
+    a signal or condition says a message is there, and send that signal before
+    the message: a signal moves the run's shared message cursor past older
+    pending messages (#1011).
+  - A send is matched by its content (channel, stream, target, reference,
+    correlation id and idempotency key). An identical row that code outside
+    the workflow wrote for the same run can satisfy it, so give workflow sends
+    their own idempotency key.
 
 ## 2.20.0 - 2026-11-03
 
