@@ -334,6 +334,9 @@ final class V2MessageStreamReplayTest extends TestCase
         $this->assertSame(1, $service->getUnconsumedCount($run->fresh(), 'b'));
         $this->assertTrue($service->hasUnconsumedMessages($run->fresh(), 'b'));
         $this->assertSame([], $service->peekMessages($run->fresh(), 'a')->pluck('payload_reference')->all());
+    }
+
+    /**
      * A message that arrives while the run is failed belongs to that run. The
      * redrive moves it to the successor, which receives it at a later step.
      */
