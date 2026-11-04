@@ -26,6 +26,20 @@ and refuse if any non-null value exists or that inventory cannot be verified.
 A missing column, omitted/stale model value, wrong storage lookup or incomplete
 schema is a refusal/health failure, never evidence of legacy null.
 
+Existing column type/nullability/default, index columns and trigger/function
+semantics must match the guard contract before adoption. A deterministic object
+name alone is insufficient. Connection aliases for the same physical table are
+one migration target.
+
+Automatic down is limited to one physical SQLite or PostgreSQL table inside a
+single DDL transaction after complete validation. Nontransactional drivers or
+multiple physical targets refuse before any DDL and retain every object.
+Rollback does not rely on reinstalling a trigger after a partial failure.
+
+Apply the expand migration before deploying code that requires this column.
+A failed or missing migration remains a storage health failure. Removing the
+column while guard readers are active is not a supported rollout sequence.
+
 ## Refusal before effects
 
 Read the discriminator authoritatively with the configured connection,
