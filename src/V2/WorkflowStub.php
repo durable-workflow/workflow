@@ -549,12 +549,15 @@ final class WorkflowStub
         $processed = 0;
 
         while ($processed < $limit) {
+            $query = self::taskQuery();
+            $dueAt = $query->getModel()->fromDateTime(now());
+
             /** @var WorkflowTask|null $task */
-            $task = self::taskQuery()
+            $task = $query
                 ->where('status', TaskStatus::Ready->value)
-                ->where(static function ($query): void {
+                ->where(static function ($query) use ($dueAt): void {
                     $query->whereNull('available_at')
-                        ->orWhere('available_at', '<=', now());
+                        ->orWhere('available_at', '<=', $dueAt);
                 })
                 ->orderBy('available_at')
                 ->orderBy('created_at')
