@@ -42,12 +42,12 @@ final class ExporterExecutionTracingTest extends TestCase
             $server->stop();
         }
         try {
-            $admitted = $this->worker($directory, 'admit', $address);
+            $admitted = $this->worker($directory, 'admit', $address, $mode === 'refused' ? 0 : 1);
             $workers = [];
             for ($i = 0; $i < 3; ++$i) {
-                $workers[] = $this->worker($directory, 'work', $address);
+                $workers[] = $this->worker($directory, 'work', $address, $mode === 'refused' ? 0 : $i + 2);
             }
-            $finished = $this->worker($directory, 'inspect', $address);
+            $finished = $this->worker($directory, 'inspect', $address, $mode === 'refused' ? 0 : 4);
             self::assertSame('completed', $finished['status']);
             self::assertSame([9007199254740993, null, '雪'], $finished['output']);
             self::assertSame(3, $finished['tasks']);
@@ -64,11 +64,7 @@ final class ExporterExecutionTracingTest extends TestCase
                 self::assertSame('4bf92f3577b34da6a3ce929d0e0e4736', $span['trace_id']);
                 self::assertSame($admitted['run_id'], $span['fields']['workflow_run_id']);
             }
-            // A timed-out exporter can return before the stalled collector
-            // has journaled every accepted request.
-            $requests = $mode === 'refused'
-                ? $this->requests($directory)
-                : $this->awaitRequests($directory, 4);
+            $requests = $this->requests($directory);
             self::assertCount($mode === 'refused' ? 0 : 4, $requests);
             foreach ($requests as $index => $request) {
                 self::assertSame('POST', $request['method']);
@@ -249,8 +245,12 @@ final class ExporterExecutionTracingTest extends TestCase
         return $this->requests($directory);
     }
 
-    private function worker(string $directory, string $mode, string $address): array
-    {
+    private function worker(
+        string $directory,
+        string $mode,
+        string $address,
+        int $expectedRequestCount
+    ): array {
         $process = new Process([
             PHP_BINARY, __DIR__ . '/../../Fixtures/V2/tracing-process.php', $directory, $mode, 'once',
             ...$this->autoloads(),
@@ -268,6 +268,9 @@ final class ExporterExecutionTracingTest extends TestCase
         if ($mode === 'work') {
             self::assertStringContainsString('Export failure', $process->getErrorOutput());
         }
+        // Settle this worker's timed-out export before the next worker
+        // snapshots the shared journal to detect premature exports.
+        self::assertCount($expectedRequestCount, $this->awaitRequests($directory, $expectedRequestCount));
 
         return $result;
     }
