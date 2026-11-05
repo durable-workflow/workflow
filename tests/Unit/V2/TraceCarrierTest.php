@@ -10,6 +10,7 @@ use OpenTelemetry\API\Baggage\Propagation\BaggagePropagator;
 use OpenTelemetry\API\Instrumentation\Configurator;
 use OpenTelemetry\API\Trace\Propagation\TraceContextPropagator;
 use OpenTelemetry\API\Trace\Span;
+use OpenTelemetry\API\Trace\TraceFlags;
 use OpenTelemetry\Context\Context;
 use OpenTelemetry\Context\Propagation\MultiTextMapPropagator;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -87,6 +88,34 @@ final class TraceCarrierTest extends TestCase
             'tracestate' => 'vendor=opaque',
         ]);
         $this->assertSame($input, TraceCarrier::normalize($input));
+    }
+
+    public static function sampledTraceFlags(): iterable
+    {
+        yield 'sampled' => ['01'];
+        yield 'sampled and random' => ['03'];
+    }
+
+    #[DataProvider('sampledTraceFlags')]
+    public function testNormalizationPreservesTheSupportedSampledFlags(string $flags): void
+    {
+        $supportedFlags = TraceFlags::SAMPLED;
+        if (defined(TraceFlags::class . '::RANDOM')) {
+            $supportedFlags |= constant(TraceFlags::class . '::RANDOM');
+        }
+        $prefix = substr(self::PARENT, 0, -2);
+        $input = self::envelope([
+            'traceparent' => $prefix . $flags,
+        ]);
+        $normalized = TraceCarrier::normalize($input, diagnostic: $diagnostic);
+        self::assertNotNull($normalized);
+        $expected = $prefix . sprintf('%02x', hexdec($flags) & $supportedFlags);
+        self::assertSame($expected, $normalized['carrier']['traceparent']);
+        self::assertSame($expected === $input['carrier']['traceparent'] ? null : 'filtered', $diagnostic);
+        $context = TraceContextPropagator::getInstance()->extract($normalized['carrier']);
+        $actualFlags = Span::fromContext($context)->getContext()->getTraceFlags();
+        self::assertSame(TraceFlags::SAMPLED, $actualFlags & TraceFlags::SAMPLED);
+        self::assertSame(0, $actualFlags & ~$supportedFlags);
     }
 
     public function testAbsentStoredMetadataDoesNotRequireApplicationInstrumentation(): void
