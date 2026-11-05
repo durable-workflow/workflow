@@ -1,0 +1,1032 @@
+{
+  "schema": "durable-workflow.command-intent/v1",
+  "value_cases": [
+    {
+      "id": "value-null",
+      "value": {
+        "type": "null"
+      },
+      "canonical_base64": "bg==",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-false",
+      "value": {
+        "type": "bool",
+        "value": false
+      },
+      "canonical_base64": "YjA=",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-true",
+      "value": {
+        "type": "bool",
+        "value": true
+      },
+      "canonical_base64": "YjE=",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-zero",
+      "value": {
+        "type": "int",
+        "value": "0"
+      },
+      "canonical_base64": "aTA=",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-one",
+      "value": {
+        "type": "int",
+        "value": "1"
+      },
+      "canonical_base64": "aTE=",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-minus-one",
+      "value": {
+        "type": "int",
+        "value": "-1"
+      },
+      "canonical_base64": "aS0x",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-long-min",
+      "value": {
+        "type": "int",
+        "value": "-9223372036854775808"
+      },
+      "canonical_base64": "aS05MjIzMzcyMDM2ODU0Nzc1ODA4",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-long-max",
+      "value": {
+        "type": "int",
+        "value": "9223372036854775807"
+      },
+      "canonical_base64": "aTkyMjMzNzIwMzY4NTQ3NzU4MDc=",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-double-zero",
+      "value": {
+        "type": "double",
+        "bits": "0000000000000000"
+      },
+      "canonical_base64": "ZDB4MDAwMDAwMDAwMDAwMDAwMA==",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-double-negative-zero",
+      "value": {
+        "type": "double",
+        "bits": "8000000000000000"
+      },
+      "canonical_base64": "ZDB4ODAwMDAwMDAwMDAwMDAwMA==",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-double-one",
+      "value": {
+        "type": "double",
+        "bits": "3ff0000000000000"
+      },
+      "canonical_base64": "ZDB4M2ZmMDAwMDAwMDAwMDAwMA==",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-double-tenth",
+      "value": {
+        "type": "double",
+        "bits": "3fb999999999999a"
+      },
+      "canonical_base64": "ZDB4M2ZiOTk5OTk5OTk5OTk5YQ==",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-double-next-tenth",
+      "value": {
+        "type": "double",
+        "bits": "3fb999999999999b"
+      },
+      "canonical_base64": "ZDB4M2ZiOTk5OTk5OTk5OTk5Yg==",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-double-smallest-subnormal",
+      "value": {
+        "type": "double",
+        "bits": "0000000000000001"
+      },
+      "canonical_base64": "ZDB4MDAwMDAwMDAwMDAwMDAwMQ==",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-double-largest-finite",
+      "value": {
+        "type": "double",
+        "bits": "7fefffffffffffff"
+      },
+      "canonical_base64": "ZDB4N2ZlZmZmZmZmZmZmZmZmZg==",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-double-infinity",
+      "value": {
+        "type": "double",
+        "bits": "7ff0000000000000"
+      },
+      "canonical_base64": "ZGluZg==",
+      "native_input": "nonfinite_refused"
+    },
+    {
+      "id": "value-double-negative-infinity",
+      "value": {
+        "type": "double",
+        "bits": "fff0000000000000"
+      },
+      "canonical_base64": "ZC1pbmY=",
+      "native_input": "nonfinite_refused"
+    },
+    {
+      "id": "value-double-nan",
+      "value": {
+        "type": "double",
+        "bits": "7ff8000000000000"
+      },
+      "canonical_base64": "ZG5hbg==",
+      "native_input": "nonfinite_refused"
+    },
+    {
+      "id": "value-text-empty",
+      "value": {
+        "type": "string",
+        "value": ""
+      },
+      "canonical_base64": "czA6",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-text-one",
+      "value": {
+        "type": "string",
+        "value": "1"
+      },
+      "canonical_base64": "czE6MQ==",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-text-unicode",
+      "value": {
+        "type": "string",
+        "value": "雪🧭"
+      },
+      "canonical_base64": "czc66Zuq8J+nrQ==",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-text-composed",
+      "value": {
+        "type": "string",
+        "value": "é"
+      },
+      "canonical_base64": "czI6w6k=",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-text-decomposed",
+      "value": {
+        "type": "string",
+        "value": "é"
+      },
+      "canonical_base64": "czM6ZcyB",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-text-controls",
+      "value": {
+        "type": "string",
+        "value": "a\u0000b\nc"
+      },
+      "canonical_base64": "czU6YQBiCmM=",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-bytes-text",
+      "value": {
+        "type": "bytes",
+        "base64": "YWI="
+      },
+      "canonical_base64": "eDI6YWI=",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-text-bytes",
+      "value": {
+        "type": "string",
+        "value": "ab"
+      },
+      "canonical_base64": "czI6YWI=",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-bytes-arbitrary",
+      "value": {
+        "type": "bytes",
+        "base64": "AP+A"
+      },
+      "canonical_base64": "eDM6AP+A",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-array-empty",
+      "value": {
+        "type": "array",
+        "items": []
+      },
+      "canonical_base64": "bDBbXQ==",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-map-empty",
+      "value": {
+        "type": "map",
+        "entries": []
+      },
+      "canonical_base64": "bTB7fQ==",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-array-order",
+      "value": {
+        "type": "array",
+        "items": [
+          {
+            "type": "int",
+            "value": "1"
+          },
+          {
+            "type": "int",
+            "value": "2"
+          }
+        ]
+      },
+      "canonical_base64": "bDJbaTFpMl0=",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-array-reversed",
+      "value": {
+        "type": "array",
+        "items": [
+          {
+            "type": "int",
+            "value": "2"
+          },
+          {
+            "type": "int",
+            "value": "1"
+          }
+        ]
+      },
+      "canonical_base64": "bDJbaTJpMV0=",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-map-order",
+      "value": {
+        "type": "map",
+        "entries": [
+          [
+            "z",
+            {
+              "type": "int",
+              "value": "1"
+            }
+          ],
+          [
+            "a",
+            {
+              "type": "array",
+              "items": [
+                {
+                  "type": "int",
+                  "value": "2"
+                },
+                {
+                  "type": "int",
+                  "value": "3"
+                }
+              ]
+            }
+          ]
+        ]
+      },
+      "canonical_base64": "bTJ7czE6YWwyW2kyaTNdczE6emkxfQ==",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-map-reversed",
+      "value": {
+        "type": "map",
+        "entries": [
+          [
+            "a",
+            {
+              "type": "array",
+              "items": [
+                {
+                  "type": "int",
+                  "value": "2"
+                },
+                {
+                  "type": "int",
+                  "value": "3"
+                }
+              ]
+            }
+          ],
+          [
+            "z",
+            {
+              "type": "int",
+              "value": "1"
+            }
+          ]
+        ]
+      },
+      "canonical_base64": "bTJ7czE6YWwyW2kyaTNdczE6emkxfQ==",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-map-numeric-keys",
+      "value": {
+        "type": "map",
+        "entries": [
+          [
+            "1",
+            {
+              "type": "string",
+              "value": "one"
+            }
+          ],
+          [
+            "0",
+            {
+              "type": "string",
+              "value": "zero"
+            }
+          ]
+        ]
+      },
+      "canonical_base64": "bTJ7czE6MHM0Onplcm9zMToxczM6b25lfQ==",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-map-key-byte-order",
+      "value": {
+        "type": "map",
+        "entries": [
+          [
+            "é",
+            {
+              "type": "int",
+              "value": "1"
+            }
+          ],
+          [
+            "z",
+            {
+              "type": "int",
+              "value": "2"
+            }
+          ],
+          [
+            "é",
+            {
+              "type": "int",
+              "value": "3"
+            }
+          ]
+        ]
+      },
+      "canonical_base64": "bTN7czM6ZcyBaTNzMTp6aTJzMjrDqWkxfQ==",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-protected-marker",
+      "value": {
+        "type": "map",
+        "entries": [
+          [
+            "__dw_intent",
+            {
+              "type": "string",
+              "value": "plain-digest"
+            }
+          ]
+        ]
+      },
+      "canonical_base64": "cDEyOnBsYWluLWRpZ2VzdA==",
+      "native_input": "declared_marker_not_plaintext_proof"
+    },
+    {
+      "id": "value-protected-marker-plus-field",
+      "value": {
+        "type": "map",
+        "entries": [
+          [
+            "__dw_intent",
+            {
+              "type": "string",
+              "value": "plain-digest"
+            }
+          ],
+          [
+            "extra",
+            {
+              "type": "int",
+              "value": "1"
+            }
+          ]
+        ]
+      },
+      "canonical_base64": "bTJ7czExOl9fZHdfaW50ZW50czEyOnBsYWluLWRpZ2VzdHM1OmV4dHJhaTF9",
+      "native_input": "finite_avro"
+    },
+    {
+      "id": "value-protected-marker-wrong-type",
+      "value": {
+        "type": "map",
+        "entries": [
+          [
+            "__dw_intent",
+            {
+              "type": "int",
+              "value": "1"
+            }
+          ]
+        ]
+      },
+      "canonical_base64": "bTF7czExOl9fZHdfaW50ZW50aTF9",
+      "native_input": "finite_avro"
+    }
+  ],
+  "command_cases": [
+    {
+      "id": "command-base",
+      "command_type": "signal",
+      "name": "changed",
+      "arguments": [
+        {
+          "type": "int",
+          "value": "1"
+        }
+      ],
+      "target_scope": "instance",
+      "requested_run_id": null,
+      "digest": "v1:92bc5b6c450ea8a520c84e381945dc93c18df3318bae0f49f982fe122a77b197"
+    },
+    {
+      "id": "command-update",
+      "command_type": "update",
+      "name": "changed",
+      "arguments": [
+        {
+          "type": "int",
+          "value": "1"
+        }
+      ],
+      "target_scope": "instance",
+      "requested_run_id": null,
+      "digest": "v1:121d528a80d8b21568fefef54029db23981dac8d2f3d484137db59ae0c60dd88"
+    },
+    {
+      "id": "command-other-name",
+      "command_type": "signal",
+      "name": "other",
+      "arguments": [
+        {
+          "type": "int",
+          "value": "1"
+        }
+      ],
+      "target_scope": "instance",
+      "requested_run_id": null,
+      "digest": "v1:dd6381210fb0f99cfa20a4050155e3bf0dc28b6486832d370170cf12f1b7d0ae"
+    },
+    {
+      "id": "command-int-as-double",
+      "command_type": "signal",
+      "name": "changed",
+      "arguments": [
+        {
+          "type": "double",
+          "bits": "3ff0000000000000"
+        }
+      ],
+      "target_scope": "instance",
+      "requested_run_id": null,
+      "digest": "v1:464360c61f154d5bcdba168068612e27b34085ff9007b9fe3cd812c3801ad8c9"
+    },
+    {
+      "id": "command-int-as-string",
+      "command_type": "signal",
+      "name": "changed",
+      "arguments": [
+        {
+          "type": "string",
+          "value": "1"
+        }
+      ],
+      "target_scope": "instance",
+      "requested_run_id": null,
+      "digest": "v1:1ddbb485bf0d510d57c7624170ae08423ad2b99ef1b6c908b517e6e9e2ed9396"
+    },
+    {
+      "id": "command-selected-run",
+      "command_type": "signal",
+      "name": "changed",
+      "arguments": [
+        {
+          "type": "int",
+          "value": "1"
+        }
+      ],
+      "target_scope": "run",
+      "requested_run_id": "run-a",
+      "digest": "v1:321ad166f560c209cf1b52c688a9887e558ba742328b39a24006a884cc2ba3de"
+    },
+    {
+      "id": "command-other-run",
+      "command_type": "signal",
+      "name": "changed",
+      "arguments": [
+        {
+          "type": "int",
+          "value": "1"
+        }
+      ],
+      "target_scope": "run",
+      "requested_run_id": "run-b",
+      "digest": "v1:46f1878c19c0cd0c1da5ff2f79c05bdc4609133cb578bbd2ad12fda3578dd764"
+    },
+    {
+      "id": "command-instance-ignores-run",
+      "command_type": "signal",
+      "name": "changed",
+      "arguments": [
+        {
+          "type": "int",
+          "value": "1"
+        }
+      ],
+      "target_scope": "instance",
+      "requested_run_id": "ignored",
+      "digest": "v1:92bc5b6c450ea8a520c84e381945dc93c18df3318bae0f49f982fe122a77b197"
+    },
+    {
+      "id": "command-map-order",
+      "command_type": "signal",
+      "name": "changed",
+      "arguments": [
+        {
+          "type": "map",
+          "entries": [
+            [
+              "z",
+              {
+                "type": "int",
+                "value": "1"
+              }
+            ],
+            [
+              "a",
+              {
+                "type": "array",
+                "items": [
+                  {
+                    "type": "int",
+                    "value": "2"
+                  },
+                  {
+                    "type": "int",
+                    "value": "3"
+                  }
+                ]
+              }
+            ]
+          ]
+        }
+      ],
+      "target_scope": "instance",
+      "requested_run_id": null,
+      "digest": "v1:21d26ae018c5162f24c4437ac141983455855c70bd70f0fa48d6679c26b8444b"
+    },
+    {
+      "id": "command-map-reversed",
+      "command_type": "signal",
+      "name": "changed",
+      "arguments": [
+        {
+          "type": "map",
+          "entries": [
+            [
+              "a",
+              {
+                "type": "array",
+                "items": [
+                  {
+                    "type": "int",
+                    "value": "2"
+                  },
+                  {
+                    "type": "int",
+                    "value": "3"
+                  }
+                ]
+              }
+            ],
+            [
+              "z",
+              {
+                "type": "int",
+                "value": "1"
+              }
+            ]
+          ]
+        }
+      ],
+      "target_scope": "instance",
+      "requested_run_id": null,
+      "digest": "v1:21d26ae018c5162f24c4437ac141983455855c70bd70f0fa48d6679c26b8444b"
+    },
+    {
+      "id": "command-negative-zero",
+      "command_type": "signal",
+      "name": "changed",
+      "arguments": [
+        {
+          "type": "double",
+          "bits": "8000000000000000"
+        }
+      ],
+      "target_scope": "instance",
+      "requested_run_id": null,
+      "digest": "v1:9fae1f042fa0ea6793a33204059ac9f6b69973df18a96f19a5c847d7bc7896e2"
+    },
+    {
+      "id": "command-positive-zero",
+      "command_type": "signal",
+      "name": "changed",
+      "arguments": [
+        {
+          "type": "double",
+          "bits": "0000000000000000"
+        }
+      ],
+      "target_scope": "instance",
+      "requested_run_id": null,
+      "digest": "v1:468c123777a6f7f23ef48b369b7355c99434a33ebcf27789f85976859c48033f"
+    },
+    {
+      "id": "command-empty",
+      "command_type": "signal",
+      "name": "changed",
+      "arguments": [],
+      "target_scope": "instance",
+      "requested_run_id": null,
+      "digest": "v1:381253a64e036eadf822bcca55fe473501a7dde69f8b4ec66dc64c907c3cfe4a"
+    },
+    {
+      "id": "command-outer-map-projected",
+      "command_type": "signal",
+      "name": "changed",
+      "arguments": [
+        {
+          "type": "int",
+          "value": "1"
+        },
+        {
+          "type": "string",
+          "value": "two"
+        }
+      ],
+      "target_scope": "instance",
+      "requested_run_id": null,
+      "digest": "v1:f4fc076740dbac1cc7c286004e04f6cfe53bcda2ac12c74b019017468aad4475"
+    },
+    {
+      "id": "command-list-reversed",
+      "command_type": "signal",
+      "name": "changed",
+      "arguments": [
+        {
+          "type": "string",
+          "value": "two"
+        },
+        {
+          "type": "int",
+          "value": "1"
+        }
+      ],
+      "target_scope": "instance",
+      "requested_run_id": null,
+      "digest": "v1:b9ed79f686e60452fe6bbb9fc945caddc087777f6aed6a5fa6ff63cdc656bbab"
+    },
+    {
+      "id": "command-bytes",
+      "command_type": "signal",
+      "name": "changed",
+      "arguments": [
+        {
+          "type": "bytes",
+          "base64": "YWI="
+        }
+      ],
+      "target_scope": "instance",
+      "requested_run_id": null,
+      "digest": "v1:91d49b626129179bb7268afad3ed793610b141329383bfd3536079d5ee05c154"
+    },
+    {
+      "id": "command-text",
+      "command_type": "signal",
+      "name": "changed",
+      "arguments": [
+        {
+          "type": "string",
+          "value": "ab"
+        }
+      ],
+      "target_scope": "instance",
+      "requested_run_id": null,
+      "digest": "v1:0ab6effe1f12a02aea59fbdd07eaa2241d48fa0bbcfdaeb4d68f46e027a42dee"
+    },
+    {
+      "id": "command-composed",
+      "command_type": "signal",
+      "name": "changed",
+      "arguments": [
+        {
+          "type": "string",
+          "value": "é"
+        }
+      ],
+      "target_scope": "instance",
+      "requested_run_id": null,
+      "digest": "v1:71ac7078726203f2b475a0634000b04c9d1293c5479cfd407eed388fd820c5a5"
+    },
+    {
+      "id": "command-decomposed",
+      "command_type": "signal",
+      "name": "changed",
+      "arguments": [
+        {
+          "type": "string",
+          "value": "é"
+        }
+      ],
+      "target_scope": "instance",
+      "requested_run_id": null,
+      "digest": "v1:fbc1d1fc12804d4eb6f75f394efbaad44b8f1edbb0f077e07fe3fdcb34abf865"
+    }
+  ],
+  "native_argument_cases": [
+    {
+      "id": "native-root-empty-list",
+      "request_root": {
+        "type": "array",
+        "items": []
+      },
+      "arguments": [],
+      "outcome": "argument_list"
+    },
+    {
+      "id": "native-root-argument-list",
+      "request_root": {
+        "type": "array",
+        "items": [
+          {
+            "type": "int",
+            "value": "1"
+          },
+          {
+            "type": "string",
+            "value": "two"
+          }
+        ]
+      },
+      "arguments": [
+        {
+          "type": "int",
+          "value": "1"
+        },
+        {
+          "type": "string",
+          "value": "two"
+        }
+      ],
+      "outcome": "argument_list"
+    },
+    {
+      "id": "native-root-outer-map",
+      "request_root": {
+        "type": "map",
+        "entries": [
+          [
+            "z",
+            {
+              "type": "string",
+              "value": "two"
+            }
+          ],
+          [
+            "a",
+            {
+              "type": "int",
+              "value": "1"
+            }
+          ]
+        ]
+      },
+      "arguments": [
+        {
+          "type": "int",
+          "value": "1"
+        },
+        {
+          "type": "string",
+          "value": "two"
+        }
+      ],
+      "outcome": "argument_list"
+    },
+    {
+      "id": "native-root-outer-map-reversed",
+      "request_root": {
+        "type": "map",
+        "entries": [
+          [
+            "a",
+            {
+              "type": "int",
+              "value": "1"
+            }
+          ],
+          [
+            "z",
+            {
+              "type": "string",
+              "value": "two"
+            }
+          ]
+        ]
+      },
+      "arguments": [
+        {
+          "type": "int",
+          "value": "1"
+        },
+        {
+          "type": "string",
+          "value": "two"
+        }
+      ],
+      "outcome": "argument_list"
+    },
+    {
+      "id": "native-root-nested-map",
+      "request_root": {
+        "type": "array",
+        "items": [
+          {
+            "type": "map",
+            "entries": [
+              [
+                "b",
+                {
+                  "type": "int",
+                  "value": "2"
+                }
+              ],
+              [
+                "a",
+                {
+                  "type": "int",
+                  "value": "1"
+                }
+              ]
+            ]
+          }
+        ]
+      },
+      "arguments": [
+        {
+          "type": "map",
+          "entries": [
+            [
+              "b",
+              {
+                "type": "int",
+                "value": "2"
+              }
+            ],
+            [
+              "a",
+              {
+                "type": "int",
+                "value": "1"
+              }
+            ]
+          ]
+        }
+      ],
+      "outcome": "argument_list"
+    },
+    {
+      "id": "native-root-empty-map",
+      "request_root": {
+        "type": "map",
+        "entries": []
+      },
+      "arguments": null,
+      "outcome": "refuse"
+    },
+    {
+      "id": "native-root-scalar",
+      "request_root": {
+        "type": "string",
+        "value": "x"
+      },
+      "arguments": null,
+      "outcome": "refuse"
+    }
+  ],
+  "digest_relations": [
+    {
+      "left": "command-base",
+      "right": "command-update",
+      "equal": false
+    },
+    {
+      "left": "command-base",
+      "right": "command-other-name",
+      "equal": false
+    },
+    {
+      "left": "command-base",
+      "right": "command-int-as-double",
+      "equal": false
+    },
+    {
+      "left": "command-base",
+      "right": "command-int-as-string",
+      "equal": false
+    },
+    {
+      "left": "command-base",
+      "right": "command-selected-run",
+      "equal": false
+    },
+    {
+      "left": "command-selected-run",
+      "right": "command-other-run",
+      "equal": false
+    },
+    {
+      "left": "command-base",
+      "right": "command-instance-ignores-run",
+      "equal": true
+    },
+    {
+      "left": "command-map-order",
+      "right": "command-map-reversed",
+      "equal": true
+    },
+    {
+      "left": "command-negative-zero",
+      "right": "command-positive-zero",
+      "equal": false
+    },
+    {
+      "left": "command-outer-map-projected",
+      "right": "command-list-reversed",
+      "equal": false
+    },
+    {
+      "left": "command-bytes",
+      "right": "command-text",
+      "equal": false
+    },
+    {
+      "left": "command-composed",
+      "right": "command-decomposed",
+      "equal": false
+    }
+  ]
+}
