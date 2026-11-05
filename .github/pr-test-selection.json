@@ -19,6 +19,7 @@
     "tests/Unit/V2/FailureFactoryCliRestoreTest.php",
     "tests/Unit/V2/LaravelDependencySecurityPolicyTest.php",
     "tests/Unit/V2/PlatformProtocolSpecsTest.php",
+    "tests/Unit/V2/PreparedLocalActivityReportTest.php",
     "tests/Unit/V2/PreparedLocalRetryPolicyTest.php",
     "tests/Unit/V2/ReadmeBranchDestinationsTest.php",
     "tests/Unit/V2/ScopedCancellationContextTest.php",
