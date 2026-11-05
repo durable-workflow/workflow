@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use Illuminate\Support\Carbon;
 use Illuminate\Validation\ValidationException;
+use InvalidArgumentException;
 use JsonException;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
@@ -43,184 +44,45 @@ final class PortableLocalActivityPreparation
         array $descriptor,
         string $protocolVersion = WorkerProtocolVersion::VERSION,
     ): array {
-        if (preg_match('/^[0-9]+\.[0-9]+$/D', $protocolVersion) !== 1
-            || version_compare($protocolVersion, self::MINIMUM_PROTOCOL_VERSION, '<')) {
-            return self::response('local_activity_preparation_requires_protocol_1_20');
-        }
-        if ($sequence < 1 || $workflowTaskAttempt < 1 || $leaseOwner === ''
-            || trim($workerAttemptId) === '' || strlen($workerAttemptId) > 255
-            || preg_match('//u', $workerAttemptId) !== 1) {
-            return self::response('invalid_local_activity_preparation');
-        }
-        try {
-            $normalized = self::normalizeDescriptor($descriptor);
-            $fingerprint = hash('sha256', json_encode($normalized, JSON_THROW_ON_ERROR));
-        } catch (ValidationException|JsonException) {
-            return self::response('invalid_local_activity_preparation');
-        }
-        /** @var WorkflowTask|null $snapshotTask */
-        $snapshotTask = ConfiguredV2Models::query('task_model', WorkflowTask::class)->find($taskId);
-        if ($snapshotTask === null) {
-            return self::response('task_not_found');
-        }
-        /** @var ActivityExecution|null $snapshotExecution */
-        $snapshotExecution = ActivityExecution::query()
-            ->where('workflow_run_id', $snapshotTask->workflow_run_id)
-            ->where('sequence', $sequence)
-            ->first();
-
-        return ConfiguredV2Models::connection()->transaction(static function () use (
-            $snapshotTask,
-            $snapshotExecution,
+        return self::prepareForContract(
+            1,
             $taskId,
             $leaseOwner,
             $workflowTaskAttempt,
             $sequence,
             $workerAttemptId,
-            $normalized,
-            $fingerprint,
-        ): array {
-            // Follow the shared attempt/execution/run/task lock order whenever
-            // an execution exists. An unseen concurrent creation is retried.
-            $rows = $snapshotExecution === null ? null : (
-                is_string($snapshotExecution->current_attempt_id)
-                    ? ActivityRowLockOrder::lockForAttempt($snapshotExecution->current_attempt_id)
-                    : ActivityRowLockOrder::lockForExecution($snapshotExecution->id)
-            );
-            /** @var WorkflowRun|null $run */
-            $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
-                ->lockForUpdate()
-                ->find($snapshotTask->workflow_run_id);
-            /** @var WorkflowTask|null $task */
-            $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
-                ->lockForUpdate()
-                ->find($taskId);
-            if ($run === null || $task === null || $task->workflow_run_id !== $run->id) {
-                return self::response('workflow_claim_not_found');
-            }
-            if ($task->task_type !== TaskType::Workflow || $task->status !== TaskStatus::Leased
-                || $task->lease_owner !== $leaseOwner || $task->attempt_count !== $workflowTaskAttempt) {
-                return self::response('workflow_claim_mismatch');
-            }
-            if ($task->lease_expires_at === null || now()->gte($task->lease_expires_at)) {
-                return self::response('workflow_claim_expired');
-            }
-            if ($run->status->isTerminal()) {
-                return self::response('run_closed');
-            }
-            if (! CancellationScopeHistory::isRecordedBefore(
-                $run,
-                $normalized['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
-                $sequence,
-            )) {
-                return self::response('local_activity_scope_not_recorded');
-            }
-            $cleanup = PortableLocalActivityCleanup::snapshot(
-                $run,
-                $normalized['cancellation_cleanup'] ?? null,
-                $sequence,
-                $normalized['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
-            );
-            if (isset($normalized['cancellation_cleanup']) && $cleanup === null) {
-                return self::response('local_activity_cleanup_authority_mismatch');
-            }
-            $scopeRefusal = CancellationScopeDelivery::admissionRefusal(
-                $run,
-                $normalized['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
-                $sequence,
-                $normalized['cancellation_cleanup'] ?? null,
-            );
-            if ($scopeRefusal !== null) {
-                return self::response($scopeRefusal);
-            }
-            $scopedCleanup = isset($cleanup['scope_id']);
-            if ($run->cancellation_request_command_id !== null
-                && ! PortableLocalActivityCleanup::belongsToRunRequest($run, $cleanup)) {
-                return self::response(isset($normalized['cancellation_cleanup'])
-                    && ! $scopedCleanup ? 'local_activity_cleanup_authority_mismatch' : 'cancellation_requested');
-            }
-            if ($run->cancellation_request_command_id === null && isset($normalized['cancellation_cleanup']) && ! $scopedCleanup) {
-                return self::response('local_activity_cleanup_authority_mismatch');
-            }
-            if ($cleanup !== null && now()->gte(PortableLocalActivityCleanup::snapshotDeadline($cleanup))) {
-                return self::response(
-                    $scopedCleanup ? 'local_activity_cleanup_deadline_expired' : 'cancellation_deadline_expired'
-                );
-            }
-            if (($run->execution_deadline_at !== null && now()->gte($run->execution_deadline_at))
-                || ($run->run_deadline_at !== null && now()->gte($run->run_deadline_at))) {
-                return self::response('run_deadline_expired');
-            }
-            if ($scopedCleanup && now()->gte(PortableLocalActivityCleanup::currentDeadline($run, $cleanup))) {
-                return self::response('local_activity_cleanup_authority_expired');
-            }
-            $execution = $rows['execution'] ?? null;
-            $attempt = $rows['attempt'] ?? null;
-            if ($snapshotExecution !== null) {
-                if (! $execution instanceof ActivityExecution
-                    || $execution->id !== $snapshotExecution->id || $execution->sequence !== $sequence
-                    || $execution->current_attempt_id !== ($rows['snapshot_attempt_id'] ?? null)) {
-                    return self::response('local_activity_previous_attempt_unresolved');
-                }
-                if ($attempt === null) {
-                    return self::prepareAdmittedMember(
-                        $run,
-                        $task,
-                        $execution,
-                        $normalized,
-                        $workerAttemptId,
-                        $fingerprint
-                    );
-                }
-                if (! $attempt instanceof ActivityAttempt) {
-                    return self::response('local_activity_previous_attempt_unresolved');
-                }
-                if ($execution->status === ActivityStatus::Pending) {
-                    return self::prepareRetry($run, $task, $execution, $attempt, $workerAttemptId, $fingerprint);
-                }
-                return self::duplicate($run, $task, $execution, $attempt, $workerAttemptId, $fingerprint);
-            }
-            if (ActivityExecution::query()->where('workflow_run_id', $run->id)->where(
-                'sequence',
-                $sequence
-            )->exists()) {
-                return self::response('local_activity_preparation_retry');
-            }
-            if (WorkflowStepHistory::nextDurableCommandSequence($run) !== $sequence) {
-                return self::response('local_activity_command_prefix_not_recorded');
-            }
-            if (($normalized['parallel_group_path'] ?? []) !== []) {
-                return self::response('local_activity_group_not_admitted');
-            }
-            $preparation = [
-                'version' => 1,
-                'descriptor_fingerprint' => $fingerprint,
-                'worker_attempt_id' => $workerAttemptId,
-                'workflow_task_attempt' => $workflowTaskAttempt,
-                ...($cleanup === null ? [] : [
-                    'cancellation_cleanup' => $cleanup,
-                ]),
-            ];
-            $execution = self::createExecution(
-                $run,
-                $task,
-                $sequence,
-                $normalized,
-                $cleanup,
-                [
-                    'local_preparation' => $preparation,
-                ]
-            );
-            $attempt = app(LocalActivityExecutor::class)->startPortableAttempt(
-                $run,
-                $task,
-                $execution,
-                $workerAttemptId,
-                $preparation
-            );
+            $descriptor,
+            $protocolVersion
+        );
+    }
 
-            return self::response(null, $execution, $attempt, task: $task);
-        }, 5);
+    /**
+     * @internal Unadvertised v2 primitive. A service adapter must separately
+     * prove its installed prepared role and original issued claim capability
+     * inside the containing transaction before invoking this method.
+     *
+     * @param array<string, mixed> $descriptor
+     * @return array<string, mixed>
+     */
+    public static function prepareWithRetryPolicy(
+        string $taskId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        int $sequence,
+        string $workerAttemptId,
+        array $descriptor,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        return self::prepareForContract(
+            2,
+            $taskId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $sequence,
+            $workerAttemptId,
+            $descriptor,
+            $protocolVersion
+        );
     }
 
     /**
@@ -494,8 +356,11 @@ final class PortableLocalActivityPreparation
     /** @param array<string, mixed> $descriptor
      * @return array<string, mixed>
      */
-    public static function normalizeDescriptor(array $descriptor): array
+    public static function normalizeDescriptor(array $descriptor, int $localContractVersion = 1): array
     {
+        if (! in_array($localContractVersion, [1, 2], true)) {
+            throw new InvalidArgumentException('Unknown prepared local activity contract.');
+        }
         $allowed = ['type', 'activity_type', 'arguments', 'payload_codec', 'retry_policy',
             'start_to_close_timeout', 'schedule_to_close_timeout', 'heartbeat_timeout', 'execution_mode',
             'cancellation_cleanup', 'cancellation_policy', 'cancellation_scope_id', 'parallel_group_id', 'parallel_group_kind', 'parallel_group_mode',
@@ -528,6 +393,25 @@ final class PortableLocalActivityPreparation
         // fabricated outcome or a claim that an application attempt ran.
         $input = $descriptor;
         unset($input['execution_mode'], $input['cancellation_cleanup'], $input['cancellation_scope_id']);
+        $retrySnapshot = null;
+        if ($localContractVersion === 2) {
+            if (! is_array($descriptor['retry_policy'] ?? null)) {
+                throw new InvalidArgumentException('Prepared contract 2 requires an explicit version-2 retry policy.');
+            }
+            $retrySnapshot = PreparedLocalRetryPolicy::normalize($descriptor['retry_policy'], array_intersect_key(
+                $descriptor,
+                array_flip(['start_to_close_timeout', 'schedule_to_close_timeout', 'heartbeat_timeout'])
+            ));
+            unset($input['retry_policy']);
+        } elseif (is_array($descriptor['retry_policy'] ?? null)
+            && array_intersect(
+                array_keys($descriptor['retry_policy']),
+                ['contract_version', 'snapshot_version', 'mode', 'maximum_interval_seconds']
+            ) !== []) {
+            throw ValidationException::withMessages([
+                'local_activity.retry_policy' => ['Versioned retry policies require their explicit prepared contract.'],
+            ]);
+        }
         $input['type'] = 'schedule_activity';
         $normalized = WorkflowCommandNormalizer::normalize([$input], self::MINIMUM_PROTOCOL_VERSION)[0];
         if (! is_string($normalized['arguments'] ?? null) || ! is_string($normalized['payload_codec'] ?? null)) {
@@ -537,6 +421,10 @@ final class PortableLocalActivityPreparation
         }
         $normalized['type'] = 'record_local_activity';
         $normalized['execution_mode'] = LocalActivityRuntime::EXECUTION_MODE;
+        if ($retrySnapshot !== null) {
+            $normalized['retry_policy'] = $retrySnapshot;
+            $normalized['local_activity_contract_version'] = 2;
+        }
         if (array_key_exists('cancellation_scope_id', $descriptor)) {
             $normalized['cancellation_scope_id'] = $descriptor['cancellation_scope_id'];
         }
@@ -579,6 +467,7 @@ final class PortableLocalActivityPreparation
         ActivityAttempt $attempt,
         string $leaseOwner,
         int $workflowTaskAttempt,
+        int $localContractVersion = 1,
     ): ?WorkflowHistoryEvent {
         if (! LocalActivityRuntime::isExecution($execution) || $execution->workflow_run_id !== $run->id
             || $attempt->workflow_run_id !== $run->id || $attempt->activity_execution_id !== $execution->id
@@ -598,7 +487,7 @@ final class PortableLocalActivityPreparation
             || ($started->payload['workflow_task_id'] ?? null) !== $attempt->workflow_task_id
             || ($started->payload['local_activity'] ?? null) !== true
             || ($started->payload['execution_mode'] ?? null) !== LocalActivityRuntime::EXECUTION_MODE
-            || ($started->payload['local_preparation']['version'] ?? null) !== 1
+            || ($started->payload['local_preparation']['version'] ?? null) !== $localContractVersion
             || ! is_string($started->payload['local_preparation']['descriptor_fingerprint'] ?? null)
             || ($started->payload['local_preparation']['worker_attempt_id'] ?? null) !== $attempt->worker_attempt_id
             || ($started->payload['local_preparation']['workflow_task_attempt'] ?? null) !== $workflowTaskAttempt
@@ -613,6 +502,26 @@ final class PortableLocalActivityPreparation
             || ($started->payload['activity_attempt']['attempt_number'] ?? null) !== $attempt->attempt_number
             || ($started->payload['activity_attempt']['lease_owner'] ?? null) !== $leaseOwner
             || ($started->payload['activity_attempt']['worker_attempt_id'] ?? null) !== $attempt->worker_attempt_id) {
+            return null;
+        }
+        if ($localContractVersion === 2) {
+            if (($started->payload['local_preparation']['local_activity_contract_version'] ?? null) !== 2
+                || ($execution->activity_options['local_activity_contract_version'] ?? null) !== 2
+                || ! is_array($started->payload['activity']['retry_policy'] ?? null)
+                || ! is_array($execution->retry_policy)) {
+                return null;
+            }
+            try {
+                if (PreparedLocalRetryPolicy::validateSnapshot($execution->retry_policy)
+                    !== PreparedLocalRetryPolicy::validateSnapshot($started->payload['activity']['retry_policy'])) {
+                    return null;
+                }
+            } catch (InvalidArgumentException) {
+                return null;
+            }
+        } elseif ($localContractVersion !== 1
+            || array_key_exists('local_activity_contract_version', $started->payload['local_preparation'])
+            || ($execution->retry_policy['snapshot_version'] ?? null) === 2) {
             return null;
         }
         $scopeId = $execution->activity_options['cancellation_scope_id'] ?? null;
@@ -642,6 +551,217 @@ final class PortableLocalActivityPreparation
         }
 
         return $started;
+    }
+
+    /**
+     * @param array<string, mixed> $descriptor
+     * @return array<string, mixed>
+     */
+    private static function prepareForContract(
+        int $localContractVersion,
+        string $taskId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        int $sequence,
+        string $workerAttemptId,
+        array $descriptor,
+        string $protocolVersion,
+    ): array {
+        if (preg_match('/^[0-9]+\.[0-9]+$/D', $protocolVersion) !== 1
+            || version_compare($protocolVersion, self::MINIMUM_PROTOCOL_VERSION, '<')) {
+            return self::response('local_activity_preparation_requires_protocol_1_20');
+        }
+        if ($sequence < 1 || $workflowTaskAttempt < 1 || $leaseOwner === ''
+            || trim($workerAttemptId) === '' || strlen($workerAttemptId) > 255
+            || preg_match('//u', $workerAttemptId) !== 1) {
+            return self::response('invalid_local_activity_preparation');
+        }
+        try {
+            $normalized = self::normalizeDescriptor($descriptor, $localContractVersion);
+            $fingerprint = hash('sha256', json_encode($normalized, JSON_THROW_ON_ERROR));
+        } catch (ValidationException|JsonException) {
+            return self::response('invalid_local_activity_preparation');
+        } catch (InvalidArgumentException $error) {
+            if ($localContractVersion === 1) {
+                throw $error;
+            }
+            return self::response('invalid_local_activity_preparation');
+        }
+        /** @var WorkflowTask|null $snapshotTask */
+        $snapshotTask = ConfiguredV2Models::query('task_model', WorkflowTask::class)->find($taskId);
+        if ($snapshotTask === null) {
+            return self::response('task_not_found');
+        }
+        /** @var ActivityExecution|null $snapshotExecution */
+        $snapshotExecution = ActivityExecution::query()
+            ->where('workflow_run_id', $snapshotTask->workflow_run_id)
+            ->where('sequence', $sequence)
+            ->first();
+
+        return ConfiguredV2Models::connection()->transaction(static function () use (
+            $snapshotTask,
+            $snapshotExecution,
+            $taskId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $sequence,
+            $workerAttemptId,
+            $normalized,
+            $fingerprint,
+            $localContractVersion,
+        ): array {
+            // Follow the shared attempt/execution/run/task lock order whenever
+            // an execution exists. An unseen concurrent creation is retried.
+            $rows = $snapshotExecution === null ? null : (
+                is_string($snapshotExecution->current_attempt_id)
+                    ? ActivityRowLockOrder::lockForAttempt($snapshotExecution->current_attempt_id)
+                    : ActivityRowLockOrder::lockForExecution($snapshotExecution->id)
+            );
+            /** @var WorkflowRun|null $run */
+            $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->lockForUpdate()
+                ->find($snapshotTask->workflow_run_id);
+            /** @var WorkflowTask|null $task */
+            $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+                ->lockForUpdate()
+                ->find($taskId);
+            if ($run === null || $task === null || $task->workflow_run_id !== $run->id) {
+                return self::response('workflow_claim_not_found');
+            }
+            if ($task->task_type !== TaskType::Workflow || $task->status !== TaskStatus::Leased
+                || $task->lease_owner !== $leaseOwner || $task->attempt_count !== $workflowTaskAttempt) {
+                return self::response('workflow_claim_mismatch');
+            }
+            if ($task->lease_expires_at === null || now()->gte($task->lease_expires_at)) {
+                return self::response('workflow_claim_expired');
+            }
+            if ($run->status->isTerminal()) {
+                return self::response('run_closed');
+            }
+            if (! CancellationScopeHistory::isRecordedBefore(
+                $run,
+                $normalized['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
+                $sequence,
+            )) {
+                return self::response('local_activity_scope_not_recorded');
+            }
+            $cleanup = PortableLocalActivityCleanup::snapshot(
+                $run,
+                $normalized['cancellation_cleanup'] ?? null,
+                $sequence,
+                $normalized['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
+            );
+            if (isset($normalized['cancellation_cleanup']) && $cleanup === null) {
+                return self::response('local_activity_cleanup_authority_mismatch');
+            }
+            $scopeRefusal = CancellationScopeDelivery::admissionRefusal(
+                $run,
+                $normalized['cancellation_scope_id'] ?? CancellationScopeHistory::ROOT_SCOPE_ID,
+                $sequence,
+                $normalized['cancellation_cleanup'] ?? null,
+            );
+            if ($scopeRefusal !== null) {
+                return self::response($scopeRefusal);
+            }
+            $scopedCleanup = isset($cleanup['scope_id']);
+            if ($run->cancellation_request_command_id !== null
+                && ! PortableLocalActivityCleanup::belongsToRunRequest($run, $cleanup)) {
+                return self::response(isset($normalized['cancellation_cleanup'])
+                    && ! $scopedCleanup ? 'local_activity_cleanup_authority_mismatch' : 'cancellation_requested');
+            }
+            if ($run->cancellation_request_command_id === null && isset($normalized['cancellation_cleanup']) && ! $scopedCleanup) {
+                return self::response('local_activity_cleanup_authority_mismatch');
+            }
+            if ($cleanup !== null && now()->gte(PortableLocalActivityCleanup::snapshotDeadline($cleanup))) {
+                return self::response(
+                    $scopedCleanup ? 'local_activity_cleanup_deadline_expired' : 'cancellation_deadline_expired'
+                );
+            }
+            if (($run->execution_deadline_at !== null && now()->gte($run->execution_deadline_at))
+                || ($run->run_deadline_at !== null && now()->gte($run->run_deadline_at))) {
+                return self::response('run_deadline_expired');
+            }
+            if ($scopedCleanup && now()->gte(PortableLocalActivityCleanup::currentDeadline($run, $cleanup))) {
+                return self::response('local_activity_cleanup_authority_expired');
+            }
+            $execution = $rows['execution'] ?? null;
+            $attempt = $rows['attempt'] ?? null;
+            if ($snapshotExecution !== null) {
+                if (! $execution instanceof ActivityExecution
+                    || $execution->id !== $snapshotExecution->id || $execution->sequence !== $sequence
+                    || $execution->current_attempt_id !== ($rows['snapshot_attempt_id'] ?? null)) {
+                    return self::response('local_activity_previous_attempt_unresolved');
+                }
+                if ($attempt === null) {
+                    return self::prepareAdmittedMember(
+                        $run,
+                        $task,
+                        $execution,
+                        $normalized,
+                        $workerAttemptId,
+                        $fingerprint
+                    );
+                }
+                if (! $attempt instanceof ActivityAttempt) {
+                    return self::response('local_activity_previous_attempt_unresolved');
+                }
+                if ($execution->status === ActivityStatus::Pending) {
+                    return self::prepareRetry($run, $task, $execution, $attempt, $workerAttemptId, $fingerprint);
+                }
+                return self::duplicate(
+                    $run,
+                    $task,
+                    $execution,
+                    $attempt,
+                    $workerAttemptId,
+                    $fingerprint,
+                    $localContractVersion
+                );
+            }
+            if (ActivityExecution::query()->where('workflow_run_id', $run->id)->where(
+                'sequence',
+                $sequence
+            )->exists()) {
+                return self::response('local_activity_preparation_retry');
+            }
+            if (WorkflowStepHistory::nextDurableCommandSequence($run) !== $sequence) {
+                return self::response('local_activity_command_prefix_not_recorded');
+            }
+            if (($normalized['parallel_group_path'] ?? []) !== []) {
+                return self::response('local_activity_group_not_admitted');
+            }
+            $preparation = [
+                'version' => $localContractVersion,
+                ...($localContractVersion === 2 ? [
+                    'local_activity_contract_version' => 2,
+                ] : []),
+                'descriptor_fingerprint' => $fingerprint,
+                'worker_attempt_id' => $workerAttemptId,
+                'workflow_task_attempt' => $workflowTaskAttempt,
+                ...($cleanup === null ? [] : [
+                    'cancellation_cleanup' => $cleanup,
+                ]),
+            ];
+            $execution = self::createExecution(
+                $run,
+                $task,
+                $sequence,
+                $normalized,
+                $cleanup,
+                [
+                    'local_preparation' => $preparation,
+                ]
+            );
+            $attempt = app(LocalActivityExecutor::class)->startPortableAttempt(
+                $run,
+                $task,
+                $execution,
+                $workerAttemptId,
+                $preparation
+            );
+
+            return self::response(null, $execution, $attempt, task: $task);
+        }, 5);
     }
 
     /** @param array<string, mixed> $normalized
@@ -683,11 +803,17 @@ final class PortableLocalActivityPreparation
             'connection' => $run->connection,
             'queue' => $run->queue,
             'parallel_group_path' => $normalized['parallel_group_path'] ?? null,
-            'retry_policy' => ActivityRetryPolicy::snapshotExternal($normalized['retry_policy'] ?? null, $options),
+            'retry_policy' => ($normalized['local_activity_contract_version'] ?? null) === 2
+                ? PreparedLocalRetryPolicy::validateSnapshot($normalized['retry_policy'])
+                : ActivityRetryPolicy::snapshotExternal($normalized['retry_policy'] ?? null, $options),
             'activity_options' => [
                 'execution_mode' => LocalActivityRuntime::EXECUTION_MODE,
                 'queue_bypassed' => true,
                 'routing' => 'workflow_worker_process',
+                ...(($normalized['local_activity_contract_version'] ?? null) === 2
+                    ? [
+                        'local_activity_contract_version' => 2,
+                    ] : []),
                 ...(isset($normalized['cancellation_policy']) ? [
                     'cancellation_policy' => $normalized['cancellation_policy'],
                 ] : []),
@@ -1043,6 +1169,7 @@ final class PortableLocalActivityPreparation
         ActivityAttempt $attempt,
         string $workerAttemptId,
         string $fingerprint,
+        int $localContractVersion = 1,
     ): array {
         if (! LocalActivityRuntime::isExecution($execution) || $execution->workflow_run_id !== $run->id
             || $execution->status !== ActivityStatus::Running
@@ -1050,7 +1177,14 @@ final class PortableLocalActivityPreparation
             || $attempt->worker_attempt_id !== $workerAttemptId || $attempt->status !== ActivityAttemptStatus::Running) {
             return self::response('local_activity_preparation_mismatch');
         }
-        $started = self::originalStart($run, $execution, $attempt, $task->lease_owner, $task->attempt_count);
+        $started = self::originalStart(
+            $run,
+            $execution,
+            $attempt,
+            $task->lease_owner,
+            $task->attempt_count,
+            $localContractVersion
+        );
         if (! $started instanceof WorkflowHistoryEvent
             || ($started->payload['local_preparation']['descriptor_fingerprint'] ?? null) !== $fingerprint) {
             return self::response('local_activity_preparation_mismatch');

@@ -30,8 +30,10 @@ use Workflow\V2\Support\ActivityCancellation;
 use Workflow\V2\Support\ActivityCancellationAcknowledgement;
 use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\CancellationScopeHistory;
+use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\HistoryTimeline;
+use Workflow\V2\Support\LocalActivityExecutor;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\PortableLocalActivityPreparation;
 use Workflow\V2\WorkflowStub;
@@ -87,6 +89,112 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
             $this->assertSame('workflow', $entry['task']['type']);
             $this->assertSame('leased', $entry['task']['status']);
         }
+    }
+
+    public function testRetryContractPreparationRetainsItsOriginalModeAndCannotUseTheLegacyOutcomeEntry(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $descriptor = [
+            ...$this->descriptor(),
+            'retry_policy' => [
+                'contract_version' => 2,
+                'mode' => 'explicit',
+                'max_attempts' => 3,
+                'backoff_seconds' => [2, 5],
+            ],
+        ];
+        $prepare = static fn (): array => PortableLocalActivityPreparation::prepareWithRetryPolicy(
+            $task->id,
+            'portable-worker',
+            1,
+            1,
+            'sdk-local-attempt',
+            $descriptor,
+            '1.20'
+        );
+        $reply = $prepare();
+        $this->assertTrue($reply['prepared']);
+        $execution = ActivityExecution::query()->findOrFail($reply['activity_execution_id']);
+        $attempt = ActivityAttempt::query()->findOrFail($reply['activity_attempt_id']);
+        $this->assertSame(2, $execution->activity_options['local_activity_contract_version']);
+        $this->assertSame(2, $execution->retry_policy['snapshot_version']);
+        $this->assertSame(5, $execution->retry_policy['maximum_interval_seconds']);
+        $started = PortableLocalActivityPreparation::originalStart($run, $execution, $attempt, 'portable-worker', 1, 2);
+        $this->assertInstanceOf(WorkflowHistoryEvent::class, $started);
+        $this->assertSame(2, $started->payload['local_preparation']['version']);
+        $this->assertSame(2, $started->payload['local_preparation']['local_activity_contract_version']);
+        $this->assertNull(
+            PortableLocalActivityPreparation::originalStart($run, $execution, $attempt, 'portable-worker', 1)
+        );
+        $refused = app(LocalActivityExecutor::class)->recordPortableOutcome(
+            $attempt->id,
+            'portable-worker',
+            1,
+            [
+                'outcome' => 'failed',
+                'message' => 'failure',
+            ],
+            '1.20'
+        );
+        $this->assertFalse($refused['recorded']);
+        $this->assertSame('local_activity_preparation_mismatch', $refused['reason']);
+        $this->assertSame(ActivityAttemptStatus::Running, $attempt->refresh()->status);
+        $this->assertSame(2, $run->historyEvents()->count());
+        $duplicate = $prepare();
+        $this->assertTrue($duplicate['prepared']);
+        $this->assertTrue($duplicate['duplicate']);
+        $this->assertSame($attempt->id, $duplicate['activity_attempt_id']);
+        $this->assertSame(2, $run->historyEvents()->count());
+
+        $policy = $execution->retry_policy;
+        $execution->forceFill([
+            'retry_policy' => [
+                ...$policy,
+                'maximum_interval_seconds' => 6,
+            ],
+        ])->save();
+        $this->assertNull(PortableLocalActivityPreparation::originalStart(
+            $run,
+            $execution->refresh(),
+            $attempt,
+            'portable-worker',
+            1,
+            2
+        ));
+    }
+
+    public function testRetryContractPreparationRollsBackModeSnapshotAndAttemptWithItsOuterTransaction(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $connection = ConfiguredV2Models::connection();
+        $connection->beginTransaction();
+        try {
+            $reply = PortableLocalActivityPreparation::prepareWithRetryPolicy(
+                $task->id,
+                'portable-worker',
+                1,
+                1,
+                'sdk-local-attempt',
+                [
+                    ...$this->descriptor(),
+                    'retry_policy' => [
+                        'contract_version' => 2,
+                        'mode' => 'explicit',
+                        'max_attempts' => 3,
+                        'backoff_seconds' => [2, 5],
+                    ],
+                ],
+                '1.20'
+            );
+            $this->assertTrue($reply['prepared']);
+            $this->assertSame(2, $run->historyEvents()->count());
+        } finally {
+            $connection->rollBack();
+        }
+        $this->assertSame(0, $run->activityExecutions()->count());
+        $this->assertSame(0, ActivityAttempt::query()->where('workflow_run_id', $run->id)->count());
+        $this->assertSame(0, $run->historyEvents()->count());
+        $this->assertSame(TaskStatus::Leased, $task->refresh()->status);
     }
 
     public function testLostPreparationResponseReturnsTheOriginalAttemptWithoutRenewingAnyDeadline(): void
