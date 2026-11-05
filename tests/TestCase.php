@@ -67,6 +67,11 @@ abstract class TestCase extends BaseTestCase
     private static array $workers = [];
 
     /**
+     * @var array<string, array{database: string, prefix: string, tables: list<string>}>|null
+     */
+    private static ?array $truncationSchema = null;
+
+    /**
      * @var array<int, array{
      *     stdout: string,
      *     stderr: string,
@@ -195,19 +200,30 @@ abstract class TestCase extends BaseTestCase
         Carbon::setTestNow($target);
     }
 
+    protected function beforeTruncatingDatabase(): void
+    {
+        // RefreshDatabase's migrated flag is shared with standalone Testbench
+        // classes whose migration paths can omit the framework tables. A flag
+        // from that application cannot establish this harness's schema.
+        if (self::$truncationSchema !== $this->truncationSchema()) {
+            RefreshDatabaseState::$migrated = false;
+        }
+
+        if (! RefreshDatabaseState::$migrated) {
+            // A fresh migration also invalidates Laravel's per-connection table
+            // cache; retaining it can miss new tables or query removed ones.
+            static::$allTables = [];
+            $this->preparePostgresTestSchemaReset();
+        }
+    }
+
     protected function setUpDatabaseTruncation(): void
     {
+        self::$truncationSchema = $this->truncationSchema();
         // Testbench's PendingCommand binds a mocked OutputStyle while it runs
         // migrations. Remove that per-command binding so application commands
         // invoked by a test can write to the output buffer supplied by Artisan.
         $this->app->offsetUnset(OutputStyle::class);
-    }
-
-    protected function beforeTruncatingDatabase(): void
-    {
-        if (! RefreshDatabaseState::$migrated) {
-            $this->preparePostgresTestSchemaReset();
-        }
     }
 
     protected function preparePostgresTestSchemaReset(): void
@@ -461,6 +477,30 @@ abstract class TestCase extends BaseTestCase
         }
 
         return $diagnostics;
+    }
+
+    /**
+     * @return array<string, array{database: string, prefix: string, tables: list<string>}>
+     */
+    private function truncationSchema(): array
+    {
+        $schema = [];
+        foreach ($this->connectionsToTruncate() as $name) {
+            $connection = $this->app->make('db')
+                ->connection($name);
+            $tables = $connection->getSchemaBuilder()
+                ->getTableListing();
+            sort($tables);
+            $schema[$connection->getName()] = [
+                'database' => $connection->getDatabaseName(),
+                'prefix' => $connection->getTablePrefix(),
+                'tables' => $tables,
+            ];
+        }
+
+        ksort($schema);
+
+        return $schema;
     }
 
     private static function normalizeJsonObject(array $value): array

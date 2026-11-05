@@ -20,27 +20,30 @@ This package also provides the orchestration engine hosted by
 [Durable Workflow Cloud](https://cloud.durable-workflow.com/) when workers need
 to run outside the Laravel application or across PHP, Python, and Rust.
 
-Use a patched Laravel 12 or 13 release for production. Laravel 10 and 11
-compatibility is retained for upgrading and draining existing applications, not
-as security support for those frameworks. The [dependency security policy](resources/laravel-dependency-security-policy.json)
-records the remaining advisories and review dates. The Laravel 10 and 11
-minimums include their upstream TokenGuard fixes; the advisory feed still
-includes those patched branches. Keep Composer audits and application security
-updates enabled.
+Workflow 2.21 requires **PHP 8.2 or newer** and **Laravel 12.69.0 or newer
+on the 12.x line, or Laravel 13.30.0 or newer on the 13.x line**. Laravel 13
+requires PHP 8.3. The [dependency security policy](resources/laravel-dependency-security-policy.json)
+records the supported framework floors. Keep Composer audits and application
+security updates enabled.
 
-Workflow 2.17.0 no longer supports Laravel 9, which has no fix for the
-[TokenGuard advisory](https://github.com/laravel/framework/security/advisories/GHSA-f9x3-7vq9-cph6).
-Composer keeps a Laravel 9 application on Workflow 2.16.x, so updating does not
-break it. To move past 2.16.x, upgrade the application to a patched Laravel 12
-or 13 release first. Until then, do not expose token-guard authentication; see
-[#922](https://github.com/durable-workflow/workflow/issues/922).
+### Upgrade to 2.21
 
-The legacy Laravel 10 and 11 exception requires an existing application
-lockfile. Keep that lock, use a targeted Workflow update, and drain or migrate
-to patched Laravel 12 or 13. It does not cover a fresh PHP 8.1 dependency
-resolution, which Composer may refuse because of the legacy advisories. If
-Composer refuses the migration, upgrade the framework first; do not globally
-disable security blocking.
+Upgrade PHP 8.1 applications to PHP 8.2 or newer and Laravel 10/11 applications
+to patched Laravel 12 or 13 before requiring Workflow 2.21. Composer refuses
+2.21 on the retired platforms. Keep the application's existing 2.20.x lock
+while preparing that upgrade; older Workflow releases do not extend upstream
+security support for PHP or Laravel. Do not disable advisory blocking to force
+an upgrade.
+
+This platform change does not migrate durable history. Existing v1 runs remain
+owned by v1; retain their code and workers until they finish, and use the
+[embedded upgrade contract](resources/laravel-embedded-upgrade-contract.json)
+to choose drain or coexistence. The stable 1.x authority is unchanged.
+
+Laravel 9 applications remain on their compatible Workflow 2.16.x line until
+they upgrade the framework. Laravel 9 has no fix for the
+[TokenGuard advisory](https://github.com/laravel/framework/security/advisories/GHSA-f9x3-7vq9-cph6)
+and was removed in Workflow 2.17.0; see [#922](https://github.com/durable-workflow/workflow/issues/922).
 
 ## Install
 

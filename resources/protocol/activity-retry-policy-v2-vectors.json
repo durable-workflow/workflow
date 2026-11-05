@@ -1,0 +1,1701 @@
+{
+  "format": "durable-workflow.activity-retry-policy-vectors",
+  "format_version": 1,
+  "status": "source-proposal",
+  "authority": {
+    "product_decision": "https://github.com/durable-workflow/.github/issues/219#issuecomment-6643667500",
+    "wire_proposal": "https://github.com/durable-workflow/.github/issues/219#issuecomment-6643231759"
+  },
+  "scope": {
+    "runtime_enabled": false,
+    "policy_contract_version": 2,
+    "snapshot_version": 2,
+    "capability": "activity_retry_delay_override_v1",
+    "failure_override_field": "failure.next_retry_delay_seconds",
+    "maximum_json_integer": 9007199254740991,
+    "generated_default_maximum_interval_seconds": 60,
+    "max_attempts_includes_first_attempt": true
+  },
+  "representation": {
+    "policy": "Authored and normalized objects are canonical policy projections for review. They are not a complete activity command or history-event schema.",
+    "generation": "Generator parameters describe the fixture schedule only. They do not add worker protocol fields.",
+    "time": "Failure and deadline integers are whole seconds in the same fixed fixture epoch. Native adapters must use one authoritative failure sample and their checked timestamp representation.",
+    "terminal_classification": "Non-retryable and attempts-exhausted labels describe precedence, not new wire reason strings.",
+    "write_count": "Zero means no task, attempt or history mutation. A terminal failure is a valid recorded outcome, not a no-write refusal.",
+    "replay": "Recorded outcomes and availability are authoritative. Replay never reruns the current policy against a later clock.",
+    "remaining_native_vectors": "Server binds native timestamp overflow, transport non-finite/invalid-JSON input, exact admission fences and retained HTTP acknowledgement shapes to these IDs before producer adoption."
+  },
+  "normalization_cases": [
+    {
+      "id": "explicit_short_list",
+      "input": {
+        "contract_version": 2,
+        "mode": "explicit",
+        "max_attempts": 5,
+        "backoff_seconds": [
+          1,
+          2,
+          4
+        ]
+      },
+      "expected": {
+        "result": "accepted",
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 5,
+          "backoff_seconds": [
+            1,
+            2,
+            4
+          ],
+          "maximum_interval_seconds": 4
+        }
+      }
+    },
+    {
+      "id": "explicit_empty_list",
+      "input": {
+        "contract_version": 2,
+        "mode": "explicit",
+        "max_attempts": 5,
+        "backoff_seconds": []
+      },
+      "expected": {
+        "result": "accepted",
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 5,
+          "backoff_seconds": [],
+          "maximum_interval_seconds": 0
+        }
+      }
+    },
+    {
+      "id": "explicit_long_delay_preserved",
+      "input": {
+        "contract_version": 2,
+        "mode": "explicit",
+        "max_attempts": 5,
+        "backoff_seconds": [
+          120
+        ]
+      },
+      "expected": {
+        "result": "accepted",
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 5,
+          "backoff_seconds": [
+            120
+          ],
+          "maximum_interval_seconds": 120
+        }
+      }
+    },
+    {
+      "id": "explicit_zero_list",
+      "input": {
+        "contract_version": 2,
+        "mode": "explicit",
+        "max_attempts": 5,
+        "backoff_seconds": [
+          0
+        ]
+      },
+      "expected": {
+        "result": "accepted",
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 5,
+          "backoff_seconds": [
+            0
+          ],
+          "maximum_interval_seconds": 0
+        }
+      }
+    },
+    {
+      "id": "explicit_supplied_cap",
+      "input": {
+        "contract_version": 2,
+        "mode": "explicit",
+        "max_attempts": 5,
+        "backoff_seconds": [
+          10
+        ],
+        "maximum_interval_seconds": 20
+      },
+      "expected": {
+        "result": "accepted",
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 5,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        }
+      }
+    },
+    {
+      "id": "explicit_empty_supplied_cap",
+      "input": {
+        "contract_version": 2,
+        "mode": "explicit",
+        "max_attempts": 5,
+        "backoff_seconds": [],
+        "maximum_interval_seconds": 20
+      },
+      "expected": {
+        "result": "accepted",
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 5,
+          "backoff_seconds": [],
+          "maximum_interval_seconds": 20
+        }
+      }
+    },
+    {
+      "id": "explicit_cap_uses_maximum_not_last",
+      "input": {
+        "contract_version": 2,
+        "mode": "explicit",
+        "max_attempts": 5,
+        "backoff_seconds": [
+          10,
+          2
+        ]
+      },
+      "expected": {
+        "result": "accepted",
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 5,
+          "backoff_seconds": [
+            10,
+            2
+          ],
+          "maximum_interval_seconds": 10
+        }
+      }
+    },
+    {
+      "id": "explicit_cap_below_entry",
+      "input": {
+        "contract_version": 2,
+        "mode": "explicit",
+        "max_attempts": 5,
+        "backoff_seconds": [
+          10,
+          2
+        ],
+        "maximum_interval_seconds": 9
+      },
+      "expected": {
+        "result": "invalid_policy",
+        "durable_write_count": 0
+      }
+    },
+    {
+      "id": "generated_default_cap",
+      "input": {
+        "contract_version": 2,
+        "mode": "generated",
+        "max_attempts": 9,
+        "generator": {
+          "initial_interval_seconds": 1,
+          "multiplier": 2
+        }
+      },
+      "expected": {
+        "result": "accepted",
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "generated",
+          "max_attempts": 9,
+          "backoff_seconds": [
+            1,
+            2,
+            4,
+            8,
+            16,
+            32,
+            60,
+            60
+          ],
+          "maximum_interval_seconds": 60
+        }
+      }
+    },
+    {
+      "id": "generated_supplied_cap",
+      "input": {
+        "contract_version": 2,
+        "mode": "generated",
+        "max_attempts": 9,
+        "generator": {
+          "initial_interval_seconds": 1,
+          "multiplier": 2
+        },
+        "maximum_interval_seconds": 10
+      },
+      "expected": {
+        "result": "accepted",
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "generated",
+          "max_attempts": 9,
+          "backoff_seconds": [
+            1,
+            2,
+            4,
+            8,
+            10,
+            10,
+            10,
+            10
+          ],
+          "maximum_interval_seconds": 10
+        }
+      }
+    },
+    {
+      "id": "legacy_authoring_not_upgraded",
+      "input": {
+        "contract_version": 1,
+        "backoff_seconds": [
+          1,
+          2,
+          4
+        ]
+      },
+      "expected": {
+        "result": "legacy_route",
+        "version_2_defaults_applied": false
+      }
+    }
+  ],
+  "decision_cases": [
+    {
+      "id": "missing_override_uses_policy",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "scheduled",
+        "selected_delay_seconds": 10,
+        "effective_cap_seconds": 20,
+        "retry_available_at_seconds": 110,
+        "retry_task_count": 1,
+        "activity_retry_scheduled_count": 1,
+        "original_deadline_unchanged": true,
+        "original_failure_preserved": true
+      }
+    },
+    {
+      "id": "override_replaces_policy",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 5
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "scheduled",
+        "selected_delay_seconds": 5,
+        "effective_cap_seconds": 20,
+        "retry_available_at_seconds": 105,
+        "retry_task_count": 1,
+        "activity_retry_scheduled_count": 1,
+        "original_deadline_unchanged": true,
+        "original_failure_preserved": true,
+        "requested_delay_seconds": 5
+      }
+    },
+    {
+      "id": "zero_override_is_present",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 0
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "scheduled",
+        "selected_delay_seconds": 0,
+        "effective_cap_seconds": 20,
+        "retry_available_at_seconds": 100,
+        "retry_task_count": 1,
+        "activity_retry_scheduled_count": 1,
+        "original_deadline_unchanged": true,
+        "original_failure_preserved": true,
+        "requested_delay_seconds": 0
+      }
+    },
+    {
+      "id": "override_at_cap",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 20
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "scheduled",
+        "selected_delay_seconds": 20,
+        "effective_cap_seconds": 20,
+        "retry_available_at_seconds": 120,
+        "retry_task_count": 1,
+        "activity_retry_scheduled_count": 1,
+        "original_deadline_unchanged": true,
+        "original_failure_preserved": true,
+        "requested_delay_seconds": 20
+      }
+    },
+    {
+      "id": "override_exceeds_cap",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 21
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "terminal",
+        "reason": "retry_delay_exceeds_policy_cap",
+        "selected_delay_seconds": 21,
+        "effective_cap_seconds": 20,
+        "retry_task_count": 0,
+        "activity_retry_scheduled_count": 0,
+        "original_deadline_unchanged": true,
+        "original_failure_preserved": true,
+        "requested_delay_seconds": 21
+      }
+    },
+    {
+      "id": "override_reaches_deadline",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 5
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 105,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "terminal",
+        "reason": "retry_delay_exceeds_schedule_to_close",
+        "selected_delay_seconds": 5,
+        "effective_cap_seconds": 20,
+        "retry_task_count": 0,
+        "activity_retry_scheduled_count": 0,
+        "original_deadline_unchanged": true,
+        "original_failure_preserved": true,
+        "requested_delay_seconds": 5
+      }
+    },
+    {
+      "id": "override_passes_deadline",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 6
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 105,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "terminal",
+        "reason": "retry_delay_exceeds_schedule_to_close",
+        "selected_delay_seconds": 6,
+        "effective_cap_seconds": 20,
+        "retry_task_count": 0,
+        "activity_retry_scheduled_count": 0,
+        "original_deadline_unchanged": true,
+        "original_failure_preserved": true,
+        "requested_delay_seconds": 6
+      }
+    },
+    {
+      "id": "override_before_deadline",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 4
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 105,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "scheduled",
+        "selected_delay_seconds": 4,
+        "effective_cap_seconds": 20,
+        "retry_available_at_seconds": 104,
+        "retry_task_count": 1,
+        "activity_retry_scheduled_count": 1,
+        "original_deadline_unchanged": true,
+        "original_failure_preserved": true,
+        "requested_delay_seconds": 4
+      }
+    },
+    {
+      "id": "policy_reaches_deadline",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 110,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "terminal",
+        "reason": "retry_delay_exceeds_schedule_to_close",
+        "selected_delay_seconds": 10,
+        "effective_cap_seconds": 20,
+        "retry_task_count": 0,
+        "activity_retry_scheduled_count": 0,
+        "original_deadline_unchanged": true,
+        "original_failure_preserved": true
+      }
+    },
+    {
+      "id": "zero_at_original_deadline_is_terminal",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 0
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 100,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "terminal",
+        "reason": "retry_delay_exceeds_schedule_to_close",
+        "selected_delay_seconds": 0,
+        "effective_cap_seconds": 20,
+        "retry_task_count": 0,
+        "activity_retry_scheduled_count": 0,
+        "original_deadline_unchanged": true,
+        "original_failure_preserved": true,
+        "requested_delay_seconds": 0
+      }
+    },
+    {
+      "id": "invalid_override_null",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": null
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "refused",
+        "error": "invalid_activity_retry_delay",
+        "http_status": 422,
+        "durable_write_count": 0
+      }
+    },
+    {
+      "id": "invalid_override_true",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": true
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "refused",
+        "error": "invalid_activity_retry_delay",
+        "http_status": 422,
+        "durable_write_count": 0
+      }
+    },
+    {
+      "id": "invalid_override_false",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": false
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "refused",
+        "error": "invalid_activity_retry_delay",
+        "http_status": 422,
+        "durable_write_count": 0
+      }
+    },
+    {
+      "id": "invalid_override_string",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": "5"
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "refused",
+        "error": "invalid_activity_retry_delay",
+        "http_status": 422,
+        "durable_write_count": 0
+      }
+    },
+    {
+      "id": "invalid_override_integral_float",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 5.0
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "refused",
+        "error": "invalid_activity_retry_delay",
+        "http_status": 422,
+        "durable_write_count": 0
+      }
+    },
+    {
+      "id": "invalid_override_fractional_float",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 5.5
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "refused",
+        "error": "invalid_activity_retry_delay",
+        "http_status": 422,
+        "durable_write_count": 0
+      }
+    },
+    {
+      "id": "invalid_override_negative",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": -1
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "refused",
+        "error": "invalid_activity_retry_delay",
+        "http_status": 422,
+        "durable_write_count": 0
+      }
+    },
+    {
+      "id": "invalid_override_overflow",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 9007199254740992
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "refused",
+        "error": "invalid_activity_retry_delay",
+        "http_status": 422,
+        "durable_write_count": 0
+      }
+    },
+    {
+      "id": "invalid_override_array",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": []
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "refused",
+        "error": "invalid_activity_retry_delay",
+        "http_status": 422,
+        "durable_write_count": 0
+      }
+    },
+    {
+      "id": "invalid_override_object",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": {}
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "refused",
+        "error": "invalid_activity_retry_delay",
+        "http_status": 422,
+        "durable_write_count": 0
+      }
+    },
+    {
+      "id": "missing_capability",
+      "input": {
+        "capabilities": {},
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 5
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "unsupported",
+        "durable_write_count": 0
+      }
+    },
+    {
+      "id": "legacy_snapshot_cannot_accept_override",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 1,
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ]
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 5
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "version_required",
+        "durable_write_count": 0
+      }
+    },
+    {
+      "id": "stale_attempt_cannot_schedule",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": false
+      },
+      "expected": {
+        "decision": "existing_attempt_fence_refusal",
+        "durable_write_count": 0
+      }
+    },
+    {
+      "id": "non_retryable_precedes_cap",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": true,
+          "next_retry_delay_seconds": 21
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "terminal",
+        "terminal_classification": "non_retryable",
+        "retry_task_count": 0,
+        "activity_retry_scheduled_count": 0,
+        "original_failure_preserved": true
+      }
+    },
+    {
+      "id": "exhausted_attempts_precede_cap",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 4,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 21
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "terminal",
+        "terminal_classification": "attempts_exhausted",
+        "retry_task_count": 0,
+        "activity_retry_scheduled_count": 0,
+        "original_failure_preserved": true
+      }
+    },
+    {
+      "id": "non_retryable_precedes_exhausted_attempts",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 4,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": true
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "terminal",
+        "terminal_classification": "non_retryable",
+        "retry_task_count": 0,
+        "activity_retry_scheduled_count": 0,
+        "original_failure_preserved": true
+      }
+    },
+    {
+      "id": "invalid_input_precedes_non_retryable",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": true,
+          "next_retry_delay_seconds": "5"
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "refused",
+        "error": "invalid_activity_retry_delay",
+        "http_status": 422,
+        "durable_write_count": 0
+      }
+    },
+    {
+      "id": "short_list_repeats_last",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 5,
+          "backoff_seconds": [
+            1,
+            2,
+            4
+          ],
+          "maximum_interval_seconds": 4
+        },
+        "completed_attempts": 4,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 1000,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "scheduled",
+        "selected_delay_seconds": 4,
+        "effective_cap_seconds": 4,
+        "retry_available_at_seconds": 104,
+        "retry_task_count": 1,
+        "activity_retry_scheduled_count": 1,
+        "original_deadline_unchanged": true,
+        "original_failure_preserved": true
+      }
+    },
+    {
+      "id": "empty_list_is_zero",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 5,
+          "backoff_seconds": [],
+          "maximum_interval_seconds": 0
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 1000,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "scheduled",
+        "selected_delay_seconds": 0,
+        "effective_cap_seconds": 0,
+        "retry_available_at_seconds": 100,
+        "retry_task_count": 1,
+        "activity_retry_scheduled_count": 1,
+        "original_deadline_unchanged": true,
+        "original_failure_preserved": true
+      }
+    },
+    {
+      "id": "explicit_120_is_not_capped_to_60",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 5,
+          "backoff_seconds": [
+            120
+          ],
+          "maximum_interval_seconds": 120
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 1000,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "scheduled",
+        "selected_delay_seconds": 120,
+        "effective_cap_seconds": 120,
+        "retry_available_at_seconds": 220,
+        "retry_task_count": 1,
+        "activity_retry_scheduled_count": 1,
+        "original_deadline_unchanged": true,
+        "original_failure_preserved": true
+      }
+    },
+    {
+      "id": "duplicate_failure_adds_no_attempt",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 5
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": false,
+        "retained_retry_disposition": {
+          "state": "scheduled",
+          "requested_delay_seconds": 5,
+          "selected_delay_seconds": 5,
+          "effective_cap_seconds": 20,
+          "retry_available_at_seconds": 105
+        },
+        "later_report_time_seconds": 100
+      },
+      "expected": {
+        "decision": "existing_duplicate_or_stale_route",
+        "additional_retry_task_count": 0,
+        "retained_retry_disposition": {
+          "state": "scheduled",
+          "requested_delay_seconds": 5,
+          "selected_delay_seconds": 5,
+          "effective_cap_seconds": 20,
+          "retry_available_at_seconds": 105
+        },
+        "original_deadline_unchanged": true
+      }
+    },
+    {
+      "id": "lost_acknowledgement_cold_retry",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 5
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": false,
+        "retained_retry_disposition": {
+          "state": "scheduled",
+          "requested_delay_seconds": 5,
+          "selected_delay_seconds": 5,
+          "effective_cap_seconds": 20,
+          "retry_available_at_seconds": 105
+        },
+        "later_report_time_seconds": 150
+      },
+      "expected": {
+        "decision": "existing_duplicate_or_stale_route",
+        "additional_retry_task_count": 0,
+        "retained_retry_disposition": {
+          "state": "scheduled",
+          "requested_delay_seconds": 5,
+          "selected_delay_seconds": 5,
+          "effective_cap_seconds": 20,
+          "retry_available_at_seconds": 105
+        },
+        "original_deadline_unchanged": true
+      }
+    },
+    {
+      "id": "nonliteral_capability_false",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": false
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 5
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "unsupported",
+        "durable_write_count": 0
+      }
+    },
+    {
+      "id": "nonliteral_capability_string",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": "true"
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 5
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "unsupported",
+        "durable_write_count": 0
+      }
+    },
+    {
+      "id": "nonliteral_capability_integer",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": 1
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10
+          ],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 5
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "unsupported",
+        "durable_write_count": 0
+      }
+    },
+    {
+      "id": "empty_default_cap_refuses_positive_override",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [],
+          "maximum_interval_seconds": 0
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 1
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "terminal",
+        "reason": "retry_delay_exceeds_policy_cap",
+        "requested_delay_seconds": 1,
+        "selected_delay_seconds": 1,
+        "effective_cap_seconds": 0,
+        "retry_task_count": 0,
+        "activity_retry_scheduled_count": 0,
+        "original_failure_preserved": true,
+        "original_deadline_unchanged": true
+      }
+    },
+    {
+      "id": "empty_explicit_cap_accepts_override",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [],
+          "maximum_interval_seconds": 20
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 5
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "scheduled",
+        "requested_delay_seconds": 5,
+        "selected_delay_seconds": 5,
+        "effective_cap_seconds": 20,
+        "retry_available_at_seconds": 105,
+        "retry_task_count": 1,
+        "activity_retry_scheduled_count": 1,
+        "original_failure_preserved": true,
+        "original_deadline_unchanged": true
+      }
+    },
+    {
+      "id": "derived_cap_uses_largest_entry",
+      "input": {
+        "capabilities": {
+          "activity_retry_delay_override_v1": true
+        },
+        "snapshot": {
+          "snapshot_version": 2,
+          "mode": "explicit",
+          "max_attempts": 4,
+          "backoff_seconds": [
+            10,
+            2
+          ],
+          "maximum_interval_seconds": 10
+        },
+        "completed_attempts": 1,
+        "failure": {
+          "type": "SyntheticFailure",
+          "non_retryable": false,
+          "next_retry_delay_seconds": 9
+        },
+        "failure_time_seconds": 100,
+        "original_schedule_to_close_seconds": 200,
+        "attempt_is_current": true
+      },
+      "expected": {
+        "decision": "scheduled",
+        "requested_delay_seconds": 9,
+        "selected_delay_seconds": 9,
+        "effective_cap_seconds": 10,
+        "retry_available_at_seconds": 109,
+        "retry_task_count": 1,
+        "activity_retry_scheduled_count": 1,
+        "original_failure_preserved": true,
+        "original_deadline_unchanged": true
+      }
+    }
+  ],
+  "legacy_cases": [
+    {
+      "id": "core_snapshot_1_repeats_last",
+      "authority": "core_snapshot_helper",
+      "snapshot": {
+        "snapshot_version": 1,
+        "max_attempts": 5,
+        "backoff_seconds": [
+          1,
+          2,
+          4
+        ]
+      },
+      "completed_attempts": [
+        1,
+        2,
+        3,
+        4,
+        99
+      ],
+      "expected_delays_seconds": [
+        1,
+        2,
+        4,
+        4,
+        4
+      ]
+    },
+    {
+      "id": "core_snapshot_1_explicit_empty",
+      "authority": "core_snapshot_helper",
+      "snapshot": {
+        "snapshot_version": 1,
+        "max_attempts": null,
+        "backoff_seconds": []
+      },
+      "completed_attempts": [
+        1,
+        2,
+        99
+      ],
+      "expected_delays_seconds": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "id": "core_snapshot_1_no_generated_cap",
+      "authority": "core_snapshot_helper",
+      "snapshot": {
+        "snapshot_version": 1,
+        "max_attempts": 5,
+        "backoff_seconds": [
+          120
+        ]
+      },
+      "completed_attempts": [
+        1,
+        99
+      ],
+      "expected_delays_seconds": [
+        120,
+        120
+      ]
+    },
+    {
+      "id": "legacy_sdk_recorded_zero_tail",
+      "authority": "recorded_outcome",
+      "recorded_delays_seconds": [
+        1,
+        2,
+        4,
+        0
+      ],
+      "recorded_available_at_seconds": [
+        101,
+        103,
+        107,
+        107
+      ],
+      "later_replay_time_seconds": 1000,
+      "expected_delays_seconds": [
+        1,
+        2,
+        4,
+        0
+      ],
+      "expected_available_at_seconds": [
+        101,
+        103,
+        107,
+        107
+      ],
+      "recompute_with_version_2": false
+    },
+    {
+      "id": "version_2_cold_replay_uses_retained_outcome",
+      "authority": "recorded_outcome",
+      "recorded_retry_disposition": {
+        "state": "scheduled",
+        "requested_delay_seconds": 5,
+        "selected_delay_seconds": 5,
+        "effective_cap_seconds": 20,
+        "retry_available_at_seconds": 105
+      },
+      "later_replay_time_seconds": 1000,
+      "expected_retry_disposition": {
+        "state": "scheduled",
+        "requested_delay_seconds": 5,
+        "selected_delay_seconds": 5,
+        "effective_cap_seconds": 20,
+        "retry_available_at_seconds": 105
+      },
+      "recompute_with_current_policy": false
+    }
+  ]
+}
