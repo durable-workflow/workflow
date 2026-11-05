@@ -282,16 +282,29 @@ final class ScheduleVisibilityQuery
         }
 
         if ($literal[0] === "'") {
-            if (strlen($literal) < 2 || ! str_ends_with($literal, "'")) {
-                throw new ScheduleVisibilityQueryException(
-                    sprintf('Schedule visibility literal [%s] is not a valid quoted string.', $literal),
-                );
-            }
-
-            return str_replace(["\\'", '\\\\'], ["'", '\\'], substr($literal, 1, -1));
+            return $this->parseSingleQuotedLiteral($literal);
         }
 
         return $this->parseUnquotedLiteral($literal);
+    }
+
+    private function parseSingleQuotedLiteral(string $literal): string
+    {
+        $index = 1;
+        $quote = "'";
+        $length = strlen($literal);
+
+        while ($index < $length && $quote !== null) {
+            [$index, $quote] = $this->quotedSegment($literal, $index, $quote);
+        }
+
+        if ($quote !== null || $index !== $length) {
+            throw new ScheduleVisibilityQueryException(
+                sprintf('Schedule visibility literal [%s] is not a valid quoted string.', $literal),
+            );
+        }
+
+        return str_replace(["\\'", '\\\\'], ["'", '\\'], substr($literal, 1, -1));
     }
 
     private function parseUnquotedLiteral(string $literal): bool|float|int

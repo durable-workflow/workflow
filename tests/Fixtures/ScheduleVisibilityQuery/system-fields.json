@@ -241,6 +241,67 @@
       "name": "empty-after-request-normalization",
       "query": "﻿​‎  ",
       "reason": "invalid_schedule_visibility_query"
+    },
+    {
+      "name": "adjacent_single_quoted_space",
+      "query": "Note = 'a' 'b'",
+      "reason": "invalid_schedule_visibility_query"
+    },
+    {
+      "name": "adjacent_single_quoted_no_space",
+      "query": "Note = 'a''b'",
+      "reason": "invalid_schedule_visibility_query"
+    },
+    {
+      "name": "adjacent_single_quoted_tab",
+      "query": "Note = 'a'\t'b'",
+      "reason": "invalid_schedule_visibility_query"
+    },
+    {
+      "name": "adjacent_single_quoted_before_and",
+      "query": "Note = 'a' 'b' AND Status = 'active'",
+      "reason": "invalid_schedule_visibility_query"
+    },
+    {
+      "name": "single_quoted_or_refused",
+      "query": "Note = 'a' OR 'b'",
+      "reason": "unsupported_schedule_visibility_predicate"
+    },
+    {
+      "name": "escaped_backslash_and_quote",
+      "query": "Note = 'a\\\\\\'b'",
+      "predicates": [
+        {
+          "field": "Note",
+          "column": "note",
+          "type": "text",
+          "literal": "a\\'b"
+        }
+      ]
+    },
+    {
+      "name": "escaped_trailing_backslash",
+      "query": "Note = 'a\\\\'",
+      "predicates": [
+        {
+          "field": "Note",
+          "column": "note",
+          "type": "text",
+          "literal": "a\\"
+        }
+      ]
+    },
+    {
+      "name": "unknown_single_quote_escape_preserved",
+      "query": "Note = 'path\\q'",
+      "predicates": [
+        {
+          "field": "Note",
+          "column": "note",
+          "type": "text",
+          "literal": "path\\q"
+        }
+      ]
     }
   ]
 }
