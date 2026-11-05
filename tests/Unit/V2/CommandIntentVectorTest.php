@@ -72,10 +72,7 @@ final class CommandIntentVectorTest extends TestCase
             $this->assertArrayHasKey($relation['left'], $digests);
             $this->assertArrayHasKey($relation['right'], $digests);
             $this->assertIsBool($relation['equal']);
-            $this->assertSame(
-                $relation['equal'],
-                $digests[$relation['left']] === $digests[$relation['right']]
-            );
+            $this->assertSame($relation['equal'], $digests[$relation['left']] === $digests[$relation['right']]);
         }
 
         // These assert the source mapping, not execution of a native adapter.
