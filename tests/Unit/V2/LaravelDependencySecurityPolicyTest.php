@@ -92,7 +92,10 @@ final class LaravelDependencySecurityPolicyTest extends TestCase
         }
 
         foreach (['9.*', '10.*', '11.*'] as $removed) {
-            $this->assertArrayNotHasKey($removed, $upgrade['supported_intersection']['authority']['laravel_minimum_php']);
+            $this->assertArrayNotHasKey(
+                $removed,
+                $upgrade['supported_intersection']['authority']['laravel_minimum_php']
+            );
             $this->assertNotContains($removed, array_column($upgrade['supported_intersection']['cells'], 'laravel'));
         }
         $this->assertSame([], $policy['accepted_advisories']);
@@ -127,10 +130,19 @@ final class LaravelDependencySecurityPolicyTest extends TestCase
         ], $authority['stable_v1']);
         $this->assertSame(['8.2', '8.3', '8.4'], $authority['qualified_php_minors']);
         $this->assertSame([
-            ['php' => '8.2', 'laravel' => '12.*'],
-            ['php' => '8.3', 'laravel' => '13.*'],
+            [
+                'php' => '8.2',
+                'laravel' => '12.*',
+            ],
+            [
+                'php' => '8.3',
+                'laravel' => '13.*',
+            ],
         ], array_map(
-            static fn (string $laravel, string $php): array => ['php' => $php, 'laravel' => $laravel],
+            static fn (string $laravel, string $php): array => [
+                'php' => $php,
+                'laravel' => $laravel,
+            ],
             array_keys($authority['laravel_minimum_php']),
             array_values($authority['laravel_minimum_php']),
         ));
