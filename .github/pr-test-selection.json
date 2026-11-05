@@ -10,6 +10,7 @@
     "tests/Unit/V2/ActivitySessionHistoryTest.php",
     "tests/Unit/V2/ActivityTaskClaimTest.php",
     "tests/Unit/V2/CancellationContextTest.php",
+    "tests/Unit/V2/CommandIntentVectorTest.php",
     "tests/Unit/V2/CompiledWorkflowDefinitionTest.php",
     "tests/Unit/V2/EmbeddedHttpSnapshotTest.php",
     "tests/Unit/V2/ExecutionTracingTest.php",
