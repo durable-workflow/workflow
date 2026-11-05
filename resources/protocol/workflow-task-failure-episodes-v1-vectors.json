@@ -1129,6 +1129,114 @@
         "age_unknown_count": 0
       },
       "expected_health": "ok"
+    },
+    {
+      "id": "active_first_failure_at_sample",
+      "sample_at": "2026-11-05T12:00:01.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": false,
+        "first_failure_at": null
+      },
+      "transitions": [
+        {
+          "kind": "ordinary_failure",
+          "at": "2026-11-05T12:00:01.000000Z",
+          "authority": "current",
+          "recorded": true
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": true,
+          "first_failure_at": "2026-11-05T12:00:01.000000Z",
+          "liveness": "repair_needed"
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 1,
+        "oldest_started_at": "2026-11-05T12:00:01.000000Z",
+        "max_age_ms": 0,
+        "age_unknown_count": 0
+      },
+      "expected_health": "warning"
+    },
+    {
+      "id": "active_first_failure_plus_999us",
+      "sample_at": "2026-11-05T12:00:01.000999Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": false,
+        "first_failure_at": null
+      },
+      "transitions": [
+        {
+          "kind": "ordinary_failure",
+          "at": "2026-11-05T12:00:01.000000Z",
+          "authority": "current",
+          "recorded": true
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": true,
+          "first_failure_at": "2026-11-05T12:00:01.000000Z",
+          "liveness": "repair_needed"
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 1,
+        "oldest_started_at": "2026-11-05T12:00:01.000000Z",
+        "max_age_ms": 0,
+        "age_unknown_count": 0
+      },
+      "expected_health": "warning"
+    },
+    {
+      "id": "active_first_failure_plus_1000us",
+      "sample_at": "2026-11-05T12:00:01.001000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": false,
+        "first_failure_at": null
+      },
+      "transitions": [
+        {
+          "kind": "ordinary_failure",
+          "at": "2026-11-05T12:00:01.000000Z",
+          "authority": "current",
+          "recorded": true
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": true,
+          "first_failure_at": "2026-11-05T12:00:01.000000Z",
+          "liveness": "repair_needed"
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 1,
+        "oldest_started_at": "2026-11-05T12:00:01.000000Z",
+        "max_age_ms": 1,
+        "age_unknown_count": 0
+      },
+      "expected_health": "warning"
     }
   ]
 }
