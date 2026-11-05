@@ -26,10 +26,11 @@ final class RuntimeProfileSqlServerBackendTest extends SchemaTestCase
         parent::setUp();
     }
 
-    public function testNullAndCanonical64RemainDistinctBeforeObservers(): void
+    #[DataProvider('canonicalProfiles')]
+    public function testNullAndCanonicalProfilesRemainDistinctBeforeObservers(string $profile): void
     {
         $legacy = $this->row(null);
-        $future = $this->row(str_repeat('x', 64));
+        $future = $this->row($profile);
         DB::table('workflow_runs')->insert([$legacy, $future]);
         $observed = 0;
         WorkflowRun::retrieved(static function () use (&$observed): void {
@@ -44,6 +45,37 @@ final class RuntimeProfileSqlServerBackendTest extends SchemaTestCase
             $this->assertSame('runtime_profile_unsupported', $error->reason);
         }
         $this->assertSame(1, $observed);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function canonicalProfiles(): iterable
+    {
+        yield 'one ASCII byte' => ['x'];
+        yield '64 ASCII bytes' => [str_repeat('x', 64)];
+        yield 'canonical punctuation and digits' => ['future.v1-2_a'];
+    }
+
+    public function testMixedHydrationBatchRefusesBeforeEveryObserver(): void
+    {
+        $legacy = $this->row(null);
+        $future = $this->row('future');
+        DB::table('workflow_runs')->insert([$legacy, $future]);
+        $before = $this->durableRows();
+        $observed = 0;
+        WorkflowRun::retrieved(static function () use (&$observed): void {
+            $observed++;
+        });
+        try {
+            WorkflowRun::query()->select(['id', 'workflow_instance_id', 'namespace'])
+                ->whereIn('id', [$legacy['id'], $future['id']])->orderBy('id')->get();
+            $this->fail('No observer may see any part of a refused mixed batch.');
+        } catch (RuntimeProfileRefusal $error) {
+            $this->assertSame('runtime_profile_unsupported', $error->reason);
+        }
+        $this->assertSame(0, $observed);
+        $this->assertSame($before, $this->durableRows());
     }
 
     #[DataProvider('invalidInputs')]
@@ -67,7 +99,9 @@ final class RuntimeProfileSqlServerBackendTest extends SchemaTestCase
         $this->assertSame($before, $this->durableRows());
     }
 
-    /** @return iterable<string, array{bool, string}> */
+    /**
+     * @return iterable<string, array{bool, string}>
+     */
     public static function invalidInputs(): iterable
     {
         foreach ([false, true] as $warnings) {
@@ -96,7 +130,10 @@ final class RuntimeProfileSqlServerBackendTest extends SchemaTestCase
         $values[array_search('runtime_profile', array_keys($row), true)] = 'CONVERT(nvarchar(1), 0x00D8)';
         unset($row['runtime_profile']);
         try {
-            DB::statement('INSERT INTO workflow_runs (' . $columns . ') VALUES (' . implode(', ', $values) . ')', array_values($row));
+            DB::statement(
+                'INSERT INTO workflow_runs (' . $columns . ') VALUES (' . implode(', ', $values) . ')',
+                array_values($row)
+            );
             $this->fail('An unpaired UTF-16 surrogate is not an ASCII token.');
         } catch (QueryException $error) {
             $this->assertStringContainsString('runtime_profile_immutable', $error->getMessage());
@@ -111,22 +148,43 @@ final class RuntimeProfileSqlServerBackendTest extends SchemaTestCase
         $legacy = $this->row(null);
         DB::table('workflow_runs')->insert([$protected, $legacy]);
         DB::table('workflow_tasks')->insert([
-            'id' => (string) Str::ulid(), 'workflow_run_id' => $protected['id'],
-            'namespace' => $protected['namespace'], 'task_type' => 'workflow', 'status' => 'ready', 'payload' => '{}',
+            'id' => (string) Str::ulid(),
+            'workflow_run_id' => $protected['id'],
+            'namespace' => $protected['namespace'],
+            'task_type' => 'workflow',
+            'status' => 'ready',
+            'payload' => '{}',
         ]);
         $before = $this->durableRows();
         try {
             $query = DB::table('workflow_runs')->where('id', $protected['id']);
             match ($operation) {
                 'delete' => $query->delete(),
-                'primary key' => $query->update(['id' => (string) Str::ulid()]),
-                'owner' => $query->update(['workflow_instance_id' => 'moved-owner']),
-                'namespace' => $query->update(['namespace' => 'moved-namespace']),
-                'profile' => $query->update(['runtime_profile' => null]),
-                'no-op' => $query->update(['status' => $protected['status']]),
-                'unrelated' => $query->update(['status' => 'running']),
-                'mixed delete' => DB::table('workflow_runs')->whereIn('id', [$protected['id'], $legacy['id']])->delete(),
-                'mixed update' => DB::table('workflow_runs')->whereIn('id', [$protected['id'], $legacy['id']])->update(['status' => 'running']),
+                'primary key' => $query->update([
+                    'id' => (string) Str::ulid(),
+                ]),
+                'owner' => $query->update([
+                    'workflow_instance_id' => 'moved-owner',
+                ]),
+                'namespace' => $query->update([
+                    'namespace' => 'moved-namespace',
+                ]),
+                'profile' => $query->update([
+                    'runtime_profile' => null,
+                ]),
+                'no-op' => $query->update([
+                    'status' => $protected['status'],
+                ]),
+                'unrelated' => $query->update([
+                    'status' => 'running',
+                ]),
+                'mixed delete' => DB::table('workflow_runs')->whereIn(
+                    'id',
+                    [$protected['id'], $legacy['id']]
+                )->delete(),
+                'mixed update' => DB::table('workflow_runs')->whereIn('id', [$protected['id'], $legacy['id']])->update([
+                    'status' => 'running',
+                ]),
                 default => throw new \LogicException('Unknown SQL Server fixture operation.'),
             };
             $this->fail('No protected-row mutation may be applied.');
@@ -136,10 +194,22 @@ final class RuntimeProfileSqlServerBackendTest extends SchemaTestCase
         $this->assertSame($before, $this->durableRows());
     }
 
-    /** @return iterable<string, array{string}> */
+    /**
+     * @return iterable<string, array{string}>
+     */
     public static function protectedMutations(): iterable
     {
-        foreach (['delete', 'primary key', 'owner', 'namespace', 'profile', 'no-op', 'unrelated', 'mixed delete', 'mixed update'] as $operation) {
+        foreach ([
+            'delete',
+            'primary key',
+            'owner',
+            'namespace',
+            'profile',
+            'no-op',
+            'unrelated',
+            'mixed delete',
+            'mixed update',
+        ] as $operation) {
             yield $operation => [$operation];
         }
     }
@@ -150,7 +220,9 @@ final class RuntimeProfileSqlServerBackendTest extends SchemaTestCase
         DB::table('workflow_runs')->insert($legacy);
         $before = $this->durableRows();
         try {
-            DB::table('workflow_runs')->where('id', $legacy['id'])->update(['runtime_profile' => 'future']);
+            DB::table('workflow_runs')->where('id', $legacy['id'])->update([
+                'runtime_profile' => 'future',
+            ]);
             $this->fail('A retained legacy row cannot be converted.');
         } catch (QueryException $error) {
             $this->assertStringContainsString('runtime_profile_immutable', $error->getMessage());
@@ -178,7 +250,8 @@ final class RuntimeProfileSqlServerBackendTest extends SchemaTestCase
         $before = $this->durableRows();
         $matched = $action === 'update' ? 'UPDATE SET status = incoming.status' : 'DELETE';
         try {
-            DB::statement('MERGE workflow_runs AS target
+            DB::statement(
+                'MERGE workflow_runs AS target
                 USING (VALUES (?, ?, ?), (?, ?, ?)) AS incoming(id, workflow_instance_id, status)
                 ON target.id = incoming.id
                 WHEN MATCHED THEN ' . $matched . '
@@ -186,7 +259,15 @@ final class RuntimeProfileSqlServerBackendTest extends SchemaTestCase
                     (id, workflow_instance_id, run_number, workflow_class, workflow_type, namespace, status, runtime_profile)
                     VALUES (incoming.id, incoming.workflow_instance_id, 1,
                         \'sql-profile-fixture\', \'sql-profile-fixture\', \'profile-sql\', incoming.status, NULL);',
-                [$protected['id'], $protected['workflow_instance_id'], 'running', $new['id'], $new['workflow_instance_id'], 'waiting']);
+                [
+                    $protected['id'],
+                    $protected['workflow_instance_id'],
+                    'running',
+                    $new['id'],
+                    $new['workflow_instance_id'],
+                    'waiting',
+                ]
+            );
             $this->fail('A mixed MERGE cannot retain an insertion or protected mutation.');
         } catch (QueryException $error) {
             $this->assertStringContainsString('runtime_profile_immutable', $error->getMessage());
@@ -194,7 +275,9 @@ final class RuntimeProfileSqlServerBackendTest extends SchemaTestCase
         $this->assertSame($before, $this->durableRows());
     }
 
-    /** @return iterable<string, array{string}> */
+    /**
+     * @return iterable<string, array{string}>
+     */
     public static function mergeActions(): iterable
     {
         yield 'protected update and new insert' => ['update'];
@@ -211,7 +294,10 @@ final class RuntimeProfileSqlServerBackendTest extends SchemaTestCase
         unset($row['runtime_profile']);
         DB::statement('DECLARE @profile nvarchar(64) = REPLICATE(N\'x\', 65);
             INSERT INTO workflow_runs (' . $columns . ') VALUES (' . implode(', ', $values) . ')', array_values($row));
-        $this->assertSame(str_repeat('x', 64), DB::table('workflow_runs')->where('id', $row['id'])->value('runtime_profile'));
+        $this->assertSame(
+            str_repeat('x', 64),
+            DB::table('workflow_runs')->where('id', $row['id'])->value('runtime_profile')
+        );
         try {
             WorkflowRun::query()->findOrFail($row['id']);
             $this->fail('A pre-truncated canonical shape still is not a supported profile.');
@@ -247,7 +333,8 @@ final class RuntimeProfileSqlServerBackendTest extends SchemaTestCase
         $schema = 'runtime_profile_fixture';
         $settings = config('database.connections.' . config('database.default'));
         $settings['prefix'] = 'rp_';
-        config()->set('database.connections.runtime_profile_sql_alias', $settings);
+        config()
+            ->set('database.connections.runtime_profile_sql_alias', $settings);
         $alias = DB::connection('runtime_profile_sql_alias');
         $grammar = $alias->getQueryGrammar();
         $table = $grammar->wrapTable($schema . '.runs');
@@ -256,7 +343,8 @@ final class RuntimeProfileSqlServerBackendTest extends SchemaTestCase
             $alias->unprepared('SELECT TOP (0) * INTO ' . $table . ' FROM '
                 . DB::connection()->getQueryGrammar()->wrapTable('workflow_runs'));
             $alias->unprepared('ALTER TABLE ' . $table . ' ADD PRIMARY KEY (id)');
-            config()->set('workflows.v2.run_model', SqlServerConfiguredProfileRun::class);
+            config()
+                ->set('workflows.v2.run_model', SqlServerConfiguredProfileRun::class);
             RuntimeProfileSchema::up(null);
             $legacy = $this->row(null);
             $protected = $this->row('future');
@@ -287,7 +375,10 @@ final class RuntimeProfileSqlServerBackendTest extends SchemaTestCase
     {
         $connection = DB::connection();
         $grammar = $connection->getQueryGrammar();
-        $schema = (string) DB::scalar('SELECT OBJECT_SCHEMA_NAME(OBJECT_ID(?))', [$grammar->wrapTable('workflow_runs')]);
+        $schema = (string) DB::scalar(
+            'SELECT OBJECT_SCHEMA_NAME(OBJECT_ID(?))',
+            [$grammar->wrapTable('workflow_runs')]
+        );
         $base = 'wf_runtime_profile_' . substr(hash('sha256', $connection->getTablePrefix() . 'workflow_runs'), 0, 20);
         foreach (['', '_insert', '_delete'] as $suffix) {
             DB::unprepared('DROP TRIGGER ' . $grammar->wrap($schema . '.' . $base . $suffix));
@@ -329,7 +420,9 @@ final class RuntimeProfileSqlServerBackendTest extends SchemaTestCase
         $this->assertSame($before, $this->durableRows());
     }
 
-    /** @return iterable<string, array{bool}> */
+    /**
+     * @return iterable<string, array{bool}>
+     */
     public static function duplicateStatements(): iterable
     {
         yield 'single duplicate' => [false];
@@ -345,13 +438,21 @@ final class RuntimeProfileSqlServerBackendTest extends SchemaTestCase
         $schema = (string) DB::scalar('SELECT OBJECT_SCHEMA_NAME(OBJECT_ID(?))', [$table]);
         $base = 'wf_runtime_profile_' . substr(hash('sha256', $connection->getTablePrefix() . 'workflow_runs'), 0, 20);
         $trigger = $grammar->wrap($schema . '.' . $base);
-        $index = $grammar->wrap('wf_rp_idx_' . substr(hash('sha256', $connection->getTablePrefix() . 'workflow_runs'), 0, 20));
-        if (in_array($kind, ['column length', 'not nullable'], true)) {
+        $index = $grammar->wrap(
+            'wf_rp_idx_' . substr(hash('sha256', $connection->getTablePrefix() . 'workflow_runs'), 0, 20)
+        );
+        if (in_array($kind, ['column length', 'column type', 'not nullable'], true)) {
             DB::unprepared('DROP INDEX ' . $index . ' ON ' . $table);
             DB::unprepared('ALTER TABLE ' . $table . ' ALTER COLUMN runtime_profile '
-                . ($kind === 'column length' ? 'nvarchar(64) NULL' : 'nvarchar(65) NOT NULL'));
+                . match ($kind) {
+                    'column length' => 'nvarchar(64) NULL',
+                    'column type' => 'varchar(65) NULL',
+                    default => 'nvarchar(65) NOT NULL',
+                });
         } elseif ($kind === 'default') {
-            DB::unprepared('ALTER TABLE ' . $table . ' ADD CONSTRAINT guard_fixture_default DEFAULT (NULL) FOR runtime_profile');
+            DB::unprepared(
+                'ALTER TABLE ' . $table . ' ADD CONSTRAINT guard_fixture_default DEFAULT (NULL) FOR runtime_profile'
+            );
         } elseif ($kind === 'disabled index') {
             DB::unprepared('ALTER INDEX ' . $index . ' ON ' . $table . ' DISABLE');
         } elseif (in_array($kind, ['wrong index', 'included index', 'filtered index'], true)) {
@@ -364,10 +465,22 @@ final class RuntimeProfileSqlServerBackendTest extends SchemaTestCase
             };
             DB::unprepared('CREATE INDEX ' . $index . ' ON ' . $table . ' (' . $columns . ')' . $extra);
         } elseif ($kind === 'ignore duplicate primary key') {
-            $primary = (string) DB::scalar('SELECT name FROM sys.indexes WHERE object_id = OBJECT_ID(?) AND is_primary_key = 1', [$table]);
-            DB::unprepared('ALTER INDEX ' . $grammar->wrap($primary) . ' ON ' . $table . ' REBUILD WITH (IGNORE_DUP_KEY = ON)');
+            $primary = (string) DB::scalar(
+                'SELECT name FROM sys.indexes WHERE object_id = OBJECT_ID(?) AND is_primary_key = 1',
+                [$table]
+            );
+            DB::unprepared(
+                'ALTER INDEX ' . $grammar->wrap($primary) . ' ON ' . $table . ' REBUILD WITH (IGNORE_DUP_KEY = ON)'
+            );
         } elseif ($kind === 'disabled trigger') {
             DB::unprepared('DISABLE TRIGGER ' . $trigger . ' ON ' . $table);
+        } elseif (str_starts_with($kind, 'missing ')) {
+            $suffix = match ($kind) {
+                'missing insert' => '_insert',
+                'missing delete' => '_delete',
+                default => '',
+            };
+            DB::unprepared('DROP TRIGGER ' . $grammar->wrap($schema . '.' . $base . $suffix));
         } else {
             DB::unprepared('DROP TRIGGER ' . $trigger);
             if ($kind === 'same-name procedure') {
@@ -375,7 +488,9 @@ final class RuntimeProfileSqlServerBackendTest extends SchemaTestCase
             } else {
                 $target = $kind === 'wrong parent' ? $grammar->wrapTable('workflow_instances') : $table;
                 $events = $kind === 'multiple events' ? 'UPDATE, DELETE' : 'UPDATE';
-                DB::unprepared('CREATE TRIGGER ' . $trigger . ' ON ' . $target . ' AFTER ' . $events . ' AS BEGIN SET NOCOUNT ON; END');
+                DB::unprepared(
+                    'CREATE TRIGGER ' . $trigger . ' ON ' . $target . ' AFTER ' . $events . ' AS BEGIN SET NOCOUNT ON; END'
+                );
             }
         }
         $catalog = $this->catalog();
@@ -399,50 +514,79 @@ final class RuntimeProfileSqlServerBackendTest extends SchemaTestCase
         }
     }
 
-    /** @return iterable<string, array{string}> */
+    /**
+     * @return iterable<string, array{string}>
+     */
     public static function wrongObjects(): iterable
     {
-        foreach (['column length', 'not nullable', 'default', 'disabled index', 'wrong index',
+        foreach (['column length', 'column type', 'not nullable', 'default', 'disabled index', 'wrong index',
             'included index', 'filtered index', 'ignore duplicate primary key', 'disabled trigger',
-            'wrong body', 'wrong parent', 'multiple events', 'same-name procedure'] as $kind) {
+            'wrong body', 'wrong parent', 'multiple events', 'same-name procedure',
+            'missing insert', 'missing update', 'missing delete'] as $kind) {
             yield $kind => [$kind];
         }
     }
 
-    /** @return array<string, list<object>> */
+    /**
+     * @return array<string, list<object>>
+     */
     private function catalog(): array
     {
         $table = DB::connection()->getQueryGrammar()->wrapTable('workflow_runs');
         return [
-            'columns' => DB::select('SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(?) ORDER BY column_id', [$table]),
-            'indexes' => DB::select('SELECT * FROM sys.indexes WHERE object_id = OBJECT_ID(?) ORDER BY index_id', [$table]),
-            'index columns' => DB::select('SELECT * FROM sys.index_columns WHERE object_id = OBJECT_ID(?) ORDER BY index_id, index_column_id', [$table]),
+            'columns' => DB::select(
+                'SELECT * FROM sys.columns WHERE object_id = OBJECT_ID(?) ORDER BY column_id',
+                [$table]
+            ),
+            'indexes' => DB::select(
+                'SELECT * FROM sys.indexes WHERE object_id = OBJECT_ID(?) ORDER BY index_id',
+                [$table]
+            ),
+            'index columns' => DB::select(
+                'SELECT * FROM sys.index_columns WHERE object_id = OBJECT_ID(?) ORDER BY index_id, index_column_id',
+                [$table]
+            ),
             'guard objects' => DB::select("SELECT o.*, m.definition, m.uses_ansi_nulls, m.uses_quoted_identifier,
                 tr.parent_id AS trigger_parent, tr.is_disabled AS trigger_disabled, tr.is_instead_of_trigger,
                 tr.is_not_for_replication FROM sys.objects o
                 LEFT JOIN sys.sql_modules m ON m.object_id = o.object_id
                 LEFT JOIN sys.triggers tr ON tr.object_id = o.object_id
-                WHERE o.name LIKE 'wf_runtime_profile_%' OR o.parent_object_id = OBJECT_ID(?) ORDER BY o.object_id", [$table]),
+                WHERE o.name LIKE 'wf_runtime_profile_%' OR o.parent_object_id = OBJECT_ID(?) ORDER BY o.object_id", [
+                $table,
+            ]),
             'events' => DB::select("SELECT e.* FROM sys.trigger_events e JOIN sys.objects o ON o.object_id = e.object_id
                 WHERE o.name LIKE 'wf_runtime_profile_%' ORDER BY e.object_id, e.type", []),
         ];
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * @return array<string, mixed>
+     */
     private function row(?string $profile): array
     {
         $id = (string) Str::ulid();
-        return ['id' => $id, 'workflow_instance_id' => 'sql-profile-' . $id,
-            'run_number' => 1, 'workflow_class' => 'sql-profile-fixture', 'workflow_type' => 'sql-profile-fixture',
-            'namespace' => 'profile-sql', 'status' => 'waiting', 'runtime_profile' => $profile];
+        return [
+            'id' => $id,
+            'workflow_instance_id' => 'sql-profile-' . $id,
+            'run_number' => 1,
+            'workflow_class' => 'sql-profile-fixture',
+            'workflow_type' => 'sql-profile-fixture',
+            'namespace' => 'profile-sql',
+            'status' => 'waiting',
+            'runtime_profile' => $profile,
+        ];
     }
 
-    /** @return array<string, list<string>> */
+    /**
+     * @return array<string, list<string>>
+     */
     private function durableRows(): array
     {
         $rows = [];
         foreach (DB::getSchemaBuilder()->getTableListing() as $table) {
-            $values = DB::table($table)->get()->map(static fn ($row): string => json_encode($row, JSON_THROW_ON_ERROR))->all();
+            $values = DB::table($table)->get()->map(
+                static fn ($row): string => json_encode($row, JSON_THROW_ON_ERROR)
+            )->all();
             sort($values);
             $rows[$table] = $values;
         }

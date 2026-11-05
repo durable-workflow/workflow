@@ -30,7 +30,9 @@ final class SqlServerRuntimeProfileSchema
                     OR {$unit} IN (45, 46, 95)))))";
     }
 
-    /** Translate storage units only after proving the exact ASCII grammar. */
+    /**
+     * Translate storage units only after proving the exact ASCII grammar.
+     */
     public static function canonicalBytes(string $column): string
     {
         return "CASE WHEN {$column} IS NULL THEN NULL WHEN " . self::invalidValue($column)
@@ -190,9 +192,14 @@ final class SqlServerRuntimeProfileSchema
         return true;
     }
 
-    public static function triggerSql(Connection $connection, string $table, string $quotedName, string $operation): string
-    {
-        $profile = $connection->getQueryGrammar()->wrap('runtime_profile');
+    public static function triggerSql(
+        Connection $connection,
+        string $table,
+        string $quotedName,
+        string $operation
+    ): string {
+        $profile = $connection->getQueryGrammar()
+            ->wrap('runtime_profile');
         $condition = match ($operation) {
             'insert' => 'EXISTS (SELECT 1 FROM inserted AS i WHERE ' . self::invalidValue('i.' . $profile) . ')',
             'update' => "EXISTS (SELECT 1 FROM deleted WHERE {$profile} IS NOT NULL)
@@ -201,7 +208,8 @@ final class SqlServerRuntimeProfileSchema
             default => throw new RuntimeProfileRefusal('runtime_profile_storage'),
         };
         $event = strtoupper($operation);
-        $table = $connection->getQueryGrammar()->wrapTable($table);
+        $table = $connection->getQueryGrammar()
+            ->wrapTable($table);
 
         // Set-based pseudo tables cover every row, including MERGE actions.
         // An explicit rollback also refuses a caller that catches the error.

@@ -43,6 +43,22 @@ single DDL transaction after complete validation. Nontransactional drivers or
 multiple physical targets refuse before any DDL and retain every object.
 Rollback does not rely on reinstalling a trigger after a partial failure.
 
+The SQL Server dialect uses nullable `NVARCHAR(65)`. The final code unit is a
+refusal sentinel, preserving the canonical limit of 64 ASCII bytes when an
+overlength value reaches the table with `ANSI_WARNINGS` off. Validation uses
+UTF-16 code-unit ordinals under a binary collation and `DATALENGTH`, including
+trailing spaces. NUL, non-ASCII, surrogate code units and noncanonical case
+refuse. A value already truncated in a caller's variable or parameter cannot
+be reconstructed at this boundary. A canonical non-null value still refuses
+execution as unsupported.
+
+SQL Server guards inspect the complete `inserted` and `deleted` sets, including
+`MERGE` actions. Protected-row updates and deletions roll back the transaction.
+Adoption checks the exact column, primary key, index, trigger events, parent,
+enabled state and module definition before DDL. Missing members of an existing
+guard set refuse. Automatic SQL Server down always refuses without DDL. Native
+qualification of this dialect is required before accepting the guard floor.
+
 Apply the expand migration before deploying code that requires this column.
 A failed or missing migration remains a storage health failure. Removing the
 column while guard readers are active is not a supported rollout sequence.

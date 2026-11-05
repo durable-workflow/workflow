@@ -156,7 +156,8 @@ final class RuntimeProfileSchema
             ? SqlServerRuntimeProfileSchema::invalidValue($column)
             : self::byteLength($connection, $column) . ' > 64';
         if ($connection->table($table)->useWritePdo()
-            ->whereRaw($invalid)->exists()) {
+            ->whereRaw($invalid)
+            ->exists()) {
             throw new RuntimeProfileRefusal('runtime_profile_storage');
         }
     }
@@ -214,7 +215,8 @@ final class RuntimeProfileSchema
     private static function tableParts(Connection $connection, string $table): array
     {
         if ($connection->getDriverName() === 'sqlsrv') {
-            $qualified = $connection->getQueryGrammar()->wrapTable($table);
+            $qualified = $connection->getQueryGrammar()
+                ->wrapTable($table);
             $row = $connection->selectOne(
                 "SELECT s.name AS schema_name, t.name AS table_name FROM sys.tables t
                     JOIN sys.schemas s ON s.schema_id = t.schema_id
