@@ -111,10 +111,7 @@ final class TraceCarrierTest extends TestCase
         self::assertNotNull($normalized);
         $expected = $prefix . sprintf('%02x', hexdec($flags) & $supportedFlags);
         self::assertSame($expected, $normalized['carrier']['traceparent']);
-        self::assertSame(
-            $expected === $input['carrier']['traceparent'] ? null : 'filtered',
-            $diagnostic
-        );
+        self::assertSame($expected === $input['carrier']['traceparent'] ? null : 'filtered', $diagnostic);
         $context = TraceContextPropagator::getInstance()->extract($normalized['carrier']);
         $actualFlags = Span::fromContext($context)->getContext()->getTraceFlags();
         self::assertSame(TraceFlags::SAMPLED, $actualFlags & TraceFlags::SAMPLED);
