@@ -125,6 +125,7 @@ final class CommandIntentVectorTest extends TestCase
             'map' => AvroMapValue::fromPairs(array_map(function (array $pair): array {
                 $this->assertTrue(array_is_list($pair));
                 $this->assertCount(2, $pair);
+
                 return [$this->stringValue($pair[0]), $this->decodeValue($pair[1])];
             }, $this->listValue($node['entries']))),
         };
@@ -133,12 +134,14 @@ final class CommandIntentVectorTest extends TestCase
     private function booleanValue(mixed $value): bool
     {
         $this->assertIsBool($value);
+
         return $value;
     }
 
     private function stringValue(mixed $value): string
     {
         $this->assertIsString($value);
+
         return $value;
     }
 
@@ -148,6 +151,7 @@ final class CommandIntentVectorTest extends TestCase
         $this->assertMatchesRegularExpression('/\A(?:0|-?[1-9][0-9]*)\z/', $value);
         $integer = filter_var($value, FILTER_VALIDATE_INT);
         $this->assertNotFalse($integer);
+
         return $integer;
     }
 
@@ -155,6 +159,7 @@ final class CommandIntentVectorTest extends TestCase
     {
         $this->assertIsString($bits);
         $this->assertMatchesRegularExpression('/\A[0-9a-f]{16}\z/', $bits);
+
         return unpack('Evalue', hex2bin($bits))['value'];
     }
 
@@ -164,6 +169,7 @@ final class CommandIntentVectorTest extends TestCase
         $bytes = base64_decode($encoded, true);
         $this->assertNotFalse($bytes);
         $this->assertSame($encoded, base64_encode($bytes));
+
         return $bytes;
     }
 
@@ -174,6 +180,7 @@ final class CommandIntentVectorTest extends TestCase
     {
         $this->assertIsArray($value);
         $this->assertTrue(array_is_list($value));
+
         return $value;
     }
 
