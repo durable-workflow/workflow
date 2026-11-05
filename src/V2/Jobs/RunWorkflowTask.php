@@ -29,6 +29,7 @@ use Workflow\V2\Support\TraceCarrier;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Support\WorkflowContinuationCache;
 use Workflow\V2\Support\WorkflowExecutor;
+use Workflow\V2\Support\WorkflowSignalReadScope;
 use Workflow\V2\Support\WorkflowTaskLease;
 
 final class RunWorkflowTask implements ShouldQueue
@@ -130,7 +131,10 @@ final class RunWorkflowTask implements ShouldQueue
                     return null;
                 }
 
-                $nextTask = $executor->run($run, $task, $continuation);
+                $nextTask = WorkflowSignalReadScope::forLockedRun(
+                    $run,
+                    static fn (): ?WorkflowTask => $executor->run($run, $task, $continuation),
+                );
                 $continuation?->offer($task);
 
                 return $nextTask;
