@@ -72,25 +72,68 @@ final class LaravelDependencySecurityPolicyTest extends TestCase
         );
         $constraint = $composer['require']['laravel/framework'];
 
-        $this->assertSame(['9'], array_map('strval', array_keys($policy['removed_majors'])));
+        $this->assertSame(['9', '10', '11'], array_map('strval', array_keys($policy['removed_majors'])));
         $this->assertSame('2.16', $policy['removed_majors']['9']['last_workflow_minor']);
+        $this->assertSame('2.20', $policy['removed_majors']['10']['last_workflow_minor']);
+        $this->assertSame('2.20', $policy['removed_majors']['11']['last_workflow_minor']);
 
         // 9.52.23 is the newest Laravel 9 release; its TokenGuard is unfixed.
-        foreach (['9.0.0', '9.52.17', '9.52.23', '9.99.99'] as $version) {
+        foreach ([
+            '9.0.0', '9.52.17', '9.52.23', '9.99.99',
+            '10.50.4', '10.99.99', '11.56.1', '11.99.99',
+        ] as $version) {
             $this->assertFalse(Semver::satisfies($version, $constraint), "{$version} must be refused");
         }
-        foreach (['10.50.3', '11.56.0', '12.68.9', '13.29.9'] as $version) {
+        foreach (['12.68.9', '13.29.9'] as $version) {
             $this->assertFalse(Semver::satisfies($version, $constraint), "{$version} is below its floor");
         }
         foreach ($policy['supported_majors'] as $major) {
             $this->assertTrue(Semver::satisfies($major['minimum'], $constraint), $major['minimum']);
         }
 
-        $this->assertArrayNotHasKey('9.*', $upgrade['supported_intersection']['authority']['laravel_minimum_php']);
-        $this->assertNotContains('9.*', array_column($upgrade['supported_intersection']['cells'], 'laravel'));
-        foreach ($policy['accepted_advisories'] as $advisory) {
-            $this->assertNotContains('9', $advisory['affected_supported_majors']);
+        foreach (['9.*', '10.*', '11.*'] as $removed) {
+            $this->assertArrayNotHasKey($removed, $upgrade['supported_intersection']['authority']['laravel_minimum_php']);
+            $this->assertNotContains($removed, array_column($upgrade['supported_intersection']['cells'], 'laravel'));
         }
+        $this->assertSame([], $policy['accepted_advisories']);
+    }
+
+    public function testTheEmbeddedPhpFloorPreservesTheStableV1Authority(): void
+    {
+        $root = dirname(__DIR__, 3);
+        $composer = json_decode(
+            (string) file_get_contents($root . '/composer.json'),
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+        $upgrade = json_decode(
+            (string) file_get_contents($root . '/resources/laravel-embedded-upgrade-contract.json'),
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+        $authority = $upgrade['supported_intersection']['authority'];
+
+        foreach (['8.1.0', '8.1.33', '8.1.99'] as $version) {
+            $this->assertFalse(Semver::satisfies($version, $composer['require']['php']));
+        }
+        foreach (['8.2.0', '8.3.0', '8.4.0'] as $version) {
+            $this->assertTrue(Semver::satisfies($version, $composer['require']['php']));
+        }
+        $this->assertSame([
+            'php' => '^8.1',
+            'laravel' => '^9.0|^10.0|^11.0|^12.0|^13.0',
+        ], $authority['stable_v1']);
+        $this->assertSame(['8.2', '8.3', '8.4'], $authority['qualified_php_minors']);
+        $this->assertSame([
+            ['php' => '8.2', 'laravel' => '12.*'],
+            ['php' => '8.3', 'laravel' => '13.*'],
+        ], array_map(
+            static fn (string $laravel, string $php): array => ['php' => $php, 'laravel' => $laravel],
+            array_keys($authority['laravel_minimum_php']),
+            array_values($authority['laravel_minimum_php']),
+        ));
     }
 
     public function testRootComposerDependabotUpdatesCannotBeConfigured(): void
