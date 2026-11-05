@@ -47,13 +47,25 @@ final class ContinuedRunMessageHandoff
 
     public static function transferInstanceScoped(WorkflowRun $closingRun, WorkflowRun $continuedRun): void
     {
-        $signals = ConfiguredV2Models::query('signal_model', WorkflowSignal::class)
+        $signalQuery = ConfiguredV2Models::query('signal_model', WorkflowSignal::class)
             ->where('workflow_run_id', $closingRun->id)
             ->where('target_scope', 'instance')
             ->where('status', SignalStatus::Received->value)
-            ->whereNull('closed_at')
-            ->lockForUpdate()
-            ->get();
+            ->whereNull('closed_at');
+        if (WorkflowSignalReadScope::allowsConsistentRead($closingRun, $signalQuery->getModel()->getConnection())) {
+            // Lock exact candidates without reserving neighboring index gaps.
+            $signals = $signalQuery->get()
+                ->map(static function (WorkflowSignal $candidate) use ($signalQuery): ?WorkflowSignal {
+                    return (clone $signalQuery)->whereKey($candidate->getKey())
+                        ->lockForUpdate()
+                        ->first();
+                })->filter();
+        } else {
+            // Outside the owned task, the caller may already have an older read view.
+            // Preserve current reads for every other execution path.
+            $signals = $signalQuery->lockForUpdate()
+                ->get();
+        }
         if ($signals->isNotEmpty()) {
             $declaredSignals = RunCommandContract::forRun($closingRun)['signals'];
             $signals = $signals->filter(
