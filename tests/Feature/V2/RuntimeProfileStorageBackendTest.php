@@ -100,6 +100,77 @@ final class RuntimeProfileStorageBackendTest extends SchemaTestCase
         }
     }
 
+    #[\PHPUnit\Framework\Attributes\DataProvider('quotedDefinitionOperations')]
+    public function testDifferentQuotedSelfReadRefusesAdoptionBeforeDdl(string $operation): void
+    {
+        $connection = DB::connection();
+        $driver = $connection->getDriverName();
+        if (! in_array($driver, ['mysql', 'mariadb', 'pgsql'], true)) {
+            $this->markTestSkipped('SQLite has the separate retained-row/dependent countercontrol.');
+        }
+        foreach (['guard  runs', 'guard runs'] as $table) {
+            $connection->getSchemaBuilder()
+                ->create($table, static function (Blueprint $blueprint): void {
+                    $blueprint->string('id')
+                        ->primary();
+                    $blueprint->string('workflow_instance_id');
+                    $blueprint->string('namespace')
+                        ->nullable();
+                    $blueprint->string('runtime_profile', 64)
+                        ->nullable();
+                });
+        }
+        config()
+            ->set('workflows.v2.run_model', RuntimeProfileQuotedRun::class);
+        RuntimeProfileSchema::up(null);
+        $name = 'wf_runtime_profile_' . substr(hash('sha256', 'guard  runs'), 0, 20)
+            . ($operation === 'insert' ? '_insert' : '');
+        $grammar = $connection->getQueryGrammar();
+        if ($driver === 'pgsql') {
+            $body = $connection->selectOne(
+                'SELECT p.prosrc AS body FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = current_schema() AND p.proname = ?',
+                [$name],
+                false,
+            );
+        } else {
+            $body = $connection->selectOne(
+                'SELECT ACTION_STATEMENT AS body FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ? AND TRIGGER_NAME = ?',
+                [$connection->getDatabaseName(), $name],
+                false,
+            );
+        }
+        $this->assertNotNull($body);
+        $bad = str_replace(
+            'FROM ' . $grammar->wrapTable('guard  runs'),
+            'FROM ' . $grammar->wrapTable('guard runs'),
+            (string) $body->body,
+            $count,
+        );
+        $this->assertSame(1, $count);
+        if ($driver === 'pgsql') {
+            $connection->unprepared('CREATE OR REPLACE FUNCTION ' . $grammar->wrap($name)
+                . '() RETURNS trigger AS $guard$ ' . $bad . ' $guard$ LANGUAGE plpgsql');
+        } else {
+            $connection->unprepared('DROP TRIGGER ' . $grammar->wrap($name));
+            $connection->unprepared('CREATE TRIGGER ' . $grammar->wrap($name) . ' BEFORE '
+                . strtoupper($operation) . ' ON ' . $grammar->wrapTable('guard  runs') . ' FOR EACH ROW ' . $bad);
+        }
+        $before = $this->objectDefinitions();
+        try {
+            RuntimeProfileSchema::up(null);
+            $this->fail('Quoted whitespace cannot authorize a self-read from another table.');
+        } catch (RuntimeProfileRefusal $error) {
+            $this->assertSame('runtime_profile_storage', $error->reason);
+        }
+        $this->assertEquals($before, $this->objectDefinitions());
+    }
+
+    public static function quotedDefinitionOperations(): iterable
+    {
+        yield 'insert' => ['insert'];
+        yield 'update' => ['update'];
+    }
+
     public function testDisjointLegacyInsertsDoNotAcquireEachOthersMissingKeyRange(): void
     {
         if (! in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb'], true)) {
@@ -653,6 +724,11 @@ final class RuntimeProfileStorageBackendTest extends SchemaTestCase
             ),
         ];
     }
+}
+
+final class RuntimeProfileQuotedRun extends WorkflowRun
+{
+    protected $table = 'guard  runs';
 }
 
 final class RuntimeProfilePrefixedRun extends WorkflowRun

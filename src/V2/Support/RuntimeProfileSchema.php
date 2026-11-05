@@ -483,7 +483,7 @@ final class RuntimeProfileSchema
 
     private static function normalize(string $sql): string
     {
-        return trim((string) preg_replace('/\s+/', ' ', $sql));
+        return RuntimeProfileSqlDefinition::normalize($sql);
     }
 
     private static function hasImmutability(Connection $connection, string $table, string $operation = 'update'): bool
