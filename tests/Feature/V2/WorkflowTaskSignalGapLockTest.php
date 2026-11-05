@@ -165,12 +165,20 @@ final class WorkflowTaskSignalGapLockTest extends TestCase
 
         $this->assertSame('continued', $run->fresh()->closed_reason);
         $successor = WorkflowRun::query()->where('workflow_instance_id', $stub->id())
-            ->where('id', '!=', $run->id)->sole();
+            ->where('id', '!=', $run->id)
+            ->sole();
         $signal = $signal->fresh();
         $this->assertSame($successor->id, $signal->workflow_run_id);
         $this->assertSame($successor->id, $signal->resolved_workflow_run_id);
         $this->assertSame(SignalStatus::Received, $signal->status);
-        foreach (['id', 'workflow_command_id', 'command_sequence', 'arguments', 'payload_codec', 'received_at'] as $field) {
+        foreach ([
+            'id',
+            'workflow_command_id',
+            'command_sequence',
+            'arguments',
+            'payload_codec',
+            'received_at',
+        ] as $field) {
             $this->assertSame($originalSignal[$field], $signal->getRawOriginal($field));
         }
         $command = WorkflowCommand::query()->findOrFail($receipt->commandId());

@@ -111,7 +111,11 @@ final class WorkflowSignalReadScopeTest extends TestCase
         $inner = $this->makeRun($connection, 'inner');
         $connection->beginTransaction();
         try {
-            $result = WorkflowSignalReadScope::forLockedRun($outer, function () use ($connection, $outer, $inner): string {
+            $result = WorkflowSignalReadScope::forLockedRun($outer, function () use (
+                $connection,
+                $outer,
+                $inner
+            ): string {
                 $this->assertTrue(WorkflowSignalReadScope::allowsConsistentRead($outer, $connection));
                 try {
                     WorkflowSignalReadScope::forLockedRun($inner, function () use ($connection, $outer, $inner): never {
