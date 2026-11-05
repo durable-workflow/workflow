@@ -19,6 +19,7 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\SignalStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSignal;
@@ -139,6 +140,61 @@ final class WorkflowTaskSignalGapLockTest extends TestCase
             fclose($sockets[0]);
             DB::purge($connectionName);
         }
+    }
+
+    public static function storageConnections(): iterable
+    {
+        yield 'default' => [false];
+        yield 'named' => [true];
+    }
+
+    #[DataProvider('storageConnections')]
+    public function testOwnedContinuationPreservesThePendingInstanceSignalReceipt(bool $named): void
+    {
+        $this->configureStorage($named);
+        $stub = WorkflowStub::make(TestConfiguredContinueSignalWorkflow::class);
+        $stub->start(0);
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $receipt = $stub->signal('name-provided', 'Taylor 雪');
+        $this->assertTrue($receipt->accepted());
+        $signal = WorkflowSignal::query()->where('workflow_command_id', $receipt->commandId())->sole();
+        $originalSignal = $signal->getAttributes();
+        $originalCommand = WorkflowCommand::query()->findOrFail($receipt->commandId())->getAttributes();
+
+        $this->executeReadyTask($run->id);
+
+        $this->assertSame('continued', $run->fresh()->closed_reason);
+        $successor = WorkflowRun::query()->where('workflow_instance_id', $stub->id())
+            ->where('id', '!=', $run->id)->sole();
+        $signal = $signal->fresh();
+        $this->assertSame($successor->id, $signal->workflow_run_id);
+        $this->assertSame($successor->id, $signal->resolved_workflow_run_id);
+        $this->assertSame(SignalStatus::Received, $signal->status);
+        foreach (['id', 'workflow_command_id', 'command_sequence', 'arguments', 'payload_codec', 'received_at'] as $field) {
+            $this->assertSame($originalSignal[$field], $signal->getRawOriginal($field));
+        }
+        $command = WorkflowCommand::query()->findOrFail($receipt->commandId());
+        foreach (['id', 'request_id', 'command_type', 'status', 'outcome', 'accepted_at'] as $field) {
+            $this->assertSame($originalCommand[$field], $command->getRawOriginal($field));
+        }
+        $this->assertSame(0, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::SignalRejected->value)->count());
+        $this->assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $successor->id)
+            ->where('event_type', HistoryEventType::SignalReceived->value)->count());
+        $this->assertSame(0, $this->storage()->transactionLevel());
+
+        DB::purge($this->storage()->getName());
+        $this->executeReadyTask($successor->id);
+
+        $signal = WorkflowSignal::query()->whereKey($originalSignal['id'])->sole();
+        $this->assertSame(SignalStatus::Applied, $signal->status);
+        $this->assertNotNull($signal->closed_at);
+        $this->assertSame($receipt->commandId(), $signal->workflow_command_id);
+        $this->assertSame('Taylor 雪', $stub->refresh()->output()['name']);
+        $this->assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $successor->id)
+            ->where('event_type', HistoryEventType::SignalApplied->value)->count());
+        $this->assertSame(2, WorkflowRun::query()->where('workflow_instance_id', $stub->id())->count());
+        $this->assertSame(0, $this->storage()->transactionLevel());
     }
 
     public static function callerTransactions(): iterable

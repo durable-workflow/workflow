@@ -104,6 +104,38 @@ final class WorkflowSignalReadScopeTest extends TestCase
         }
     }
 
+    public function testNestedFailureRestoresTheOuterRunScope(): void
+    {
+        $connection = $this->connection();
+        $outer = $this->makeRun($connection, 'outer');
+        $inner = $this->makeRun($connection, 'inner');
+        $connection->beginTransaction();
+        try {
+            $result = WorkflowSignalReadScope::forLockedRun($outer, function () use ($connection, $outer, $inner): string {
+                $this->assertTrue(WorkflowSignalReadScope::allowsConsistentRead($outer, $connection));
+                try {
+                    WorkflowSignalReadScope::forLockedRun($inner, function () use ($connection, $outer, $inner): never {
+                        $this->assertTrue(WorkflowSignalReadScope::allowsConsistentRead($inner, $connection));
+                        $this->assertFalse(WorkflowSignalReadScope::allowsConsistentRead($outer, $connection));
+                        throw new RuntimeException('nested scope control');
+                    });
+                    $this->fail('The inner failure was hidden.');
+                } catch (RuntimeException $error) {
+                    $this->assertSame('nested scope control', $error->getMessage());
+                }
+                $this->assertTrue(WorkflowSignalReadScope::allowsConsistentRead($outer, $connection));
+                $this->assertFalse(WorkflowSignalReadScope::allowsConsistentRead($inner, $connection));
+
+                return 'outer restored';
+            });
+            $this->assertSame('outer restored', $result);
+            $this->assertFalse(WorkflowSignalReadScope::allowsConsistentRead($outer, $connection));
+            $this->assertFalse(WorkflowSignalReadScope::allowsConsistentRead($inner, $connection));
+        } finally {
+            $connection->rollBack();
+        }
+    }
+
     private function connection(string $driver = 'mysql'): Connection
     {
         // SQLite backs only scope/identity unit controls. The separate feature
