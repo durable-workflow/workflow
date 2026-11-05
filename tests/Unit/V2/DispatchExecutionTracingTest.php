@@ -7,6 +7,7 @@ namespace Tests\Unit\V2;
 use Composer\Autoload\ClassLoader;
 use Illuminate\Filesystem\Filesystem;
 use OpenTelemetry\API\Trace\SpanKind;
+use OpenTelemetry\API\Trace\TraceFlags;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Process\Process;
@@ -126,8 +127,19 @@ final class DispatchExecutionTracingTest extends TestCase
                     self::assertLessThanOrEqual(4096, strlen(json_encode($carrier, JSON_THROW_ON_ERROR)));
                     self::assertArrayNotHasKey('baggage', $carrier['context']['carrier']);
                     $producer = $dispatchByTask[$queued['task_id']];
+                    $supportedFlags = TraceFlags::SAMPLED;
+                    if (defined(TraceFlags::class . '::RANDOM')) {
+                        $supportedFlags |= constant(TraceFlags::class . '::RANDOM');
+                    }
+                    self::assertSame(TraceFlags::SAMPLED, $producer['trace_flags'] & TraceFlags::SAMPLED);
+                    self::assertSame(0, $producer['trace_flags'] & ~$supportedFlags);
                     self::assertSame(
-                        '00-' . $producer['trace_id'] . '-' . $producer['span_id'] . '-01',
+                        sprintf(
+                            '00-%s-%s-%02x',
+                            $producer['trace_id'],
+                            $producer['span_id'],
+                            $producer['trace_flags']
+                        ),
                         $carrier['context']['carrier']['traceparent']
                     );
                 }
