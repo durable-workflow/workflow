@@ -17,7 +17,10 @@ $app = \Orchestra\Testbench\Foundation\Application::create(options: [
 $app->make(\Illuminate\Contracts\Console\Kernel::class)->bootstrap();
 try {
     $result = \Workflow\V2\WorkflowStub::loadRun((string) getenv('INBOX_PARALLEL_RUN_ID'))->query('received');
-    echo json_encode(['received' => $result], JSON_THROW_ON_ERROR);
+    echo json_encode([
+        'received' => $result,
+    ], JSON_THROW_ON_ERROR);
 } finally {
-    $app->make('db')->purge();
+    $app->make('db')
+        ->purge();
 }

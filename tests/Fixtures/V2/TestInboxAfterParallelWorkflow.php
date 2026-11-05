@@ -28,12 +28,19 @@ final class TestInboxAfterParallelWorkflow extends Workflow
                 static fn () => activity(TestGreetingActivity::class, 'second'),
             ]);
         } else {
-            $results = [activity(TestGreetingActivity::class, 'first'), activity(TestGreetingActivity::class, 'second')];
+            $results = [
+                activity(TestGreetingActivity::class, 'first'),
+                activity(TestGreetingActivity::class, 'second'),
+            ];
         }
-        $this->received = $this->inbox('chat')->receiveOne()?->payload_reference;
+        $this->received = $this->inbox('chat')
+            ->receiveOne()?->payload_reference;
         await('done');
 
-        return ['activities' => $results, 'received' => $this->received];
+        return [
+            'activities' => $results,
+            'received' => $this->received,
+        ];
     }
 
     #[QueryMethod]

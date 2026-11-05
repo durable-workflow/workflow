@@ -28,19 +28,32 @@ final class V2InboxAfterParallelTest extends TestCase
     public function testPendingReceiveAfterActivitiesSurvivesColdReplay(bool $parallel, int $admission): void
     {
         Queue::fake();
-        config()->set('workflows.v2.task_dispatch_mode', 'poll');
-        $stub = WorkflowStub::make(TestInboxAfterParallelWorkflow::class, ($parallel ? 'after-all-' : 'after-sequential-') . $admission);
+        config()
+            ->set('workflows.v2.task_dispatch_mode', 'poll');
+        $stub = WorkflowStub::make(
+            TestInboxAfterParallelWorkflow::class,
+            ($parallel ? 'after-all-' : 'after-sequential-') . $admission
+        );
         $stub->start($parallel);
         $this->drain();
         $run = WorkflowRun::query()->findOrFail($stub->runId());
-        $send = static fn () => (new MessageService())->sendMessage($run, MessageChannel::WorkflowMessage, $run->workflow_instance_id, 'j1', 'chat');
+        $send = static fn () => (new MessageService())->sendMessage(
+            $run,
+            MessageChannel::WorkflowMessage,
+            $run->workflow_instance_id,
+            'j1',
+            'chat'
+        );
         if ($admission === 0) {
             $send();
         }
         $stub->signal('go');
         if ($admission === 2) {
             for ($turn = 0; $turn < 20; $turn++) {
-                if (ActivityExecution::query()->where('workflow_run_id', $run->id)->where('status', 'completed')->count() === 2) {
+                if (ActivityExecution::query()->where('workflow_run_id', $run->id)->where(
+                    'status',
+                    'completed'
+                )->count() === 2) {
                     break;
                 }
                 self::assertTrue($this->runNextTask(), 'Two real activities must complete before admission.');
@@ -50,10 +63,17 @@ final class V2InboxAfterParallelTest extends TestCase
             $send();
         }
         $this->drain();
-        self::assertSame(2, ActivityExecution::query()->where('workflow_run_id', $run->id)->where('status', 'completed')->count());
-        $first = $stub->refresh()->query('received');
+        self::assertSame(
+            2,
+            ActivityExecution::query()->where('workflow_run_id', $run->id)->where('status', 'completed')->count()
+        );
+        $first = $stub->refresh()
+            ->query('received');
         $before = $this->rows();
-        $reader = new Process([PHP_BINARY, __DIR__ . '/../../Fixtures/V2/inbox_after_parallel_cold_read.php'], dirname(__DIR__, 3), [
+        $reader = new Process([PHP_BINARY, __DIR__ . '/../../Fixtures/V2/inbox_after_parallel_cold_read.php'], dirname(
+            __DIR__,
+            3
+        ), [
             'INBOX_PARALLEL_RUN_ID' => $run->id,
         ]);
         $reader->setTimeout(30);
@@ -69,7 +89,11 @@ final class V2InboxAfterParallelTest extends TestCase
 
     public static function executionModes(): iterable
     {
-        foreach ([0 => 'before signal', 1 => 'before activities', 2 => 'after activities'] as $admission => $name) {
+        foreach ([
+            0 => 'before signal',
+            1 => 'before activities',
+            2 => 'after activities',
+        ] as $admission => $name) {
             yield 'sequential ' . $name => [false, $admission];
             yield 'parallel ' . $name => [true, $admission];
         }
@@ -104,7 +128,9 @@ final class V2InboxAfterParallelTest extends TestCase
     {
         $rows = [];
         foreach (DB::getSchemaBuilder()->getTableListing() as $table) {
-            $values = DB::table($table)->get()->map(static fn ($row): string => json_encode($row, JSON_THROW_ON_ERROR))->all();
+            $values = DB::table($table)->get()->map(
+                static fn ($row): string => json_encode($row, JSON_THROW_ON_ERROR)
+            )->all();
             sort($values);
             $rows[$table] = $values;
         }
