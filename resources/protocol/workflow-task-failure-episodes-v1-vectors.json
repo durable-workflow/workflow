@@ -1,0 +1,1134 @@
+{
+  "contract": "workflow-task-failure-episodes",
+  "format_version": 1,
+  "status": "source_proposal_not_enabled",
+  "normalized_transitions_are_wire_messages": false,
+  "proposed_operator_metric_path": "workflow_task_failure_episodes",
+  "proposed_fields": {
+    "evaluation": "complete | partial | unavailable",
+    "count": "Nonnegative count of authoritative open runs with an unresolved episode; null when membership is unavailable.",
+    "oldest_started_at": "UTC first accepted failure of the oldest active episode; null for no episodes or any unknown age.",
+    "max_age_ms": "Whole elapsed milliseconds at sample_at; zero only for a proven empty set or a known sub-millisecond age; null for unknown/unavailable age.",
+    "age_unknown_count": "Number of known active runs without a qualified first-failure clock; null if membership is unavailable."
+  },
+  "authority": {
+    "clock": "Backend-authoritative acceptance/commit clock, persisted atomically with the first accepted failure.",
+    "membership": "Existing run/namespace/task/attempt/owner/deadline fences apply before any episode mutation. One open run counts once.",
+    "anchor": "Durable per-run first-failure/reset authority or equivalent bounded projection; task ancestry, generic created_at/updated_at and historical task_problem/attempt counts are insufficient.",
+    "repeat": "Preserve the first timestamp across accepted failures, retry, claim, heartbeat, replay blocking and automatic delivery/lease recovery.",
+    "reset": "Only applied failure-repair writer intent, new committed successful task completion/progress checkpoint, supported recorded waiting acknowledgement completing its task, or closure.",
+    "repair_origin": "Explicit writer intent distinguishes failure_episode_reset from delivery_recovery. Event names, repair_count and HTTP success do not establish intent.",
+    "noop": "Refused/stale/wrong-owner/wrong-attempt/duplicate/no-effect reports and repair_not_needed neither begin nor clear an episode.",
+    "legacy": "Do not invent an anchor for an existing run. Known active membership with unknown age is partial; unqualified membership or an unsupported backend is unavailable.",
+    "aggregate": "If any active age is unknown, global oldest_started_at/max_age_ms are null. A known subset is not the oldest age of the full set.",
+    "retention": "Closed runs are excluded. Missing active ancestry is incomplete evidence, not age zero. Future pruning must preserve any admitted anchor.",
+    "advisory": "Proposed dedicated health check is warning for a positive count, partial or unavailable evaluation; complete zero is OK. This is advisory, with existing HTTP failure rules preserved.",
+    "consumer": "Absent family means unavailable, never count zero. Dashboard label is Workflow task failures; an unknown age is displayed as unavailable."
+  },
+  "adoption_gates": [
+    "General/source contract review",
+    "Complete Core and Server writer/reset inventory",
+    "Existing-run and mixed-version compatibility policy",
+    "Backend qualification and downstream consumer review",
+    "Normal integration/release authorization"
+  ],
+  "vectors": [
+    {
+      "id": "open_without_failure",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": false,
+        "first_failure_at": null
+      },
+      "transitions": [],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": false,
+          "first_failure_at": null
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 0,
+        "oldest_started_at": null,
+        "max_age_ms": 0,
+        "age_unknown_count": 0
+      },
+      "expected_health": "ok"
+    },
+    {
+      "id": "ordinary_first_failure_php",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": false,
+        "first_failure_at": null
+      },
+      "transitions": [
+        {
+          "kind": "ordinary_failure",
+          "at": "2026-11-05T12:00:01.000000Z",
+          "authority": "current",
+          "recorded": true
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": true,
+          "first_failure_at": "2026-11-05T12:00:01.000000Z",
+          "liveness": "repair_needed"
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 1,
+        "oldest_started_at": "2026-11-05T12:00:01.000000Z",
+        "max_age_ms": 9000,
+        "age_unknown_count": 0
+      },
+      "expected_health": "warning"
+    },
+    {
+      "id": "ordinary_first_failure_native_ready_retry",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": false,
+        "first_failure_at": null
+      },
+      "transitions": [
+        {
+          "kind": "ordinary_failure",
+          "at": "2026-11-05T12:00:01.000000Z",
+          "authority": "current",
+          "recorded": true
+        },
+        {
+          "kind": "automatic_retry",
+          "at": "2026-11-05T12:00:05.000000Z",
+          "authority": "current",
+          "recorded": true
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": true,
+          "first_failure_at": "2026-11-05T12:00:01.000000Z",
+          "liveness": "workflow_task_ready"
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 1,
+        "oldest_started_at": "2026-11-05T12:00:01.000000Z",
+        "max_age_ms": 9000,
+        "age_unknown_count": 0
+      },
+      "expected_health": "warning"
+    },
+    {
+      "id": "failure_without_retry_successor",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": false,
+        "first_failure_at": null
+      },
+      "transitions": [
+        {
+          "kind": "ordinary_failure",
+          "at": "2026-11-05T12:00:01.000000Z",
+          "authority": "current",
+          "recorded": true,
+          "retry_successor_created": false,
+          "another_workflow_task_open": true
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": true,
+          "first_failure_at": "2026-11-05T12:00:01.000000Z"
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 1,
+        "oldest_started_at": "2026-11-05T12:00:01.000000Z",
+        "max_age_ms": 9000,
+        "age_unknown_count": 0
+      },
+      "expected_health": "warning"
+    },
+    {
+      "id": "repeated_failure_keeps_first_timestamp",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": true,
+        "first_failure_at": "2026-11-05T12:00:01.000000Z"
+      },
+      "transitions": [
+        {
+          "kind": "ordinary_failure",
+          "at": "2026-11-05T12:00:05.000000Z",
+          "authority": "current",
+          "recorded": true
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": true,
+          "first_failure_at": "2026-11-05T12:00:01.000000Z"
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 1,
+        "oldest_started_at": "2026-11-05T12:00:01.000000Z",
+        "max_age_ms": 9000,
+        "age_unknown_count": 0
+      },
+      "expected_health": "warning"
+    },
+    {
+      "id": "first_replay_block",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": false,
+        "first_failure_at": null
+      },
+      "transitions": [
+        {
+          "kind": "replay_block",
+          "at": "2026-11-05T12:00:01.000000Z",
+          "authority": "current",
+          "recorded": true
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": true,
+          "first_failure_at": "2026-11-05T12:00:01.000000Z",
+          "liveness": "workflow_replay_blocked"
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 1,
+        "oldest_started_at": "2026-11-05T12:00:01.000000Z",
+        "max_age_ms": 9000,
+        "age_unknown_count": 0
+      },
+      "expected_health": "warning"
+    },
+    {
+      "id": "retry_then_replay_block_preserves_episode",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": true,
+        "first_failure_at": "2026-11-05T12:00:01.000000Z"
+      },
+      "transitions": [
+        {
+          "kind": "replay_block",
+          "at": "2026-11-05T12:00:05.000000Z",
+          "authority": "current",
+          "recorded": true
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": true,
+          "first_failure_at": "2026-11-05T12:00:01.000000Z",
+          "liveness": "workflow_replay_blocked"
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 1,
+        "oldest_started_at": "2026-11-05T12:00:01.000000Z",
+        "max_age_ms": 9000,
+        "age_unknown_count": 0
+      },
+      "expected_health": "warning"
+    },
+    {
+      "id": "accepted_repair_not_yet_applied",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": true,
+        "first_failure_at": "2026-11-05T12:00:01.000000Z"
+      },
+      "transitions": [
+        {
+          "kind": "repair_command_accepted",
+          "at": "2026-11-05T12:00:05.000000Z",
+          "authority": "current",
+          "recorded": true,
+          "applied": false
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": true,
+          "first_failure_at": "2026-11-05T12:00:01.000000Z"
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 1,
+        "oldest_started_at": "2026-11-05T12:00:01.000000Z",
+        "max_age_ms": 9000,
+        "age_unknown_count": 0
+      },
+      "expected_health": "warning"
+    },
+    {
+      "id": "effective_failure_repair_clears",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": true,
+        "first_failure_at": "2026-11-05T12:00:01.000000Z"
+      },
+      "transitions": [
+        {
+          "kind": "failure_repair_applied",
+          "at": "2026-11-05T12:00:05.000000Z",
+          "authority": "current",
+          "recorded": true,
+          "writer_intent": "failure_episode_reset"
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": false,
+          "first_failure_at": null,
+          "task_problem_history": true
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 0,
+        "oldest_started_at": null,
+        "max_age_ms": 0,
+        "age_unknown_count": 0
+      },
+      "expected_health": "ok"
+    },
+    {
+      "id": "repair_not_needed_keeps_episode",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": true,
+        "first_failure_at": "2026-11-05T12:00:01.000000Z"
+      },
+      "transitions": [
+        {
+          "kind": "repair_not_needed",
+          "at": "2026-11-05T12:00:05.000000Z",
+          "authority": "current",
+          "recorded": true,
+          "state_changed": false
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": true,
+          "first_failure_at": "2026-11-05T12:00:01.000000Z"
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 1,
+        "oldest_started_at": "2026-11-05T12:00:01.000000Z",
+        "max_age_ms": 9000,
+        "age_unknown_count": 0
+      },
+      "expected_health": "warning"
+    },
+    {
+      "id": "automatic_lease_recovery_keeps_episode",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": true,
+        "first_failure_at": "2026-11-05T12:00:01.000000Z"
+      },
+      "transitions": [
+        {
+          "kind": "automatic_lease_recovery",
+          "at": "2026-11-05T12:00:05.000000Z",
+          "authority": "current",
+          "recorded": true,
+          "writer_intent": "delivery_recovery",
+          "emitted_event": "RepairRequested",
+          "repair_count_incremented": true
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": true,
+          "first_failure_at": "2026-11-05T12:00:01.000000Z"
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 1,
+        "oldest_started_at": "2026-11-05T12:00:01.000000Z",
+        "max_age_ms": 9000,
+        "age_unknown_count": 0
+      },
+      "expected_health": "warning"
+    },
+    {
+      "id": "abandoned_task_recovery_keeps_episode",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": true,
+        "first_failure_at": "2026-11-05T12:00:01.000000Z"
+      },
+      "transitions": [
+        {
+          "kind": "abandoned_task_recovery",
+          "at": "2026-11-05T12:00:05.000000Z",
+          "authority": "current",
+          "recorded": true,
+          "writer_intent": "delivery_recovery",
+          "emitted_event": "RepairRequested",
+          "repair_count_incremented": true
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": true,
+          "first_failure_at": "2026-11-05T12:00:01.000000Z"
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 1,
+        "oldest_started_at": "2026-11-05T12:00:01.000000Z",
+        "max_age_ms": 9000,
+        "age_unknown_count": 0
+      },
+      "expected_health": "warning"
+    },
+    {
+      "id": "delivery_redispatch_keeps_episode",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": true,
+        "first_failure_at": "2026-11-05T12:00:01.000000Z"
+      },
+      "transitions": [
+        {
+          "kind": "delivery_redispatch",
+          "at": "2026-11-05T12:00:05.000000Z",
+          "authority": "current",
+          "recorded": true,
+          "writer_intent": "delivery_recovery",
+          "emitted_event": "RepairRequested",
+          "repair_count_incremented": true
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": true,
+          "first_failure_at": "2026-11-05T12:00:01.000000Z"
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 1,
+        "oldest_started_at": "2026-11-05T12:00:01.000000Z",
+        "max_age_ms": 9000,
+        "age_unknown_count": 0
+      },
+      "expected_health": "warning"
+    },
+    {
+      "id": "waiting_history_completed_ack_clears",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": true,
+        "first_failure_at": "2026-11-05T12:00:01.000000Z"
+      },
+      "transitions": [
+        {
+          "kind": "waiting_for_history_ack",
+          "at": "2026-11-05T12:00:05.000000Z",
+          "authority": "current",
+          "recorded": true,
+          "task_completed": true,
+          "committed": true
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": false,
+          "first_failure_at": null,
+          "liveness": "workflow_waiting",
+          "task_problem_history": true
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 0,
+        "oldest_started_at": null,
+        "max_age_ms": 0,
+        "age_unknown_count": 0
+      },
+      "expected_health": "ok"
+    },
+    {
+      "id": "refused_wait_ack_cannot_clear",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": true,
+        "first_failure_at": "2026-11-05T12:00:01.000000Z"
+      },
+      "transitions": [
+        {
+          "kind": "waiting_for_history_ack",
+          "at": "2026-11-05T12:00:05.000000Z",
+          "authority": "stale",
+          "recorded": false,
+          "task_completed": false
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": true,
+          "first_failure_at": "2026-11-05T12:00:01.000000Z"
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 1,
+        "oldest_started_at": "2026-11-05T12:00:01.000000Z",
+        "max_age_ms": 9000,
+        "age_unknown_count": 0
+      },
+      "expected_health": "warning"
+    },
+    {
+      "id": "new_completion_clears",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": true,
+        "first_failure_at": "2026-11-05T12:00:01.000000Z"
+      },
+      "transitions": [
+        {
+          "kind": "task_completion",
+          "at": "2026-11-05T12:00:05.000000Z",
+          "authority": "current",
+          "recorded": true,
+          "committed": true
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": false,
+          "first_failure_at": null,
+          "task_problem_history": true
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 0,
+        "oldest_started_at": null,
+        "max_age_ms": 0,
+        "age_unknown_count": 0
+      },
+      "expected_health": "ok"
+    },
+    {
+      "id": "duplicate_completion_cannot_clear_later_episode",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": true,
+        "first_failure_at": "2026-11-05T12:00:01.000000Z"
+      },
+      "transitions": [
+        {
+          "kind": "task_completion",
+          "at": "2026-11-05T12:00:05.000000Z",
+          "authority": "current",
+          "recorded": false,
+          "receipt_replay": true,
+          "committed": false
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": true,
+          "first_failure_at": "2026-11-05T12:00:01.000000Z"
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 1,
+        "oldest_started_at": "2026-11-05T12:00:01.000000Z",
+        "max_age_ms": 9000,
+        "age_unknown_count": 0
+      },
+      "expected_health": "warning"
+    },
+    {
+      "id": "new_progress_checkpoint_clears",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": true,
+        "first_failure_at": "2026-11-05T12:00:01.000000Z"
+      },
+      "transitions": [
+        {
+          "kind": "progress_checkpoint",
+          "at": "2026-11-05T12:00:05.000000Z",
+          "authority": "current",
+          "recorded": true,
+          "committed": true,
+          "state_changed": true
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": false,
+          "first_failure_at": null,
+          "task_problem_history": true
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 0,
+        "oldest_started_at": null,
+        "max_age_ms": 0,
+        "age_unknown_count": 0
+      },
+      "expected_health": "ok"
+    },
+    {
+      "id": "duplicate_checkpoint_keeps_episode",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": true,
+        "first_failure_at": "2026-11-05T12:00:01.000000Z"
+      },
+      "transitions": [
+        {
+          "kind": "progress_checkpoint",
+          "at": "2026-11-05T12:00:05.000000Z",
+          "authority": "current",
+          "recorded": false,
+          "committed": false,
+          "state_changed": false
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": true,
+          "first_failure_at": "2026-11-05T12:00:01.000000Z"
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 1,
+        "oldest_started_at": "2026-11-05T12:00:01.000000Z",
+        "max_age_ms": 9000,
+        "age_unknown_count": 0
+      },
+      "expected_health": "warning"
+    },
+    {
+      "id": "stale_failure_cannot_begin_episode",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": false,
+        "first_failure_at": null
+      },
+      "transitions": [
+        {
+          "kind": "ordinary_failure",
+          "at": "2026-11-05T12:00:05.000000Z",
+          "authority": "wrong_attempt",
+          "recorded": false
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": false,
+          "first_failure_at": null
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 0,
+        "oldest_started_at": null,
+        "max_age_ms": 0,
+        "age_unknown_count": 0
+      },
+      "expected_health": "ok"
+    },
+    {
+      "id": "run_closure_excludes_historical_failure",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": true,
+        "first_failure_at": "2026-11-05T12:00:01.000000Z"
+      },
+      "transitions": [
+        {
+          "kind": "run_closure",
+          "at": "2026-11-05T12:00:05.000000Z",
+          "authority": "current",
+          "recorded": true
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": false,
+          "episode_active": false,
+          "first_failure_at": null,
+          "retained_failed_tasks": 9,
+          "task_problem_history": true
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 0,
+        "oldest_started_at": null,
+        "max_age_ms": 0,
+        "age_unknown_count": 0
+      },
+      "expected_health": "ok"
+    },
+    {
+      "id": "known_active_legacy_episode_unknown_age",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": true,
+        "first_failure_at": null,
+        "age_authority": "unknown"
+      },
+      "transitions": [],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": true,
+          "first_failure_at": null,
+          "age_authority": "unknown"
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "partial",
+        "count": 1,
+        "oldest_started_at": null,
+        "max_age_ms": null,
+        "age_unknown_count": 1
+      },
+      "expected_health": "warning"
+    },
+    {
+      "id": "future_clock_does_not_report_zero_age",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": true,
+        "first_failure_at": "2026-11-05T12:00:20.000000Z"
+      },
+      "transitions": [],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": true,
+          "first_failure_at": "2026-11-05T12:00:20.000000Z"
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "partial",
+        "count": 1,
+        "oldest_started_at": null,
+        "max_age_ms": null,
+        "age_unknown_count": 1
+      },
+      "expected_health": "warning"
+    },
+    {
+      "id": "unsupported_backend_is_unavailable",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "unsupported",
+      "before": null,
+      "transitions": [],
+      "after": [],
+      "expected_metric": {
+        "evaluation": "unavailable",
+        "count": null,
+        "oldest_started_at": null,
+        "max_age_ms": null,
+        "age_unknown_count": null
+      },
+      "expected_health": "warning"
+    },
+    {
+      "id": "unknown_membership_is_unavailable",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "membership": "unknown"
+      },
+      "transitions": [],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "membership": "unknown"
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "unavailable",
+        "count": null,
+        "oldest_started_at": null,
+        "max_age_ms": null,
+        "age_unknown_count": null
+      },
+      "expected_health": "warning"
+    },
+    {
+      "id": "aggregate_counts_open_runs_once",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": null,
+      "transitions": [],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": true,
+          "first_failure_at": "2026-11-05T12:00:01.000000Z",
+          "retained_failed_tasks": 8
+        },
+        {
+          "id": "run-b",
+          "open": true,
+          "episode_active": true,
+          "first_failure_at": "2026-11-05T12:00:05.000000Z",
+          "liveness": "workflow_task_ready"
+        },
+        {
+          "id": "run-closed",
+          "open": false,
+          "episode_active": false,
+          "first_failure_at": null,
+          "retained_failed_tasks": 99
+        },
+        {
+          "id": "run-history",
+          "open": true,
+          "episode_active": false,
+          "first_failure_at": null,
+          "task_problem_history": true
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 2,
+        "oldest_started_at": "2026-11-05T12:00:01.000000Z",
+        "max_age_ms": 9000,
+        "age_unknown_count": 0
+      },
+      "expected_health": "warning"
+    },
+    {
+      "id": "any_unknown_age_makes_global_oldest_unknown",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": null,
+      "transitions": [],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": true,
+          "first_failure_at": "2026-11-05T12:00:01.000000Z"
+        },
+        {
+          "id": "run-b",
+          "open": true,
+          "episode_active": true,
+          "first_failure_at": null,
+          "age_authority": "unknown"
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "partial",
+        "count": 2,
+        "oldest_started_at": null,
+        "max_age_ms": null,
+        "age_unknown_count": 1
+      },
+      "expected_health": "warning"
+    },
+    {
+      "id": "effective_repair_then_new_failure_starts_new_clock",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": true,
+        "first_failure_at": "2026-11-05T12:00:01.000000Z"
+      },
+      "transitions": [
+        {
+          "kind": "failure_repair_applied",
+          "at": "2026-11-05T12:00:05.000000Z",
+          "authority": "current",
+          "recorded": true,
+          "writer_intent": "failure_episode_reset"
+        },
+        {
+          "kind": "ordinary_failure",
+          "at": "2026-11-05T12:00:05.000000Z",
+          "authority": "current",
+          "recorded": true
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": true,
+          "first_failure_at": "2026-11-05T12:00:05.000000Z"
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 1,
+        "oldest_started_at": "2026-11-05T12:00:05.000000Z",
+        "max_age_ms": 5000,
+        "age_unknown_count": 0
+      },
+      "expected_health": "warning"
+    },
+    {
+      "id": "wrong_namespace_failure_cannot_begin_episode",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": false,
+        "first_failure_at": null
+      },
+      "transitions": [
+        {
+          "kind": "ordinary_failure",
+          "at": "2026-11-05T12:00:05.000000Z",
+          "authority": "wrong_namespace",
+          "recorded": false
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": false,
+          "first_failure_at": null
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 0,
+        "oldest_started_at": null,
+        "max_age_ms": 0,
+        "age_unknown_count": 0
+      },
+      "expected_health": "ok"
+    },
+    {
+      "id": "wrong_owner_failure_cannot_begin_episode",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": false,
+        "first_failure_at": null
+      },
+      "transitions": [
+        {
+          "kind": "ordinary_failure",
+          "at": "2026-11-05T12:00:05.000000Z",
+          "authority": "wrong_owner",
+          "recorded": false
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": true,
+          "episode_active": false,
+          "first_failure_at": null
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 0,
+        "oldest_started_at": null,
+        "max_age_ms": 0,
+        "age_unknown_count": 0
+      },
+      "expected_health": "ok"
+    },
+    {
+      "id": "deadline_closure_wins_before_failure",
+      "sample_at": "2026-11-05T12:00:10.000000Z",
+      "backend_support": "supported",
+      "before": {
+        "id": "run-a",
+        "open": true,
+        "episode_active": true,
+        "first_failure_at": "2026-11-05T12:00:01.000000Z"
+      },
+      "transitions": [
+        {
+          "kind": "deadline_closure",
+          "at": "2026-11-05T12:00:05.000000Z",
+          "authority": "current",
+          "recorded": true
+        },
+        {
+          "kind": "ordinary_failure",
+          "at": "2026-11-05T12:00:05.000000Z",
+          "authority": "run_closed",
+          "recorded": false
+        }
+      ],
+      "after": [
+        {
+          "id": "run-a",
+          "open": false,
+          "episode_active": false,
+          "first_failure_at": null,
+          "retained_failed_tasks": 9,
+          "task_problem_history": true
+        }
+      ],
+      "expected_metric": {
+        "evaluation": "complete",
+        "count": 0,
+        "oldest_started_at": null,
+        "max_age_ms": 0,
+        "age_unknown_count": 0
+      },
+      "expected_health": "ok"
+    }
+  ]
+}
