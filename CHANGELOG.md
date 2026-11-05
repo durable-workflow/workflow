@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Workflow 2.21.0 requires PHP `^8.2` and patched Laravel
+  `^12.69.0|^13.30.0`. Laravel 10/11 and PHP 8.1 are no longer supported.
+  Upgrade the application platform first while preserving its existing
+  Workflow 2.20.x lock, then update Workflow. The stable-v1 authority and
+  ownership of existing durable history are unchanged.
+- The embedded source/published upgrade matrices now cover Laravel 12/13
+  on their supported PHP 8.2–8.4 intersection. Laravel 13 still requires
+  PHP 8.3 or newer. Removed-framework constraints refuse before installation;
+  retired-platform advisory exceptions are not carried into 2.21.
+
+## 2.20.4 - 2026-11-05
+
+- Fix an embedded MySQL/InnoDB REPEATABLE READ deadlock between
+  continue-as-new and unrelated signal admission. Caller-owned transactions
+  retain their original read views, pending default/named signal handoffs
+  remain durable, and user workflow code is not automatically replayed to
+  recover from the deadlock.
+
 ## 2.20.3 - 2026-11-04
 
 - Rollback, embedded Workflow package: 2.20.3 changes no schema, history
