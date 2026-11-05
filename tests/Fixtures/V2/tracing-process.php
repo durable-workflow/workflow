@@ -1182,6 +1182,8 @@ try {
                 ->getTraceId(),
             'span_id' => $span->getContext()
                 ->getSpanId(),
+            'trace_flags' => $span->getContext()
+                ->getTraceFlags(),
             'parent_id' => $span->getParentContext()
                 ->getSpanId(),
             'fields' => $span->getAttributes()

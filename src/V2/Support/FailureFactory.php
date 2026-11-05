@@ -829,7 +829,6 @@ final class FailureFactory
         mixed $value,
     ): void {
         $reflectionProperty = new ReflectionProperty($class, $property);
-        $reflectionProperty->setAccessible(true);
         $reflectionProperty->setValue($throwable, $value);
     }
 
