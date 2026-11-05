@@ -475,11 +475,17 @@ final class RuntimeProfileGuard
             'sqlite' => ["length(CAST({$column} AS BLOB))", "substr(CAST({$column} AS BLOB), 1, 65)"],
             'mysql', 'mariadb' => ["OCTET_LENGTH({$column})", "SUBSTRING(CAST({$column} AS BINARY), 1, 65)"],
             'pgsql' => ["octet_length({$column})", "substring(convert_to({$column}, 'UTF8') from 1 for 65)"],
+            'sqlsrv' => [SqlServerRuntimeProfileSchema::canonicalBytes($column),
+                "SUBSTRING({$column} COLLATE Latin1_General_100_BIN2, 1, 65)"],
             default => throw new RuntimeProfileRefusal('runtime_profile_storage'),
         };
-        return [$key, 'workflow_instance_id', 'namespace',
+        $columns = [$key, 'workflow_instance_id', 'namespace',
             $connection->raw("{$length} AS runtime_profile_bytes"),
             $connection->raw("{$prefix} AS runtime_profile_value")];
+        if ($connection->getDriverName() === 'sqlsrv') {
+            $columns[] = $connection->raw("DATALENGTH({$column}) AS runtime_profile_storage_bytes");
+        }
+        return $columns;
     }
 
     /**

@@ -42,8 +42,9 @@ final class RuntimeProfileSchema
                 throw new RuntimeProfileRefusal('runtime_profile_storage');
             }
             if (! $schema->hasColumn($table, 'runtime_profile')) {
-                $schema->table($table, static function (Blueprint $blueprint): void {
-                    $blueprint->string('runtime_profile', 64)
+                $length = $connection->getDriverName() === 'sqlsrv' ? 65 : 64;
+                $schema->table($table, static function (Blueprint $blueprint) use ($length): void {
+                    $blueprint->string('runtime_profile', $length)
                         ->nullable();
                 });
             }
@@ -151,8 +152,11 @@ final class RuntimeProfileSchema
     {
         $column = $connection->getQueryGrammar()
             ->wrap('runtime_profile');
+        $invalid = $connection->getDriverName() === 'sqlsrv'
+            ? SqlServerRuntimeProfileSchema::invalidValue($column)
+            : self::byteLength($connection, $column) . ' > 64';
         if ($connection->table($table)->useWritePdo()
-            ->whereRaw(self::byteLength($connection, $column) . ' > 64')->exists()) {
+            ->whereRaw($invalid)->exists()) {
             throw new RuntimeProfileRefusal('runtime_profile_storage');
         }
     }
@@ -195,7 +199,7 @@ final class RuntimeProfileSchema
                 serialize([$driver, self::sqliteDatabaseIdentity($connection, $schema), $physicalTable])
             );
         }
-        if (! in_array($driver, ['mysql', 'mariadb', 'pgsql'], true)) {
+        if (! in_array($driver, ['mysql', 'mariadb', 'pgsql', 'sqlsrv'], true)) {
             throw new RuntimeProfileRefusal('runtime_profile_storage');
         }
         // Server-reported hostname/port are not unique endpoint authority,
@@ -209,6 +213,21 @@ final class RuntimeProfileSchema
      */
     private static function tableParts(Connection $connection, string $table): array
     {
+        if ($connection->getDriverName() === 'sqlsrv') {
+            $qualified = $connection->getQueryGrammar()->wrapTable($table);
+            $row = $connection->selectOne(
+                "SELECT s.name AS schema_name, t.name AS table_name FROM sys.tables t
+                    JOIN sys.schemas s ON s.schema_id = t.schema_id
+                    WHERE t.object_id = OBJECT_ID(?, N'U') AND PARSENAME(?, 4) IS NULL
+                    AND (PARSENAME(?, 3) IS NULL OR DB_ID(PARSENAME(?, 3)) = DB_ID())",
+                [$qualified, $qualified, $qualified, $qualified],
+                false,
+            );
+            if ($row === null || ! is_string($row->schema_name) || ! is_string($row->table_name)) {
+                throw new RuntimeProfileRefusal('runtime_profile_storage');
+            }
+            return [$row->schema_name, $row->table_name];
+        }
         $parts = explode('.', $table);
         if (count($parts) > 2) {
             throw new RuntimeProfileRefusal('runtime_profile_storage');
@@ -240,6 +259,10 @@ final class RuntimeProfileSchema
     {
         [$schema, $name] = self::tableParts($connection, $table);
         $driver = $connection->getDriverName();
+        if ($driver === 'sqlsrv') {
+            SqlServerRuntimeProfileSchema::assertColumn($connection, $schema, $name, $allowMissing);
+            return;
+        }
         if ($driver === 'sqlite') {
             $grammar = $connection->getQueryGrammar();
             $columns = $connection->select(
@@ -293,6 +316,9 @@ final class RuntimeProfileSchema
     {
         $name = 'wf_runtime_profile_' . substr(hash('sha256', $connection->getTablePrefix() . $table), 0, 20);
         $name .= $operation === 'update' ? '' : '_' . $operation;
+        if ($connection->getDriverName() === 'sqlsrv') {
+            return self::tableParts($connection, $table)[0] . '.' . $name;
+        }
         $separator = strrpos($table, '.');
         return $separator === false ? $name : substr($table, 0, $separator + 1) . $name;
     }
@@ -304,6 +330,15 @@ final class RuntimeProfileSchema
 
     private static function hasIndex(Connection $connection, string $table): bool
     {
+        if ($connection->getDriverName() === 'sqlsrv') {
+            [$schema, $physicalTable] = self::tableParts($connection, $table);
+            return SqlServerRuntimeProfileSchema::hasIndex(
+                $connection,
+                $schema,
+                $physicalTable,
+                self::indexName($connection, $table),
+            );
+        }
         foreach ($connection->getSchemaBuilder()->getIndexes($table) as $index) {
             if ($index['name'] === self::indexName($connection, $table)) {
                 if ($index['columns'] !== ['runtime_profile'] || $index['unique'] || $index['primary']) {
@@ -355,6 +390,10 @@ final class RuntimeProfileSchema
             if (! in_array($authority, $columns, true)) {
                 throw new RuntimeProfileRefusal('runtime_profile_storage');
             }
+        }
+        if ($connection->getDriverName() === 'sqlsrv') {
+            [$schema, $physicalTable] = self::tableParts($connection, $table);
+            SqlServerRuntimeProfileSchema::assertPrimaryKey($connection, $schema, $physicalTable, $key);
         }
         return $connection->getQueryGrammar()
             ->wrap($key);
@@ -451,6 +490,7 @@ final class RuntimeProfileSchema
         $event = strtoupper($operation);
         $columns = '';
         return match ($connection->getDriverName()) {
+            'sqlsrv' => SqlServerRuntimeProfileSchema::triggerSql($connection, $table, $name, $operation),
             'sqlite' => 'CREATE TRIGGER ' . $name . ' BEFORE ' . $event . $columns . ' ON ' . $quotedTable . ' ' . self::body(
                 'sqlite',
                 $operation,
@@ -492,6 +532,15 @@ final class RuntimeProfileSchema
         [$schema, $physicalTable] = self::tableParts($connection, $table);
         $grammar = $connection->getQueryGrammar();
         switch ($connection->getDriverName()) {
+            case 'sqlsrv':
+                return SqlServerRuntimeProfileSchema::hasImmutability(
+                    $connection,
+                    $schema,
+                    $physicalTable,
+                    $name,
+                    $operation,
+                    self::triggerSql($connection, $table, $operation),
+                );
             case 'sqlite':
                 $row = $connection->selectOne(
                     'SELECT tbl_name, sql FROM ' . $grammar->wrap($schema)
