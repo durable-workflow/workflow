@@ -30,15 +30,27 @@ final class PendingSignalCloser
             return;
         }
 
-        $signals = ConfiguredV2Models::query('signal_model', WorkflowSignal::class)
+        $signalQuery = ConfiguredV2Models::query('signal_model', WorkflowSignal::class)
             ->where('workflow_run_id', $run->id)
             ->where('status', SignalStatus::Received->value)
             ->orderByRaw('CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END')
             ->orderBy('command_sequence')
             ->orderBy('received_at')
-            ->orderBy('id')
-            ->lockForUpdate()
-            ->get();
+            ->orderBy('id');
+        if (WorkflowSignalReadScope::allowsConsistentRead($run, $signalQuery->getModel()->getConnection())) {
+            // Lock exact candidates without reserving neighboring index gaps.
+            $signals = $signalQuery->get()
+                ->map(static function (WorkflowSignal $candidate) use ($signalQuery): ?WorkflowSignal {
+                    return (clone $signalQuery)->whereKey($candidate->getKey())
+                        ->lockForUpdate()
+                        ->first();
+                })->filter();
+        } else {
+            // Outside the owned task, the caller may already have an older read view.
+            // Preserve current reads for every other execution path.
+            $signals = $signalQuery->lockForUpdate()
+                ->get();
+        }
 
         foreach ($signals as $signal) {
             if (! $signal instanceof WorkflowSignal) {
