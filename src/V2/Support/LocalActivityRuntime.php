@@ -74,6 +74,7 @@ final class LocalActivityRuntime
         ?CarbonInterface $deadline = null,
         bool $cleanup = false,
         ?WorkflowRun $run = null,
+        bool $validatePreparedRetryTimestamp = false,
     ): ?CarbonInterface {
         if ($task->task_type !== TaskType::Workflow || $task->status !== TaskStatus::Leased) {
             return null;
@@ -86,6 +87,9 @@ final class LocalActivityRuntime
         $leaseExpiresAt = $deadline === null
             ? ($cleanup ? CancellationCleanupLease::renewableExpiry() : CancellationCleanupLease::forScopes($run))
             : CancellationCleanupLease::forDeadline($deadline);
+        if ($validatePreparedRetryTimestamp) {
+            PreparedLocalRetryTimestamp::addForConnection($leaseExpiresAt, 0, ConfiguredV2Models::connection());
+        }
 
         $task->forceFill([
             'lease_expires_at' => $leaseExpiresAt,
