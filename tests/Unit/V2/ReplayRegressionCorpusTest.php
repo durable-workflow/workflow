@@ -7,6 +7,11 @@ namespace Tests\Unit\V2;
 use Illuminate\Config\Repository;
 use Illuminate\Container\Container;
 use Illuminate\Foundation\Application;
+use Illuminate\Support\Facades\Facade;
+use Illuminate\Translation\ArrayLoader;
+use Illuminate\Translation\Translator;
+use Illuminate\Validation\Factory as ValidationFactory;
+use Illuminate\Validation\ValidationException;
 use OpenTelemetry\API\Instrumentation\Configurator;
 use OpenTelemetry\Context\Context;
 use OpenTelemetry\SDK\Trace\SpanExporter\InMemoryExporter;
@@ -26,6 +31,8 @@ use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\CooperativeCancellationDelivery;
 use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\HistoryEventPayloadContract;
+use Workflow\V2\Support\PortableLocalActivityPreparation;
+use Workflow\V2\Support\PreparedLocalRetryPolicy;
 use Workflow\V2\Support\ServiceCallCancellationOrigin;
 use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Support\WorkflowStep;
@@ -149,7 +156,14 @@ final class ReplayRegressionCorpusTest extends TestCase
         }
 
         $profiledWorkflow = null;
-        if ($fixture['id'] === 'replay-unrelated-payload-read-budget') {
+        if (in_array(
+            $fixture['id'],
+            ['replay-unrelated-payload-read-budget', 'prepared-v1-policy-refusal-legacy-zero-tail'],
+            true
+        )) {
+            if ($fixture['id'] === 'prepared-v1-policy-refusal-legacy-zero-tail') {
+                $this->assertPreparedV1RefusesTheVersionedPolicy($fixture);
+            }
             Container::getInstance()->resolving(
                 $workflowClass,
                 static function (Workflow $instance) use (&$profiledWorkflow): void {
@@ -187,6 +201,20 @@ final class ReplayRegressionCorpusTest extends TestCase
         }
 
         $step = $runner->step();
+
+        if ($fixture['id'] === 'prepared-v1-policy-refusal-legacy-zero-tail') {
+            $this->assertInstanceOf(Workflow::class, $profiledWorkflow);
+            $retries = $profiledWorkflow->run->historyEvents
+                ->where('event_type', HistoryEventType::ActivityRetryScheduled);
+            $this->assertSame([120, 0], $retries->map(
+                static fn (WorkflowHistoryEvent $event): int => $event->payload['retry_backoff_seconds']
+            )->values()
+                ->all());
+            $scheduled = $profiledWorkflow->run->historyEvents
+                ->firstWhere('event_type', HistoryEventType::ActivityScheduled);
+            $this->assertSame(1, ActivitySnapshot::fromEvent($scheduled)['retry_policy']['snapshot_version']);
+            $this->assertSame([120], ActivitySnapshot::fromEvent($scheduled)['retry_policy']['backoff_seconds']);
+        }
 
         if ($fixture['id'] === 'replay-unrelated-payload-read-budget') {
             $this->assertSame(
@@ -379,6 +407,33 @@ final class ReplayRegressionCorpusTest extends TestCase
         }
 
         return $fixtures;
+    }
+
+    private function assertPreparedV1RefusesTheVersionedPolicy(array $fixture): void
+    {
+        $policy = $fixture['unqualified_preparation_policy'];
+        $this->assertSame(2, PreparedLocalRetryPolicy::normalize($policy)['snapshot_version']);
+        $container = new Container();
+        $translator = new Translator(new ArrayLoader(), 'en');
+        $container->instance('validator', new ValidationFactory($translator, $container));
+        $prior = Facade::getFacadeApplication();
+        Facade::clearResolvedInstance('validator');
+        Facade::setFacadeApplication($container);
+        try {
+            PortableLocalActivityPreparation::normalizeDescriptor([
+                'type' => 'record_local_activity',
+                'activity_type' => $fixture['history'][1]['payload']['activity_type'],
+                'arguments' => Serializer::serializeWithCodec('avro', $fixture['workflow']['arguments']),
+                'payload_codec' => 'avro',
+                'retry_policy' => $policy,
+            ]);
+            $this->fail('Prepared v1 discarded the versioned policy instead of refusing it.');
+        } catch (ValidationException $error) {
+            $this->assertArrayHasKey('local_activity.retry_policy', $error->errors());
+        } finally {
+            Facade::clearResolvedInstance('validator');
+            Facade::setFacadeApplication($prior);
+        }
     }
 
     private function assertWorkflowFiberObservabilityContext(array $fixture): void

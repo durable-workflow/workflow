@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use JsonException;
@@ -315,9 +316,10 @@ final class LocalActivityExecutor
         ActivityExecution $execution,
         string $workerAttemptId,
         array $preparation,
+        ?Carbon $preparedAt = null,
     ): ActivityAttempt {
         $preparation['schedule_to_close_deadline_at'] = $execution->schedule_to_close_deadline_at?->toISOString();
-        return $this->startAttempt($run, $task, $execution, $workerAttemptId, $preparation);
+        return $this->startAttempt($run, $task, $execution, $workerAttemptId, $preparation, $preparedAt);
     }
 
     /**
@@ -662,8 +664,19 @@ final class LocalActivityExecutor
         ActivityExecution $execution,
         ?string $workerAttemptId = null,
         array $preparation = [],
+        ?Carbon $preparedAt = null,
     ): ActivityAttempt {
-        $now = now();
+        $now = $preparedAt?->copy() ?? now();
+        if (($execution->activity_options['local_activity_contract_version'] ?? null) === 2) {
+            PreparedLocalRetryPolicy::validateSnapshot($execution->retry_policy);
+            foreach (['start_to_close_timeout', 'heartbeat_timeout'] as $field) {
+                PreparedLocalRetryTimestamp::addForConnection(
+                    $now,
+                    $execution->retry_policy[$field] ?? 0,
+                    ConfiguredV2Models::connection()
+                );
+            }
+        }
         $attemptId = (string) Str::ulid();
         $attemptNumber = ((int) $execution->attempt_count) + 1;
         $retryPolicy = is_array($execution->retry_policy) ? $execution->retry_policy : [];

@@ -628,11 +628,12 @@ final class PortableLocalActivityPreparation
             if ($run === null || $task === null || $task->workflow_run_id !== $run->id) {
                 return self::response('workflow_claim_not_found');
             }
+            $preparedAt = $localContractVersion === 2 ? now() : null;
             if ($task->task_type !== TaskType::Workflow || $task->status !== TaskStatus::Leased
                 || $task->lease_owner !== $leaseOwner || $task->attempt_count !== $workflowTaskAttempt) {
                 return self::response('workflow_claim_mismatch');
             }
-            if ($task->lease_expires_at === null || now()->gte($task->lease_expires_at)) {
+            if ($task->lease_expires_at === null || ($preparedAt ?? now())->gte($task->lease_expires_at)) {
                 return self::response('workflow_claim_expired');
             }
             if ($run->status->isTerminal()) {
@@ -672,16 +673,20 @@ final class PortableLocalActivityPreparation
             if ($run->cancellation_request_command_id === null && isset($normalized['cancellation_cleanup']) && ! $scopedCleanup) {
                 return self::response('local_activity_cleanup_authority_mismatch');
             }
-            if ($cleanup !== null && now()->gte(PortableLocalActivityCleanup::snapshotDeadline($cleanup))) {
+            if ($cleanup !== null && ($preparedAt ?? now())->gte(
+                PortableLocalActivityCleanup::snapshotDeadline($cleanup)
+            )) {
                 return self::response(
                     $scopedCleanup ? 'local_activity_cleanup_deadline_expired' : 'cancellation_deadline_expired'
                 );
             }
-            if (($run->execution_deadline_at !== null && now()->gte($run->execution_deadline_at))
-                || ($run->run_deadline_at !== null && now()->gte($run->run_deadline_at))) {
+            if (($run->execution_deadline_at !== null && ($preparedAt ?? now())->gte($run->execution_deadline_at))
+                || ($run->run_deadline_at !== null && ($preparedAt ?? now())->gte($run->run_deadline_at))) {
                 return self::response('run_deadline_expired');
             }
-            if ($scopedCleanup && now()->gte(PortableLocalActivityCleanup::currentDeadline($run, $cleanup))) {
+            if ($scopedCleanup && ($preparedAt ?? now())->gte(
+                PortableLocalActivityCleanup::currentDeadline($run, $cleanup)
+            )) {
                 return self::response('local_activity_cleanup_authority_expired');
             }
             $execution = $rows['execution'] ?? null;
@@ -750,14 +755,16 @@ final class PortableLocalActivityPreparation
                 $cleanup,
                 [
                     'local_preparation' => $preparation,
-                ]
+                ],
+                $preparedAt
             );
             $attempt = app(LocalActivityExecutor::class)->startPortableAttempt(
                 $run,
                 $task,
                 $execution,
                 $workerAttemptId,
-                $preparation
+                $preparation,
+                $preparedAt
             );
 
             return self::response(null, $execution, $attempt, task: $task);
@@ -774,9 +781,21 @@ final class PortableLocalActivityPreparation
         int $sequence,
         array $normalized,
         ?array $cleanup,
-        array $opening
+        array $opening,
+        ?Carbon $preparedAt = null,
     ): ActivityExecution {
         StructuralLimits::guardPendingActivities($run);
+        $now = $preparedAt ?? now();
+        if (($normalized['local_activity_contract_version'] ?? null) === 2) {
+            $connection = ConfiguredV2Models::connection();
+            foreach (['start_to_close_timeout', 'schedule_to_close_timeout', 'heartbeat_timeout'] as $field) {
+                PreparedLocalRetryTimestamp::addForConnection(
+                    $now,
+                    $normalized['retry_policy'][$field] ?? 0,
+                    $connection
+                );
+            }
+        }
         $codec = $normalized['payload_codec'];
         $arguments = ExternalPayloads::externalizeForNamespace(
             $normalized['arguments'],
@@ -784,7 +803,6 @@ final class PortableLocalActivityPreparation
             is_string($run->namespace) ? $run->namespace : null
         );
         StructuralLimits::guardPayloadSize($arguments);
-        $now = now();
         $options = new ActivityOptions(
             startToCloseTimeout: $normalized['start_to_close_timeout'] ?? null,
             scheduleToCloseTimeout: $normalized['schedule_to_close_timeout'] ?? null,

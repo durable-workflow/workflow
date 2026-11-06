@@ -1,0 +1,211 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "prepared-v1-policy-refusal-legacy-zero-tail",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner",
+    "workflow-executor"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestLocalActivityWorkflow",
+    "arguments": [
+      "Ada"
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-05T00:02:04.000001Z",
+      "payload": {}
+    },
+    {
+      "sequence": 2,
+      "event_type": "ActivityScheduled",
+      "recorded_at": "2026-11-05T00:02:04.000002Z",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "01j00000000000000000000001",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "execution_mode": "local",
+        "local_activity": true,
+        "activity": {
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 3,
+            "backoff_seconds": [
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          }
+        }
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "ActivityStarted",
+      "recorded_at": "2026-11-05T00:02:04.000003Z",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "01j00000000000000000000001",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "execution_mode": "local",
+        "local_activity": true,
+        "activity_attempt_id": "01j0000000000000000000000a",
+        "attempt_number": 1,
+        "worker_attempt_id": "legacy-local-1"
+      }
+    },
+    {
+      "sequence": 4,
+      "event_type": "ActivityRetryScheduled",
+      "recorded_at": "2026-11-05T00:02:04.000004Z",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "01j00000000000000000000001",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "execution_mode": "local",
+        "local_activity": true,
+        "activity_attempt_id": "01j0000000000000000000000a",
+        "worker_attempt_id": "legacy-local-1",
+        "retry_reason": "failure",
+        "retry_backoff_seconds": 120,
+        "activity": {
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 3,
+            "backoff_seconds": [
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          }
+        },
+        "retry_after_attempt_id": "01j0000000000000000000000a",
+        "retry_after_attempt": 1,
+        "message": "Legacy SDK local attempt failed."
+      }
+    },
+    {
+      "sequence": 5,
+      "event_type": "ActivityStarted",
+      "recorded_at": "2026-11-05T00:02:04.000005Z",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "01j00000000000000000000001",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "execution_mode": "local",
+        "local_activity": true,
+        "activity_attempt_id": "01j0000000000000000000000b",
+        "attempt_number": 2,
+        "worker_attempt_id": "legacy-local-2"
+      }
+    },
+    {
+      "sequence": 6,
+      "event_type": "ActivityRetryScheduled",
+      "recorded_at": "2026-11-05T00:02:04.000006Z",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "01j00000000000000000000001",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "execution_mode": "local",
+        "local_activity": true,
+        "activity_attempt_id": "01j0000000000000000000000b",
+        "worker_attempt_id": "legacy-local-2",
+        "retry_reason": "failure",
+        "retry_backoff_seconds": 0,
+        "activity": {
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 3,
+            "backoff_seconds": [
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          }
+        },
+        "retry_after_attempt_id": "01j0000000000000000000000b",
+        "retry_after_attempt": 2,
+        "message": "Legacy SDK local attempt failed."
+      }
+    },
+    {
+      "sequence": 7,
+      "event_type": "ActivityStarted",
+      "recorded_at": "2026-11-05T00:02:04.000007Z",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "01j00000000000000000000001",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "execution_mode": "local",
+        "local_activity": true,
+        "activity_attempt_id": "01j0000000000000000000000c",
+        "attempt_number": 3,
+        "worker_attempt_id": "legacy-local-3"
+      }
+    },
+    {
+      "sequence": 8,
+      "event_type": "ActivityCompleted",
+      "recorded_at": "2026-11-05T00:02:04.000008Z",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "01j00000000000000000000001",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "execution_mode": "local",
+        "local_activity": true,
+        "activity_attempt_id": "01j0000000000000000000000c",
+        "attempt_number": 3,
+        "worker_attempt_id": "legacy-local-3",
+        "result": "wwHioz3/VYAiNwoWSGVsbG8sIEFkYSE=",
+        "payload_codec": "avro"
+      }
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "greeting": "Hello, Ada!",
+      "workflow_id": "regression-corpus-prepared-v1-policy-refusal-legacy-zero-tail",
+      "run_id": "regression-corpus-run-prepared-v1-policy-refusal-legacy-zero-tail"
+    },
+    "commands": [
+      {
+        "type": "complete_workflow"
+      }
+    ]
+  },
+  "unqualified_preparation_policy": {
+    "contract_version": 2,
+    "mode": "explicit",
+    "max_attempts": 3,
+    "backoff_seconds": [
+      120
+    ],
+    "maximum_interval_seconds": 120
+  }
+}

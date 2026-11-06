@@ -23,6 +23,7 @@
     "tests/Unit/V2/PreparedLocalRetryDecisionTest.php",
     "tests/Unit/V2/PreparedLocalRetryDescriptorTest.php",
     "tests/Unit/V2/PreparedLocalRetryPolicyTest.php",
+    "tests/Unit/V2/PreparedLocalRetryTimestampTest.php",
     "tests/Unit/V2/ReadmeBranchDestinationsTest.php",
     "tests/Unit/V2/ScopedCancellationContextTest.php",
     "tests/Unit/V2/SqliteTransactionTest.php",

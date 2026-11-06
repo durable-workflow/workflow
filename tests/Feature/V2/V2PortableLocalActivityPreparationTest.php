@@ -36,6 +36,7 @@ use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\LocalActivityExecutor;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\PortableLocalActivityPreparation;
+use Workflow\V2\Support\PreparedLocalRetryTimestamp;
 use Workflow\V2\WorkflowStub;
 
 final class V2PortableLocalActivityPreparationTest extends TestCase
@@ -195,6 +196,47 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
         $this->assertSame(0, ActivityAttempt::query()->where('workflow_run_id', $run->id)->count());
         $this->assertSame(0, $run->historyEvents()->count());
         $this->assertSame(TaskStatus::Leased, $task->refresh()->status);
+    }
+
+    public function testRetryContractRejectsAnUnbindableDeadlineBeforePublishingPreparation(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $latest = PreparedLocalRetryTimestamp::latestForConnection(ConfiguredV2Models::connection());
+        $task->forceFill([
+            'lease_expires_at' => $latest,
+        ])->save();
+        $before = $task->refresh()
+            ->getAttributes();
+        Carbon::setTestNow(Carbon::instance($latest)->subMicroseconds(500000));
+        try {
+            PortableLocalActivityPreparation::prepareWithRetryPolicy(
+                $task->id,
+                'portable-worker',
+                1,
+                1,
+                'sdk-local-attempt',
+                [
+                    ...$this->descriptor(),
+                    'retry_policy' => [
+                        'contract_version' => 2,
+                        'mode' => 'explicit',
+                        'max_attempts' => 3,
+                        'backoff_seconds' => [2, 5],
+                    ],
+                    'start_to_close_timeout' => 1,
+                ],
+                '1.20'
+            );
+            $this->fail('Prepared an attempt with an unbindable deadline.');
+        } catch (\InvalidArgumentException) {
+            $this->addToAssertionCount(1);
+        } finally {
+            Carbon::setTestNow();
+        }
+        $this->assertSame(0, $run->activityExecutions()->count());
+        $this->assertSame(0, ActivityAttempt::query()->where('workflow_run_id', $run->id)->count());
+        $this->assertSame(0, $run->historyEvents()->count());
+        $this->assertSame($before, $task->refresh()->getAttributes());
     }
 
     public function testLostPreparationResponseReturnsTheOriginalAttemptWithoutRenewingAnyDeadline(): void
