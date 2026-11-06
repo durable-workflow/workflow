@@ -13,6 +13,7 @@ use Tests\TestCase;
 use Throwable;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\CooperativeWorkflowTaskBridge;
+use Workflow\V2\Contracts\PreparedLocalActivityRetryTaskBridge;
 use Workflow\V2\Contracts\PreparedLocalActivityTaskBridge;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\ActivityAttemptStatus;
@@ -843,12 +844,15 @@ final class V2PortableLocalActivityRecoveryTest extends TestCase
     public function testPreparedLocalRoleUsesTheExistingWorkflowBindingWithoutExpandingCustomBridges(): void
     {
         $this->assertSame(app(WorkflowTaskBridge::class), $this->bridge());
+        $this->assertFalse($this->app->bound(PreparedLocalActivityRetryTaskBridge::class));
+        $this->assertNotInstanceOf(PreparedLocalActivityRetryTaskBridge::class, $this->bridge());
         foreach ([WorkflowTaskBridge::class, CooperativeWorkflowTaskBridge::class] as $contract) {
             $custom = \Mockery::mock($contract);
             $this->app->instance(WorkflowTaskBridge::class, $custom);
             $resolved = $this->app->make(PreparedLocalActivityTaskBridge::class);
             $this->assertSame($custom, $resolved);
             $this->assertNotInstanceOf(PreparedLocalActivityTaskBridge::class, $resolved);
+            $this->assertNotInstanceOf(PreparedLocalActivityRetryTaskBridge::class, $resolved);
         }
     }
 
