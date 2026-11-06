@@ -369,6 +369,14 @@ final class LocalActivityExecutor
                     || ($receipt->payload['task']['attempt_count'] ?? null) !== $workflowTaskAttempt) {
                     return $refused('local_activity_outcome_mismatch');
                 }
+                if ($localContractVersion === 2 && ! self::matchesStoredRetryReceipt(
+                    $receipt,
+                    $execution,
+                    $attempt,
+                    $report
+                )) {
+                    return $refused('local_activity_outcome_mismatch');
+                }
                 return self::portableReceipt($receipt, true);
             }
             $failureTime = $localContractVersion === 2 ? now() : null;
@@ -676,6 +684,55 @@ final class LocalActivityExecutor
             PreparedLocalRetryTimestamp::latestForConnection($connection),
             $timeoutKind,
             $nonRetryable,
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $report
+     */
+    private static function matchesStoredRetryReceipt(
+        WorkflowHistoryEvent $event,
+        ActivityExecution $execution,
+        ActivityAttempt $attempt,
+        array $report,
+    ): bool {
+        $payload = $event->payload;
+        $outcome = $payload['local_outcome'];
+        if (count($outcome) !== 4 || array_diff(array_keys($outcome), [
+            'version', 'report_fingerprint', 'workflow_task_attempt', 'submitted_outcome',
+        ]) !== [] || $outcome['submitted_outcome'] !== $report['outcome']) {
+            return false;
+        }
+        if ($event->event_type === HistoryEventType::ActivityCompleted) {
+            return ! array_key_exists('retry_disposition', $payload);
+        }
+        $stored = $payload['retry_disposition'] ?? null;
+        if (! is_array($stored)) {
+            return false;
+        }
+        $nonRetryable = false;
+        if ($report['outcome'] === 'completed' && $event->event_type === HistoryEventType::ActivityFailed) {
+            if (($payload['failure_category'] ?? null) !== FailureCategory::StructuralLimit->value
+                || ! is_string($payload['message'] ?? null) || ! is_bool($payload['non_retryable'] ?? null)) {
+                return false;
+            }
+            $report = [
+                'outcome' => 'failed',
+                'message' => $payload['message'],
+            ];
+            $nonRetryable = $payload['non_retryable'];
+        }
+        $connection = ConfiguredV2Models::connection();
+
+        return PreparedLocalRetryDecision::matchesStored(
+            $execution->retry_policy,
+            $attempt->attempt_number,
+            $report,
+            $execution->schedule_to_close_deadline_at,
+            PreparedLocalRetryTimestamp::latestForConnection($connection),
+            $stored,
+            $nonRetryable,
+            PreparedLocalRetryTimestamp::earliestForDriver($connection->getDriverName()),
         );
     }
 

@@ -14,6 +14,62 @@ use RuntimeException;
 /** @internal Select from the one locked engine sample, never a worker clock. */
 final class PreparedLocalRetryDecision
 {
+    /** Validate caller-bound retained bytes without a new clock or effects.
+     * Timeout kind is retained engine authority, never a worker-selected input.
+     * @param array<string, mixed> $snapshot
+     * @param array<string, mixed> $report
+     * @param array<string, mixed> $stored
+     */
+    public static function matchesStored(
+        array $snapshot,
+        int $attemptNumber,
+        array $report,
+        ?DateTimeInterface $originalDeadline,
+        DateTimeInterface $latestBindableTimestamp,
+        array $stored,
+        bool $nonRetryable = false,
+        ?DateTimeInterface $earliestBindableTimestamp = null,
+    ): bool {
+        $time = $stored['failure_time'] ?? null;
+        $timeout = $stored['timeout_kind'] ?? null;
+        if (! is_string($time) || preg_match(
+            '/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z$/D',
+            $time
+        ) !== 1
+            || ($timeout !== null && ! is_string($timeout))) {
+            return false;
+        }
+        $sample = DateTimeImmutable::createFromFormat('!Y-m-d\TH:i:s.u\Z', $time, new DateTimeZone('UTC'));
+        if (! $sample instanceof DateTimeImmutable || self::format($sample) !== $time) {
+            return false;
+        }
+        try {
+            PreparedLocalRetryTimestamp::add($sample, 0, $latestBindableTimestamp, $earliestBindableTimestamp);
+            $expected = self::select(
+                $snapshot,
+                $attemptNumber,
+                $report,
+                $sample,
+                $originalDeadline,
+                $latestBindableTimestamp,
+                $timeout,
+                $nonRetryable
+            );
+        } catch (InvalidArgumentException) {
+            return false;
+        }
+        if (count($stored) !== count($expected) || array_diff(array_keys($stored), array_keys($expected)) !== []) {
+            return false;
+        }
+        foreach ($expected as $key => $value) {
+            if ($stored[$key] !== $value) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     /**
      * The caller owns original authority, fresh fences and actual timeout
      * detection. Only a scheduled decision is a duration to execute. Terminal

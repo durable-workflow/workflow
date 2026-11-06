@@ -330,6 +330,232 @@ final class PreparedLocalRetryDecisionTest extends TestCase
         }
     }
 
+    public function testRetainedDecisionRequiresTheExactTypedClosedSelection(): void
+    {
+        $report = [
+            'outcome' => 'failed',
+            'message' => 'failure',
+            'next_retry_delay_seconds' => 0,
+        ];
+        $deadline = new DateTimeImmutable('2026-11-05T00:01:00.000000Z');
+        $latest = new DateTimeImmutable('9999-12-31T23:59:59.999999Z');
+        $stored = $this->select(report: $report, deadline: $deadline);
+        $matches = fn (array $value): bool => PreparedLocalRetryDecision::matchesStored(
+            $this->snapshot(),
+            1,
+            $report,
+            $deadline,
+            $latest,
+            $value
+        );
+        self::assertTrue($matches(array_reverse($stored, true)));
+        $missing = $stored;
+        unset($missing['candidate_delay_seconds']);
+        foreach ([
+            $missing,
+            [
+                ...$stored,
+                'unexpected' => true,
+            ],
+            [
+                ...$stored,
+                'contract_version' => '2',
+            ],
+            [
+                ...$stored,
+                'snapshot_version' => 1,
+            ],
+            [
+                ...$stored,
+                'candidate_delay_seconds' => '0',
+            ],
+            [
+                ...$stored,
+                'requested_delay_seconds' => null,
+            ],
+            [
+                ...$stored,
+                'maximum_interval_seconds' => 6,
+            ],
+            [
+                ...$stored,
+                'retry_available_at' => '2026-11-05T00:00:01.000000Z',
+            ],
+            [
+                ...$stored,
+                'original_schedule_to_close_deadline_at' => null,
+            ],
+            [
+                ...$stored,
+                'failure_time' => [],
+            ],
+            [
+                ...$stored,
+                'failure_time' => '2026-02-30T00:00:00.000000Z',
+            ],
+            [
+                ...$stored,
+                'failure_time' => '2026-11-05T24:00:00.000000Z',
+            ],
+            [
+                ...$stored,
+                'failure_time' => '2026-11-05T00:00:00Z',
+            ],
+            [
+                ...$stored,
+                'timeout_kind' => [],
+            ],
+            [
+                ...$stored,
+                'timeout_kind' => 'worker_selected',
+            ],
+        ] as $index => $changed) {
+            self::assertFalse($matches($changed), 'Retained selection substitution ' . $index);
+        }
+        self::assertFalse(PreparedLocalRetryDecision::matchesStored(
+            $this->snapshot(),
+            1,
+            [
+                ...$report,
+                'next_retry_delay_seconds' => 1,
+            ],
+            $deadline,
+            $latest,
+            $stored
+        ));
+    }
+
+    public function testRetainedTerminalDecisionsCannotGainAnExecutableTimestampOrUnselectedDelay(): void
+    {
+        $latest = new DateTimeImmutable('9999-12-31T23:59:59.999999Z');
+        $report = [
+            'outcome' => 'failed',
+            'message' => 'failure',
+            'next_retry_delay_seconds' => 6,
+        ];
+        $stored = $this->select(report: $report);
+        self::assertTrue(PreparedLocalRetryDecision::matchesStored(
+            $this->snapshot(),
+            1,
+            $report,
+            null,
+            $latest,
+            $stored
+        ));
+        self::assertFalse(PreparedLocalRetryDecision::matchesStored(
+            $this->snapshot(),
+            1,
+            $report,
+            null,
+            $latest,
+            [
+                ...$stored,
+                'retry_available_at' => '2026-11-05T00:00:06.000000Z',
+            ]
+        ));
+        $report = [
+            'outcome' => 'timed_out',
+        ];
+        $deadline = new DateTimeImmutable('2026-11-05T00:00:00.000000Z');
+        $stored = $this->select(report: $report, deadline: $deadline);
+        self::assertTrue(PreparedLocalRetryDecision::matchesStored(
+            $this->snapshot(),
+            1,
+            $report,
+            $deadline,
+            $latest,
+            $stored
+        ));
+        self::assertFalse(PreparedLocalRetryDecision::matchesStored(
+            $this->snapshot(),
+            1,
+            $report,
+            $deadline,
+            $latest,
+            [
+                ...$stored,
+                'delay_source' => 'policy',
+            ]
+        ));
+        self::assertFalse(PreparedLocalRetryDecision::matchesStored(
+            $this->snapshot(),
+            1,
+            $report,
+            $deadline->modify('+1 second'),
+            $latest,
+            $stored
+        ));
+    }
+
+    public function testRetainedDecisionKeepsBackendBoundsAndEngineNonRetryableClassification(): void
+    {
+        $report = [
+            'outcome' => 'failed',
+            'message' => 'failure',
+        ];
+        $sample = new DateTimeImmutable('2026-11-05T00:00:00.000000Z');
+        $latest = new DateTimeImmutable('9999-12-31T23:59:59.999999Z');
+        $stored = $this->select(report: $report, nonRetryable: true);
+        self::assertTrue(PreparedLocalRetryDecision::matchesStored(
+            $this->snapshot(),
+            1,
+            $report,
+            null,
+            $latest,
+            $stored,
+            true
+        ));
+        self::assertFalse(PreparedLocalRetryDecision::matchesStored(
+            $this->snapshot(),
+            1,
+            $report,
+            null,
+            $latest,
+            $stored
+        ));
+        self::assertFalse(PreparedLocalRetryDecision::matchesStored(
+            $this->snapshot(),
+            1,
+            $report,
+            null,
+            $sample->modify('-1 microsecond'),
+            $stored,
+            true
+        ));
+        self::assertFalse(PreparedLocalRetryDecision::matchesStored(
+            $this->snapshot(),
+            1,
+            $report,
+            null,
+            $latest,
+            $stored,
+            true,
+            $sample->modify('+1 microsecond')
+        ));
+        $snapshot = $this->snapshot();
+        $snapshot['snapshot_version'] = 1;
+        self::assertFalse(PreparedLocalRetryDecision::matchesStored(
+            $snapshot,
+            1,
+            $report,
+            null,
+            $latest,
+            $stored,
+            true
+        ));
+    }
+
+    private function snapshot(): array
+    {
+        return PreparedLocalRetryPolicy::normalize([
+            'contract_version' => 2,
+            'mode' => 'explicit',
+            'max_attempts' => 3,
+            'backoff_seconds' => [2, 5],
+            'non_retryable_error_types' => ['PermanentFailure'],
+        ]);
+    }
+
     private function select(
         array $report = [
             'outcome' => 'failed',
@@ -342,13 +568,7 @@ final class PreparedLocalRetryDecisionTest extends TestCase
         ?string $timeout = null,
         bool $nonRetryable = false,
     ): array {
-        $snapshot = PreparedLocalRetryPolicy::normalize([
-            'contract_version' => 2,
-            'mode' => 'explicit',
-            'max_attempts' => 3,
-            'backoff_seconds' => [2, 5],
-            'non_retryable_error_types' => ['PermanentFailure'],
-        ]);
+        $snapshot = $this->snapshot();
 
         return PreparedLocalRetryDecision::select(
             $snapshot,

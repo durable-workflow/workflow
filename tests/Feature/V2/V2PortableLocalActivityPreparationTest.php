@@ -439,6 +439,92 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
         );
     }
 
+    public function testRetryContractCompletionKeepsItsClosedReceiptWithoutARetryDecision(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $prepared = $this->prepareRetryContract($task);
+        $executor = app(LocalActivityExecutor::class);
+        $report = [
+            'outcome' => 'completed',
+            'result' => Serializer::serializeWithCodec('avro', 'done'),
+            'payload_codec' => 'avro',
+        ];
+        $reply = $executor->recordPortableRetryOutcome(
+            $prepared['activity_attempt_id'],
+            'portable-worker',
+            1,
+            $report,
+            '1.20'
+        );
+        $this->assertTrue($reply['recorded']);
+        $this->assertSame('ActivityCompleted', $reply['event_type']);
+        $this->assertArrayNotHasKey('retry_disposition', $reply);
+        $this->assertTrue($executor->recordPortableRetryOutcome(
+            $prepared['activity_attempt_id'],
+            'portable-worker',
+            1,
+            $report,
+            '1.20'
+        )['duplicate']);
+        $event = WorkflowHistoryEvent::query()->findOrFail($reply['event_id']);
+        $event->forceFill([
+            'payload' => [
+                ...$event->payload,
+                'retry_disposition' => [],
+            ],
+        ])->save();
+        $changed = $executor->recordPortableRetryOutcome(
+            $prepared['activity_attempt_id'],
+            'portable-worker',
+            1,
+            $report,
+            '1.20'
+        );
+        $this->assertFalse($changed['recorded']);
+        $this->assertSame('local_activity_outcome_mismatch', $changed['reason']);
+        $this->assertSame(3, $run->historyEvents()->count());
+        $this->assertSame(1, $run->tasks()->count());
+    }
+
+    public function testRetainedTerminalDecisionCannotBeChangedIntoRetryPermission(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $prepared = $this->prepareRetryContract($task);
+        $report = [
+            'outcome' => 'failed',
+            'message' => 'original failure',
+            'next_retry_delay_seconds' => 6,
+        ];
+        $executor = app(LocalActivityExecutor::class);
+        $reply = $executor->recordPortableRetryOutcome(
+            $prepared['activity_attempt_id'],
+            'portable-worker',
+            1,
+            $report,
+            '1.20'
+        );
+        $this->assertTrue($reply['recorded']);
+        $event = WorkflowHistoryEvent::query()->findOrFail($reply['event_id']);
+        $payload = $event->payload;
+        $payload['retry_disposition']['decision'] = 'scheduled';
+        $payload['retry_disposition']['retry_available_at'] = $payload['retry_disposition']['failure_time'];
+        $event->forceFill([
+            'payload' => $payload,
+        ])->save();
+        $changed = $executor->recordPortableRetryOutcome(
+            $prepared['activity_attempt_id'],
+            'portable-worker',
+            1,
+            $report,
+            '1.20'
+        );
+        $this->assertFalse($changed['recorded']);
+        $this->assertSame('local_activity_outcome_mismatch', $changed['reason']);
+        $this->assertSame(3, $run->historyEvents()->count());
+        $this->assertSame(1, $run->tasks()->count());
+        $this->assertSame(1, $run->activityExecutions()->sole()->attempt_count);
+    }
+
     public function testRetryContractReportPreflightDoesNotGrantModeAuthority(): void
     {
         [$run, $task] = $this->newClaim();
