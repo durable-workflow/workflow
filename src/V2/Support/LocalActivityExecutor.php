@@ -19,6 +19,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Exceptions\ActivityTimeoutException;
+use Workflow\V2\Exceptions\PreparedLocalActivityContractException;
 use Workflow\V2\Exceptions\RestoredWorkflowException;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\ActivityAttempt;
@@ -163,7 +164,7 @@ final class LocalActivityExecutor
         if (($execution->activity_options['local_activity_contract_version'] ?? null) === 2
             && (($preparation['version'] ?? null) !== 2
                 || ($preparation['local_activity_contract_version'] ?? null) !== 2 || $preparedAt === null)) {
-            throw new RuntimeException(
+            throw new PreparedLocalActivityContractException(
                 'Prepared retry attempts require their versioned preparation and locked sample.'
             );
         }
@@ -184,14 +185,16 @@ final class LocalActivityExecutor
     ): WorkflowHistoryEvent {
         if (! in_array($localContractVersion, [1, 2], true)
             || ($execution->activity_options['local_activity_contract_version'] ?? 1) !== $localContractVersion) {
-            throw new RuntimeException('Prepared retry expiry requires its original contract.');
+            throw new PreparedLocalActivityContractException('Prepared retry expiry requires its original contract.');
         }
         $decision = null;
         $metadata = [];
         if ($localContractVersion === 2) {
             $attempt = self::currentAttempt($execution);
             if (! $attempt instanceof ActivityAttempt || $sample === null) {
-                throw new RuntimeException('Prepared retry expiry requires its original attempt and locked sample.');
+                throw new PreparedLocalActivityContractException(
+                    'Prepared retry expiry requires its original attempt and locked sample.'
+                );
             }
             $decision = self::selectPortableRetryDecision(
                 $execution,
@@ -680,8 +683,10 @@ final class LocalActivityExecutor
             $attempt->attempt_number,
             $report,
             $failureTime,
-            $execution->schedule_to_close_deadline_at,
-            PreparedLocalRetryTimestamp::latestForConnection($connection),
+            new PreparedLocalRetryWindow(
+                $execution->schedule_to_close_deadline_at,
+                PreparedLocalRetryTimestamp::latestForConnection($connection)
+            ),
             $timeoutKind,
             $nonRetryable,
         );
@@ -728,11 +733,13 @@ final class LocalActivityExecutor
             $execution->retry_policy,
             $attempt->attempt_number,
             $report,
-            $execution->schedule_to_close_deadline_at,
-            PreparedLocalRetryTimestamp::latestForConnection($connection),
+            new PreparedLocalRetryWindow(
+                $execution->schedule_to_close_deadline_at,
+                PreparedLocalRetryTimestamp::latestForConnection($connection),
+                PreparedLocalRetryTimestamp::earliestForDriver($connection->getDriverName())
+            ),
             $stored,
             $nonRetryable,
-            PreparedLocalRetryTimestamp::earliestForDriver($connection->getDriverName()),
         );
     }
 
@@ -772,7 +779,9 @@ final class LocalActivityExecutor
                 $execution = $this->createExecution($lockedRun, $lockedTask, $sequence, $activityCall);
             }
             if (($execution->activity_options['local_activity_contract_version'] ?? null) === 2) {
-                throw new RuntimeException('Prepared retry execution requires its versioned portable entry.');
+                throw new PreparedLocalActivityContractException(
+                    'Prepared retry execution requires its versioned portable entry.'
+                );
             }
 
             if (! LocalActivityRuntime::isExecution($execution)) {

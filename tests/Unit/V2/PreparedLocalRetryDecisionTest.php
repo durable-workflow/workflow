@@ -4,14 +4,33 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use DateTime;
 use DateTimeImmutable;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 use Workflow\V2\Support\PreparedLocalRetryDecision;
 use Workflow\V2\Support\PreparedLocalRetryPolicy;
+use Workflow\V2\Support\PreparedLocalRetryWindow;
 
 final class PreparedLocalRetryDecisionTest extends TestCase
 {
+    public function testOriginalWindowCopiesMutableTimestampsWithoutReadingAClock(): void
+    {
+        $deadline = new DateTime('2026-11-05T01:01:00.123456+01:00');
+        $latest = new DateTime('9999-12-31T23:59:59.999999Z');
+        $earliest = new DateTime('1970-01-01T00:00:01.000000Z');
+        $window = new PreparedLocalRetryWindow($deadline, $latest, $earliest);
+        $deadline->modify('+1 hour');
+        $latest->modify('-1 day');
+        $earliest->modify('+1 second');
+        self::assertSame('2026-11-05T00:01:00.123456+00:00', $window->deadline->format('Y-m-d\TH:i:s.uP'));
+        self::assertSame('9999-12-31T23:59:59.999999+00:00', $window->latest->format('Y-m-d\TH:i:s.uP'));
+        self::assertSame('1970-01-01T00:00:01.000000+00:00', $window->earliest->format('Y-m-d\TH:i:s.uP'));
+        $unbounded = new PreparedLocalRetryWindow(null, $window->latest);
+        self::assertNull($unbounded->deadline);
+        self::assertNull($unbounded->earliest);
+    }
+
     public function testCanonicalApplicationSelectionProjections(): void
     {
         $vectors = json_decode(file_get_contents(dirname(__DIR__, 3)
@@ -52,8 +71,7 @@ final class PreparedLocalRetryDecisionTest extends TestCase
                 $input['completed_attempts'],
                 $report,
                 $sample,
-                $deadline,
-                new DateTimeImmutable('9999-12-31T23:59:59.999999Z')
+                new PreparedLocalRetryWindow($deadline, new DateTimeImmutable('9999-12-31T23:59:59.999999Z')),
             );
             self::assertSame($case['expected']['decision'], $decision['decision'], $case['id']);
             if ($decision['decision'] === 'terminal') {
@@ -344,9 +362,8 @@ final class PreparedLocalRetryDecisionTest extends TestCase
             $this->snapshot(),
             1,
             $report,
-            $deadline,
-            $latest,
-            $value
+            new PreparedLocalRetryWindow($deadline, $latest),
+            $value,
         );
         self::assertTrue($matches(array_reverse($stored, true)));
         $missing = $stored;
@@ -403,6 +420,10 @@ final class PreparedLocalRetryDecisionTest extends TestCase
             ],
             [
                 ...$stored,
+                'failure_time' => '٢٠٢٦-11-05T00:00:00.000000Z',
+            ],
+            [
+                ...$stored,
                 'timeout_kind' => [],
             ],
             [
@@ -419,9 +440,8 @@ final class PreparedLocalRetryDecisionTest extends TestCase
                 ...$report,
                 'next_retry_delay_seconds' => 1,
             ],
-            $deadline,
-            $latest,
-            $stored
+            new PreparedLocalRetryWindow($deadline, $latest),
+            $stored,
         ));
     }
 
@@ -438,20 +458,18 @@ final class PreparedLocalRetryDecisionTest extends TestCase
             $this->snapshot(),
             1,
             $report,
-            null,
-            $latest,
-            $stored
+            new PreparedLocalRetryWindow(null, $latest),
+            $stored,
         ));
         self::assertFalse(PreparedLocalRetryDecision::matchesStored(
             $this->snapshot(),
             1,
             $report,
-            null,
-            $latest,
+            new PreparedLocalRetryWindow(null, $latest),
             [
                 ...$stored,
                 'retry_available_at' => '2026-11-05T00:00:06.000000Z',
-            ]
+            ],
         ));
         $report = [
             'outcome' => 'timed_out',
@@ -462,28 +480,25 @@ final class PreparedLocalRetryDecisionTest extends TestCase
             $this->snapshot(),
             1,
             $report,
-            $deadline,
-            $latest,
-            $stored
+            new PreparedLocalRetryWindow($deadline, $latest),
+            $stored,
         ));
         self::assertFalse(PreparedLocalRetryDecision::matchesStored(
             $this->snapshot(),
             1,
             $report,
-            $deadline,
-            $latest,
+            new PreparedLocalRetryWindow($deadline, $latest),
             [
                 ...$stored,
                 'delay_source' => 'policy',
-            ]
+            ],
         ));
         self::assertFalse(PreparedLocalRetryDecision::matchesStored(
             $this->snapshot(),
             1,
             $report,
-            $deadline->modify('+1 second'),
-            $latest,
-            $stored
+            new PreparedLocalRetryWindow($deadline->modify('+1 second'), $latest),
+            $stored,
         ));
     }
 
@@ -500,37 +515,32 @@ final class PreparedLocalRetryDecisionTest extends TestCase
             $this->snapshot(),
             1,
             $report,
-            null,
-            $latest,
-            $stored,
-            true
-        ));
-        self::assertFalse(PreparedLocalRetryDecision::matchesStored(
-            $this->snapshot(),
-            1,
-            $report,
-            null,
-            $latest,
-            $stored
-        ));
-        self::assertFalse(PreparedLocalRetryDecision::matchesStored(
-            $this->snapshot(),
-            1,
-            $report,
-            null,
-            $sample->modify('-1 microsecond'),
-            $stored,
-            true
-        ));
-        self::assertFalse(PreparedLocalRetryDecision::matchesStored(
-            $this->snapshot(),
-            1,
-            $report,
-            null,
-            $latest,
+            new PreparedLocalRetryWindow(null, $latest),
             $stored,
             true,
-            $sample->modify('+1 microsecond')
+        ));
+        self::assertFalse(PreparedLocalRetryDecision::matchesStored(
+            $this->snapshot(),
+            1,
+            $report,
+            new PreparedLocalRetryWindow(null, $latest),
+            $stored,
+        ));
+        self::assertFalse(PreparedLocalRetryDecision::matchesStored(
+            $this->snapshot(),
+            1,
+            $report,
+            new PreparedLocalRetryWindow(null, $sample->modify('-1 microsecond')),
+            $stored,
+            true,
+        ));
+        self::assertFalse(PreparedLocalRetryDecision::matchesStored(
+            $this->snapshot(),
+            1,
+            $report,
+            new PreparedLocalRetryWindow(null, $latest, $sample->modify('+1 microsecond')),
+            $stored,
+            true,
         ));
         $snapshot = $this->snapshot();
         $snapshot['snapshot_version'] = 1;
@@ -538,10 +548,9 @@ final class PreparedLocalRetryDecisionTest extends TestCase
             $snapshot,
             1,
             $report,
-            null,
-            $latest,
+            new PreparedLocalRetryWindow(null, $latest),
             $stored,
-            true
+            true,
         ));
     }
 
@@ -575,10 +584,9 @@ final class PreparedLocalRetryDecisionTest extends TestCase
             $attempt,
             $report,
             $sample ?? new DateTimeImmutable('2026-11-05T00:00:00.000000Z'),
-            $deadline,
-            $latest ?? new DateTimeImmutable('9999-12-31T23:59:59.999999Z'),
+            new PreparedLocalRetryWindow($deadline, $latest ?? new DateTimeImmutable('9999-12-31T23:59:59.999999Z')),
             $timeout,
-            $nonRetryable
+            $nonRetryable,
         );
     }
 }

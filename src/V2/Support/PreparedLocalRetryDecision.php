@@ -24,50 +24,22 @@ final class PreparedLocalRetryDecision
         array $snapshot,
         int $attemptNumber,
         array $report,
-        ?DateTimeInterface $originalDeadline,
-        DateTimeInterface $latestBindableTimestamp,
+        PreparedLocalRetryWindow $window,
         array $stored,
         bool $nonRetryable = false,
-        ?DateTimeInterface $earliestBindableTimestamp = null,
     ): bool {
-        $time = $stored['failure_time'] ?? null;
+        $sample = self::storedSample($stored['failure_time'] ?? null);
         $timeout = $stored['timeout_kind'] ?? null;
-        if (! is_string($time) || preg_match(
-            '/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z$/D',
-            $time
-        ) !== 1
-            || ($timeout !== null && ! is_string($timeout))) {
-            return false;
-        }
-        $sample = DateTimeImmutable::createFromFormat('!Y-m-d\TH:i:s.u\Z', $time, new DateTimeZone('UTC'));
-        if (! $sample instanceof DateTimeImmutable || self::format($sample) !== $time) {
+        if ($sample === null || ($timeout !== null && ! is_string($timeout))) {
             return false;
         }
         try {
-            PreparedLocalRetryTimestamp::add($sample, 0, $latestBindableTimestamp, $earliestBindableTimestamp);
-            $expected = self::select(
-                $snapshot,
-                $attemptNumber,
-                $report,
-                $sample,
-                $originalDeadline,
-                $latestBindableTimestamp,
-                $timeout,
-                $nonRetryable
-            );
+            PreparedLocalRetryTimestamp::add($sample, 0, $window->latest, $window->earliest);
+            $expected = self::select($snapshot, $attemptNumber, $report, $sample, $window, $timeout, $nonRetryable);
         } catch (InvalidArgumentException) {
             return false;
         }
-        if (count($stored) !== count($expected) || array_diff(array_keys($stored), array_keys($expected)) !== []) {
-            return false;
-        }
-        foreach ($expected as $key => $value) {
-            if ($stored[$key] !== $value) {
-                return false;
-            }
-        }
-
-        return true;
+        return self::sameFields($expected, $stored);
     }
 
     /**
@@ -84,12 +56,36 @@ final class PreparedLocalRetryDecision
         int $attemptNumber,
         array $report,
         DateTimeInterface $sample,
-        ?DateTimeInterface $originalDeadline,
-        DateTimeInterface $latestBindableTimestamp,
+        PreparedLocalRetryWindow $window,
         ?string $dueTimeoutKind = null,
         bool $nonRetryable = false,
     ): array {
         $snapshot = PreparedLocalRetryPolicy::validateSnapshot($snapshot);
+        self::validateReport($report, $attemptNumber, $dueTimeoutKind);
+        $sample = self::utc($sample);
+        $deadline = $window->deadline === null ? null : self::utc($window->deadline);
+        self::utc($window->latest);
+        if ($deadline !== null && $sample >= $deadline) {
+            $dueTimeoutKind = 'schedule_to_close';
+        }
+        self::validateClock($sample, $window, $dueTimeoutKind, $report);
+        $decision = self::commonDecision($report, $sample, $window, $dueTimeoutKind);
+        $terminal = self::earlyTerminal($snapshot, $attemptNumber, $report, $dueTimeoutKind, $nonRetryable);
+        if ($terminal !== null) {
+            return [
+                ...$decision,
+                'terminal_classification' => $terminal,
+            ];
+        }
+
+        return self::selectedDelay($snapshot, $attemptNumber, $report, $sample, $window, $dueTimeoutKind, $decision);
+    }
+
+    /**
+     * @param array<string, mixed> $report
+     */
+    private static function validateReport(array $report, int $attemptNumber, ?string $dueTimeoutKind): void
+    {
         $refusal = PreparedLocalActivityReport::refusal($report);
         if ($refusal !== null || $attemptNumber < 1 || $attemptNumber > PreparedLocalRetryPolicy::MAX_ATTEMPTS
             || ($dueTimeoutKind !== null && ! in_array(
@@ -99,16 +95,21 @@ final class PreparedLocalRetryDecision
             ))) {
             throw new InvalidArgumentException($refusal ?? 'Invalid prepared retry decision input.');
         }
-        $sample = self::utc($sample);
-        $deadline = $originalDeadline === null ? null : self::utc($originalDeadline);
-        $latest = self::utc($latestBindableTimestamp);
-        if ($sample > $latest) {
+    }
+
+    /**
+     * @param array<string, mixed> $report
+     */
+    private static function validateClock(
+        DateTimeImmutable $sample,
+        PreparedLocalRetryWindow $window,
+        ?string $dueTimeoutKind,
+        array $report,
+    ): void {
+        if ($sample > $window->latest) {
             throw new InvalidArgumentException('Prepared failure sample exceeds the backend timestamp range.');
         }
-        if ($deadline !== null && $sample >= $deadline) {
-            $dueTimeoutKind = 'schedule_to_close';
-        }
-        if ($dueTimeoutKind === 'schedule_to_close' && ($deadline === null || $sample < $deadline)) {
+        if ($dueTimeoutKind === 'schedule_to_close' && ($window->deadline === null || $sample < $window->deadline)) {
             throw new InvalidArgumentException('Overall timeout requires the original due deadline.');
         }
         if ($dueTimeoutKind === null && $report['outcome'] !== 'failed') {
@@ -116,13 +117,27 @@ final class PreparedLocalRetryDecision
                 'A retry decision needs an application failure or an actually due timeout.'
             );
         }
+    }
+
+    /** @param array<string, mixed> $report
+     * @return array<string, mixed>
+     */
+    private static function commonDecision(
+        array $report,
+        DateTimeImmutable $sample,
+        PreparedLocalRetryWindow $window,
+        ?string $dueTimeoutKind,
+    ): array {
         $engineTimeout = $dueTimeoutKind !== null;
-        $decision = [
+
+        return [
             'contract_version' => 2,
             'snapshot_version' => 2,
             'decision' => 'terminal',
             'failure_time' => self::format($sample),
-            'original_schedule_to_close_deadline_at' => $deadline === null ? null : self::format($deadline),
+            'original_schedule_to_close_deadline_at' => $window->deadline === null ? null : self::format(
+                $window->deadline
+            ),
             'failure_source' => $engineTimeout ? 'engine_timeout' : 'application',
             ...($engineTimeout ? [
                 'timeout_kind' => $dueTimeoutKind,
@@ -132,27 +147,44 @@ final class PreparedLocalRetryDecision
                     'requested_delay_seconds' => $report['next_retry_delay_seconds'],
                 ] : []),
         ];
-        if ($dueTimeoutKind === 'schedule_to_close') {
-            return [
-                ...$decision,
-                'terminal_classification' => 'engine_timeout',
-            ];
-        }
+    }
+
+    /** @param array<string, mixed> $snapshot
+     * @param array<string, mixed> $report
+     */
+    private static function earlyTerminal(
+        array $snapshot,
+        int $attemptNumber,
+        array $report,
+        ?string $dueTimeoutKind,
+        bool $nonRetryable,
+    ): ?string {
         $type = $report['exception_type'] ?? RuntimeException::class;
-        if (! $engineTimeout && ($nonRetryable || ($report['non_retryable'] ?? false)
-            || in_array($type, $snapshot['non_retryable_error_types'], true))) {
-            return [
-                ...$decision,
-                'terminal_classification' => 'non_retryable',
-            ];
-        }
-        if ($attemptNumber >= $snapshot['max_attempts']) {
-            return [
-                ...$decision,
-                'terminal_classification' => 'attempts_exhausted',
-            ];
-        }
-        $override = ! $engineTimeout && array_key_exists('next_retry_delay_seconds', $report);
+
+        return match (true) {
+            $dueTimeoutKind === 'schedule_to_close' => 'engine_timeout',
+            $dueTimeoutKind === null && ($nonRetryable || ($report['non_retryable'] ?? false)
+                || in_array($type, $snapshot['non_retryable_error_types'], true)) => 'non_retryable',
+            $attemptNumber >= $snapshot['max_attempts'] => 'attempts_exhausted',
+            default => null,
+        };
+    }
+
+    /** @param array<string, mixed> $snapshot
+     * @param array<string, mixed> $report
+     * @param array<string, mixed> $decision
+     * @return array<string, mixed>
+     */
+    private static function selectedDelay(
+        array $snapshot,
+        int $attemptNumber,
+        array $report,
+        DateTimeImmutable $sample,
+        PreparedLocalRetryWindow $window,
+        ?string $dueTimeoutKind,
+        array $decision,
+    ): array {
+        $override = $dueTimeoutKind === null && array_key_exists('next_retry_delay_seconds', $report);
         $candidate = $override ? $report['next_retry_delay_seconds']
             : PreparedLocalRetryPolicy::delayForRetry($snapshot, $attemptNumber);
         $decision = [
@@ -167,8 +199,8 @@ final class PreparedLocalRetryDecision
                 'terminal_classification' => 'retry_delay_exceeds_policy_cap',
             ];
         }
-        if ($deadline !== null && $candidate >= intdiv(
-            self::microseconds($deadline) - self::microseconds($sample) + 999999,
+        if ($window->deadline !== null && $candidate >= intdiv(
+            self::microseconds($window->deadline) - self::microseconds($sample) + 999999,
             1000000
         )) {
             return [
@@ -178,7 +210,7 @@ final class PreparedLocalRetryDecision
         }
         // Check by division before multiplication or DateInterval construction.
         // Even the largest portable integer cannot wrap or become a float.
-        if ($candidate > intdiv(self::microseconds($latest) - self::microseconds($sample), 1000000)) {
+        if ($candidate > intdiv(self::microseconds($window->latest) - self::microseconds($sample), 1000000)) {
             throw new InvalidArgumentException('Prepared retry availability exceeds the backend timestamp range.');
         }
         $available = $sample->add(new DateInterval('PT' . $candidate . 'S'));
@@ -188,6 +220,33 @@ final class PreparedLocalRetryDecision
             'decision' => 'scheduled',
             'retry_available_at' => self::format($available),
         ];
+    }
+
+    private static function storedSample(mixed $time): ?DateTimeImmutable
+    {
+        if (! is_string($time) || preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/D', $time) !== 1) {
+            return null;
+        }
+        $sample = DateTimeImmutable::createFromFormat('!Y-m-d\TH:i:s.u\Z', $time, new DateTimeZone('UTC'));
+
+        return $sample instanceof DateTimeImmutable && self::format($sample) === $time ? $sample : null;
+    }
+
+    /** @param array<string, mixed> $expected
+     * @param array<string, mixed> $stored
+     */
+    private static function sameFields(array $expected, array $stored): bool
+    {
+        if (count($stored) !== count($expected) || array_diff(array_keys($stored), array_keys($expected)) !== []) {
+            return false;
+        }
+        foreach ($expected as $key => $value) {
+            if ($stored[$key] !== $value) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static function utc(DateTimeInterface $value): DateTimeImmutable
