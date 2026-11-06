@@ -33,6 +33,7 @@ use Workflow\V2\Support\CancellationScopeHistory;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\HistoryTimeline;
+use Workflow\V2\Support\LocalActivityCall;
 use Workflow\V2\Support\LocalActivityExecutor;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\PortableLocalActivityPreparation;
@@ -195,6 +196,38 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
         $this->assertSame(0, $run->activityExecutions()->count());
         $this->assertSame(0, ActivityAttempt::query()->where('workflow_run_id', $run->id)->count());
         $this->assertSame(0, $run->historyEvents()->count());
+        $this->assertSame(TaskStatus::Leased, $task->refresh()->status);
+    }
+
+    public function testRetryContractCannotDowngradeThroughLegacyInternalExecution(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $prepared = $this->prepareRetryContract($task);
+        $execution = ActivityExecution::query()->findOrFail($prepared['activity_execution_id']);
+        $executor = app(LocalActivityExecutor::class);
+        $operations = [
+            static fn () => $executor->execute(
+                $run,
+                $task,
+                1,
+                new LocalActivityCall('python-local-greeting', ['Taylor'])
+            ),
+            static fn () => $executor->expirePortableRetry($run, $task, $execution),
+            static fn () => $executor->startPortableAttempt($run, $task, $execution, 'replacement', [
+                'version' => 1,
+            ]),
+        ];
+        foreach ($operations as $operation) {
+            try {
+                $operation();
+                $this->fail('A legacy internal entry accepted prepared retry contract 2.');
+            } catch (\RuntimeException $error) {
+                $this->assertStringStartsWith('Prepared retry ', $error->getMessage());
+            }
+        }
+        $this->assertSame(2, $run->historyEvents()->count());
+        $this->assertSame(1, ActivityAttempt::query()->where('workflow_run_id', $run->id)->count());
+        $this->assertSame(ActivityStatus::Running, $execution->refresh()->status);
         $this->assertSame(TaskStatus::Leased, $task->refresh()->status);
     }
 

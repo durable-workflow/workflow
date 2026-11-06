@@ -160,6 +160,13 @@ final class LocalActivityExecutor
         array $preparation,
         ?Carbon $preparedAt = null,
     ): ActivityAttempt {
+        if (($execution->activity_options['local_activity_contract_version'] ?? null) === 2
+            && (($preparation['version'] ?? null) !== 2
+                || ($preparation['local_activity_contract_version'] ?? null) !== 2 || $preparedAt === null)) {
+            throw new RuntimeException(
+                'Prepared retry attempts require their versioned preparation and locked sample.'
+            );
+        }
         $preparation['schedule_to_close_deadline_at'] = $execution->schedule_to_close_deadline_at?->toISOString();
         return $this->startAttempt($run, $task, $execution, $workerAttemptId, $preparation, $preparedAt);
     }
@@ -175,6 +182,10 @@ final class LocalActivityExecutor
         int $localContractVersion = 1,
         ?Carbon $sample = null,
     ): WorkflowHistoryEvent {
+        if (! in_array($localContractVersion, [1, 2], true)
+            || ($execution->activity_options['local_activity_contract_version'] ?? 1) !== $localContractVersion) {
+            throw new RuntimeException('Prepared retry expiry requires its original contract.');
+        }
         $decision = null;
         $metadata = [];
         if ($localContractVersion === 2) {
@@ -702,6 +713,9 @@ final class LocalActivityExecutor
 
             if (! $execution instanceof ActivityExecution) {
                 $execution = $this->createExecution($lockedRun, $lockedTask, $sequence, $activityCall);
+            }
+            if (($execution->activity_options['local_activity_contract_version'] ?? null) === 2) {
+                throw new RuntimeException('Prepared retry execution requires its versioned portable entry.');
             }
 
             if (! LocalActivityRuntime::isExecution($execution)) {
