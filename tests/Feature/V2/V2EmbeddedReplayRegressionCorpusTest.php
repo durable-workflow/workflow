@@ -1571,6 +1571,7 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             }
 
             if ($fixture['id'] === 'prepared-v1-policy-refusal-legacy-zero-tail') {
+                $this->clearWorkflowState();
                 $run = $this->createRunFromFixture($fixture);
                 $scheduled = collect($fixture['history'])->firstWhere('event_type', 'ActivityScheduled')['payload'];
                 $completed = collect($fixture['history'])->firstWhere('event_type', 'ActivityCompleted')['payload'];
