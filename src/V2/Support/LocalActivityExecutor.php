@@ -47,193 +47,35 @@ final class LocalActivityExecutor
         array $report,
         string $protocolVersion = WorkerProtocolVersion::VERSION,
     ): array {
-        $refused = static fn (string $reason): array => [
-            'recorded' => false,
-            'duplicate' => false,
-            'reason' => $reason,
-            'activity_attempt_id' => $attemptId,
-            'claim_released' => false,
-            'created_task_ids' => [],
-        ];
-        if (preg_match('/^[0-9]+\.[0-9]+$/D', $protocolVersion) !== 1
-            || version_compare($protocolVersion, PortableLocalActivityPreparation::MINIMUM_PROTOCOL_VERSION, '<')) {
-            return $refused('local_activity_outcome_requires_protocol_1_20');
-        }
-        try {
-            $normalized = self::normalizePortableReport($report);
-            $fingerprint = hash('sha256', json_encode($normalized, JSON_THROW_ON_ERROR));
-        } catch (ValidationException|JsonException) {
-            return $refused('invalid_local_activity_outcome');
-        }
-
-        return ConfiguredV2Models::connection()->transaction(function () use (
+        return $this->recordPortableOutcomeForContract(
+            1,
             $attemptId,
             $leaseOwner,
             $workflowTaskAttempt,
-            $normalized,
-            $fingerprint,
-            $refused,
-        ): array {
-            $rows = ActivityRowLockOrder::lockForAttempt($attemptId);
-            $attempt = $rows['attempt'];
-            $execution = $rows['execution'];
-            if (! $attempt instanceof ActivityAttempt || ! $execution instanceof ActivityExecution) {
-                return $refused('activity_attempt_not_found');
-            }
-            /** @var WorkflowRun|null $run */
-            $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
-                ->lockForUpdate()
-                ->find($execution->workflow_run_id);
-            /** @var WorkflowTask|null $task */
-            $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
-                ->lockForUpdate()
-                ->find($attempt->workflow_task_id);
-            if ($run === null || $task === null || $task->workflow_run_id !== $run->id) {
-                return $refused('workflow_claim_not_found');
-            }
-            $started = PortableLocalActivityPreparation::originalStart(
-                $run,
-                $execution,
-                $attempt,
-                $leaseOwner,
-                $workflowTaskAttempt,
-            );
-            if ($started === null) {
-                return $refused('local_activity_preparation_mismatch');
-            }
-            $receipt = $run->historyEvents()
-                ->whereIn('event_type', [HistoryEventType::ActivityCompleted, HistoryEventType::ActivityFailed,
-                    HistoryEventType::ActivityTimedOut, HistoryEventType::ActivityRetryScheduled])
-                ->where('payload->activity_attempt_id', $attemptId)
-                ->whereNotNull('payload->local_outcome')
-                ->orderBy('sequence')
-                ->first();
-            if ($receipt instanceof WorkflowHistoryEvent) {
-                if ($receipt->sequence <= $started->sequence || $receipt->workflow_task_id !== $task->id
-                    || ($receipt->payload['activity_execution_id'] ?? null) !== $execution->id
-                    || ($receipt->payload['local_outcome']['version'] ?? null) !== 1
-                    || ($receipt->payload['local_outcome']['report_fingerprint'] ?? null) !== $fingerprint
-                    || ($receipt->payload['local_outcome']['workflow_task_attempt'] ?? null) !== $workflowTaskAttempt
-                    || ($receipt->payload['task']['lease_owner'] ?? null) !== $leaseOwner
-                    || ($receipt->payload['task']['attempt_count'] ?? null) !== $workflowTaskAttempt) {
-                    return $refused('local_activity_outcome_mismatch');
-                }
-                return self::portableReceipt($receipt, true);
-            }
-            if ($execution->current_attempt_id !== $attemptId || $execution->attempt_count !== $attempt->attempt_number) {
-                return $refused('stale_activity_attempt');
-            }
-            // An original owner may fence its own still-running attempt after
-            // takeover. This grants no result authority and leaves the hosting
-            // workflow claim untouched. A separate joined-callback receipt follows.
-            $cleanup = PortableLocalActivityCleanup::isExecution($run, $execution, $started);
-            $runCleanup = $cleanup && PortableLocalActivityCleanup::belongsToRunRequest(
-                $run,
-                $execution->activity_options['cancellation_cleanup'],
-            );
-            if ($run->cancellation_request_command_id !== null
-                && (! $runCleanup || now()->gte($run->cancellation_deadline_at))) {
-                $cancelled = $run->historyEvents()
-                    ->where('event_type', HistoryEventType::ActivityCancelled)
-                    ->where('payload->activity_execution_id', $execution->id)
-                    ->where('payload->activity_attempt_id', $attemptId)
-                    ->where('payload->workflow_command_id', $run->cancellation_request_command_id)
-                    ->first();
-                if (! $cancelled instanceof WorkflowHistoryEvent) {
-                    if ($attempt->status !== ActivityAttemptStatus::Running || $execution->status !== ActivityStatus::Running) {
-                        return $refused('stale_activity_attempt');
-                    }
-                    $cancelled = ActivityCancellation::record(
-                        $run,
-                        $execution,
-                        command: $run->cancellation_request_command_id
-                    );
-                }
-                return [
-                    ...$refused($runCleanup
-                        ? 'cancellation_deadline_expired' : 'cancellation_requested'),
-                    'fenced' => true,
-                    'cancellation_history_event_id' => $cancelled?->id,
-                ];
-            }
-            if ($attempt->status !== ActivityAttemptStatus::Running || $execution->status !== ActivityStatus::Running) {
-                return $refused('stale_activity_attempt');
-            }
-            if ($task->task_type !== TaskType::Workflow || $task->status !== TaskStatus::Leased
-                || $task->lease_owner !== $leaseOwner || $task->attempt_count !== $workflowTaskAttempt) {
-                return $refused('workflow_claim_mismatch');
-            }
-            if (PortableLocalActivityCleanup::isScoped($execution)) {
-                if ($run->status->isTerminal()) {
-                    return $refused('run_closed');
-                }
-                if (($run->execution_deadline_at !== null && now()->gte($run->execution_deadline_at))
-                    || ($run->run_deadline_at !== null && now()->gte($run->run_deadline_at))) {
-                    return $refused('run_deadline_expired');
-                }
-                if (PortableLocalActivityCleanup::currentAuthorityExpired($run, $execution)) {
-                    return $refused('local_activity_cleanup_authority_expired');
-                }
-            }
-            if ($task->lease_expires_at === null || now()->gte($task->lease_expires_at)
-                || $attempt->lease_expires_at === null || now()
-                    ->gte($attempt->lease_expires_at)) {
-                return $refused('workflow_claim_expired');
-            }
-            if ($run->status->isTerminal()) {
-                return $refused('run_closed');
-            }
-            if (($run->execution_deadline_at !== null && now()->gte($run->execution_deadline_at))
-                || ($run->run_deadline_at !== null && now()->gte($run->run_deadline_at))) {
-                return $refused('run_deadline_expired');
-            }
-            $metadata = [
-                'worker_attempt_id' => $attempt->worker_attempt_id,
-                'local_outcome' => [
-                    'version' => 1,
-                    'report_fingerprint' => $fingerprint,
-                    'workflow_task_attempt' => $workflowTaskAttempt,
-                    'submitted_outcome' => $normalized['outcome'],
-                ],
-            ];
-            $timeoutKind = self::timeoutKind($execution);
-            if ($timeoutKind !== null) {
-                $outcome = $this->recordTimeoutOutcome($run, $task, $execution, $timeoutKind, $metadata);
-            } elseif ($normalized['outcome'] === 'timed_out') {
-                return $refused('local_activity_timeout_not_due');
-            } elseif ($normalized['outcome'] === 'completed') {
-                $outcome = $this->recordSuccess($run, $task, $execution, $attempt, null, [
-                    'blob' => $normalized['result'],
-                    'codec' => $normalized['payload_codec'],
-                ], $metadata);
-            } else {
-                $failure = new RestoredWorkflowException([
-                    'class' => $normalized['exception_type'],
-                    'type' => $normalized['exception_type'],
-                    'message' => $normalized['message'],
-                    'non_retryable' => $normalized['non_retryable'],
-                    'code' => 0,
-                ]);
-                $outcome = $this->recordFailureOrRetry($run, $task, $execution, $attempt, $failure, $metadata);
-            }
-            if ($outcome['next_task'] instanceof WorkflowTask) {
-                $task->forceFill([
-                    'status' => TaskStatus::Completed,
-                    'lease_expires_at' => null,
-                ])->save();
-                self::projectRun($run);
-            }
-            $receipt = $outcome['event'] ?? $run->historyEvents()
-                ->where('event_type', HistoryEventType::ActivityRetryScheduled)
-                ->where('payload->activity_attempt_id', $attemptId)
-                ->orderByDesc('sequence')
-                ->first();
-            if (! $receipt instanceof WorkflowHistoryEvent) {
-                throw new RuntimeException('Portable local outcome did not record its canonical receipt.');
-            }
+            $report,
+            $protocolVersion
+        );
+    }
 
-            return self::portableReceipt($receipt, false);
-        }, 5);
+    /** @internal Unadvertised until the installed bridge and retained claim bind contract 2.
+     * @param array<string, mixed> $report
+     * @return array<string, mixed>
+     */
+    public function recordPortableRetryOutcome(
+        string $attemptId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        array $report,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        return $this->recordPortableOutcomeForContract(
+            2,
+            $attemptId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $report,
+            $protocolVersion
+        );
     }
 
     /**
@@ -381,6 +223,261 @@ final class LocalActivityExecutor
         ];
     }
 
+    /** @param array<string, mixed> $report
+     * @return array<string, mixed>
+     */
+    private function recordPortableOutcomeForContract(
+        int $localContractVersion,
+        string $attemptId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        array $report,
+        string $protocolVersion,
+    ): array {
+        $refused = static fn (string $reason): array => [
+            'recorded' => false,
+            'duplicate' => false,
+            'reason' => $reason,
+            'activity_attempt_id' => $attemptId,
+            'claim_released' => false,
+            'created_task_ids' => [],
+        ];
+        if (preg_match('/^[0-9]+\.[0-9]+$/D', $protocolVersion) !== 1
+            || version_compare($protocolVersion, PortableLocalActivityPreparation::MINIMUM_PROTOCOL_VERSION, '<')) {
+            return $refused('local_activity_outcome_requires_protocol_1_20');
+        }
+        $normalized = null;
+        $fingerprint = null;
+        if ($localContractVersion === 2 && array_key_exists('next_retry_delay_seconds', $report)) {
+            $reason = PreparedLocalActivityReport::refusal($report);
+            if ($reason !== null) {
+                return $refused($reason);
+            }
+        }
+        if ($localContractVersion === 1) {
+            try {
+                $normalized = self::normalizePortableReport($report);
+                $fingerprint = hash('sha256', json_encode($normalized, JSON_THROW_ON_ERROR));
+            } catch (ValidationException|JsonException) {
+                return $refused('invalid_local_activity_outcome');
+            }
+        }
+
+        return ConfiguredV2Models::connection()->transaction(function () use (
+            $attemptId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $normalized,
+            $fingerprint,
+            $refused,
+            $report,
+            $localContractVersion,
+        ): array {
+            $rows = ActivityRowLockOrder::lockForAttempt($attemptId);
+            $attempt = $rows['attempt'];
+            $execution = $rows['execution'];
+            if (! $attempt instanceof ActivityAttempt || ! $execution instanceof ActivityExecution) {
+                return $refused('activity_attempt_not_found');
+            }
+            /** @var WorkflowRun|null $run */
+            $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->lockForUpdate()
+                ->find($execution->workflow_run_id);
+            /** @var WorkflowTask|null $task */
+            $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+                ->lockForUpdate()
+                ->find($attempt->workflow_task_id);
+            if ($run === null || $task === null || $task->workflow_run_id !== $run->id) {
+                return $refused('workflow_claim_not_found');
+            }
+            $started = PortableLocalActivityPreparation::originalStart(
+                $run,
+                $execution,
+                $attempt,
+                $leaseOwner,
+                $workflowTaskAttempt,
+                $localContractVersion,
+            );
+            if ($started === null) {
+                return $refused('local_activity_preparation_mismatch');
+            }
+            if ($localContractVersion === 2) {
+                $reason = PreparedLocalActivityReport::refusal($report);
+                if ($reason !== null) {
+                    return $refused($reason);
+                }
+                try {
+                    $normalized = self::normalizePortableReport($report, 2);
+                    $fingerprint = hash('sha256', json_encode($normalized, JSON_THROW_ON_ERROR));
+                } catch (ValidationException|JsonException) {
+                    return $refused('invalid_local_activity_outcome');
+                }
+            }
+            $receipt = $run->historyEvents()
+                ->whereIn('event_type', [HistoryEventType::ActivityCompleted, HistoryEventType::ActivityFailed,
+                    HistoryEventType::ActivityTimedOut, HistoryEventType::ActivityRetryScheduled])
+                ->where('payload->activity_attempt_id', $attemptId)
+                ->whereNotNull('payload->local_outcome')
+                ->orderBy('sequence')
+                ->first();
+            if ($receipt instanceof WorkflowHistoryEvent) {
+                if ($receipt->sequence <= $started->sequence || $receipt->workflow_task_id !== $task->id
+                    || ($receipt->payload['activity_execution_id'] ?? null) !== $execution->id
+                    || ($receipt->payload['local_outcome']['version'] ?? null) !== $localContractVersion
+                    || ($receipt->payload['local_outcome']['report_fingerprint'] ?? null) !== $fingerprint
+                    || ($receipt->payload['local_outcome']['workflow_task_attempt'] ?? null) !== $workflowTaskAttempt
+                    || ($receipt->payload['task']['lease_owner'] ?? null) !== $leaseOwner
+                    || ($receipt->payload['task']['attempt_count'] ?? null) !== $workflowTaskAttempt) {
+                    return $refused('local_activity_outcome_mismatch');
+                }
+                return self::portableReceipt($receipt, true);
+            }
+            $failureTime = $localContractVersion === 2 ? now() : null;
+            if ($execution->current_attempt_id !== $attemptId || $execution->attempt_count !== $attempt->attempt_number) {
+                return $refused('stale_activity_attempt');
+            }
+            // An original owner may fence its own still-running attempt after
+            // takeover. This grants no result authority and leaves the hosting
+            // workflow claim untouched. A separate joined-callback receipt follows.
+            $cleanup = PortableLocalActivityCleanup::isExecution($run, $execution, $started);
+            $runCleanup = $cleanup && PortableLocalActivityCleanup::belongsToRunRequest(
+                $run,
+                $execution->activity_options['cancellation_cleanup'],
+            );
+            if ($run->cancellation_request_command_id !== null
+                && (! $runCleanup || ($failureTime ?? now())->gte($run->cancellation_deadline_at))) {
+                $cancelled = $run->historyEvents()
+                    ->where('event_type', HistoryEventType::ActivityCancelled)
+                    ->where('payload->activity_execution_id', $execution->id)
+                    ->where('payload->activity_attempt_id', $attemptId)
+                    ->where('payload->workflow_command_id', $run->cancellation_request_command_id)
+                    ->first();
+                if (! $cancelled instanceof WorkflowHistoryEvent) {
+                    if ($attempt->status !== ActivityAttemptStatus::Running || $execution->status !== ActivityStatus::Running) {
+                        return $refused('stale_activity_attempt');
+                    }
+                    $cancelled = ActivityCancellation::record(
+                        $run,
+                        $execution,
+                        command: $run->cancellation_request_command_id
+                    );
+                }
+                return [
+                    ...$refused($runCleanup
+                        ? 'cancellation_deadline_expired' : 'cancellation_requested'),
+                    'fenced' => true,
+                    'cancellation_history_event_id' => $cancelled?->id,
+                ];
+            }
+            if ($attempt->status !== ActivityAttemptStatus::Running || $execution->status !== ActivityStatus::Running) {
+                return $refused('stale_activity_attempt');
+            }
+            if ($task->task_type !== TaskType::Workflow || $task->status !== TaskStatus::Leased
+                || $task->lease_owner !== $leaseOwner || $task->attempt_count !== $workflowTaskAttempt) {
+                return $refused('workflow_claim_mismatch');
+            }
+            if (PortableLocalActivityCleanup::isScoped($execution)) {
+                if ($run->status->isTerminal()) {
+                    return $refused('run_closed');
+                }
+                if (($run->execution_deadline_at !== null && ($failureTime ?? now())->gte($run->execution_deadline_at))
+                    || ($run->run_deadline_at !== null && ($failureTime ?? now())->gte($run->run_deadline_at))) {
+                    return $refused('run_deadline_expired');
+                }
+                if (PortableLocalActivityCleanup::currentAuthorityExpired($run, $execution, $failureTime)) {
+                    return $refused('local_activity_cleanup_authority_expired');
+                }
+            }
+            if ($task->lease_expires_at === null || ($failureTime ?? now())->gte($task->lease_expires_at)
+                || $attempt->lease_expires_at === null || ($failureTime ?? now())
+                    ->gte($attempt->lease_expires_at)) {
+                return $refused('workflow_claim_expired');
+            }
+            if ($run->status->isTerminal()) {
+                return $refused('run_closed');
+            }
+            if (($run->execution_deadline_at !== null && ($failureTime ?? now())->gte($run->execution_deadline_at))
+                || ($run->run_deadline_at !== null && ($failureTime ?? now())->gte($run->run_deadline_at))) {
+                return $refused('run_deadline_expired');
+            }
+            $metadata = [
+                'worker_attempt_id' => $attempt->worker_attempt_id,
+                'local_outcome' => [
+                    'version' => $localContractVersion,
+                    'report_fingerprint' => $fingerprint,
+                    'workflow_task_attempt' => $workflowTaskAttempt,
+                    'submitted_outcome' => $normalized['outcome'],
+                ],
+            ];
+            $timeoutKind = self::timeoutKind($execution, $failureTime);
+            if ($failureTime !== null && ($timeoutKind !== null || $normalized['outcome'] === 'failed')) {
+                $decision = self::selectPortableRetryDecision(
+                    $execution,
+                    $attempt,
+                    $report,
+                    $failureTime,
+                    $timeoutKind
+                );
+                $metadata['retry_disposition'] = $decision;
+            } else {
+                $decision = null;
+            }
+            if ($timeoutKind !== null) {
+                $outcome = $this->recordTimeoutOutcome(
+                    $run,
+                    $task,
+                    $execution,
+                    $timeoutKind,
+                    $metadata,
+                    $decision,
+                    $failureTime
+                );
+            } elseif ($normalized['outcome'] === 'timed_out') {
+                return $refused('local_activity_timeout_not_due');
+            } elseif ($normalized['outcome'] === 'completed') {
+                $outcome = $this->recordSuccess($run, $task, $execution, $attempt, null, [
+                    'blob' => $normalized['result'],
+                    'codec' => $normalized['payload_codec'],
+                ], $metadata, $failureTime);
+            } else {
+                $failure = new RestoredWorkflowException([
+                    'class' => $normalized['exception_type'],
+                    'type' => $normalized['exception_type'],
+                    'message' => $normalized['message'],
+                    'non_retryable' => $normalized['non_retryable'],
+                    'code' => 0,
+                ]);
+                $outcome = $this->recordFailureOrRetry(
+                    $run,
+                    $task,
+                    $execution,
+                    $attempt,
+                    $failure,
+                    $metadata,
+                    $decision,
+                    $failureTime
+                );
+            }
+            if ($outcome['next_task'] instanceof WorkflowTask) {
+                $task->forceFill([
+                    'status' => TaskStatus::Completed,
+                    'lease_expires_at' => null,
+                ])->save();
+                self::projectRun($run);
+            }
+            $receipt = $outcome['event'] ?? $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityRetryScheduled)
+                ->where('payload->activity_attempt_id', $attemptId)
+                ->orderByDesc('sequence')
+                ->first();
+            if (! $receipt instanceof WorkflowHistoryEvent) {
+                throw new RuntimeException('Portable local outcome did not record its canonical receipt.');
+            }
+
+            return self::portableReceipt($receipt, false);
+        }, 5);
+    }
+
     /**
      * @return array{mixed, Throwable|null}
      */
@@ -432,12 +529,13 @@ final class LocalActivityExecutor
     /** @param array<string, mixed> $report
      * @return array<string, mixed>
      */
-    private static function normalizePortableReport(array $report): array
+    private static function normalizePortableReport(array $report, int $localContractVersion = 1): array
     {
         $outcome = $report['outcome'] ?? null;
         $fields = match ($outcome) {
             'completed' => ['outcome', 'result', 'payload_codec'],
-            'failed' => ['outcome', 'message', 'exception_type', 'non_retryable'],
+            'failed' => ['outcome', 'message', 'exception_type', 'non_retryable',
+                ...($localContractVersion === 2 ? ['next_retry_delay_seconds'] : [])],
             'timed_out' => ['outcome'],
             default => [],
         };
@@ -475,6 +573,10 @@ final class LocalActivityExecutor
                 'message' => $message,
                 'exception_type' => $type,
                 'non_retryable' => $report['non_retryable'] ?? false,
+                ...(array_key_exists('next_retry_delay_seconds', $report)
+                    ? [
+                        'next_retry_delay_seconds' => $report['next_retry_delay_seconds'],
+                    ] : []),
             ];
         }
 
@@ -506,7 +608,36 @@ final class LocalActivityExecutor
             'recorded_at' => $event->recorded_at->toISOString(),
             'claim_released' => $event->event_type === HistoryEventType::ActivityRetryScheduled,
             'created_task_ids' => is_string($retryTaskId) ? [$retryTaskId] : [],
+            ...(isset($payload['retry_disposition']) ? [
+                'retry_disposition' => $payload['retry_disposition'],
+            ] : []),
         ];
+    }
+
+    /** @param array<string, mixed> $report
+     * @return array<string, mixed>
+     */
+    private static function selectPortableRetryDecision(
+        ActivityExecution $execution,
+        ActivityAttempt $attempt,
+        array $report,
+        Carbon $failureTime,
+        ?string $timeoutKind = null,
+        bool $nonRetryable = false,
+    ): array {
+        $connection = ConfiguredV2Models::connection();
+        PreparedLocalRetryTimestamp::addForConnection($failureTime, 0, $connection);
+
+        return PreparedLocalRetryDecision::select(
+            $execution->retry_policy,
+            $attempt->attempt_number,
+            $report,
+            $failureTime,
+            $execution->schedule_to_close_deadline_at,
+            PreparedLocalRetryTimestamp::latestForConnection($connection),
+            $timeoutKind,
+            $nonRetryable,
+        );
     }
 
     /**
@@ -846,6 +977,7 @@ final class LocalActivityExecutor
         mixed $result,
         ?array $encodedResult = null,
         array $historyMetadata = [],
+        ?Carbon $failureTime = null,
     ): array {
         $encoded = $encodedResult ?? self::serializeWithCodec($result, self::preferredPayloadCodec($execution, $run));
         $encoded['blob'] = ExternalPayloads::externalizeForNamespace(
@@ -857,8 +989,30 @@ final class LocalActivityExecutor
         try {
             StructuralLimits::guardPayloadSize($encoded['blob']);
         } catch (StructuralLimitExceededException $limitExceeded) {
+            $decision = $failureTime === null ? null : self::selectPortableRetryDecision(
+                $execution,
+                $attempt,
+                [
+                    'outcome' => 'failed',
+                    'message' => $limitExceeded->getMessage(),
+                ],
+                $failureTime,
+                nonRetryable: ActivityRetryPolicy::isNonRetryableFailure($execution, $limitExceeded),
+            );
+            if ($decision !== null) {
+                $historyMetadata['retry_disposition'] = $decision;
+            }
             /** @var array{status: 'failed'|'waiting', event: WorkflowHistoryEvent|null, next_task: WorkflowTask|null} $failure */
-            $failure = $this->recordFailureOrRetry($run, $task, $execution, $attempt, $limitExceeded, $historyMetadata);
+            $failure = $this->recordFailureOrRetry(
+                $run,
+                $task,
+                $execution,
+                $attempt,
+                $limitExceeded,
+                $historyMetadata,
+                $decision,
+                $failureTime
+            );
 
             return $failure;
         }
@@ -868,12 +1022,12 @@ final class LocalActivityExecutor
             'result' => $encoded['blob'],
             'payload_codec' => $encoded['codec'],
             'exception' => null,
-            'closed_at' => now(),
+            'closed_at' => $failureTime ?? now(),
             'close_deadline_at' => null,
             'heartbeat_deadline_at' => null,
         ])->save();
 
-        self::closeAttempt($attempt, ActivityAttemptStatus::Completed);
+        self::closeAttempt($attempt, ActivityAttemptStatus::Completed, $failureTime);
 
         $event = WorkflowHistoryEvent::record(
             $run,
@@ -927,11 +1081,14 @@ final class LocalActivityExecutor
         ActivityAttempt $attempt,
         Throwable $throwable,
         array $historyMetadata = [],
+        ?array $retryDecision = null,
+        ?Carbon $failureTime = null,
     ): array {
         $attemptNumber = max(1, (int) $attempt->attempt_number);
         $maxAttempts = ActivityRetryPolicy::maxAttemptsFromSnapshot($execution);
 
-        if (! ActivityRetryPolicy::isNonRetryableFailure($execution, $throwable) && $attemptNumber < $maxAttempts) {
+        if ($retryDecision !== null ? $retryDecision['decision'] === 'scheduled'
+            : ! ActivityRetryPolicy::isNonRetryableFailure($execution, $throwable) && $attemptNumber < $maxAttempts) {
             $retry = $this->scheduleRetry(
                 $run,
                 $task,
@@ -940,6 +1097,8 @@ final class LocalActivityExecutor
                 $throwable,
                 LocalActivityRuntime::RETRY_REASON_FAILURE,
                 historyMetadata: $historyMetadata,
+                retryDecision: $retryDecision,
+                failureTime: $failureTime,
             );
 
             return [
@@ -949,7 +1108,15 @@ final class LocalActivityExecutor
             ];
         }
 
-        $event = $this->recordTerminalFailure($run, $task, $execution, $attempt, $throwable, $historyMetadata);
+        $event = $this->recordTerminalFailure(
+            $run,
+            $task,
+            $execution,
+            $attempt,
+            $throwable,
+            $historyMetadata,
+            $failureTime
+        );
 
         return [
             'status' => 'failed',
@@ -967,17 +1134,21 @@ final class LocalActivityExecutor
         string $retryReason,
         ?string $timeoutKind = null,
         array $historyMetadata = [],
+        ?array $retryDecision = null,
+        ?Carbon $failureTime = null,
     ): WorkflowTask {
         $attemptNumber = max(1, (int) ($attempt?->attempt_number ?? $execution->attempt_count));
         $maxAttempts = ActivityRetryPolicy::maxAttemptsFromSnapshot($execution);
-        $backoffSeconds = ActivityRetryPolicy::backoffSecondsFromSnapshot($execution, $attemptNumber);
-        $retryAvailableAt = now()
-            ->addSeconds($backoffSeconds);
+        $backoffSeconds = $retryDecision['candidate_delay_seconds']
+            ?? ActivityRetryPolicy::backoffSecondsFromSnapshot($execution, $attemptNumber);
+        $retryAvailableAt = $retryDecision === null ? now()
+            ->addSeconds($backoffSeconds)
+            : Carbon::parse($retryDecision['retry_available_at']);
         $exceptionPayload = FailureFactory::payload($throwable);
         $runCodec = is_string($run->payload_codec) && $run->payload_codec !== '' ? $run->payload_codec : null;
 
         if ($attempt instanceof ActivityAttempt && ! isset($historyMetadata['local_recovery'])) {
-            self::closeAttempt($attempt, ActivityAttemptStatus::Failed);
+            self::closeAttempt($attempt, ActivityAttemptStatus::Failed, $failureTime);
         }
 
         $execution->forceFill([
@@ -1057,6 +1228,7 @@ final class LocalActivityExecutor
         ?ActivityAttempt $attempt,
         Throwable $throwable,
         array $historyMetadata = [],
+        ?Carbon $failureTime = null,
     ): WorkflowHistoryEvent {
         $exceptionPayload = FailureFactory::payload($throwable);
         $failureCategory = $throwable instanceof StructuralLimitExceededException
@@ -1085,13 +1257,13 @@ final class LocalActivityExecutor
                 $runCodec ?? CodecRegistry::defaultCodec(),
                 $exceptionPayload
             ),
-            'closed_at' => now(),
+            'closed_at' => $failureTime ?? now(),
             'close_deadline_at' => null,
             'heartbeat_deadline_at' => null,
         ])->save();
 
         if ($attempt instanceof ActivityAttempt && ! isset($historyMetadata['local_recovery'])) {
-            self::closeAttempt($attempt, ActivityAttemptStatus::Failed);
+            self::closeAttempt($attempt, ActivityAttemptStatus::Failed, $failureTime);
         }
 
         $event = WorkflowHistoryEvent::record(
@@ -1155,11 +1327,14 @@ final class LocalActivityExecutor
         ActivityExecution $execution,
         string $timeoutKind,
         array $historyMetadata = [],
+        ?array $retryDecision = null,
+        ?Carbon $failureTime = null,
     ): array {
         $attempt = self::currentAttempt($execution);
         $attemptNumber = max(1, (int) ($attempt?->attempt_number ?? $execution->attempt_count));
         $maxAttempts = ActivityRetryPolicy::maxAttemptsFromSnapshot($execution);
-        $canRetry = $attemptNumber < $maxAttempts && $timeoutKind !== 'schedule_to_close';
+        $canRetry = $retryDecision !== null ? $retryDecision['decision'] === 'scheduled'
+            : $attemptNumber < $maxAttempts && $timeoutKind !== 'schedule_to_close';
         $throwable = new RuntimeException(self::timeoutMessage($execution, $timeoutKind));
 
         if ($canRetry) {
@@ -1174,15 +1349,17 @@ final class LocalActivityExecutor
                     LocalActivityRuntime::RETRY_REASON_TIMEOUT,
                     $timeoutKind,
                     $historyMetadata,
+                    $retryDecision,
+                    $failureTime,
                 ),
             ];
         }
 
         if ($attempt instanceof ActivityAttempt && ! isset($historyMetadata['local_recovery'])) {
-            self::closeAttempt($attempt, ActivityAttemptStatus::Failed);
+            self::closeAttempt($attempt, ActivityAttemptStatus::Failed, $failureTime);
         }
 
-        $now = now();
+        $now = $failureTime ?? now();
         $failureCategory = FailureCategory::Timeout;
         $exceptionClass = ActivityTimeoutException::class;
 
@@ -1348,18 +1525,21 @@ final class LocalActivityExecutor
         return $attempt;
     }
 
-    private static function closeAttempt(ActivityAttempt $attempt, ActivityAttemptStatus $status): void
-    {
+    private static function closeAttempt(
+        ActivityAttempt $attempt,
+        ActivityAttemptStatus $status,
+        ?Carbon $sample = null,
+    ): void {
         $attempt->forceFill([
             'status' => $status,
             'lease_expires_at' => null,
-            'closed_at' => $attempt->closed_at ?? now(),
+            'closed_at' => $attempt->closed_at ?? $sample ?? now(),
         ])->save();
     }
 
-    private static function timeoutKind(ActivityExecution $execution): ?string
+    private static function timeoutKind(ActivityExecution $execution, ?Carbon $sample = null): ?string
     {
-        $now = now();
+        $now = $sample ?? now();
 
         if ($execution->schedule_to_close_deadline_at !== null && $now->gte(
             $execution->schedule_to_close_deadline_at

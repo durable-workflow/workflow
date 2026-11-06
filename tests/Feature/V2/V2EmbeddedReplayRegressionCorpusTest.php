@@ -1576,7 +1576,11 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                     ->count();
                 $this->runReadyWorkflowTask($run);
                 $this->assertSame(RunStatus::Completed, $run->refresh()->status);
-                $this->assertSame($fixture['expected_step']['result'], Serializer::unserializeWithCodec(
+                $this->assertSame([
+                    ...$fixture['expected']['result'],
+                    'workflow_id' => $run->workflow_instance_id,
+                    'run_id' => $run->id,
+                ], Serializer::unserializeWithCodec(
                     $run->outputPayloadCodec(),
                     $run->output
                 ));
