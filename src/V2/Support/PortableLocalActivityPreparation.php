@@ -691,6 +691,10 @@ final class PortableLocalActivityPreparation
             }
             $execution = $rows['execution'] ?? null;
             $attempt = $rows['attempt'] ?? null;
+            if ($execution instanceof ActivityExecution
+                && ($execution->activity_options['local_activity_contract_version'] ?? 1) !== $localContractVersion) {
+                return self::response('local_activity_preparation_mismatch');
+            }
             if ($snapshotExecution !== null) {
                 if (! $execution instanceof ActivityExecution
                     || $execution->id !== $snapshotExecution->id || $execution->sequence !== $sequence
@@ -711,7 +715,16 @@ final class PortableLocalActivityPreparation
                     return self::response('local_activity_previous_attempt_unresolved');
                 }
                 if ($execution->status === ActivityStatus::Pending) {
-                    return self::prepareRetry($run, $task, $execution, $attempt, $workerAttemptId, $fingerprint);
+                    return self::prepareRetry(
+                        $run,
+                        $task,
+                        $execution,
+                        $attempt,
+                        $workerAttemptId,
+                        $fingerprint,
+                        $localContractVersion,
+                        $preparedAt
+                    );
                 }
                 return self::duplicate(
                     $run,
@@ -720,7 +733,8 @@ final class PortableLocalActivityPreparation
                     $attempt,
                     $workerAttemptId,
                     $fingerprint,
-                    $localContractVersion
+                    $localContractVersion,
+                    $preparedAt
                 );
             }
             if (ActivityExecution::query()->where('workflow_run_id', $run->id)->where(
@@ -983,6 +997,8 @@ final class PortableLocalActivityPreparation
         ActivityAttempt $previous,
         string $workerAttemptId,
         string $fingerprint,
+        int $localContractVersion = 1,
+        ?Carbon $preparedAt = null,
     ): array {
         $started = $run->historyEvents()
             ->where('event_type', HistoryEventType::ActivityStarted)
@@ -994,7 +1010,14 @@ final class PortableLocalActivityPreparation
             || $previous->closed_at === null
             || $execution->attempt_count !== $previous->attempt_number
             || ! is_int($originalTaskAttempt)
-            || self::originalStart($run, $execution, $previous, $previous->lease_owner, $originalTaskAttempt) === null
+            || self::originalStart(
+                $run,
+                $execution,
+                $previous,
+                $previous->lease_owner,
+                $originalTaskAttempt,
+                $localContractVersion
+            ) === null
             || ($started->payload['local_preparation']['descriptor_fingerprint'] ?? null) !== $fingerprint) {
             return self::response('local_activity_retry_preparation_mismatch');
         }
@@ -1009,7 +1032,13 @@ final class PortableLocalActivityPreparation
             || ($retry->payload['retry_after_attempt_id'] ?? null) !== $previous->id
             || ($retry->payload['retry_after_attempt'] ?? null) !== $previous->attempt_number
             || ($retry->payload['retry_policy'] ?? null) !== $execution->retry_policy
-            || ! self::retryAuthorityMatches($retry, $previous, $originalTaskAttempt, $fingerprint)
+            || ! self::retryAuthorityMatches(
+                $retry,
+                $previous,
+                $originalTaskAttempt,
+                $fingerprint,
+                $localContractVersion
+            )
             || ! is_string($retry->payload['retry_available_at'] ?? null)
             || $execution->attempt_count >= ActivityRetryPolicy::maxAttemptsFromSnapshot($execution)) {
             return self::response('local_activity_retry_preparation_mismatch');
@@ -1019,21 +1048,30 @@ final class PortableLocalActivityPreparation
         }
         // The durable receipt owns backoff. Mutable task availability cannot
         // admit a callback early. Total timeout owns the entire retry chain.
-        if ($execution->schedule_to_close_deadline_at !== null && now()->gte(
+        if ($execution->schedule_to_close_deadline_at !== null && ($preparedAt ?? now())->gte(
             $execution->schedule_to_close_deadline_at
         )) {
-            $event = app(LocalActivityExecutor::class)->expirePortableRetry($run, $task, $execution);
+            $event = app(LocalActivityExecutor::class)->expirePortableRetry(
+                $run,
+                $task,
+                $execution,
+                $localContractVersion,
+                $preparedAt
+            );
             return [
                 ...self::response('local_activity_deadline_expired'),
                 'event_id' => $event->id,
                 'event_type' => $event->event_type->value,
             ];
         }
-        if (now()->lt(Carbon::parse($retry->payload['retry_available_at']))) {
+        if (($preparedAt ?? now())->lt(Carbon::parse($retry->payload['retry_available_at']))) {
             return self::response('local_activity_retry_not_due');
         }
         $attempt = app(LocalActivityExecutor::class)->startPortableAttempt($run, $task, $execution, $workerAttemptId, [
-            'version' => 1,
+            'version' => $localContractVersion,
+            ...($localContractVersion === 2 ? [
+                'local_activity_contract_version' => 2,
+            ] : []),
             'descriptor_fingerprint' => $fingerprint,
             'worker_attempt_id' => $workerAttemptId,
             'workflow_task_attempt' => $task->attempt_count,
@@ -1041,7 +1079,7 @@ final class PortableLocalActivityPreparation
                 ? [
                     'cancellation_cleanup' => $execution->activity_options['cancellation_cleanup'],
                 ] : []),
-        ]);
+        ], $preparedAt);
 
         return self::response(null, $execution, $attempt, task: $task);
     }
@@ -1152,14 +1190,27 @@ final class PortableLocalActivityPreparation
         ActivityAttempt $previous,
         int $originalTaskAttempt,
         string $fingerprint,
+        int $localContractVersion = 1,
     ): bool {
         $payload = $retry->payload;
-        if (($payload['local_outcome']['version'] ?? null) === 1) {
+        if (($payload['local_outcome']['version'] ?? null) === $localContractVersion) {
             return $previous->status === ActivityAttemptStatus::Failed
                 && $retry->workflow_task_id === $previous->workflow_task_id
                 && ($payload['local_outcome']['workflow_task_attempt'] ?? null) === $originalTaskAttempt
                 && ($payload['task']['lease_owner'] ?? null) === $previous->lease_owner
-                && ($payload['task']['attempt_count'] ?? null) === $originalTaskAttempt;
+                && ($payload['task']['attempt_count'] ?? null) === $originalTaskAttempt
+                && ($localContractVersion === 1 || (
+                    ($payload['retry_disposition']['contract_version'] ?? null) === 2
+                    && ($payload['retry_disposition']['snapshot_version'] ?? null) === 2
+                    && ($payload['retry_disposition']['decision'] ?? null) === 'scheduled'
+                    && ($payload['retry_disposition']['candidate_delay_seconds'] ?? null)
+                        === ($payload['retry_backoff_seconds'] ?? null)
+                    && ($payload['retry_disposition']['retry_available_at'] ?? null)
+                        === ($payload['retry_available_at'] ?? null)
+                ));
+        }
+        if ($localContractVersion !== 1) {
+            return false;
         }
         $recovery = $payload['local_recovery'] ?? [];
         return $previous->status === ActivityAttemptStatus::Expired
@@ -1188,6 +1239,7 @@ final class PortableLocalActivityPreparation
         string $workerAttemptId,
         string $fingerprint,
         int $localContractVersion = 1,
+        ?Carbon $preparedAt = null,
     ): array {
         if (! LocalActivityRuntime::isExecution($execution) || $execution->workflow_run_id !== $run->id
             || $execution->status !== ActivityStatus::Running
@@ -1207,7 +1259,7 @@ final class PortableLocalActivityPreparation
             || ($started->payload['local_preparation']['descriptor_fingerprint'] ?? null) !== $fingerprint) {
             return self::response('local_activity_preparation_mismatch');
         }
-        if ($attempt->lease_expires_at === null || now()->gte($attempt->lease_expires_at)) {
+        if ($attempt->lease_expires_at === null || ($preparedAt ?? now())->gte($attempt->lease_expires_at)) {
             return self::response('local_activity_preparation_lease_expired');
         }
         foreach ([
@@ -1215,7 +1267,7 @@ final class PortableLocalActivityPreparation
             $execution->schedule_to_close_deadline_at,
             $execution->heartbeat_deadline_at,
         ] as $deadline) {
-            if ($deadline !== null && now()->gte($deadline)) {
+            if ($deadline !== null && ($preparedAt ?? now())->gte($deadline)) {
                 return self::response('local_activity_deadline_expired');
             }
         }

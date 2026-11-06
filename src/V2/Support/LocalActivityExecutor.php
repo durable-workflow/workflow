@@ -172,8 +172,36 @@ final class LocalActivityExecutor
         WorkflowRun $run,
         WorkflowTask $task,
         ActivityExecution $execution,
+        int $localContractVersion = 1,
+        ?Carbon $sample = null,
     ): WorkflowHistoryEvent {
-        $outcome = $this->recordTimeoutOutcome($run, $task, $execution, 'schedule_to_close');
+        $decision = null;
+        $metadata = [];
+        if ($localContractVersion === 2) {
+            $attempt = self::currentAttempt($execution);
+            if (! $attempt instanceof ActivityAttempt || $sample === null) {
+                throw new RuntimeException('Prepared retry expiry requires its original attempt and locked sample.');
+            }
+            $decision = self::selectPortableRetryDecision(
+                $execution,
+                $attempt,
+                [
+                    'outcome' => 'timed_out',
+                ],
+                $sample,
+                'schedule_to_close'
+            );
+            $metadata['retry_disposition'] = $decision;
+        }
+        $outcome = $this->recordTimeoutOutcome(
+            $run,
+            $task,
+            $execution,
+            'schedule_to_close',
+            $metadata,
+            $decision,
+            $sample
+        );
 
         return $outcome['event'];
     }
