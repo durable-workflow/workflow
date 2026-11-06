@@ -4,10 +4,16 @@
 declare(strict_types=1);
 
 $scope = null;
+$contractPath = null;
 
 foreach (array_slice($argv, 1) as $argument) {
-    if (str_starts_with($argument, '--scope=')) {
+    if (str_starts_with($argument, '--scope=') && $scope === null) {
         $scope = substr($argument, strlen('--scope='));
+    } elseif (str_starts_with($argument, '--contract-path=') && $contractPath === null) {
+        $contractPath = substr($argument, strlen('--contract-path='));
+    } else {
+        fwrite(STDERR, "Unknown or repeated matrix argument.\n");
+        exit(1);
     }
 }
 
@@ -16,8 +22,17 @@ if (! in_array($scope, ['source', 'published'], true)) {
     exit(1);
 }
 
-$contractPath = dirname(__DIR__, 2) . '/resources/laravel-embedded-upgrade-contract.json';
-$contract = json_decode((string) file_get_contents($contractPath), true, 512, JSON_THROW_ON_ERROR);
+$contractPath ??= dirname(__DIR__, 2) . '/resources/laravel-embedded-upgrade-contract.json';
+if (! is_file($contractPath) || is_link($contractPath)) {
+    fwrite(STDERR, "The Laravel embedded upgrade contract must be a regular file.\n");
+    exit(1);
+}
+$contractBytes = file_get_contents($contractPath, false, null, 0, 65_537);
+if ($contractBytes === false || strlen($contractBytes) > 65_536) {
+    fwrite(STDERR, "The Laravel embedded upgrade contract exceeds its byte limit.\n");
+    exit(1);
+}
+$contract = json_decode($contractBytes, true, 512, JSON_THROW_ON_ERROR);
 $intersection = $contract['supported_intersection'] ?? null;
 
 if (! is_array($intersection) || ! is_array($intersection['cells'] ?? null)) {

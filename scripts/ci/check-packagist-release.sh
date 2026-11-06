@@ -44,7 +44,12 @@ fi
 
 package_url="https://repo.packagist.org/p2/${package_name}.json"
 tmp_dir="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
-package_path="${tmp_dir}/packagist-package.json"
+umask 077
+package_path="$(mktemp "${tmp_dir}/workflow-packagist.XXXXXX.json")"
+trap 'rm -f -- "$package_path"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 attempt=1
 
 while [ "$attempt" -le "$attempts" ]; do

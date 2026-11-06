@@ -29,7 +29,8 @@ download_with_retry() {
     attempt=1
 
     while [ "$attempt" -le "$attempts" ]; do
-        if curl -fsSL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 30 \
+        if curl -fsSL --proto '=https' --proto-redir '=https' \
+            --retry 3 --retry-all-errors --connect-timeout 10 --max-time 30 \
             -o "$download_file" "$download_url"; then
             return
         fi
