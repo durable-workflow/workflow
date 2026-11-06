@@ -251,14 +251,17 @@ final class PortableLocalActivityCleanup
         return $current === null ? $deadline : $deadline->min(\Illuminate\Support\Carbon::parse($current));
     }
 
-    public static function currentAuthorityExpired(WorkflowRun $run, ActivityExecution $execution): bool
-    {
+    public static function currentAuthorityExpired(
+        WorkflowRun $run,
+        ActivityExecution $execution,
+        ?CarbonInterface $sample = null,
+    ): bool {
         if (! self::isScoped($execution)) {
             return false;
         }
         $deadline = self::currentDeadline($run, $execution->activity_options['cancellation_cleanup']);
 
-        return $deadline !== null && $deadline->lt(self::deadline($execution)) && now()->gte($deadline);
+        return $deadline !== null && $deadline->lt(self::deadline($execution)) && ($sample ?? now())->gte($deadline);
     }
 
     public static function bound(

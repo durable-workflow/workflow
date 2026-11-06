@@ -39,6 +39,28 @@ final class PortableLocalActivityControl
         return self::observe($attemptId, $leaseOwner, $workflowTaskAttempt, $renewLease, false, null, $protocolVersion);
     }
 
+    /** @internal Unadvertised versioned supervisor entry.
+     * @return array<string, mixed>
+     */
+    public static function pollWithRetryPolicy(
+        string $attemptId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        bool $renewLease = false,
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        return self::observe(
+            $attemptId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            $renewLease,
+            false,
+            null,
+            $protocolVersion,
+            2
+        );
+    }
+
     /** @param array<string, mixed> $progress
      * @return array<string, mixed>
      */
@@ -58,6 +80,35 @@ final class PortableLocalActivityControl
         return self::observe($attemptId, $leaseOwner, $workflowTaskAttempt, false, true, $normalized, $protocolVersion);
     }
 
+    /** @internal Unadvertised versioned application heartbeat entry.
+     * @param array<string, mixed> $progress
+     * @return array<string, mixed>
+     */
+    public static function heartbeatWithRetryPolicy(
+        string $attemptId,
+        string $leaseOwner,
+        int $workflowTaskAttempt,
+        array $progress = [],
+        string $protocolVersion = WorkerProtocolVersion::VERSION,
+    ): array {
+        try {
+            $normalized = HeartbeatProgress::normalizeForWrite($progress);
+        } catch (LogicException) {
+            return self::response('invalid_local_activity_heartbeat');
+        }
+
+        return self::observe(
+            $attemptId,
+            $leaseOwner,
+            $workflowTaskAttempt,
+            false,
+            true,
+            $normalized,
+            $protocolVersion,
+            2
+        );
+    }
+
     /** @param array<string, mixed>|null $progress
      * @return array<string, mixed>
      */
@@ -69,6 +120,7 @@ final class PortableLocalActivityControl
         bool $applicationHeartbeat,
         ?array $progress,
         string $protocolVersion,
+        int $localContractVersion = 1,
     ): array {
         $reply = self::lockedObservation(
             $attemptId,
@@ -77,7 +129,8 @@ final class PortableLocalActivityControl
             $renewLease,
             $applicationHeartbeat,
             $progress,
-            $protocolVersion
+            $protocolVersion,
+            $localContractVersion
         );
         $pending = $reply['_scope_control'] ?? null;
         if (! is_array($pending)) {
@@ -141,7 +194,8 @@ final class PortableLocalActivityControl
             $renewLease,
             $applicationHeartbeat,
             $progress,
-            $protocolVersion
+            $protocolVersion,
+            $localContractVersion
         );
     }
 
@@ -156,6 +210,7 @@ final class PortableLocalActivityControl
         bool $applicationHeartbeat,
         ?array $progress,
         string $protocolVersion,
+        int $localContractVersion = 1,
     ): array {
         if (preg_match('/^[0-9]+\.[0-9]+$/D', $protocolVersion) !== 1
             || version_compare($protocolVersion, PortableLocalActivityPreparation::MINIMUM_PROTOCOL_VERSION, '<')) {
@@ -172,6 +227,7 @@ final class PortableLocalActivityControl
             $renewLease,
             $applicationHeartbeat,
             $progress,
+            $localContractVersion,
         ): array {
             $rows = ActivityRowLockOrder::lockForAttempt($attemptId);
             $attempt = $rows['attempt'];
@@ -196,6 +252,7 @@ final class PortableLocalActivityControl
                 $attempt,
                 $leaseOwner,
                 $workflowTaskAttempt,
+                $localContractVersion,
             );
             if ($started === null) {
                 return self::response('local_activity_preparation_mismatch');
@@ -372,6 +429,7 @@ final class PortableLocalActivityControl
                     ) ? null : PortableLocalActivityCleanup::deadline($execution),
                     $cleanup,
                     $run,
+                    validatePreparedRetryTimestamp: $localContractVersion === 2,
                 );
                 $deadline = PortableLocalActivityCleanup::currentDeadline(
                     $run,
@@ -388,6 +446,13 @@ final class PortableLocalActivityControl
             if ($applicationHeartbeat) {
                 $heartbeatAt = now();
                 $timeout = $execution->retry_policy['heartbeat_timeout'] ?? null;
+                if ($localContractVersion === 2) {
+                    PreparedLocalRetryTimestamp::addForConnection(
+                        $heartbeatAt,
+                        $timeout ?? 0,
+                        ConfiguredV2Models::connection()
+                    );
+                }
                 $execution->forceFill([
                     'last_heartbeat_at' => $heartbeatAt,
                     'heartbeat_deadline_at' => PortableLocalActivityCleanup::bound(
