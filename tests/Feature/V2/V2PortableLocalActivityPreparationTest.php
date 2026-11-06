@@ -454,6 +454,19 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
                 ]
             );
             $attemptId = $prepared['activity_attempt_id'];
+            $this->assertSame(
+                'invalid_local_activity_heartbeat',
+                PortableLocalActivityControl::heartbeatWithRetryPolicy(
+                    $attemptId,
+                    'portable-worker',
+                    1,
+                    [
+                        'step' => 1,
+                    ],
+                    '1.20'
+                )['reason']
+            );
+            $this->assertSame(2, $run->historyEvents()->count());
             $this->assertSame('local_activity_preparation_mismatch', PortableLocalActivityControl::poll(
                 $attemptId,
                 'portable-worker',
@@ -483,7 +496,7 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
                 'portable-worker',
                 1,
                 [
-                    'step' => 1,
+                    'current' => 1,
                 ],
                 '1.20'
             );
@@ -530,7 +543,7 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
             'foreign-worker',
             1,
             [
-                'step' => 1,
+                'current' => 1,
             ],
             '1.20'
         );
@@ -571,7 +584,7 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
                     'portable-worker',
                     1,
                     [
-                        'step' => 1,
+                        'current' => 1,
                     ],
                     '1.20'
                 ),
