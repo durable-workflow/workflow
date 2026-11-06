@@ -86,7 +86,7 @@ final class V2PortableLocalActivityRecoveryTest extends TestCase
         $this->assertCount(1, $reply['created_task_ids']);
         $this->assertSame(1, ActivityAttempt::query()->where('workflow_run_id', $run->id)->count());
         $this->assertSame(2, $run->tasks()->count());
-        $this->assertSame([
+        $this->assertRecoveryReply([
             ...$reply,
             'duplicate' => true,
         ], $this->recoverRetryContract($task, $descriptor));
@@ -115,7 +115,7 @@ final class V2PortableLocalActivityRecoveryTest extends TestCase
         $this->assertSame($before, $task->refresh()->getAttributes());
         $this->assertSame(1, $run->tasks()->count());
         $this->assertSame(1, ActivityExecution::query()->findOrFail($first['activity_execution_id'])->attempt_count);
-        $this->assertSame([
+        $this->assertRecoveryReply([
             ...$reply,
             'duplicate' => true,
         ], $this->recoverRetryContract($task, $descriptor));
@@ -157,7 +157,7 @@ final class V2PortableLocalActivityRecoveryTest extends TestCase
         $this->assertSame($scheduled, $reply['claim_released']);
         $this->assertCount($scheduled ? 1 : 0, $reply['created_task_ids']);
         $this->assertSame($scheduled ? 2 : 1, $run->tasks()->count());
-        $this->assertSame([
+        $this->assertRecoveryReply([
             ...$reply,
             'duplicate' => true,
         ], $this->recoverRetryContract($task, $descriptor));
@@ -204,7 +204,7 @@ final class V2PortableLocalActivityRecoveryTest extends TestCase
             ]);
         $before = $run->historyEvents()
             ->count();
-        $this->assertSame([
+        $this->assertRecoveryReply([
             ...$reply,
             'duplicate' => true,
         ], $this->recoverRetryContract($task, $descriptor));
@@ -228,7 +228,7 @@ final class V2PortableLocalActivityRecoveryTest extends TestCase
                 'backoff_seconds' => [$invalidCap ? 21 : 3],
             ],
         ])->save();
-        $before = [$run->historyEvents()->count(), $run->tasks()->count(), $execution->getAttributes(),
+        $before = [$run->historyEvents()->count(), $run->tasks()->count(), $execution->refresh()->getAttributes(),
             ActivityAttempt::query()->findOrFail($first['activity_attempt_id'])->getAttributes()];
         $rejected = $this->recoverRetryContract($task, $descriptor);
         $this->assertFalse($rejected['recovered']);
@@ -291,6 +291,44 @@ final class V2PortableLocalActivityRecoveryTest extends TestCase
         yield 'stop state cannot be rewritten' => ['local_recovery.callback_stop_state', 'stopped'];
         yield 'original owner substituted' => ['local_recovery.original_lease_owner', 'foreign'];
         yield 'retry delay substituted' => ['retry_backoff_seconds', 0];
+        yield 'outcome and recovery authority mixed' => ['local_outcome.version', 2];
+    }
+
+    public function testRetryPreparationRefusesMixedOutcomeAndRecoveryAuthority(): void
+    {
+        [$run, $task, $first, $descriptor] = $this->reclaimedRetryCall();
+        $reply = $this->recoverRetryContract($task, $descriptor);
+        $this->assertTrue($reply['recovered'], $reply['reason'] ?? '');
+        $event = WorkflowHistoryEvent::query()->findOrFail($reply['event_id']);
+        $event->forceFill([
+            'payload' => [
+                ...$event->payload,
+                'local_outcome' => [
+                    'version' => 2,
+                ],
+            ],
+        ])->save();
+        $retry = WorkflowTask::query()->findOrFail($reply['created_task_ids'][0]);
+        $retry->forceFill([
+            'status' => TaskStatus::Leased,
+            'lease_owner' => 'next-worker',
+            'attempt_count' => 1,
+            'lease_expires_at' => now()
+                ->addMinute(),
+        ])->save();
+        Carbon::setTestNow(now()->addSeconds(2));
+        $refused = PortableLocalActivityPreparation::prepareWithRetryPolicy(
+            $retry->id,
+            'next-worker',
+            1,
+            1,
+            'next-local-attempt',
+            $descriptor,
+            '1.20'
+        );
+        $this->assertSame('local_activity_retry_preparation_mismatch', $refused['reason']);
+        $this->assertSame(3, $run->historyEvents()->count());
+        $this->assertSame(1, ActivityExecution::query()->findOrFail($first['activity_execution_id'])->attempt_count);
     }
 
     public function testRetryRecoveryRollbackPublishesNoFailureSampleReceiptOrTask(): void
@@ -447,7 +485,7 @@ final class V2PortableLocalActivityRecoveryTest extends TestCase
             $line = fgets($sockets[0]);
             $this->assertIsString($line);
             $loser = json_decode($line, true, flags: JSON_THROW_ON_ERROR);
-            $this->assertSame([
+            $this->assertRecoveryReply([
                 ...$winner,
                 'duplicate' => true,
             ], $loser);
@@ -830,6 +868,17 @@ final class V2PortableLocalActivityRecoveryTest extends TestCase
         $this->assertFalse($reply['acknowledged']);
         $this->assertSame('local_activity_stop_receipt_requires_protocol_1_20', $reply['reason']);
         $this->assertSame($before, $run->historyEvents()->count());
+    }
+
+    private function assertRecoveryReply(array $expected, array $actual): void
+    {
+        // Native JSON storage may reorder object keys. Preserve exact scalar
+        // types and every field while comparing the closed disposition.
+        if (isset($expected['retry_disposition'], $actual['retry_disposition'])) {
+            ksort($expected['retry_disposition']);
+            ksort($actual['retry_disposition']);
+        }
+        $this->assertSame($expected, $actual);
     }
 
     private function recoverRetryContract(WorkflowTask $task, array $descriptor): array

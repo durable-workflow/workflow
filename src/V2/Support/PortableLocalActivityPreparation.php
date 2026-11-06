@@ -444,7 +444,8 @@ final class PortableLocalActivityPreparation
         $payload = $event->payload;
         $decision = $payload['retry_disposition'] ?? null;
         $recovery = $payload['local_recovery'] ?? null;
-        if ($started === null || ! is_array($decision) || ! is_array($recovery)) {
+        if ($started === null || ! is_array($decision) || ! is_array($recovery)
+            || array_key_exists('local_outcome', $payload)) {
             return false;
         }
         $connection = ConfiguredV2Models::connection();
@@ -1253,7 +1254,9 @@ final class PortableLocalActivityPreparation
                 $previous,
                 $originalTaskAttempt,
                 $fingerprint,
-                $localContractVersion
+                $localContractVersion,
+                $execution,
+                $started
             )
             || ! is_string($retry->payload['retry_available_at'] ?? null)
             || $execution->attempt_count >= ActivityRetryPolicy::maxAttemptsFromSnapshot($execution)) {
@@ -1399,7 +1402,7 @@ final class PortableLocalActivityPreparation
     }
 
     /**
-     * @return array<string, mixed>
+     * Validate original outcome or recovery authority before preparing a retry.
      */
     private static function retryAuthorityMatches(
         WorkflowHistoryEvent $retry,
@@ -1407,8 +1410,14 @@ final class PortableLocalActivityPreparation
         int $originalTaskAttempt,
         string $fingerprint,
         int $localContractVersion = 1,
+        ?ActivityExecution $execution = null,
+        ?WorkflowHistoryEvent $started = null,
     ): bool {
         $payload = $retry->payload;
+        if ($localContractVersion === 2 && array_key_exists('local_recovery', $payload)) {
+            return $previous->status === ActivityAttemptStatus::Expired && $execution !== null
+                && self::matchesRetryRecoveryReceipt($retry, $execution, $previous, $started);
+        }
         if (($payload['local_outcome']['version'] ?? null) === $localContractVersion) {
             return $previous->status === ActivityAttemptStatus::Failed
                 && $retry->workflow_task_id === $previous->workflow_task_id
