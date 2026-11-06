@@ -1570,6 +1570,27 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 continue;
             }
 
+            if ($fixture['id'] === 'prepared-v1-policy-refusal-legacy-zero-tail') {
+                $run = $this->createRunFromFixture($fixture);
+                $before = $run->historyEvents()
+                    ->count();
+                $this->runReadyWorkflowTask($run);
+                $this->assertSame(RunStatus::Completed, $run->refresh()->status);
+                $this->assertSame($fixture['expected_step']['result'], Serializer::unserializeWithCodec(
+                    $run->outputPayloadCodec(),
+                    $run->output
+                ));
+                $this->assertSame([120, 0], $run->historyEvents()
+                    ->where('event_type', HistoryEventType::ActivityRetryScheduled)
+                    ->orderBy('sequence')
+                    ->get()
+                    ->map(static fn (WorkflowHistoryEvent $event): int => $event->payload['retry_backoff_seconds'])
+                    ->all());
+                $this->assertSame($before + 1, $run->historyEvents()->count());
+                $this->assertSame(0, $run->activityExecutions()->count());
+                continue;
+            }
+
             if ($fixture['id'] === 'nexus-sdk-caller-attribution') {
                 $this->clearWorkflowState();
                 $this->assertNexusCallerSdkAttribution($fixture);
