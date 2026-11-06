@@ -283,6 +283,9 @@ final class ParallelChildGroup
             self::normalizedPath($metadata),
             'activity',
             $closedActivityStatus,
+            // Outcome validation may establish a snapshot before the run lock.
+            // The barrier must observe the preceding lock holder's resolution.
+            true,
         );
     }
 
