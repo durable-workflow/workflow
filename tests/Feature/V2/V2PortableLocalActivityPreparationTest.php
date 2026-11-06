@@ -30,10 +30,15 @@ use Workflow\V2\Support\ActivityCancellation;
 use Workflow\V2\Support\ActivityCancellationAcknowledgement;
 use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\CancellationScopeHistory;
+use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\HistoryTimeline;
+use Workflow\V2\Support\LocalActivityCall;
+use Workflow\V2\Support\LocalActivityExecutor;
 use Workflow\V2\Support\ParallelChildGroup;
+use Workflow\V2\Support\PortableLocalActivityControl;
 use Workflow\V2\Support\PortableLocalActivityPreparation;
+use Workflow\V2\Support\PreparedLocalRetryTimestamp;
 use Workflow\V2\WorkflowStub;
 
 final class V2PortableLocalActivityPreparationTest extends TestCase
@@ -87,6 +92,669 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
             $this->assertSame('workflow', $entry['task']['type']);
             $this->assertSame('leased', $entry['task']['status']);
         }
+    }
+
+    public function testRetryContractPreparationRetainsItsOriginalModeAndCannotUseTheLegacyOutcomeEntry(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $descriptor = [
+            ...$this->descriptor(),
+            'retry_policy' => [
+                'contract_version' => 2,
+                'mode' => 'explicit',
+                'max_attempts' => 3,
+                'backoff_seconds' => [2, 5],
+            ],
+        ];
+        $prepare = static fn (): array => PortableLocalActivityPreparation::prepareWithRetryPolicy(
+            $task->id,
+            'portable-worker',
+            1,
+            1,
+            'sdk-local-attempt',
+            $descriptor,
+            '1.20'
+        );
+        $reply = $prepare();
+        $this->assertTrue($reply['prepared']);
+        $execution = ActivityExecution::query()->findOrFail($reply['activity_execution_id']);
+        $attempt = ActivityAttempt::query()->findOrFail($reply['activity_attempt_id']);
+        $this->assertSame(2, $execution->activity_options['local_activity_contract_version']);
+        $this->assertSame(2, $execution->retry_policy['snapshot_version']);
+        $this->assertSame(5, $execution->retry_policy['maximum_interval_seconds']);
+        $started = PortableLocalActivityPreparation::originalStart($run, $execution, $attempt, 'portable-worker', 1, 2);
+        $this->assertInstanceOf(WorkflowHistoryEvent::class, $started);
+        $this->assertSame(2, $started->payload['local_preparation']['version']);
+        $this->assertSame(2, $started->payload['local_preparation']['local_activity_contract_version']);
+        $this->assertNull(
+            PortableLocalActivityPreparation::originalStart($run, $execution, $attempt, 'portable-worker', 1)
+        );
+        $refused = app(LocalActivityExecutor::class)->recordPortableOutcome(
+            $attempt->id,
+            'portable-worker',
+            1,
+            [
+                'outcome' => 'failed',
+                'message' => 'failure',
+            ],
+            '1.20'
+        );
+        $this->assertFalse($refused['recorded']);
+        $this->assertSame('local_activity_preparation_mismatch', $refused['reason']);
+        $this->assertSame(ActivityAttemptStatus::Running, $attempt->refresh()->status);
+        $this->assertSame(2, $run->historyEvents()->count());
+        $duplicate = $prepare();
+        $this->assertTrue($duplicate['prepared']);
+        $this->assertTrue($duplicate['duplicate']);
+        $this->assertSame($attempt->id, $duplicate['activity_attempt_id']);
+        $this->assertSame(2, $run->historyEvents()->count());
+
+        $policy = $execution->retry_policy;
+        $execution->forceFill([
+            'retry_policy' => [
+                ...$policy,
+                'maximum_interval_seconds' => 6,
+            ],
+        ])->save();
+        $this->assertNull(PortableLocalActivityPreparation::originalStart(
+            $run,
+            $execution->refresh(),
+            $attempt,
+            'portable-worker',
+            1,
+            2
+        ));
+    }
+
+    public function testRetryContractPreparationRollsBackModeSnapshotAndAttemptWithItsOuterTransaction(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $connection = ConfiguredV2Models::connection();
+        $connection->beginTransaction();
+        try {
+            $reply = PortableLocalActivityPreparation::prepareWithRetryPolicy(
+                $task->id,
+                'portable-worker',
+                1,
+                1,
+                'sdk-local-attempt',
+                [
+                    ...$this->descriptor(),
+                    'retry_policy' => [
+                        'contract_version' => 2,
+                        'mode' => 'explicit',
+                        'max_attempts' => 3,
+                        'backoff_seconds' => [2, 5],
+                    ],
+                ],
+                '1.20'
+            );
+            $this->assertTrue($reply['prepared']);
+            $this->assertSame(2, $run->historyEvents()->count());
+        } finally {
+            $connection->rollBack();
+        }
+        $this->assertSame(0, $run->activityExecutions()->count());
+        $this->assertSame(0, ActivityAttempt::query()->where('workflow_run_id', $run->id)->count());
+        $this->assertSame(0, $run->historyEvents()->count());
+        $this->assertSame(TaskStatus::Leased, $task->refresh()->status);
+    }
+
+    public function testRetryContractCannotDowngradeThroughLegacyInternalExecution(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $prepared = $this->prepareRetryContract($task);
+        $execution = ActivityExecution::query()->findOrFail($prepared['activity_execution_id']);
+        $executor = app(LocalActivityExecutor::class);
+        $operations = [
+            static fn () => $executor->execute(
+                $run,
+                $task,
+                1,
+                new LocalActivityCall('python-local-greeting', ['Taylor'])
+            ),
+            static fn () => $executor->expirePortableRetry($run, $task, $execution),
+            static fn () => $executor->startPortableAttempt($run, $task, $execution, 'replacement', [
+                'version' => 1,
+            ]),
+            static fn () => $executor->recoverPortableAttempt(
+                $run,
+                $task,
+                $execution,
+                ActivityAttempt::query()->findOrFail($prepared['activity_attempt_id']),
+                []
+            ),
+        ];
+        foreach ($operations as $operation) {
+            try {
+                $operation();
+                $this->fail('A legacy internal entry accepted prepared retry contract 2.');
+            } catch (\RuntimeException $error) {
+                $this->assertStringStartsWith('Prepared retry ', $error->getMessage());
+            }
+        }
+        $this->assertSame(2, $run->historyEvents()->count());
+        $this->assertSame(1, ActivityAttempt::query()->where('workflow_run_id', $run->id)->count());
+        $this->assertSame(ActivityStatus::Running, $execution->refresh()->status);
+        $this->assertSame(TaskStatus::Leased, $task->refresh()->status);
+    }
+
+    public function testRetryContractRejectsAnUnbindableDeadlineBeforePublishingPreparation(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $latest = PreparedLocalRetryTimestamp::latestForConnection(ConfiguredV2Models::connection());
+        $task->forceFill([
+            'lease_expires_at' => $latest,
+        ])->save();
+        $before = $task->refresh()
+            ->getAttributes();
+        Carbon::setTestNow(Carbon::instance($latest)->subMicroseconds(500000));
+        try {
+            PortableLocalActivityPreparation::prepareWithRetryPolicy(
+                $task->id,
+                'portable-worker',
+                1,
+                1,
+                'sdk-local-attempt',
+                [
+                    ...$this->descriptor(),
+                    'retry_policy' => [
+                        'contract_version' => 2,
+                        'mode' => 'explicit',
+                        'max_attempts' => 3,
+                        'backoff_seconds' => [2, 5],
+                    ],
+                    'start_to_close_timeout' => 1,
+                ],
+                '1.20'
+            );
+            $this->fail('Prepared an attempt with an unbindable deadline.');
+        } catch (\InvalidArgumentException) {
+            $this->addToAssertionCount(1);
+        } finally {
+            Carbon::setTestNow();
+        }
+        $this->assertSame(0, $run->activityExecutions()->count());
+        $this->assertSame(0, ActivityAttempt::query()->where('workflow_run_id', $run->id)->count());
+        $this->assertSame(0, $run->historyEvents()->count());
+        $this->assertSame($before, $task->refresh()->getAttributes());
+    }
+
+    #[DataProvider('retryContractOutcomes')]
+    public function testRetryContractCommitsAndReplaysItsOriginalDecision(
+        int $elapsed,
+        array $report,
+        array $timeouts,
+        string $eventType,
+        string $classification,
+        ?int $delay,
+    ): void {
+        $origin = Carbon::parse('2026-11-01T00:00:00.123456Z');
+        Carbon::setTestNow($origin);
+        try {
+            [$run, $task] = $this->newClaim();
+            $prepared = $this->prepareRetryContract($task, $timeouts);
+            $this->assertTrue($prepared['prepared']);
+            Carbon::setTestNow($origin->copy()->addSeconds($elapsed));
+            $executor = app(LocalActivityExecutor::class);
+            $reply = $executor->recordPortableRetryOutcome(
+                $prepared['activity_attempt_id'],
+                'portable-worker',
+                1,
+                $report,
+                '1.20'
+            );
+            $this->assertTrue($reply['recorded'], json_encode($reply));
+            $this->assertFalse($reply['duplicate']);
+            $this->assertSame($eventType, $reply['event_type']);
+            $decision = $reply['retry_disposition'];
+            $this->assertSame($classification, $decision['terminal_classification'] ?? $decision['decision']);
+            $this->assertSame($origin->copy()->addSeconds($elapsed)->toISOString(), $decision['failure_time']);
+            $this->assertSame(
+                $origin->copy()
+                    ->addSeconds(100)
+                    ->toISOString(),
+                $decision['original_schedule_to_close_deadline_at']
+            );
+            $event = WorkflowHistoryEvent::query()->findOrFail($reply['event_id']);
+            $this->assertSame(2, $event->payload['local_outcome']['version']);
+            $this->assertEquals($decision, $event->payload['retry_disposition']);
+            $this->assertSame($delay === null ? 'terminal' : 'scheduled', $decision['decision']);
+            $this->assertSame($delay !== null, $reply['claim_released']);
+            $this->assertCount($delay === null ? 0 : 1, $reply['created_task_ids']);
+            if ($delay !== null) {
+                $retry = WorkflowTask::query()->findOrFail($reply['created_task_ids'][0]);
+                $this->assertSame(
+                    $origin->copy()
+                        ->addSeconds($elapsed + $delay)
+                        ->toISOString(),
+                    $retry->available_at->toISOString()
+                );
+                $this->assertSame($delay, $event->payload['retry_backoff_seconds']);
+                $this->assertSame(TaskStatus::Completed, $task->refresh()->status);
+            } else {
+                $this->assertSame(TaskStatus::Leased, $task->refresh()->status);
+                $this->assertArrayNotHasKey('retry_available_at', $decision);
+            }
+            if ($decision['failure_source'] === 'application') {
+                $this->assertSame($report['message'], $event->payload['message']);
+                $this->assertSame('SyntheticFailure', $event->payload['exception_type']);
+            }
+            $this->assertSame(1, $run->activityExecutions()->sole()->attempt_count);
+            $this->assertSame(1, ActivityAttempt::query()->where('workflow_run_id', $run->id)->count());
+            $this->assertSame(3, $run->historyEvents()->count());
+            $taskCount = $run->tasks()
+                ->count();
+            Carbon::setTestNow($origin->copy()->addSeconds(400));
+            $duplicate = $executor->recordPortableRetryOutcome(
+                $prepared['activity_attempt_id'],
+                'portable-worker',
+                1,
+                $report,
+                '1.20'
+            );
+            $this->assertTrue($duplicate['recorded']);
+            $this->assertTrue($duplicate['duplicate']);
+            $this->assertSame($reply['event_id'], $duplicate['event_id']);
+            $this->assertEquals($decision, $duplicate['retry_disposition']);
+            $this->assertSame(3, $run->historyEvents()->count());
+            $this->assertSame($taskCount, $run->tasks()->count());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public static function retryContractOutcomes(): array
+    {
+        $failure = [
+            'outcome' => 'failed',
+            'message' => 'original failure',
+            'exception_type' => 'SyntheticFailure',
+        ];
+        return [
+            'zero override before original deadline' => [99, [
+                ...$failure,
+                'next_retry_delay_seconds' => 0,
+            ], [],
+                'ActivityRetryScheduled', 'scheduled', 0],
+            'candidate reaches original deadline' => [99, [
+                ...$failure,
+                'next_retry_delay_seconds' => 1,
+            ], [],
+                'ActivityFailed', 'retry_delay_exceeds_schedule_to_close', null],
+            'fresh due deadline preempts zero override' => [100, [
+                ...$failure,
+                'next_retry_delay_seconds' => 0,
+            ], [],
+                'ActivityTimedOut', 'engine_timeout', null],
+            'override exceeds cap' => [1, [
+                ...$failure,
+                'next_retry_delay_seconds' => 6,
+            ], [],
+                'ActivityFailed', 'retry_delay_exceeds_policy_cap', null],
+            'absent override selects policy' => [1, $failure, [], 'ActivityRetryScheduled', 'scheduled', 2],
+            'start timeout ignores application override' => [2, [
+                ...$failure,
+                'next_retry_delay_seconds' => 0,
+            ],
+                [
+                    'start_to_close_timeout' => 2,
+                ], 'ActivityRetryScheduled', 'scheduled', 2],
+            'heartbeat timeout uses policy' => [2, [
+                'outcome' => 'timed_out',
+            ], [
+                'heartbeat_timeout' => 2,
+            ],
+                'ActivityRetryScheduled', 'scheduled', 2],
+            'nonretryable precedes selection' => [1, [
+                ...$failure,
+                'non_retryable' => true,
+                'next_retry_delay_seconds' => 6,
+            ], [], 'ActivityFailed', 'non_retryable', null],
+        ];
+    }
+
+    public function testRetryContractOutcomeAndItsTaskRollBackWithTheOuterTransaction(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $prepared = $this->prepareRetryContract($task);
+        $connection = ConfiguredV2Models::connection();
+        $connection->beginTransaction();
+        try {
+            $reply = app(LocalActivityExecutor::class)->recordPortableRetryOutcome(
+                $prepared['activity_attempt_id'],
+                'portable-worker',
+                1,
+                [
+                    'outcome' => 'failed',
+                    'message' => 'failure',
+                    'next_retry_delay_seconds' => 0,
+                ],
+                '1.20'
+            );
+            $this->assertTrue($reply['recorded']);
+            $this->assertSame(3, $run->historyEvents()->count());
+            $this->assertSame(2, $run->tasks()->count());
+        } finally {
+            $connection->rollBack();
+        }
+        $this->assertSame(2, $run->historyEvents()->count());
+        $this->assertSame(1, $run->tasks()->count());
+        $this->assertSame(TaskStatus::Leased, $task->refresh()->status);
+        $this->assertSame(
+            ActivityAttemptStatus::Running,
+            ActivityAttempt::query()->findOrFail($prepared['activity_attempt_id'])->status
+        );
+    }
+
+    public function testRetryContractSupervisorAndHeartbeatKeepTheirSeparateAuthority(): void
+    {
+        $origin = Carbon::parse('2026-11-01T00:00:00.123456Z');
+        Carbon::setTestNow($origin);
+        try {
+            [$run, $task] = $this->newClaim();
+            $prepared = $this->prepareRetryContract(
+                $task,
+                [
+                    'start_to_close_timeout' => 10,
+                    'heartbeat_timeout' => 4,
+                ]
+            );
+            $attemptId = $prepared['activity_attempt_id'];
+            $this->assertSame(
+                'invalid_local_activity_heartbeat',
+                PortableLocalActivityControl::heartbeatWithRetryPolicy(
+                    $attemptId,
+                    'portable-worker',
+                    1,
+                    [
+                        'step' => 1,
+                    ],
+                    '1.20'
+                )['reason']
+            );
+            $this->assertSame(2, $run->historyEvents()->count());
+            $this->assertSame('local_activity_preparation_mismatch', PortableLocalActivityControl::poll(
+                $attemptId,
+                'portable-worker',
+                1,
+                true,
+                '1.20'
+            )['reason']);
+            Carbon::setTestNow($origin->copy()->addSecond());
+            $renewed = PortableLocalActivityControl::pollWithRetryPolicy(
+                $attemptId,
+                'portable-worker',
+                1,
+                true,
+                '1.20'
+            );
+            $this->assertTrue($renewed['active']);
+            $this->assertTrue($renewed['renewed']);
+            $this->assertFalse($renewed['heartbeat_recorded']);
+            $this->assertSame($renewed['lease_expires_at'], $renewed['workflow_lease_expires_at']);
+            $this->assertSame($prepared['start_to_close_deadline_at'], $renewed['start_to_close_deadline_at']);
+            $this->assertSame($prepared['schedule_to_close_deadline_at'], $renewed['schedule_to_close_deadline_at']);
+            $this->assertSame($prepared['heartbeat_deadline_at'], $renewed['heartbeat_deadline_at']);
+            $this->assertSame(2, $run->historyEvents()->count());
+            Carbon::setTestNow($origin->copy()->addSeconds(2));
+            $heartbeat = PortableLocalActivityControl::heartbeatWithRetryPolicy(
+                $attemptId,
+                'portable-worker',
+                1,
+                [
+                    'current' => 1,
+                ],
+                '1.20'
+            );
+            $this->assertTrue($heartbeat['active']);
+            $this->assertTrue($heartbeat['heartbeat_recorded']);
+            $this->assertFalse($heartbeat['renewed']);
+            $this->assertSame($renewed['lease_expires_at'], $heartbeat['lease_expires_at']);
+            $this->assertSame($origin->copy()->addSeconds(6)->toISOString(), $heartbeat['heartbeat_deadline_at']);
+            $this->assertSame($prepared['start_to_close_deadline_at'], $heartbeat['start_to_close_deadline_at']);
+            $this->assertSame($prepared['schedule_to_close_deadline_at'], $heartbeat['schedule_to_close_deadline_at']);
+            $this->assertSame(3, $run->historyEvents()->count());
+            Carbon::setTestNow($origin->copy()->addSeconds(6));
+            $expired = PortableLocalActivityControl::pollWithRetryPolicy(
+                $attemptId,
+                'portable-worker',
+                1,
+                true,
+                '1.20'
+            );
+            $this->assertTrue($expired['stop_required']);
+            $this->assertSame('local_activity_deadline_expired', $expired['reason']);
+            $this->assertFalse($expired['renewed']);
+            $this->assertSame($renewed['lease_expires_at'], $expired['lease_expires_at']);
+            $this->assertSame(3, $run->historyEvents()->count());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function testRetryContractSupervisorDoesNotBorrowLegacyOrForeignPreparation(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $prepared = $this->prepare($task);
+        $refused = PortableLocalActivityControl::pollWithRetryPolicy(
+            $prepared['activity_attempt_id'],
+            'portable-worker',
+            1,
+            true,
+            '1.20'
+        );
+        $this->assertSame('local_activity_preparation_mismatch', $refused['reason']);
+        $refused = PortableLocalActivityControl::heartbeatWithRetryPolicy(
+            $prepared['activity_attempt_id'],
+            'foreign-worker',
+            1,
+            [
+                'current' => 1,
+            ],
+            '1.20'
+        );
+        $this->assertSame('local_activity_preparation_mismatch', $refused['reason']);
+        $this->assertSame(2, $run->historyEvents()->count());
+        $this->assertSame(TaskStatus::Leased, $task->refresh()->status);
+    }
+
+    public function testRetryContractRenewalAndHeartbeatRefuseUnbindableTimestampsBeforeWrites(): void
+    {
+        config()->set('workflows.v2.workflow_task_lease_seconds', 300);
+        [$run, $task] = $this->newClaim();
+        $latest = Carbon::instance(PreparedLocalRetryTimestamp::latestForConnection(ConfiguredV2Models::connection()));
+        $task->forceFill([
+            'lease_expires_at' => $latest,
+        ])->save();
+        Carbon::setTestNow($latest->copy()->subMicroseconds(2500000));
+        try {
+            $prepared = $this->prepareRetryContract(
+                $task,
+                [
+                    'schedule_to_close_timeout' => null,
+                    'heartbeat_timeout' => 2,
+                ]
+            );
+            $this->assertTrue($prepared['prepared']);
+            $execution = $run->activityExecutions()
+                ->sole();
+            $attempt = ActivityAttempt::query()->findOrFail($prepared['activity_attempt_id']);
+            $executionBefore = $execution->getAttributes();
+            $attemptBefore = $attempt->getAttributes();
+            $taskBefore = $task->refresh()
+                ->getAttributes();
+            Carbon::setTestNow($latest->copy()->subMicroseconds(1500000));
+            foreach ([
+                static fn () => PortableLocalActivityControl::heartbeatWithRetryPolicy(
+                    $attempt->id,
+                    'portable-worker',
+                    1,
+                    [
+                        'current' => 1,
+                    ],
+                    '1.20'
+                ),
+                static fn () => PortableLocalActivityControl::pollWithRetryPolicy(
+                    $attempt->id,
+                    'portable-worker',
+                    1,
+                    true,
+                    '1.20'
+                ),
+            ] as $operation) {
+                try {
+                    $operation();
+                    $this->fail('Published an unbindable heartbeat or renewal timestamp.');
+                } catch (\InvalidArgumentException) {
+                    $this->addToAssertionCount(1);
+                }
+                $this->assertSame($executionBefore, $execution->refresh()->getAttributes());
+                $this->assertSame($attemptBefore, $attempt->refresh()->getAttributes());
+                $this->assertSame($taskBefore, $task->refresh()->getAttributes());
+                $this->assertSame(2, $run->historyEvents()->count());
+            }
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function testRetryContractCompletionKeepsItsClosedReceiptWithoutARetryDecision(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $prepared = $this->prepareRetryContract($task);
+        $executor = app(LocalActivityExecutor::class);
+        $report = [
+            'outcome' => 'completed',
+            'result' => Serializer::serializeWithCodec('avro', 'done'),
+            'payload_codec' => 'avro',
+        ];
+        $reply = $executor->recordPortableRetryOutcome(
+            $prepared['activity_attempt_id'],
+            'portable-worker',
+            1,
+            $report,
+            '1.20'
+        );
+        $this->assertTrue($reply['recorded']);
+        $this->assertSame('ActivityCompleted', $reply['event_type']);
+        $this->assertArrayNotHasKey('retry_disposition', $reply);
+        $this->assertTrue($executor->recordPortableRetryOutcome(
+            $prepared['activity_attempt_id'],
+            'portable-worker',
+            1,
+            $report,
+            '1.20'
+        )['duplicate']);
+        $event = WorkflowHistoryEvent::query()->findOrFail($reply['event_id']);
+        $event->forceFill([
+            'payload' => [
+                ...$event->payload,
+                'retry_disposition' => [],
+            ],
+        ])->save();
+        $changed = $executor->recordPortableRetryOutcome(
+            $prepared['activity_attempt_id'],
+            'portable-worker',
+            1,
+            $report,
+            '1.20'
+        );
+        $this->assertFalse($changed['recorded']);
+        $this->assertSame('local_activity_outcome_mismatch', $changed['reason']);
+        $this->assertSame(3, $run->historyEvents()->count());
+        $this->assertSame(1, $run->tasks()->count());
+    }
+
+    public function testRetainedTerminalDecisionCannotBeChangedIntoRetryPermission(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $prepared = $this->prepareRetryContract($task);
+        $report = [
+            'outcome' => 'failed',
+            'message' => 'original failure',
+            'next_retry_delay_seconds' => 6,
+        ];
+        $executor = app(LocalActivityExecutor::class);
+        $reply = $executor->recordPortableRetryOutcome(
+            $prepared['activity_attempt_id'],
+            'portable-worker',
+            1,
+            $report,
+            '1.20'
+        );
+        $this->assertTrue($reply['recorded']);
+        $event = WorkflowHistoryEvent::query()->findOrFail($reply['event_id']);
+        $payload = $event->payload;
+        $payload['retry_disposition']['decision'] = 'scheduled';
+        $payload['retry_disposition']['retry_available_at'] = $payload['retry_disposition']['failure_time'];
+        $event->forceFill([
+            'payload' => $payload,
+        ])->save();
+        $changed = $executor->recordPortableRetryOutcome(
+            $prepared['activity_attempt_id'],
+            'portable-worker',
+            1,
+            $report,
+            '1.20'
+        );
+        $this->assertFalse($changed['recorded']);
+        $this->assertSame('local_activity_outcome_mismatch', $changed['reason']);
+        $this->assertSame(3, $run->historyEvents()->count());
+        $this->assertSame(1, $run->tasks()->count());
+        $this->assertSame(1, $run->activityExecutions()->sole()->attempt_count);
+    }
+
+    public function testRetryContractReportPreflightDoesNotGrantModeAuthority(): void
+    {
+        [$run, $task] = $this->newClaim();
+        $legacy = $this->prepare($task);
+        $executor = app(LocalActivityExecutor::class);
+        $connection = ConfiguredV2Models::connection();
+        $connection->enableQueryLog();
+        $connection->flushQueryLog();
+        try {
+            $refused = $executor->recordPortableRetryOutcome(
+                'missing',
+                'foreign',
+                1,
+                [
+                    'outcome' => 'failed',
+                    'message' => false,
+                    'next_retry_delay_seconds' => null,
+                ],
+                '1.20'
+            );
+            $this->assertSame('invalid_activity_retry_delay', $refused['reason']);
+            $this->assertSame([], $connection->getQueryLog());
+        } finally {
+            $connection->disableQueryLog();
+            $connection->flushQueryLog();
+        }
+        $refused = $executor->recordPortableRetryOutcome(
+            $legacy['activity_attempt_id'],
+            'portable-worker',
+            1,
+            [
+                'outcome' => 'failed',
+                'message' => 'failure',
+                'next_retry_delay_seconds' => 0,
+            ],
+            '1.20'
+        );
+        $this->assertSame('local_activity_preparation_mismatch', $refused['reason']);
+        $this->assertSame(2, $run->historyEvents()->count());
+        $refused = $executor->recordPortableRetryOutcome(
+            'missing',
+            'foreign',
+            1,
+            [
+                'outcome' => 'failed',
+                'message' => false,
+            ],
+            '1.20'
+        );
+        $this->assertSame('activity_attempt_not_found', $refused['reason']);
     }
 
     public function testLostPreparationResponseReturnsTheOriginalAttemptWithoutRenewingAnyDeadline(): void
@@ -1339,6 +2007,171 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
         yield 'execution reparented' => ['execution'];
         yield 'scheduled snapshot reparented' => ['scheduled'];
         yield 'started snapshot reparented' => ['started'];
+    }
+
+    public function testRetryContractPreparesOnlyTheStoredDueRetryAndKeepsTheOriginalBudget(): void
+    {
+        $origin = Carbon::parse('2026-11-01T00:00:00.123456Z');
+        Carbon::setTestNow($origin);
+        try {
+            [$run, $task] = $this->newClaim();
+            $prepared = $this->prepareRetryContract($task);
+            $executor = app(LocalActivityExecutor::class);
+            $report = [
+                'outcome' => 'failed',
+                'message' => 'failure',
+            ];
+            $first = $executor->recordPortableRetryOutcome(
+                $prepared['activity_attempt_id'],
+                'portable-worker',
+                1,
+                $report,
+                '1.20'
+            );
+            $this->assertTrue($first['recorded']);
+            $retry = WorkflowTask::query()->findOrFail($first['created_task_ids'][0]);
+            $retry->forceFill([
+                'status' => TaskStatus::Leased,
+                'attempt_count' => 1,
+                'lease_owner' => 'portable-worker',
+                'lease_expires_at' => $origin->copy()
+                    ->addMinutes(5),
+                'available_at' => $origin,
+            ])->save();
+            Carbon::setTestNow($origin->copy()->addSecond());
+            $early = $this->prepareRetryContract($retry, workerAttemptId: 'sdk-local-attempt-2');
+            $this->assertSame('local_activity_retry_not_due', $early['reason']);
+            $this->assertSame(1, $run->activityExecutions()->sole()->attempt_count);
+            $this->assertSame(3, $run->historyEvents()->count());
+            Carbon::setTestNow($origin->copy()->addSeconds(2));
+            $second = $this->prepareRetryContract($retry, workerAttemptId: 'sdk-local-attempt-2');
+            $this->assertTrue($second['prepared'], json_encode($second));
+            $this->assertNotSame($prepared['activity_attempt_id'], $second['activity_attempt_id']);
+            $this->assertSame(
+                $origin->copy()
+                    ->addSeconds(100)
+                    ->toISOString(),
+                $run->activityExecutions()
+                    ->sole()
+                    ->schedule_to_close_deadline_at->toISOString()
+            );
+            $lost = $executor->recordPortableRetryOutcome(
+                $prepared['activity_attempt_id'],
+                'portable-worker',
+                1,
+                $report,
+                '1.20'
+            );
+            $this->assertTrue($lost['duplicate']);
+            $this->assertSame($first['event_id'], $lost['event_id']);
+            Carbon::setTestNow($origin->copy()->addSeconds(3));
+            $secondFailure = $executor->recordPortableRetryOutcome(
+                $second['activity_attempt_id'],
+                'portable-worker',
+                1,
+                $report,
+                '1.20'
+            );
+            $this->assertSame(5, $secondFailure['retry_disposition']['candidate_delay_seconds']);
+            $thirdTask = WorkflowTask::query()->findOrFail($secondFailure['created_task_ids'][0]);
+            $thirdTask->forceFill([
+                'status' => TaskStatus::Leased,
+                'attempt_count' => 1,
+                'lease_owner' => 'portable-worker',
+                'lease_expires_at' => $origin->copy()
+                    ->addMinutes(5),
+            ])->save();
+            Carbon::setTestNow($origin->copy()->addSeconds(8));
+            $third = $this->prepareRetryContract($thirdTask, workerAttemptId: 'sdk-local-attempt-3');
+            $this->assertTrue($third['prepared'], json_encode($third));
+            $terminal = $executor->recordPortableRetryOutcome(
+                $third['activity_attempt_id'],
+                'portable-worker',
+                1,
+                $report,
+                '1.20'
+            );
+            $this->assertSame('attempts_exhausted', $terminal['retry_disposition']['terminal_classification']);
+            $this->assertSame([], $terminal['created_task_ids']);
+            $this->assertSame(3, $run->activityExecutions()->sole()->attempt_count);
+            $this->assertSame(3, ActivityAttempt::query()->where('workflow_run_id', $run->id)->count());
+            $this->assertSame(7, $run->historyEvents()->count());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function testRetryContractExpiresAPendingRetryWithoutAnAdditionalAttempt(): void
+    {
+        $origin = Carbon::parse('2026-11-01T00:00:00.123456Z');
+        Carbon::setTestNow($origin);
+        try {
+            [$run, $task] = $this->newClaim();
+            $prepared = $this->prepareRetryContract($task);
+            $reply = app(LocalActivityExecutor::class)->recordPortableRetryOutcome(
+                $prepared['activity_attempt_id'],
+                'portable-worker',
+                1,
+                [
+                    'outcome' => 'failed',
+                    'message' => 'failure',
+                ],
+                '1.20'
+            );
+            $retry = WorkflowTask::query()->findOrFail($reply['created_task_ids'][0]);
+            $retry->forceFill([
+                'status' => TaskStatus::Leased,
+                'attempt_count' => 1,
+                'lease_owner' => 'portable-worker',
+                'lease_expires_at' => $origin->copy()
+                    ->addMinutes(5),
+            ])->save();
+            Carbon::setTestNow($origin->copy()->addSeconds(100));
+            $expired = $this->prepareRetryContract($retry, workerAttemptId: 'sdk-local-attempt-2');
+            $this->assertFalse($expired['prepared']);
+            $this->assertSame('local_activity_deadline_expired', $expired['reason']);
+            $this->assertSame('ActivityTimedOut', $expired['event_type']);
+            $event = WorkflowHistoryEvent::query()->findOrFail($expired['event_id']);
+            $this->assertSame('engine_timeout', $event->payload['retry_disposition']['terminal_classification']);
+            $this->assertSame(
+                $origin->copy()
+                    ->addSeconds(100)
+                    ->toISOString(),
+                $event->payload['retry_disposition']['failure_time']
+            );
+            $this->assertSame(1, $run->activityExecutions()->sole()->attempt_count);
+            $this->assertSame(1, ActivityAttempt::query()->where('workflow_run_id', $run->id)->count());
+            $this->assertSame(2, $run->tasks()->count());
+            $this->assertSame(4, $run->historyEvents()->count());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    private function prepareRetryContract(
+        WorkflowTask $task,
+        array $timeouts = [],
+        string $workerAttemptId = 'sdk-local-attempt',
+    ): array {
+        return PortableLocalActivityPreparation::prepareWithRetryPolicy(
+            $task->id,
+            'portable-worker',
+            1,
+            1,
+            $workerAttemptId,
+            [
+                ...$this->descriptor(),
+                'retry_policy' => [
+                    'contract_version' => 2,
+                    'mode' => 'explicit',
+                    'max_attempts' => 3,
+                    'backoff_seconds' => [2, 5],
+                ],
+                'schedule_to_close_timeout' => 100,
+                ...$timeouts,
+            ],
+            '1.20'
+        );
     }
 
     /** @param list<array<string, mixed>> $expected

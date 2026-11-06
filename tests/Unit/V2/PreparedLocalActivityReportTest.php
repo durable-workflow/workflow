@@ -131,7 +131,8 @@ final class PreparedLocalActivityReportTest extends TestCase
             ];
         }
         foreach (['retry_disposition', 'backoff_seconds', 'retry_backoff_seconds', 'retry_available_at',
-            'failure_time', 'original_schedule_to_close_deadline_at', 'snapshot_version', 'extra'] as $field) {
+            'failure_time', 'original_schedule_to_close_deadline_at', 'snapshot_version', 'failure_source',
+            'requested_delay_seconds', 'local_recovery', 'callback_stop_state', 'extra'] as $field) {
             $invalid[] = [
                 'outcome' => 'failed',
                 'message' => '',
@@ -142,6 +143,9 @@ final class PreparedLocalActivityReportTest extends TestCase
                 $field => 0,
             ];
         }
+        $invalid[] = [
+            'outcome' => 'engine_interruption',
+        ];
         $invalid[] = [
             'outcome' => 'timed_out',
             'timeout_kind' => 'heartbeat',

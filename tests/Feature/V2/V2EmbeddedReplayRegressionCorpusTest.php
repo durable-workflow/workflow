@@ -1570,6 +1570,60 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 continue;
             }
 
+            if ($fixture['id'] === 'prepared-v1-policy-refusal-legacy-zero-tail') {
+                $this->clearWorkflowState();
+                $run = $this->createRunFromFixture($fixture);
+                $scheduled = collect($fixture['history'])->firstWhere('event_type', 'ActivityScheduled')['payload'];
+                $completed = collect($fixture['history'])->firstWhere('event_type', 'ActivityCompleted')['payload'];
+                // Embedded execution reloads both retained history and its
+                // activity projection, unlike the history-only fiber runner.
+                ActivityExecution::query()->create([
+                    'id' => $scheduled['activity_execution_id'],
+                    'workflow_run_id' => $run->id,
+                    'sequence' => $scheduled['sequence'],
+                    'activity_class' => $scheduled['activity_class'],
+                    'activity_type' => $scheduled['activity_type'],
+                    'status' => \Workflow\V2\Enums\ActivityStatus::Completed,
+                    'attempt_count' => $completed['attempt_number'],
+                    'arguments' => Serializer::serializeWithCodec('avro', $fixture['workflow']['arguments']),
+                    'result' => $completed['result'],
+                    'payload_codec' => $completed['payload_codec'],
+                    'retry_policy' => $scheduled['activity']['retry_policy'],
+                    'activity_options' => [
+                        'execution_mode' => 'local',
+                        'queue_bypassed' => true,
+                        'routing' => 'workflow_worker_process',
+                    ],
+                    'connection' => $run->connection,
+                    'queue' => $run->queue,
+                ]);
+                $before = $run->historyEvents()
+                    ->count();
+                $this->runReadyWorkflowTask($run);
+                $this->assertSame(RunStatus::Completed, $run->refresh()->status);
+                $this->assertSame([
+                    ...$fixture['expected']['result'],
+                    'workflow_id' => $run->workflow_instance_id,
+                    'run_id' => $run->id,
+                ], Serializer::unserializeWithCodec($run->outputPayloadCodec(), $run->output));
+                $this->assertSame([120, 0], $run->historyEvents()
+                    ->where('event_type', HistoryEventType::ActivityRetryScheduled)
+                    ->orderBy('sequence')
+                    ->get()
+                    ->map(static fn (WorkflowHistoryEvent $event): int => $event->payload['retry_backoff_seconds'])
+                    ->all());
+                $this->assertSame($before + 1, $run->historyEvents()->count());
+                $this->assertSame(1, $run->activityExecutions()->count());
+                $this->assertSame(0, ActivityAttempt::query()->where('workflow_run_id', $run->id)->count());
+                $this->assertEquals(
+                    $scheduled['activity']['retry_policy'],
+                    $run->activityExecutions()
+                        ->sole()
+->retry_policy
+                );
+                continue;
+            }
+
             if ($fixture['id'] === 'nexus-sdk-caller-attribution') {
                 $this->clearWorkflowState();
                 $this->assertNexusCallerSdkAttribution($fixture);
