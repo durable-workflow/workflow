@@ -95,14 +95,26 @@ final class LaravelEmbeddedUpgradeContractTest extends TestCase
     {
         $path = tempnam(sys_get_temp_dir(), 'workflow-tag-contract-');
         $this->assertNotFalse($path);
-        $cells = [['php' => '8.2', 'laravel' => '11'], ['php' => '8.4', 'laravel' => '13']];
+        $cells = [[
+            'php' => '8.2',
+            'laravel' => '11',
+        ], [
+            'php' => '8.4',
+            'laravel' => '13',
+        ]];
 
         try {
-            file_put_contents($path, json_encode(['supported_intersection' => ['cells' => $cells]], JSON_THROW_ON_ERROR));
+            file_put_contents($path, json_encode([
+                'supported_intersection' => [
+                    'cells' => $cells,
+                ],
+            ], JSON_THROW_ON_ERROR));
             $process = $this->matrixProcess(['--scope=published', '--contract-path=' . $path]);
             $process->mustRun();
 
-            $this->assertSame(['include' => $cells], json_decode($process->getOutput(), true, 512, JSON_THROW_ON_ERROR));
+            $this->assertSame([
+                'include' => $cells,
+            ], json_decode($process->getOutput(), true, 512, JSON_THROW_ON_ERROR));
         } finally {
             unlink($path);
         }
@@ -148,10 +160,16 @@ final class LaravelEmbeddedUpgradeContractTest extends TestCase
         }
     }
 
-    /** @param list<string> $arguments */
+    /**
+     * @param list<string> $arguments
+     */
     private function matrixProcess(array $arguments): Process
     {
-        return new Process([PHP_BINARY, dirname(__DIR__, 3) . '/scripts/ci/laravel-embedded-upgrade-matrix.php', ...$arguments]);
+        return new Process([
+            PHP_BINARY,
+            dirname(__DIR__, 3) . '/scripts/ci/laravel-embedded-upgrade-matrix.php',
+            ...$arguments,
+        ]);
     }
 
     /**
