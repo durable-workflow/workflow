@@ -14,6 +14,146 @@ use Workflow\V2\Support\PreparedLocalRetryWindow;
 
 final class PreparedLocalRetryDecisionTest extends TestCase
 {
+    public function testEngineInterruptionUsesOnlyTheRetainedPolicyAndItsCommittedSample(): void
+    {
+        $sample = new DateTimeImmutable('2026-11-05T00:00:00.123456Z');
+        $window = new PreparedLocalRetryWindow($sample->modify('+10 seconds'), $sample->modify('+100 seconds'));
+        foreach ([0, 2] as $delay) {
+            $snapshot = [
+                ...$this->snapshot(),
+                'backoff_seconds' => [$delay],
+                'maximum_interval_seconds' => $delay,
+            ];
+            $decision = PreparedLocalRetryDecision::selectInterruption($snapshot, 1, $sample, $window);
+            self::assertSame('engine_interruption', $decision['failure_source']);
+            self::assertSame('scheduled', $decision['decision']);
+            self::assertSame('policy', $decision['delay_source']);
+            self::assertSame($delay, $decision['candidate_delay_seconds']);
+            self::assertSame(
+                $sample->modify('+' . $delay . ' seconds')->format('Y-m-d\TH:i:s.u\Z'),
+                $decision['retry_available_at']
+            );
+            self::assertArrayNotHasKey('requested_delay_seconds', $decision);
+            self::assertArrayNotHasKey('timeout_kind', $decision);
+            self::assertTrue(
+                PreparedLocalRetryDecision::matchesStoredInterruption($snapshot, 1, $window, array_reverse(
+                    $decision,
+                    true
+                ))
+            );
+        }
+    }
+
+    public function testInterruptionKeepsNonRetryableBudgetAndOriginalDeadlinePrecedence(): void
+    {
+        $sample = new DateTimeImmutable('2026-11-05T00:00:00.000000Z');
+        $window = new PreparedLocalRetryWindow($sample->modify('+2 seconds'), $sample->modify('+100 seconds'));
+        foreach ([
+            [
+                'snapshot' => [
+                    ...$this->snapshot(),
+                    'non_retryable_error_types' => [\RuntimeException::class],
+                ],
+                'attempt' => 3,
+                'reason' => 'non_retryable',
+            ],
+            [
+                'snapshot' => $this->snapshot(),
+                'attempt' => 3,
+                'reason' => 'attempts_exhausted',
+            ],
+            [
+                'snapshot' => $this->snapshot(),
+                'attempt' => 1,
+                'reason' => 'retry_delay_exceeds_schedule_to_close',
+            ],
+        ] as $case) {
+            $decision = PreparedLocalRetryDecision::selectInterruption(
+                $case['snapshot'],
+                $case['attempt'],
+                $sample,
+                $window
+            );
+            self::assertSame('terminal', $decision['decision']);
+            self::assertSame('engine_interruption', $decision['failure_source']);
+            self::assertSame($case['reason'], $decision['terminal_classification']);
+            self::assertArrayNotHasKey('retry_available_at', $decision);
+            self::assertTrue(
+                PreparedLocalRetryDecision::matchesStoredInterruption(
+                    $case['snapshot'],
+                    $case['attempt'],
+                    $window,
+                    $decision
+                )
+            );
+            if ($case['reason'] !== 'retry_delay_exceeds_schedule_to_close') {
+                self::assertArrayNotHasKey('candidate_delay_seconds', $decision);
+                self::assertArrayNotHasKey('delay_source', $decision);
+            }
+        }
+    }
+
+    public function testActualDueTimeoutKeepsAuthorityAheadOfInterruption(): void
+    {
+        $sample = new DateTimeImmutable('2026-11-05T00:00:00.000000Z');
+        $latest = $sample->modify('+100 seconds');
+        $snapshot = [
+            ...$this->snapshot(),
+            'non_retryable_error_types' => [\RuntimeException::class],
+        ];
+        foreach (['start_to_close', 'heartbeat'] as $kind) {
+            $window = new PreparedLocalRetryWindow($sample->modify('+10 seconds'), $latest);
+            $decision = PreparedLocalRetryDecision::selectInterruption($snapshot, 1, $sample, $window, $kind);
+            self::assertSame('engine_timeout', $decision['failure_source']);
+            self::assertSame($kind, $decision['timeout_kind']);
+            self::assertSame('scheduled', $decision['decision']);
+            self::assertSame('policy', $decision['delay_source']);
+            self::assertTrue(PreparedLocalRetryDecision::matchesStoredInterruption($snapshot, 1, $window, $decision));
+        }
+        $window = new PreparedLocalRetryWindow($sample, $latest);
+        $decision = PreparedLocalRetryDecision::selectInterruption($snapshot, 3, $sample, $window);
+        self::assertSame('engine_timeout', $decision['failure_source']);
+        self::assertSame('schedule_to_close', $decision['timeout_kind']);
+        self::assertSame('engine_timeout', $decision['terminal_classification']);
+        self::assertArrayNotHasKey('candidate_delay_seconds', $decision);
+    }
+
+    public function testRetainedInterruptionCannotGainWorkerOverrideOrTimeoutAuthority(): void
+    {
+        $sample = new DateTimeImmutable('2026-11-05T00:00:00.000000Z');
+        $window = new PreparedLocalRetryWindow(null, $sample->modify('+100 seconds'));
+        $stored = PreparedLocalRetryDecision::selectInterruption($this->snapshot(), 1, $sample, $window);
+        foreach ([
+            [
+                'failure_source' => 'application',
+            ], [
+                'requested_delay_seconds' => 1,
+            ],
+            [
+                'timeout_kind' => 'heartbeat',
+            ], [
+                'delay_source' => 'failure_override',
+            ],
+            [
+                'callback_stop_state' => 'stopped',
+            ], [
+                'candidate_delay_seconds' => 0,
+            ],
+        ] as $mutation) {
+            self::assertFalse(
+                PreparedLocalRetryDecision::matchesStoredInterruption($this->snapshot(), 1, $window, [
+                    ...$stored,
+                    ...$mutation,
+                ])
+            );
+        }
+        $this->expectException(InvalidArgumentException::class);
+        PreparedLocalRetryDecision::selectInterruption([
+            ...$this->snapshot(),
+            'maximum_interval_seconds' => 1,
+        ], 1, $sample, $window);
+    }
+
     public function testOriginalWindowCopiesMutableTimestampsWithoutReadingAClock(): void
     {
         $deadline = new DateTime('2026-11-05T01:01:00.123456+01:00');

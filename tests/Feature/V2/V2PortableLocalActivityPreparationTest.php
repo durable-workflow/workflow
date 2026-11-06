@@ -217,6 +217,13 @@ final class V2PortableLocalActivityPreparationTest extends TestCase
             static fn () => $executor->startPortableAttempt($run, $task, $execution, 'replacement', [
                 'version' => 1,
             ]),
+            static fn () => $executor->recoverPortableAttempt(
+                $run,
+                $task,
+                $execution,
+                ActivityAttempt::query()->findOrFail($prepared['activity_attempt_id']),
+                []
+            ),
         ];
         foreach ($operations as $operation) {
             try {

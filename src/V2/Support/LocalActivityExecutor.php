@@ -234,6 +234,9 @@ final class LocalActivityExecutor
         ActivityAttempt $attempt,
         array $recovery,
     ): array {
+        if (($execution->activity_options['local_activity_contract_version'] ?? null) === 2) {
+            throw new PreparedLocalActivityContractException('Prepared retry recovery requires its versioned entry.');
+        }
         $metadata = [
             'worker_attempt_id' => $attempt->worker_attempt_id,
             'local_recovery' => $recovery,
@@ -243,6 +246,89 @@ final class LocalActivityExecutor
         $outcome = $timeoutKind === null
             ? $this->recordInterruptedAttempt($run, $task, $execution, $metadata)
             : $this->recordTimeoutOutcome($run, $task, $execution, $timeoutKind, $metadata);
+        return self::finishPortableRecovery($run, $task, $attempt, $outcome);
+    }
+
+    /**
+     * @internal The caller has validated original snapshot/Started authority,
+     * locked the canonical graph and proved loss of the original claim using
+     * this one sample. Recovery does not admit or join a callback.
+     * @param array<string, mixed> $recovery
+     * @return array{event: WorkflowHistoryEvent, next_task: WorkflowTask|null}
+     */
+    public function recoverPortableRetryAttempt(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        ActivityExecution $execution,
+        ActivityAttempt $attempt,
+        array $recovery,
+        Carbon $sample,
+    ): array {
+        if (($execution->activity_options['local_activity_contract_version'] ?? null) !== 2) {
+            throw new PreparedLocalActivityContractException('Prepared retry recovery requires its original contract.');
+        }
+        $connection = ConfiguredV2Models::connection();
+        PreparedLocalRetryTimestamp::addForConnection($sample, 0, $connection);
+        $timeout = self::timeoutKind($execution, $sample);
+        $decision = PreparedLocalRetryDecision::selectInterruption(
+            $execution->retry_policy,
+            $attempt->attempt_number,
+            $sample,
+            new PreparedLocalRetryWindow(
+                $execution->schedule_to_close_deadline_at,
+                PreparedLocalRetryTimestamp::latestForConnection($connection)
+            ),
+            $timeout
+        );
+        $metadata = [
+            'worker_attempt_id' => $attempt->worker_attempt_id,
+            'local_recovery' => $recovery,
+            'retry_disposition' => $decision,
+        ];
+        self::closeAttempt($attempt, ActivityAttemptStatus::Expired, $sample);
+        if ($timeout !== null) {
+            $outcome = $this->recordTimeoutOutcome($run, $task, $execution, $timeout, $metadata, $decision, $sample);
+        } else {
+            $throwable = new RuntimeException(PreparedLocalRetryDecision::INTERRUPTION_MESSAGE);
+            $outcome = $decision['decision'] === 'scheduled' ? [
+                'event' => null,
+                'next_task' => $this->scheduleRetry(
+                    $run,
+                    $task,
+                    $execution,
+                    $attempt,
+                    $throwable,
+                    LocalActivityRuntime::RETRY_REASON_COLD_REPLAY,
+                    historyMetadata: $metadata,
+                    retryDecision: $decision,
+                    failureTime: $sample,
+                ),
+            ] : [
+                'event' => $this->recordTerminalFailure(
+                    $run,
+                    $task,
+                    $execution,
+                    $attempt,
+                    $throwable,
+                    $metadata,
+                    $sample
+                ),
+                'next_task' => null,
+            ];
+        }
+
+        return self::finishPortableRecovery($run, $task, $attempt, $outcome);
+    }
+
+    /** @param array{event: WorkflowHistoryEvent|null, next_task: WorkflowTask|null} $outcome
+     * @return array{event: WorkflowHistoryEvent, next_task: WorkflowTask|null}
+     */
+    private static function finishPortableRecovery(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        ActivityAttempt $attempt,
+        array $outcome,
+    ): array {
         if ($outcome['next_task'] instanceof WorkflowTask) {
             $task->forceFill([
                 'status' => TaskStatus::Completed,

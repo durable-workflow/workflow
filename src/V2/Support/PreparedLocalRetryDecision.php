@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Closure;
 use DateInterval;
 use DateTimeImmutable;
 use DateTimeInterface;
@@ -14,6 +15,8 @@ use RuntimeException;
 /** @internal Select from the one locked engine sample, never a worker clock. */
 final class PreparedLocalRetryDecision
 {
+    public const INTERRUPTION_MESSAGE = 'Local activity attempt was interrupted before a terminal event.';
+
     /** Validate caller-bound retained bytes without a new clock or effects.
      * Timeout kind is retained engine authority, never a worker-selected input.
      * @param array<string, mixed> $snapshot
@@ -28,18 +31,72 @@ final class PreparedLocalRetryDecision
         array $stored,
         bool $nonRetryable = false,
     ): bool {
-        $sample = self::storedSample($stored['failure_time'] ?? null);
-        $timeout = $stored['timeout_kind'] ?? null;
-        if ($sample === null || ($timeout !== null && ! is_string($timeout))) {
-            return false;
+        return self::matchesStoredSelection(
+            $window,
+            $stored,
+            static fn (DateTimeImmutable $sample, ?string $timeout): array => self::select(
+                $snapshot,
+                $attemptNumber,
+                $report,
+                $sample,
+                $window,
+                $timeout,
+                $nonRetryable
+            )
+        );
+    }
+
+    /**
+     * @internal The caller has proved original claim loss under canonical
+     * locks. No worker report can select this engine-owned provenance.
+     * @param array<string, mixed> $snapshot
+     * @return array<string, mixed>
+     */
+    public static function selectInterruption(
+        array $snapshot,
+        int $attemptNumber,
+        DateTimeInterface $sample,
+        PreparedLocalRetryWindow $window,
+        ?string $dueTimeoutKind = null,
+    ): array {
+        $decision = self::select(
+            $snapshot,
+            $attemptNumber,
+            [
+                'outcome' => 'failed',
+                'message' => self::INTERRUPTION_MESSAGE,
+            ],
+            $sample,
+            $window,
+            $dueTimeoutKind
+        );
+        if ($decision['failure_source'] === 'application') {
+            $decision['failure_source'] = 'engine_interruption';
         }
-        try {
-            PreparedLocalRetryTimestamp::add($sample, 0, $window->latest, $window->earliest);
-            $expected = self::select($snapshot, $attemptNumber, $report, $sample, $window, $timeout, $nonRetryable);
-        } catch (InvalidArgumentException) {
-            return false;
-        }
-        return self::sameFields($expected, $stored);
+
+        return $decision;
+    }
+
+    /** @param array<string, mixed> $snapshot
+     * @param array<string, mixed> $stored
+     */
+    public static function matchesStoredInterruption(
+        array $snapshot,
+        int $attemptNumber,
+        PreparedLocalRetryWindow $window,
+        array $stored,
+    ): bool {
+        return self::matchesStoredSelection(
+            $window,
+            $stored,
+            static fn (DateTimeImmutable $sample, ?string $timeout): array => self::selectInterruption(
+                $snapshot,
+                $attemptNumber,
+                $sample,
+                $window,
+                $timeout
+            )
+        );
     }
 
     /**
@@ -79,6 +136,28 @@ final class PreparedLocalRetryDecision
         }
 
         return self::selectedDelay($snapshot, $attemptNumber, $report, $sample, $window, $dueTimeoutKind, $decision);
+    }
+
+    /** @param array<string, mixed> $stored
+     * @param Closure(DateTimeImmutable, ?string): array<string, mixed> $select
+     */
+    private static function matchesStoredSelection(
+        PreparedLocalRetryWindow $window,
+        array $stored,
+        Closure $select,
+    ): bool {
+        $sample = self::storedSample($stored['failure_time'] ?? null);
+        $timeout = $stored['timeout_kind'] ?? null;
+        if ($sample === null || ($timeout !== null && ! is_string($timeout))) {
+            return false;
+        }
+        try {
+            PreparedLocalRetryTimestamp::add($sample, 0, $window->latest, $window->earliest);
+            $expected = $select($sample, $timeout);
+        } catch (InvalidArgumentException) {
+            return false;
+        }
+        return self::sameFields($expected, $stored);
     }
 
     /**
