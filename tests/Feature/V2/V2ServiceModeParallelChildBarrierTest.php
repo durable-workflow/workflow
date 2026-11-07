@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
@@ -342,6 +345,165 @@ final class V2ServiceModeParallelChildBarrierTest extends TestCase
             ->where('event_type', HistoryEventType::ChildRunCompleted->value)
             ->count());
         $this->assertSame(1, $this->openParentWorkflowTaskCount($parentRun));
+    }
+
+    public static function activityHistoryInterleavings(): array
+    {
+        $cases = [];
+        foreach ([false, true] as $named) {
+            foreach ([2, 6, 25] as $size) {
+                $cases[($named ? 'named' : 'default') . '-' . $size] = [$size, $named, false];
+            }
+            $cases[($named ? 'named' : 'default') . '-nested'] = [6, $named, true];
+        }
+
+        return $cases;
+    }
+
+    #[DataProvider('activityHistoryInterleavings')]
+    public function testActivityClosureReadsCurrentHistoryAfterAnEarlierSnapshot(
+        int $size,
+        bool $named,
+        bool $nested,
+    ): void {
+        if (DB::connection()->getDriverName() !== 'mysql') {
+            $this->markTestSkipped('This interleaving exercises MySQL repeatable-read snapshots.');
+        }
+
+        $originalStorage = config('workflows.storage.connection');
+        $default = DB::getDefaultConnection();
+        $reader = $named ? 'activity_barrier_reader' : $default;
+        $writer = 'activity_barrier_writer';
+        config([
+            'database.connections.' . $writer => config('database.connections.' . $default),
+        ]);
+        if ($named) {
+            config([
+                'database.connections.' . $reader => config('database.connections.' . $default),
+            ]);
+        }
+        config([
+            'workflows.storage.connection' => $named ? $reader : null,
+        ]);
+        $observedSnapshot = false;
+
+        try {
+            $readConnection = DB::connection($reader);
+            $writeConnection = DB::connection($writer);
+            $readConnection->statement('SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+            $writeConnection->statement('SET SESSION innodb_lock_wait_timeout = 5');
+            $this->assertNotSame(
+                $readConnection->scalar('SELECT CONNECTION_ID()'),
+                $writeConnection->scalar('SELECT CONNECTION_ID()'),
+            );
+
+            [$run, $attempts] = $this->stageActivityGroup($size, $nested);
+            $activities = $this->app->make(ActivityTaskBridge::class);
+            foreach (array_slice($attempts, 0, -2) as $attempt) {
+                $this->assertTrue($activities->complete($attempt, 'earlier sibling')['recorded']);
+                $this->assertSame(0, $this->openParentWorkflowTaskCount($run));
+            }
+            $first = $attempts[$size - 2];
+            $last = $attempts[$size - 1];
+            $readStorage = config('workflows.storage.connection');
+
+            DB::listen(function (QueryExecuted $event) use (
+                &$observedSnapshot,
+                $reader,
+                $writer,
+                $first,
+                $run,
+                $size,
+                $activities,
+                $readStorage,
+            ): void {
+                if ($observedSnapshot || $event->connectionName !== $reader
+                    || $event->connection->transactionLevel() === 0
+                    || ! str_contains(strtolower($event->sql), 'exists')
+                    || ! str_contains($event->sql, 'activity_attempts')) {
+                    return;
+                }
+                $observedSnapshot = true;
+                // The real final handler has established its RR snapshot but
+                // has not acquired the parent-run lock. Commit its sibling on
+                // a separate connection before that handler can continue.
+                config([
+                    'workflows.storage.connection' => $writer,
+                ]);
+                try {
+                    $this->assertTrue($activities->complete($first, 'concurrent sibling')['recorded']);
+                    $this->assertSame(0, $this->openParentWorkflowTaskCount($run));
+                    $this->assertSame($size - 1, $run->historyEvents()
+                        ->where('event_type', HistoryEventType::ActivityCompleted->value)->count());
+                } finally {
+                    config([
+                        'workflows.storage.connection' => $readStorage,
+                    ]);
+                }
+                // Prove that merely reloading an ordinary relation would
+                // still miss the committed sibling on this connection.
+                $this->assertSame($size - 2, $event->connection->table('workflow_history_events')
+                    ->where('workflow_run_id', $run->id)
+                    ->where('event_type', HistoryEventType::ActivityCompleted->value)->count());
+            });
+
+            $this->assertTrue($activities->complete($last, 'last sibling')['recorded']);
+            $this->assertTrue($observedSnapshot);
+            $this->assertSame($size, $run->historyEvents()
+                ->where('event_type', HistoryEventType::ActivityCompleted->value)->count());
+            $this->assertSame(1, $this->openParentWorkflowTaskCount($run));
+            $this->assertFalse($activities->complete($last, 'duplicate')['recorded']);
+            $this->assertSame(1, $this->openParentWorkflowTaskCount($run));
+        } finally {
+            config([
+                'workflows.storage.connection' => $originalStorage,
+            ]);
+            DB::purge($writer);
+            if ($named) {
+                DB::purge($reader);
+            }
+        }
+    }
+
+    /**
+     * @return array{WorkflowRun, list<string>}
+     */
+    private function stageActivityGroup(int $size, bool $nested): array
+    {
+        $run = $this->createWaitingRun();
+        $task = $this->createLeasedTask($run);
+        $commands = [];
+        for ($index = 0; $index < $size; $index++) {
+            $path = [$this->parallelEntry('parallel-activities:1:' . $size, 'activity', 1, $size, $index)];
+            if ($nested && $index >= $size - 2) {
+                $path[] = $this->parallelEntry(
+                    'parallel-activities:' . ($size - 1) . ':2',
+                    'activity',
+                    $size - 1,
+                    2,
+                    $index - ($size - 2)
+                );
+            }
+            $commands[] = [
+                'type' => 'schedule_activity',
+                'activity_type' => 'test-activity-history',
+                'arguments' => Serializer::serialize([]),
+                ...$path[array_key_last($path)],
+                'parallel_group_path' => $path,
+            ];
+        }
+        $reply = $this->bridge->complete($task->id, $commands);
+        $this->assertTrue($reply['completed']);
+        $this->assertCount($size, $reply['created_task_ids']);
+        $attempts = [];
+        $activities = $this->app->make(ActivityTaskBridge::class);
+        foreach ($reply['created_task_ids'] as $id) {
+            $claim = $activities->claimStatus($id, 'activity-history-' . $id);
+            $this->assertTrue($claim['claimed']);
+            $attempts[] = $claim['activity_attempt_id'];
+        }
+
+        return [$run, $attempts];
     }
 
     /**
