@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 2.21.1 - 2026-11-07
+
+- Exclude the test tree from Composer distribution archives (#1064), avoiding
+  the `tests/Fixtures` and `tests/fixtures` directory collision when vendor
+  files are synchronized to a case-insensitive filesystem. Source checkouts
+  retain the complete test corpus. Runtime code, history, schema, public APIs
+  and the 2.21.0 platform support floors are unchanged.
+
 ## 2.21.0 - 2026-11-07
 
 - Workflow 2.21.0 requires PHP `^8.2` and patched Laravel
