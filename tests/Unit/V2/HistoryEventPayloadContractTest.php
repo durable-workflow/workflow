@@ -12,6 +12,27 @@ use Workflow\V2\Support\HistoryEventPayloadContract;
 
 final class HistoryEventPayloadContractTest extends TestCase
 {
+    #[DataProvider('unreviewedUpdateReceiveObservationFields')]
+    public function testUnreviewedUpdateReceiveObservationFieldsRemainDisabled(
+        HistoryEventType $type,
+        string $field,
+    ): void {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('undocumented key(s): ' . $field);
+
+        HistoryEventPayloadContract::assertKnownPayloadKeys($type, [
+            $field => [],
+        ]);
+    }
+
+    public static function unreviewedUpdateReceiveObservationFields(): array
+    {
+        return [
+            [HistoryEventType::UpdateApplied, 'message_receive_observations_version'],
+            [HistoryEventType::UpdateCompleted, 'message_receive_observations'],
+        ];
+    }
+
     public function testRejectedOutcomeReaderRecognizesOnlyBoundDiagnosticFields(): void
     {
         $type = HistoryEventType::from('ActivityOutcomeRejected');

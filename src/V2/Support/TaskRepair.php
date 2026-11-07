@@ -25,6 +25,7 @@ final class TaskRepair
 {
     public static function repairRun(WorkflowRun $run, WorkflowRunSummary $summary): ?WorkflowTask
     {
+        RuntimeProfileGuard::assertRun($run);
         $task = self::recoverableTask($run);
 
         if ($task !== null) {
@@ -36,6 +37,7 @@ final class TaskRepair
 
     public static function recoverExistingTask(WorkflowTask $task, WorkflowRun $run): ?WorkflowTask
     {
+        RuntimeProfileGuard::assertTaskRun($task, $run);
         $execution = $run->status->isTerminal() && $task->task_type === TaskType::Activity
             ? self::activityExecutionForTask($task) : null;
         $abandoned = $execution instanceof ActivityExecution && ActivityAbandonment::allows($run, $execution);

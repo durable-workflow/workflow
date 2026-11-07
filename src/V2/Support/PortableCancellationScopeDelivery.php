@@ -54,6 +54,10 @@ final class PortableCancellationScopeDelivery
         if ($leaseOwner === '' || $workflowTaskAttempt < 1 || $scopeId === '' || $requestId === '') {
             return $refused('invalid_cancellation_scope_delivery');
         }
+        // Check the actual linked profile before model observers. This actor
+        // validates namespace/lease binding below and preserves its typed legacy
+        // refusal for an invalid claim, before any mutation or replay.
+        RuntimeProfileGuard::taskExistsAndIsSupported($taskId, bindNamespace: false);
         /** @var WorkflowTask|null $claim */
         $claim = ConfiguredV2Models::query('task_model', WorkflowTask::class)->find($taskId);
         if ($claim === null) {

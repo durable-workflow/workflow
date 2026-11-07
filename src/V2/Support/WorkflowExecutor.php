@@ -36,6 +36,7 @@ use Workflow\V2\Exceptions\ActivityRetryPolicyMismatchException;
 use Workflow\V2\Exceptions\ConditionWaitDefinitionMismatchException;
 use Workflow\V2\Exceptions\DurableOperationCancelledException;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
+use Workflow\V2\Exceptions\RuntimeProfileRefusal;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
@@ -71,6 +72,7 @@ final class WorkflowExecutor
         WorkflowTask $task,
         ?WorkflowContinuationSession $continuation = null,
     ): ?WorkflowTask {
+        RuntimeProfileGuard::assertTaskRun($task, $run);
         $sample = WorkflowExecutionProfile::begin('executor');
         try {
             return $this->runTask($run, $task, $continuation);
@@ -89,6 +91,7 @@ final class WorkflowExecutor
      */
     public function timeoutIfDeadlineExpired(WorkflowRun $run, WorkflowTask $task): bool
     {
+        RuntimeProfileGuard::assertRun($run);
         $sample = WorkflowExecutionProfile::begin('initial_history_load');
         try {
             $run->load([
@@ -123,6 +126,7 @@ final class WorkflowExecutor
      */
     public function finishPortableCooperativeCancellation(WorkflowRun $run, WorkflowTask $task): bool
     {
+        RuntimeProfileGuard::assertRun($run);
         if (! is_string($run->cancellation_request_command_id)) {
             return false;
         }
@@ -138,6 +142,7 @@ final class WorkflowExecutor
 
     public function cancelIfCleanupDeadlineExpired(WorkflowRun $run, WorkflowTask $task): bool
     {
+        RuntimeProfileGuard::assertRun($run);
         if (
             $run->status->isTerminal()
             || ! is_string($run->cancellation_request_command_id)
@@ -171,6 +176,7 @@ final class WorkflowExecutor
      */
     public function recoverClosedChildResolutions(WorkflowRun $parentRun): void
     {
+        RuntimeProfileGuard::assertRun($parentRun);
         if ($parentRun->status->isTerminal() || $parentRun->tasks()
             ->where('task_type', TaskType::Workflow->value)
             ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
@@ -223,6 +229,7 @@ final class WorkflowExecutor
         ?int $operationSequence = null,
         int $operationSequenceSpan = 1,
     ): ?WorkflowHistoryEvent {
+        RuntimeProfileGuard::assertRun($run);
         $existing = CooperativeCancellationDelivery::recorded($run);
         if ($existing instanceof WorkflowHistoryEvent) {
             return $existing;
@@ -4380,6 +4387,10 @@ final class WorkflowExecutor
         string $sourceId,
         ?int $failedStepSequence = null,
     ): void {
+        if ($throwable instanceof RuntimeProfileRefusal) {
+            throw $throwable;
+        }
+        RuntimeProfileGuard::assertRun($run);
         if ($throwable instanceof WorkflowCancellationRequestedException
             && is_string($run->cancellation_request_command_id)) {
             $this->finishCooperativeCancellation($run, $task, 'Cooperative cancellation completed.');
@@ -6649,6 +6660,9 @@ final class WorkflowExecutor
                     }
                 }
             } catch (Throwable $throwable) {
+                if ($throwable instanceof RuntimeProfileRefusal) {
+                    throw $throwable;
+                }
                 $exceptionPayload = FailureFactory::payload($throwable);
                 $updateFailureCategory = FailureFactory::classify('update', 'workflow_command', $throwable);
                 $updateNonRetryable = FailureFactory::isNonRetryable($throwable);

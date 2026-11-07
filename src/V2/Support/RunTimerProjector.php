@@ -20,6 +20,8 @@ final class RunTimerProjector
      */
     public static function project(WorkflowRun $run, ?array $timers = null, bool $collectRows = true): array
     {
+        RuntimeProfileGuard::assertRun($run);
+
         $timers ??= RunTimerView::timersForRun($run);
         $entryModel = self::entryModel();
         $seen = [];
@@ -103,6 +105,8 @@ final class RunTimerProjector
      */
     public static function snapshotForRun(WorkflowRun $run): array
     {
+        RuntimeProfileGuard::assertRun($run);
+
         $projected = self::projectedRows($run);
         $canonicalTimers = RunTimerView::timersForRun($run);
         $rebuildReasons = self::rebuildReasons($projected, $canonicalTimers);
@@ -150,6 +154,8 @@ final class RunTimerProjector
      */
     public static function driftStatusForRun(WorkflowRun $run): array
     {
+        RuntimeProfileGuard::assertRun($run);
+
         $projected = self::projectedRows($run);
         $canonicalTimers = RunTimerView::timersForRun($run);
         $hasProjection = $projected->isNotEmpty();

@@ -21,6 +21,7 @@ use Workflow\V2\Support\EmbeddedActivityLease;
 use Workflow\V2\Support\EntryMethod;
 use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\RuntimeObjectFactory;
+use Workflow\V2\Support\RuntimeProfileGuard;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskTraceTimings;
 use Workflow\V2\Support\TraceCarrier;
@@ -49,11 +50,6 @@ final class RunActivityTask implements ShouldQueue
 
     public function handle(): void
     {
-        WorkerCompatibilityFleet::heartbeat(
-            is_string($this->connection ?? null) ? $this->connection : null,
-            is_string($this->queue ?? null) ? $this->queue : null,
-        );
-
         [$claim, $releaseIn] = $this->claimTask();
 
         if ($releaseIn !== null) {
@@ -130,6 +126,9 @@ final class RunActivityTask implements ShouldQueue
         try {
             $arguments = ActivityEntryArguments::resolve($activity, $activityArguments, $entryMethod);
         } catch (Throwable $error) {
+            if ($error instanceof \Workflow\V2\Exceptions\RuntimeProfileRefusal) {
+                throw $error;
+            }
             $arguments = [];
             $throwable = $error;
         }
@@ -157,6 +156,9 @@ final class RunActivityTask implements ShouldQueue
             try {
                 $result = $activity->{$entryMethod->getName()}(...$arguments);
             } catch (Throwable $error) {
+                if ($error instanceof \Workflow\V2\Exceptions\RuntimeProfileRefusal) {
+                    throw $error;
+                }
                 $throwable = $error;
             }
         }
@@ -192,6 +194,15 @@ final class RunActivityTask implements ShouldQueue
      */
     private function claimTask(): array
     {
-        return ActivityTaskClaimer::claim($this->taskId, $this->taskId, releaseFutureTasks: true);
+        return \Workflow\V2\Support\SqliteTransaction::forTask($this->taskId, function (): array {
+            if (! RuntimeProfileGuard::taskExistsAndIsSupported($this->taskId)) {
+                return [null, null];
+            }
+            WorkerCompatibilityFleet::heartbeat(
+                is_string($this->connection ?? null) ? $this->connection : null,
+                is_string($this->queue ?? null) ? $this->queue : null,
+            );
+            return ActivityTaskClaimer::claim($this->taskId, $this->taskId, releaseFutureTasks: true);
+        });
     }
 }

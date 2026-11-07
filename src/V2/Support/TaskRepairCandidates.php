@@ -36,6 +36,25 @@ final class TaskRepairCandidates
         ?string $connection = null,
         ?string $queue = null,
     ): array {
+        $plan = self::planTaskIds($limit, $now, $runIds, $instanceId, $connection, $queue);
+        foreach ($plan['ids'] as $id) {
+            RuntimeProfileGuard::taskExistsAndIsSupported($id);
+        }
+        self::commitTaskPlan($plan);
+        return $plan['ids'];
+    }
+
+    /**
+     * @internal Read-only discovery, with cursor publication deferred until admission.
+     */
+    public static function planTaskIds(
+        ?int $limit = null,
+        ?CarbonInterface $now = null,
+        array $runIds = [],
+        ?string $instanceId = null,
+        ?string $connection = null,
+        ?string $queue = null,
+    ): array {
         $limit ??= TaskRepairPolicy::scanLimit();
         $pages = self::existingTaskPages(
             $limit,
@@ -57,11 +76,20 @@ final class TaskRepairCandidates
                 $cursors[$key]['remaining'] = max(0, $remaining - 1);
             }
         }
-        foreach ($cursors as $key => $cursor) {
-            // A lost cursor only restarts inspection. It never grants task authority.
+        return [
+            'ids' => array_column($selected, 'id'),
+            'cursors' => $cursors,
+        ];
+    }
+
+    /**
+     * @internal @param array{ids: list<string>, cursors: array<string, mixed>} $plan
+     */
+    public static function commitTaskPlan(array $plan): void
+    {
+        foreach ($plan['cursors'] as $key => $cursor) {
             Cache::put($key, $cursor, 300);
         }
-        return array_column($selected, 'id');
     }
 
     /**

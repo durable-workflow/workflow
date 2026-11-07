@@ -1,0 +1,761 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tests\Feature\V2;
+
+use Illuminate\Database\QueryException;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
+use Tests\SchemaTestCase;
+use Tests\Support\RuntimeProfileRetainedIdentityControls;
+use Workflow\V2\Exceptions\RuntimeProfileRefusal;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\PortableCancellationScopeDelivery;
+use Workflow\V2\Support\RuntimeProfileSchema;
+
+final class RuntimeProfileStorageBackendTest extends SchemaTestCase
+{
+    use RuntimeProfileRetainedIdentityControls {
+        retainedProfileConflicts as private allRetainedProfileConflicts;
+    }
+
+    protected function tearDown(): void
+    {
+        config()->set('workflows.v2.run_model', WorkflowRun::class);
+        DB::purge('profile_guard_prefix');
+        DB::purge('profile_guard_alias');
+        parent::tearDown();
+    }
+
+    public static function retainedProfileConflicts(): iterable
+    {
+        $driver = getenv('DB_CONNECTION') ?: '';
+        foreach (self::allRetainedProfileConflicts() as $name => $case) {
+            if (! in_array($driver, ['sqlite', 'mysql', 'mariadb', 'pgsql'], true) || $case[2] === $driver) {
+                yield $name => $case;
+            }
+        }
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('currentReadProfiles')]
+    public function testLockedHydrationUsesCurrentAuthorityOverAnOlderSnapshot(?string $profile, string $lock): void
+    {
+        if (! in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('Native consistent-read versus locking-read control.');
+        }
+        $row = $this->identityRow(null);
+        DB::table('workflow_runs')->where('id', $row['id'])->delete();
+        config()
+            ->set(
+                'database.connections.profile_guard_alias',
+                config('database.connections.' . config('database.default'))
+            );
+        $other = DB::connection('profile_guard_alias');
+        $observed = 0;
+        WorkflowRun::retrieved(static function () use (&$observed): void {
+            ++$observed;
+        });
+        DB::statement('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+        DB::beginTransaction();
+        try {
+            $this->assertFalse(DB::table('workflow_runs')->where('id', $row['id'])->exists());
+            $row['runtime_profile'] = $profile;
+            $other->table('workflow_runs')
+                ->insert($row);
+            $before = $other->table('workflow_runs')
+                ->orderBy('id')
+                ->get()
+                ->all();
+            $query = WorkflowRun::query()->select(['id', 'workflow_instance_id', 'namespace'])
+                ->whereKey($row['id']);
+            $query->{$lock}();
+            try {
+                $run = $query->first();
+                $this->assertNull($profile, 'A protected row must refuse before any observer.');
+                $this->assertInstanceOf(WorkflowRun::class, $run);
+                $this->assertSame($row['id'], $run->id);
+                $this->assertSame(1, $observed);
+                $run->forceFill([
+                    'status' => 'running',
+                ])->save();
+                $this->assertSame('running', $run->getRawOriginal('status'));
+            } catch (RuntimeProfileRefusal $error) {
+                $this->assertSame('future', $profile);
+                $this->assertSame('runtime_profile_unsupported', $error->reason);
+                $this->assertSame(0, $observed);
+            }
+            $this->assertEquals($before, $other->table('workflow_runs')->orderBy('id')->get()->all());
+        } finally {
+            DB::rollBack();
+        }
+    }
+
+    public static function currentReadProfiles(): iterable
+    {
+        foreach (['lockForUpdate', 'sharedLock'] as $lock) {
+            yield $lock . ' legacy' => [null, $lock];
+            yield $lock . ' protected' => ['future', $lock];
+        }
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('quotedDefinitionOperations')]
+    public function testDifferentQuotedSelfReadRefusesAdoptionBeforeDdl(string $operation): void
+    {
+        $connection = DB::connection();
+        $driver = $connection->getDriverName();
+        if (! in_array($driver, ['mysql', 'mariadb', 'pgsql'], true)) {
+            $this->markTestSkipped('SQLite has the separate retained-row/dependent countercontrol.');
+        }
+        foreach (['guard  runs', 'guard runs'] as $table) {
+            $connection->getSchemaBuilder()
+                ->create($table, static function (Blueprint $blueprint): void {
+                    $blueprint->string('id')
+                        ->primary();
+                    $blueprint->string('workflow_instance_id');
+                    $blueprint->string('namespace')
+                        ->nullable();
+                    $blueprint->string('runtime_profile', 64)
+                        ->nullable();
+                });
+        }
+        config()
+            ->set('workflows.v2.run_model', RuntimeProfileQuotedRun::class);
+        RuntimeProfileSchema::up(null);
+        $name = 'wf_runtime_profile_' . substr(hash('sha256', 'guard  runs'), 0, 20)
+            . ($operation === 'insert' ? '_insert' : '');
+        $grammar = $connection->getQueryGrammar();
+        if ($driver === 'pgsql') {
+            $body = $connection->selectOne(
+                'SELECT p.prosrc AS body FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = current_schema() AND p.proname = ?',
+                [$name],
+                false,
+            );
+        } else {
+            $body = $connection->selectOne(
+                'SELECT ACTION_STATEMENT AS body FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ? AND TRIGGER_NAME = ?',
+                [$connection->getDatabaseName(), $name],
+                false,
+            );
+        }
+        $this->assertNotNull($body);
+        $bad = str_replace(
+            'FROM ' . $grammar->wrapTable('guard  runs'),
+            'FROM ' . $grammar->wrapTable('guard runs'),
+            (string) $body->body,
+            $count,
+        );
+        $this->assertSame(1, $count);
+        if ($driver === 'pgsql') {
+            $connection->unprepared('CREATE OR REPLACE FUNCTION ' . $grammar->wrap($name)
+                . '() RETURNS trigger AS $guard$ ' . $bad . ' $guard$ LANGUAGE plpgsql');
+        } else {
+            $connection->unprepared('DROP TRIGGER ' . $grammar->wrap($name));
+            $connection->unprepared('CREATE TRIGGER ' . $grammar->wrap($name) . ' BEFORE '
+                . strtoupper($operation) . ' ON ' . $grammar->wrapTable('guard  runs') . ' FOR EACH ROW ' . $bad);
+        }
+        $before = $this->objectDefinitions();
+        try {
+            RuntimeProfileSchema::up(null);
+            $this->fail('Quoted whitespace cannot authorize a self-read from another table.');
+        } catch (RuntimeProfileRefusal $error) {
+            $this->assertSame('runtime_profile_storage', $error->reason);
+        }
+        $this->assertEquals($before, $this->objectDefinitions());
+    }
+
+    public static function quotedDefinitionOperations(): iterable
+    {
+        yield 'insert' => ['insert'];
+        yield 'update' => ['update'];
+    }
+
+    public function testDisjointLegacyInsertsDoNotAcquireEachOthersMissingKeyRange(): void
+    {
+        if (! in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('Native InnoDB missing-key lock control.');
+        }
+        $first = [
+            'id' => 'concurrent-legacy-1',
+            'workflow_instance_id' => 'concurrent-owner-1',
+            'run_number' => 1,
+            'workflow_class' => 'identity-fixture',
+            'workflow_type' => 'identity-fixture',
+            'namespace' => 'profile-tests',
+            'status' => 'waiting',
+            'runtime_profile' => null,
+        ];
+        $second = $first;
+        $second['id'] = 'concurrent-legacy-2';
+        $second['workflow_instance_id'] .= '-second';
+        config()
+            ->set(
+                'database.connections.profile_guard_alias',
+                config('database.connections.' . config('database.default'))
+            );
+        $other = DB::connection('profile_guard_alias');
+        $timeoutRow = $other->selectOne('SELECT @@SESSION.innodb_lock_wait_timeout AS value');
+        $timeout = (int) $timeoutRow->value;
+        $other->statement('SET SESSION innodb_lock_wait_timeout = 1');
+        DB::statement('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+        $other->statement('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+        DB::beginTransaction();
+        try {
+            DB::table('workflow_runs')->insert($first);
+            $other->table('workflow_runs')
+                ->insert($second);
+            $this->assertTrue(DB::table('workflow_runs')->where('id', $first['id'])->exists());
+            $this->assertSame($second, (array) $other->table('workflow_runs')
+                ->where('id', $second['id'])->first(array_keys($second)));
+        } finally {
+            DB::rollBack();
+            $other->statement('SET SESSION innodb_lock_wait_timeout = ' . $timeout);
+        }
+        $this->assertFalse(DB::table('workflow_runs')->where('id', $first['id'])->exists());
+        $this->assertSame(1, DB::table('workflow_runs')->where('id', $second['id'])->count());
+    }
+
+    public function testNullOnlyAutomaticDownIsAtomicOrRefusesBeforeAnyDdl(): void
+    {
+        $driver = DB::connection()->getDriverName();
+        $before = $this->objectDefinitions();
+        $ddl = [];
+        DB::listen(static function ($event) use (&$ddl): void {
+            if (preg_match('/\A\s*(?:create|alter|drop|rename|truncate)\b/i', $event->sql)) {
+                $ddl[] = $event->sql;
+            }
+        });
+        if (in_array($driver, ['mysql', 'mariadb'], true)) {
+            try {
+                RuntimeProfileSchema::down(null);
+                $this->fail('Nontransactional automatic down must refuse.');
+            } catch (RuntimeProfileRefusal $error) {
+                $this->assertSame('runtime_profile_storage', $error->reason);
+            }
+            $this->assertSame([], $ddl);
+            $this->assertEquals($before, $this->objectDefinitions());
+            return;
+        }
+        RuntimeProfileSchema::down(null);
+        $this->assertFalse(DB::getSchemaBuilder()->hasColumn('workflow_runs', 'runtime_profile'));
+        RuntimeProfileSchema::up(null);
+        $this->assertEquals($before, $this->objectDefinitions());
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('wrongObjectKinds')]
+    public function testWrongBackendObjectIsRefusedWithoutAnyDdl(string $kind): void
+    {
+        $connection = DB::connection();
+        $driver = $connection->getDriverName();
+        if (($kind === 'function' && $driver !== 'pgsql') || ($kind === 'column' && $driver === 'sqlite')) {
+            $this->markTestSkipped('This exact object shape is driver-specific.');
+        }
+        $grammar = $connection->getQueryGrammar();
+        $name = 'wf_runtime_profile_' . substr(hash('sha256', $connection->getTablePrefix() . 'workflow_runs'), 0, 20);
+        $quoted = $grammar->wrap($name);
+        if ($kind === 'index') {
+            $index = 'wf_rp_idx_' . substr(hash('sha256', $connection->getTablePrefix() . 'workflow_runs'), 0, 20);
+            DB::getSchemaBuilder()->table('workflow_runs', static function (Blueprint $table) use ($index): void {
+                $table->dropIndex($index);
+            });
+            DB::getSchemaBuilder()->table('workflow_runs', static function (Blueprint $table) use ($index): void {
+                $table->index('namespace', $index);
+            });
+        } elseif ($kind === 'column') {
+            DB::getSchemaBuilder()->table('workflow_runs', static function (Blueprint $table): void {
+                $table->string('runtime_profile', 32)
+                    ->nullable()
+                    ->change();
+            });
+        } elseif (in_array($kind, ['default', 'literal-null default'], true)) {
+            DB::getSchemaBuilder()->table('workflow_runs', static function (Blueprint $table) use ($kind): void {
+                $table->string('runtime_profile', 64)
+                    ->nullable()
+                    ->default($kind === 'default' ? 'future' : 'NULL')
+                    ->change();
+            });
+        } elseif ($kind === 'function') {
+            DB::unprepared('CREATE OR REPLACE FUNCTION ' . $quoted
+                . '() RETURNS trigger AS $$ BEGIN RETURN NEW; END; $$ LANGUAGE plpgsql');
+        } else {
+            $table = $kind === 'table' ? 'workflow_instances' : 'workflow_runs';
+            if ($driver === 'pgsql') {
+                DB::unprepared('DROP TRIGGER ' . $quoted . ' ON workflow_runs');
+                // Same table/event name and function signature are not enough.
+                if ($kind === 'trigger') {
+                    DB::unprepared('CREATE TRIGGER ' . $quoted . ' AFTER UPDATE ON ' . $table
+                        . ' FOR EACH ROW EXECUTE FUNCTION ' . $quoted . '()');
+                } else {
+                    DB::unprepared('CREATE TRIGGER ' . $quoted . ' BEFORE UPDATE ON ' . $table
+                        . ' FOR EACH ROW EXECUTE FUNCTION ' . $quoted . '()');
+                }
+            } else {
+                DB::unprepared('DROP TRIGGER ' . $quoted);
+                DB::unprepared('CREATE TRIGGER ' . $quoted . ' BEFORE UPDATE ON ' . $table . ' '
+                    . ($driver === 'sqlite' ? 'BEGIN SELECT 1; END' : 'FOR EACH ROW BEGIN SET @guard_probe = 1; END'));
+            }
+        }
+        $before = $this->objectDefinitions();
+        $ddl = [];
+        DB::listen(static function ($event) use (&$ddl): void {
+            if (preg_match('/\A\s*(?:create|alter|drop|rename|truncate)\b/i', $event->sql)) {
+                $ddl[] = $event->sql;
+            }
+        });
+        try {
+            RuntimeProfileSchema::up(null);
+            $this->fail('Object names must not authorize stale definitions.');
+        } catch (RuntimeProfileRefusal $error) {
+            $this->assertSame('runtime_profile_storage', $error->reason);
+        }
+        $this->assertSame([], $ddl);
+        $this->assertEquals($before, $this->objectDefinitions());
+    }
+
+    public static function wrongObjectKinds(): iterable
+    {
+        foreach (['trigger', 'table', 'index', 'column', 'default', 'literal-null default', 'function'] as $kind) {
+            yield $kind => [$kind];
+        }
+    }
+
+    public function testExplicitPostgresTestWipePreservesUnrelatedFunctions(): void
+    {
+        if (DB::connection()->getDriverName() !== 'pgsql') {
+            $this->markTestSkipped('PostgreSQL disposable test reset control.');
+        }
+        $before = $this->objectDefinitions();
+        DB::unprepared(
+            'CREATE FUNCTION workflow_guard_reset_sentinel() RETURNS integer AS $$ SELECT 1 $$ LANGUAGE SQL'
+        );
+        try {
+            $this->preparePostgresTestSchemaReset();
+            $this->artisan('migrate:fresh')
+                ->run();
+            RuntimeProfileSchema::up(null);
+            $this->assertEquals($before, $this->objectDefinitions());
+            $this->assertSame(1, (int) DB::scalar('SELECT workflow_guard_reset_sentinel()'));
+        } finally {
+            DB::unprepared('DROP FUNCTION workflow_guard_reset_sentinel()');
+        }
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('postgresDownFailureSteps')]
+    public function testPostgresDownRestoresExactObjectsAfterAnInjectedFailure(string $step): void
+    {
+        if (DB::connection()->getDriverName() !== 'pgsql') {
+            $this->markTestSkipped('Transactional PostgreSQL DDL control.');
+        }
+        $before = $this->objectDefinitions();
+        $armed = true;
+        $injected = false;
+        DB::listen(static function ($event) use ($step, &$armed, &$injected): void {
+            if ($armed && str_contains(strtolower($event->sql), $step)) {
+                $armed = false;
+                $injected = true;
+                throw new \RuntimeException('injected-guard-ddl-failure');
+            }
+        });
+        try {
+            RuntimeProfileSchema::down(null);
+            $this->fail('The selected DDL failure was not injected.');
+        } catch (\RuntimeException $error) {
+            $this->assertSame('injected-guard-ddl-failure', $error->getMessage());
+        } finally {
+            $armed = false;
+        }
+        $this->assertTrue($injected);
+        $this->assertEquals($before, $this->objectDefinitions());
+    }
+
+    public static function postgresDownFailureSteps(): iterable
+    {
+        foreach (['drop trigger', 'drop function', 'drop index', 'drop column'] as $step) {
+            yield $step => [$step];
+        }
+    }
+
+    public function testDistinctServerConnectionAliasesCannotAuthorizeDestructiveDeduplication(): void
+    {
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            $this->markTestSkipped('SQLite proven file aliases have a separate positive control.');
+        }
+        config()
+            ->set(
+                'database.connections.profile_guard_alias',
+                config('database.connections.' . config('database.default'))
+            );
+        config()
+            ->set('workflows.v2.run_model', RuntimeProfileAliasRun::class);
+        $this->assertNotSame(DB::connection(), DB::connection('profile_guard_alias'));
+        $before = $this->objectDefinitions();
+        RuntimeProfileSchema::up(null);
+        $this->assertEquals($before, $this->objectDefinitions());
+        $ddl = [];
+        DB::listen(static function ($event) use (&$ddl): void {
+            if (preg_match('/\A\s*(?:create|alter|drop|rename|truncate)\b/i', $event->sql)) {
+                $ddl[] = $event->sql;
+            }
+        });
+        try {
+            RuntimeProfileSchema::down(null);
+            $this->fail('Unproven alias equivalence cannot authorize destructive down.');
+        } catch (RuntimeProfileRefusal $error) {
+            $this->assertSame('runtime_profile_storage', $error->reason);
+        }
+        $this->assertSame([], $ddl);
+        $this->assertEquals($before, $this->objectDefinitions());
+    }
+
+    public function testLegacySourceCannotReplaceProtectedAuthorityOrItsDependents(): void
+    {
+        $future = $this->protectedAuthorityWithDependents();
+        $legacy = $this->identityRow(null);
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            DB::statement('PRAGMA recursive_triggers = OFF');
+        }
+        $before = $this->durableRows();
+        try {
+            $verb = DB::connection()->getDriverName() === 'sqlite' ? 'UPDATE OR REPLACE' : 'UPDATE';
+            DB::update($verb . ' workflow_runs SET id = ? WHERE id = ?', [$future['id'], $legacy['id']]);
+            $this->fail('Legacy update conflict cannot remove a protected target.');
+        } catch (QueryException $error) {
+            $this->assertStringContainsString('runtime_profile_immutable', $error->getMessage());
+        }
+        $this->assertSame($before, $this->durableRows());
+        try {
+            DB::table('workflow_runs')->where('id', $future['id'])->update([
+                'id' => 'moved-key',
+            ]);
+            $this->fail('The retained key and its dependents must remain unchanged.');
+        } catch (QueryException $error) {
+            $this->assertStringContainsString('runtime_profile_immutable', $error->getMessage());
+        }
+        $this->assertSame($before, $this->durableRows());
+        $replacement = $future;
+        $replacement['runtime_profile'] = null;
+        try {
+            DB::table('workflow_runs')->insert($replacement);
+            $this->fail('The original protected key cannot be recreated as legacy.');
+        } catch (QueryException $error) {
+            if (in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb'], true)) {
+                // Plain INSERT cannot replace a retained row. REPLACE and
+                // UPSERT exercise the explicit DELETE/UPDATE guards below.
+                $this->assertSame('23000', $error->errorInfo[0]);
+                $this->assertSame(1062, (int) $error->errorInfo[1]);
+            } else {
+                $this->assertStringContainsString('runtime_profile_immutable', $error->getMessage());
+            }
+        }
+        $this->assertSame($before, $this->durableRows());
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('mysqlProtectedConflictForms')]
+    public function testMysqlProtectedConflictStatementsPreserveCompleteAuthority(string $form): void
+    {
+        if (! in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb'], true)) {
+            $this->markTestSkipped('MySQL/MariaDB native conflict statement control.');
+        }
+        $future = $this->protectedAuthorityWithDependents();
+        $replacement = $future;
+        $replacement['runtime_profile'] = $form === 'replace-same' ? 'future' : null;
+        $before = $this->durableRows();
+        try {
+            if ($form === 'plain' || $form === 'multi') {
+                $first = $replacement;
+                $first['id'] = (string) \Illuminate\Support\Str::ulid();
+                $first['workflow_instance_id'] .= '-new';
+                DB::table('workflow_runs')->insert($form === 'plain' ? $replacement : [$first, $replacement]);
+            } elseif ($form === 'ignore') {
+                $this->assertSame(0, DB::table('workflow_runs')->insertOrIgnore($replacement));
+                $pdo = DB::connection()->getPdo();
+                $emulated = $pdo->getAttribute(\PDO::ATTR_EMULATE_PREPARES);
+                try {
+                    // Preparing SHOW WARNINGS can replace the warning under
+                    // inspection with a prepared-protocol warning.
+                    $pdo->setAttribute(\PDO::ATTR_EMULATE_PREPARES, true);
+                    $statement = $pdo->query('SHOW WARNINGS');
+                    $this->assertInstanceOf(\PDOStatement::class, $statement);
+                    $warnings = $statement->fetchAll(\PDO::FETCH_OBJ);
+                } finally {
+                    $pdo->setAttribute(\PDO::ATTR_EMULATE_PREPARES, $emulated);
+                }
+                $this->assertCount(1, $warnings);
+                $this->assertSame(1062, (int) $warnings[0]->Code);
+                $this->assertSame($before, $this->durableRows());
+                return;
+            } else {
+                $grammar = DB::connection()->getQueryGrammar();
+                $columns = implode(', ', array_map($grammar->wrap(...), array_keys($replacement)));
+                $values = implode(', ', array_fill(0, count($replacement), '?'));
+                $replace = str_starts_with($form, 'replace-');
+                $sql = ($replace ? 'REPLACE' : 'INSERT') . ' INTO ' . $grammar->wrapTable('workflow_runs')
+                    . ' (' . $columns . ') VALUES (' . $values . ')';
+                if (! $replace) {
+                    $clause = match ($form) {
+                        'upsert-noop' => 'status = status',
+                        'upsert-unrelated' => "status = 'running'",
+                        'upsert-profile' => 'runtime_profile = NULL',
+                        'upsert-key' => "id = 'moved-key'",
+                        'upsert-owner' => "workflow_instance_id = 'moved-owner'",
+                        'upsert-namespace' => "namespace = 'moved-namespace'",
+                        default => throw new \LogicException('Unknown native conflict fixture.'),
+                    };
+                    $sql .= ' ON DUPLICATE KEY UPDATE ' . $clause;
+                }
+                DB::statement($sql, array_values($replacement));
+            }
+            $this->fail('A conflict cannot report successful protected-run admission.');
+        } catch (QueryException $error) {
+            if ($form === 'plain' || $form === 'multi') {
+                $this->assertSame('23000', $error->errorInfo[0]);
+                $this->assertSame(1062, (int) $error->errorInfo[1]);
+            } else {
+                $this->assertStringContainsString('runtime_profile_immutable', $error->getMessage());
+            }
+        }
+        $this->assertSame($before, $this->durableRows());
+    }
+
+    public static function mysqlProtectedConflictForms(): iterable
+    {
+        foreach (['plain', 'multi', 'ignore', 'replace-null', 'replace-same', 'upsert-noop',
+            'upsert-unrelated', 'upsert-profile', 'upsert-key', 'upsert-owner', 'upsert-namespace'] as $form) {
+            yield $form => [$form];
+        }
+    }
+
+    public static function qualifiedTableForms(): iterable
+    {
+        yield 'unqualified' => [false];
+        yield 'schema qualified' => [true];
+    }
+
+    public static function scopeOperations(): iterable
+    {
+        yield 'opening' => [true];
+        yield 'delivery' => [false];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('scopeOperations')]
+    public function testInvalidNamespaceCannotHideAProtectedProfileBeforeTaskObservers(bool $opening): void
+    {
+        $run = $this->identityRow('future');
+        $taskId = (string) \Illuminate\Support\Str::ulid();
+        DB::table('workflow_tasks')->insert([
+            'id' => $taskId,
+            'workflow_run_id' => $run['id'],
+            'namespace' => 'different-namespace',
+            'task_type' => 'workflow',
+            'status' => 'ready',
+            'payload' => '{}',
+        ]);
+        $retrieved = 0;
+        WorkflowTask::retrieved(static function () use (&$retrieved): void {
+            ++$retrieved;
+        });
+        $before = $this->durableRows();
+        try {
+            if ($opening) {
+                app(\Workflow\V2\Support\DefaultWorkflowTaskBridge::class)->openCancellationScope(
+                    $taskId,
+                    'worker',
+                    1,
+                    1,
+                    'root',
+                    false,
+                    '1.20'
+                );
+            } else {
+                PortableCancellationScopeDelivery::mutate(
+                    true,
+                    $taskId,
+                    'worker',
+                    1,
+                    'root',
+                    'request',
+                    1,
+                    'activity',
+                    1,
+                    null,
+                    1,
+                    '1.20'
+                );
+            }
+            $this->fail('Invalid claim binding must not hide an unsupported profile.');
+        } catch (RuntimeProfileRefusal $error) {
+            $this->assertSame('runtime_profile_unsupported', $error->reason);
+        }
+        $this->assertSame(0, $retrieved);
+        $this->assertSame($before, $this->durableRows());
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('qualifiedTableForms')]
+    public function testConfiguredPrefixedAuthorityIsGuardedAndAmbiguousDownIsNonDestructive(bool $qualified): void
+    {
+        $settings = config('database.connections.' . config('database.default'));
+        $settings['prefix'] = 'rp_guard_';
+        config()
+            ->set('database.connections.profile_guard_prefix', $settings);
+        $storage = DB::connection('profile_guard_prefix');
+        foreach (['runs', 'workflow_runs'] as $name) {
+            $storage->getSchemaBuilder()
+                ->create($name, static function (Blueprint $table): void {
+                    $table->string('id')
+                        ->primary();
+                    $table->string('workflow_instance_id');
+                    $table->string('namespace')
+                        ->nullable();
+                });
+        }
+        config()
+            ->set(
+                'workflows.v2.run_model',
+                $qualified ? RuntimeProfileQualifiedPrefixedRun::class : RuntimeProfilePrefixedRun::class
+            );
+        RuntimeProfileSchema::up(null);
+        // Repeating up must inspect the actual unprefixed backend metadata.
+        RuntimeProfileSchema::up(null);
+        $storage->table('runs')
+            ->insert([
+                'id' => 'prefix-future',
+                'workflow_instance_id' => 'prefix-owner',
+                'namespace' => 'prefix-tests',
+                'runtime_profile' => 'future',
+            ]);
+        $before = $storage->table('runs')
+            ->get()
+            ->toArray();
+        foreach (['id', 'workflow_instance_id', 'namespace', 'runtime_profile'] as $column) {
+            try {
+                $storage->table('runs')
+                    ->where('id', 'prefix-future')
+                    ->update([
+                        $column => 'other',
+                    ]);
+                $this->fail('Configured protected authority cannot move.');
+            } catch (QueryException $error) {
+                $this->assertStringContainsString('runtime_profile_immutable', $error->getMessage());
+            }
+            $this->assertEquals($before, $storage->table('runs')->get()->toArray());
+        }
+        try {
+            RuntimeProfileSchema::down(null);
+            $this->fail('A protected or independent target must prevent automatic down.');
+        } catch (RuntimeProfileRefusal $error) {
+            $this->assertSame('runtime_profile_storage', $error->reason);
+        }
+        $this->assertTrue($storage->getSchemaBuilder()->hasColumn('runs', 'runtime_profile'));
+        $this->assertEquals($before, $storage->table('runs')->get()->toArray());
+        $this->assertTrue(DB::getSchemaBuilder()->hasColumn('workflow_runs', 'runtime_profile'));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function protectedAuthorityWithDependents(): array
+    {
+        $future = $this->identityRow('future');
+        $taskId = (string) \Illuminate\Support\Str::ulid();
+        DB::table('workflow_tasks')->insert([
+            'id' => $taskId,
+            'workflow_run_id' => $future['id'],
+            'namespace' => $future['namespace'],
+            'task_type' => 'workflow',
+            'status' => 'ready',
+            'payload' => '{}',
+        ]);
+        DB::table('workflow_history_events')->insert([
+            'id' => (string) \Illuminate\Support\Str::ulid(),
+            'workflow_run_id' => $future['id'],
+            'workflow_task_id' => $taskId,
+            'sequence' => 1,
+            'event_type' => 'WorkflowStarted',
+            'payload' => '{}',
+            'recorded_at' => now()
+                ->format('Y-m-d H:i:s.u'),
+        ]);
+        return $future;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function objectDefinitions(): array
+    {
+        $connection = DB::connection();
+        if ($connection->getDriverName() === 'sqlite') {
+            return [
+                'objects' => $connection->select(
+                    'SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name'
+                ),
+            ];
+        }
+        if (in_array($connection->getDriverName(), ['mysql', 'mariadb'], true)) {
+            $grammar = $connection->getQueryGrammar();
+            $objects = [];
+            foreach ($connection->getSchemaBuilder()->getTableListing() as $table) {
+                $objects['table:' . $table] = $connection->select('SHOW CREATE TABLE ' . $grammar->wrapTable($table));
+            }
+            foreach ($connection->select(
+                'SELECT TRIGGER_NAME AS name FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ? ORDER BY TRIGGER_NAME',
+                [$connection->getDatabaseName()]
+            ) as $trigger) {
+                $objects['trigger:' . $trigger->name] = $connection->select(
+                    'SHOW CREATE TRIGGER ' . $grammar->wrap($trigger->name)
+                );
+            }
+            ksort($objects);
+            return $objects;
+        }
+        return [
+            'columns' => $connection->select(
+                'SELECT table_name, column_name, data_type, character_maximum_length, is_nullable, column_default, is_generated FROM information_schema.columns WHERE table_schema = current_schema() ORDER BY table_name, ordinal_position'
+            ),
+            'indexes' => $connection->select(
+                'SELECT c.relname, pg_get_indexdef(i.indexrelid) AS definition FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = current_schema() ORDER BY c.relname'
+            ),
+            'triggers' => $connection->select(
+                'SELECT c.relname, t.tgname, pg_get_triggerdef(t.oid) AS definition FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = current_schema() AND NOT t.tgisinternal ORDER BY c.relname, t.tgname'
+            ),
+            'functions' => $connection->select(
+                "SELECT p.proname, pg_get_functiondef(p.oid) AS definition FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = current_schema() AND p.proname LIKE 'wf_runtime_profile_%' ORDER BY p.proname"
+            ),
+        ];
+    }
+}
+
+final class RuntimeProfileQuotedRun extends WorkflowRun
+{
+    protected $table = 'guard  runs';
+}
+
+final class RuntimeProfilePrefixedRun extends WorkflowRun
+{
+    protected $table = 'runs';
+
+    protected $connection = 'profile_guard_prefix';
+}
+
+final class RuntimeProfileAliasRun extends WorkflowRun
+{
+    protected $connection = 'profile_guard_alias';
+}
+
+final class RuntimeProfileQualifiedPrefixedRun extends WorkflowRun
+{
+    protected $connection = 'profile_guard_prefix';
+
+    public function getTable()
+    {
+        $connection = $this->getConnection();
+        $schema = match ($connection->getDriverName()) {
+            'sqlite' => 'main',
+            'pgsql' => $connection->selectOne('SELECT current_schema() AS name')
+->name,
+            default => $connection->getDatabaseName(),
+        };
+        return $schema . '.runs';
+    }
+}

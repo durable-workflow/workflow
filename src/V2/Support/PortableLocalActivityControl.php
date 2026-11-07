@@ -36,6 +36,8 @@ final class PortableLocalActivityControl
         bool $renewLease = false,
         string $protocolVersion = WorkerProtocolVersion::VERSION,
     ): array {
+        RuntimeProfileGuard::assertActivityAttempt($attemptId);
+
         return self::observe($attemptId, $leaseOwner, $workflowTaskAttempt, $renewLease, false, null, $protocolVersion);
     }
 
@@ -71,6 +73,8 @@ final class PortableLocalActivityControl
         array $progress = [],
         string $protocolVersion = WorkerProtocolVersion::VERSION,
     ): array {
+        RuntimeProfileGuard::assertActivityAttempt($attemptId);
+
         try {
             $normalized = HeartbeatProgress::normalizeForWrite($progress);
         } catch (LogicException) {
@@ -212,6 +216,8 @@ final class PortableLocalActivityControl
         string $protocolVersion,
         int $localContractVersion = 1,
     ): array {
+        RuntimeProfileGuard::assertActivityAttempt($attemptId);
+
         if (preg_match('/^[0-9]+\.[0-9]+$/D', $protocolVersion) !== 1
             || version_compare($protocolVersion, PortableLocalActivityPreparation::MINIMUM_PROTOCOL_VERSION, '<')) {
             return self::response('local_activity_control_requires_protocol_1_20');

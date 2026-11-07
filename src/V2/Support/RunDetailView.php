@@ -19,6 +19,7 @@ final class RunDetailView
      */
     public static function forRun(WorkflowRun $run, ?int $timelineLimit = null): array
     {
+        RuntimeProfileGuard::assertRun($run);
         $relations = [
             'summary',
             'commands',

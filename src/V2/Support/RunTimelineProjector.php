@@ -21,6 +21,8 @@ final class RunTimelineProjector
      */
     public static function project(WorkflowRun $run, ?iterable $entries = null, bool $collectRows = true): array
     {
+        RuntimeProfileGuard::assertRun($run);
+
         $entryModel = self::entryModel();
         $seen = [];
         $projected = [];
@@ -100,6 +102,8 @@ final class RunTimelineProjector
         WorkflowRun $run,
         WorkflowHistoryEvent $event,
     ): WorkflowTimelineEntry {
+        RuntimeProfileGuard::assertRun($run);
+
         if ($event->workflow_run_id !== $run->id) {
             throw new \LogicException('Timeline event must belong to the projected workflow run.');
         }
@@ -123,6 +127,8 @@ final class RunTimelineProjector
         WorkflowRun $run,
         WorkflowHistoryEvent $event,
     ): WorkflowTimelineEntry {
+        RuntimeProfileGuard::assertRun($run);
+
         if ($event->workflow_run_id !== $run->id) {
             throw new \LogicException('Timeline event must belong to the projected workflow run.');
         }
@@ -149,6 +155,8 @@ final class RunTimelineProjector
         WorkflowRun $run,
         WorkflowHistoryEvent $event,
     ): WorkflowTimelineEntry {
+        RuntimeProfileGuard::assertRun($run);
+
         return self::projectHistoryPoint($run, $event, HistoryTimeline::fromWorkerTerminalEvent($event));
     }
 
@@ -156,6 +164,8 @@ final class RunTimelineProjector
         WorkflowRun $run,
         WorkflowHistoryEvent $event,
     ): WorkflowTimelineEntry {
+        RuntimeProfileGuard::assertRun($run);
+
         return self::projectHistoryPoint($run, $event, HistoryTimeline::fromActivityOutcomeRejection($event));
     }
 
@@ -164,6 +174,8 @@ final class RunTimelineProjector
      */
     public static function snapshotForRun(WorkflowRun $run, ?int $limit = null): array
     {
+        RuntimeProfileGuard::assertRun($run);
+
         if ($limit !== null) {
             return self::projectedWindow($run, max(1, $limit));
         }
@@ -215,6 +227,8 @@ final class RunTimelineProjector
      */
     public static function driftStatusForRun(WorkflowRun $run): array
     {
+        RuntimeProfileGuard::assertRun($run);
+
         $projected = self::projectedRows($run);
         $canonicalTimeline = HistoryTimeline::fromHistory($run);
         $hasProjection = $projected->isNotEmpty();

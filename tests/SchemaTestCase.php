@@ -46,6 +46,7 @@ abstract class SchemaTestCase extends TestCase
     {
         $this->app->make('migrator')
             ->path(\Orchestra\Testbench\default_migration_path());
+        $this->preparePostgresTestSchemaReset();
         $this->artisan('migrate:fresh')
             ->run();
         $this->app[Kernel::class]->setArtisan(null);

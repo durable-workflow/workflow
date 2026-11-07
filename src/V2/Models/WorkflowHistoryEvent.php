@@ -179,6 +179,7 @@ class WorkflowHistoryEvent extends Model
         WorkflowCommand|string|null $command,
         ?TerminalCancellationHistory $terminalHistory,
     ): self {
+        \Workflow\V2\Support\RuntimeProfileGuard::assertRun($run);
         if ($eventType === HistoryEventType::MemoUpserted) {
             foreach (['entries', 'merged'] as $field) {
                 if (! is_array($payload[$field] ?? null)) {

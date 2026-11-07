@@ -85,6 +85,7 @@ final class ActivityTimeoutEnforcer
      */
     public static function enforce(string $executionId): array
     {
+        RuntimeProfileGuard::assertActivityExecution($executionId);
         return self::enforceExpiredAttempt($executionId);
     }
 
@@ -95,6 +96,7 @@ final class ActivityTimeoutEnforcer
      */
     public static function enforceLeaseExpiry(string $taskId): array
     {
+        RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
         $task = WorkflowTask::query()->find($taskId);
         $executionId = $task?->payload['activity_execution_id'] ?? null;
 
@@ -114,6 +116,7 @@ final class ActivityTimeoutEnforcer
      */
     public static function revokeWorkerLease(string $taskId, string $namespace, string $leaseOwner): array
     {
+        RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
         $task = WorkflowTask::query()->find($taskId);
         $executionId = $task?->payload['activity_execution_id'] ?? null;
 

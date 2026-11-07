@@ -49,6 +49,7 @@ final class ActivityTaskClaimer
             $leaseOwner,
             $releaseFutureTasks
         ): array {
+            RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
             /** @var WorkflowTask|null $task */
             $task = WorkflowTask::query()
                 ->lockForUpdate()

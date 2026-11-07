@@ -162,6 +162,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         ?string $namespace = null,
         array $workflowTypes = []
     ): array {
+        RuntimeProfileGuard::assertScope($connection, $queue, namespace: $namespace);
         $requestedWorkflowTypes = self::nonEmptyStrings($workflowTypes);
 
         if ($workflowTypes !== [] && $requestedWorkflowTypes === []) {
@@ -271,6 +272,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
     public function claimStatus(string $taskId, ?string $leaseOwner = null): array
     {
         return ConfiguredV2Models::connection()->transaction(static function () use ($taskId, $leaseOwner): array {
+            RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()
@@ -403,6 +405,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
 
     public function historyPayload(string $taskId): ?array
     {
+        RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
+
         /** @var WorkflowTask|null $task */
         $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
             ->find($taskId);
@@ -466,6 +470,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         int $afterSequence = 0,
         int $pageSize = WorkerProtocolVersion::DEFAULT_HISTORY_PAGE_SIZE,
     ): ?array {
+        RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
+
         $pageSize = max(1, min($pageSize, WorkerProtocolVersion::MAX_HISTORY_PAGE_SIZE));
 
         /** @var WorkflowTask|null $task */
@@ -556,6 +562,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
 
     public function execute(string $taskId): array
     {
+        RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
+
         if (! $this->claimIfReady($taskId)) {
             return [
                 'executed' => false,
@@ -597,6 +605,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 return $this->executor->run($run, $task);
             });
         } catch (Throwable $throwable) {
+            if ($throwable instanceof \Workflow\V2\Exceptions\RuntimeProfileRefusal) {
+                throw $throwable;
+            }
             ConfiguredV2Models::connection()->transaction(static function () use ($taskId, $throwable): void {
                 /** @var WorkflowTask|null $task */
                 $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
@@ -650,6 +661,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
 
     public function fail(string $taskId, Throwable|array|string $failure, ?string $codec = null): array
     {
+        RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
+
         return ConfiguredV2Models::connection()->transaction(static function () use ($taskId, $failure): array {
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
@@ -732,6 +745,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         ?int $operationSequence = null,
         int $operationSequenceSpan = 1,
     ): array {
+        RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
+
         return ConfiguredV2Models::connection()->transaction(function () use (
             $taskId,
             $requestId,
@@ -818,6 +833,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
 
     public function heartbeat(string $taskId): array
     {
+        RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
+
         return ConfiguredV2Models::connection()->transaction(function () use ($taskId): array {
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
@@ -893,6 +910,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
 
     public function status(string $taskId): array
     {
+        RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
+
         /** @var WorkflowTask|null $task */
         $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
             ->find($taskId);
@@ -1057,6 +1076,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         array $descriptor,
         string $protocolVersion = WorkerProtocolVersion::VERSION,
     ): array {
+        RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
+
         return PortableLocalActivityPreparation::prepare(
             $taskId,
             $leaseOwner,
@@ -1075,6 +1096,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         array $report,
         string $protocolVersion = WorkerProtocolVersion::VERSION,
     ): array {
+        RuntimeProfileGuard::assertActivityAttempt($attemptId);
+
         return app(LocalActivityExecutor::class)->recordPortableOutcome(
             $attemptId,
             $leaseOwner,
@@ -1091,6 +1114,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         bool $renewLease = false,
         string $protocolVersion = WorkerProtocolVersion::VERSION,
     ): array {
+        RuntimeProfileGuard::assertActivityAttempt($attemptId);
+
         return PortableLocalActivityControl::poll(
             $attemptId,
             $leaseOwner,
@@ -1108,6 +1133,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         array $descriptor,
         string $protocolVersion = WorkerProtocolVersion::VERSION,
     ): array {
+        RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
+
         return PortableLocalActivityPreparation::recover(
             $taskId,
             $leaseOwner,
@@ -1125,6 +1152,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         array $progress = [],
         string $protocolVersion = WorkerProtocolVersion::VERSION,
     ): array {
+        RuntimeProfileGuard::assertActivityAttempt($attemptId);
+
         return PortableLocalActivityControl::heartbeat(
             $attemptId,
             $leaseOwner,
@@ -1141,6 +1170,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         int $workflowTaskAttempt,
         string $protocolVersion = WorkerProtocolVersion::VERSION,
     ): array {
+        RuntimeProfileGuard::assertActivityAttempt($attemptId);
+
         if (preg_match('/^[0-9]+\.[0-9]+$/D', $protocolVersion) !== 1
             || version_compare($protocolVersion, PortableLocalActivityPreparation::MINIMUM_PROTOCOL_VERSION, '<')) {
             return [
@@ -1177,6 +1208,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         array $commands,
         string $protocolVersion = WorkerProtocolVersion::VERSION,
     ): array {
+        RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
+
         return $this->checkpointCommands(
             $taskId,
             $leaseOwner,
@@ -1198,6 +1231,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         array $commands,
         string $protocolVersion = WorkerProtocolVersion::VERSION,
     ): array {
+        RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
+
         return $this->checkpointCommands(
             $taskId,
             $leaseOwner,
@@ -1219,6 +1254,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         array $commands,
         string $protocolVersion = WorkerProtocolVersion::VERSION,
     ): array {
+        RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
+
         return $this->checkpointCommands(
             $taskId,
             $leaseOwner,
@@ -1233,11 +1270,15 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
 
     public function complete(string $taskId, array $commands): array
     {
+        RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
+
         return $this->completeForProtocol($taskId, $commands, WorkerProtocolVersion::VERSION);
     }
 
     public function completeForProtocol(string $taskId, array $commands, string $protocolVersion): array
     {
+        RuntimeProfileGuard::taskExistsAndIsSupported($taskId);
+
         if (! WorkerProtocolVersion::isWellFormed($protocolVersion)) {
             return [
                 'completed' => false,
@@ -1537,6 +1578,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
      */
     public function validateCancellationScopeMembership(WorkflowRun $run, array $commands, int $sequence): ?string
     {
+        RuntimeProfileGuard::assertRun($run);
+
         if (! self::operationScopesAreRecorded($run, $commands, $sequence)) {
             return 'operation_scope_not_recorded';
         }
@@ -7683,6 +7726,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
 
             ChildProjectionRepairStore::acknowledge([$repair]);
         } catch (Throwable $exception) {
+            if ($exception instanceof \Workflow\V2\Exceptions\RuntimeProfileRefusal) {
+                throw $exception;
+            }
             Log::warning('Workflow child-resolution projection repair remains pending.', [
                 'workflow_run_id' => $run->id,
                 'workflow_instance_id' => $run->workflow_instance_id,
@@ -7709,6 +7755,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         try {
             self::projectRun($run, $with);
         } catch (Throwable $exception) {
+            if ($exception instanceof \Workflow\V2\Exceptions\RuntimeProfileRefusal) {
+                throw $exception;
+            }
             Log::warning('Workflow run projection failed after child-workflow state changed.', [
                 'operation' => $operation,
                 'workflow_run_id' => $run->id,

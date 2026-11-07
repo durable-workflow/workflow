@@ -13,10 +13,12 @@ use Throwable;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\RuntimeProfileRefusal;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\ExecutionTracing;
+use Workflow\V2\Support\RuntimeProfileGuard;
 use Workflow\V2\Support\ServiceCallWorkflowDelivery;
 use Workflow\V2\Support\SqliteTransaction;
 use Workflow\V2\Support\StickyExecution;
@@ -52,11 +54,6 @@ final class RunWorkflowTask implements ShouldQueue
 
     public function handle(WorkflowExecutor $executor): void
     {
-        WorkerCompatibilityFleet::heartbeat(
-            is_string($this->connection ?? null) ? $this->connection : null,
-            is_string($this->queue ?? null) ? $this->queue : null,
-        );
-
         [$task, $deferredTask, $claimedAttempt] = $this->claimTask();
 
         if ($deferredTask instanceof WorkflowTask) {
@@ -140,6 +137,9 @@ final class RunWorkflowTask implements ShouldQueue
                 return $nextTask;
             });
         } catch (Throwable $throwable) {
+            if ($throwable instanceof RuntimeProfileRefusal) {
+                throw $throwable;
+            }
             $continuation?->disable('transaction_failure');
             SqliteTransaction::forTask($this->taskId, function () use ($throwable): void {
                 /** @var WorkflowTask|null $task */
@@ -190,6 +190,13 @@ final class RunWorkflowTask implements ShouldQueue
     private function claimTask(): array
     {
         return SqliteTransaction::forTask($this->taskId, function (): array {
+            if (! RuntimeProfileGuard::taskExistsAndIsSupported($this->taskId)) {
+                return [null, null, 0];
+            }
+            WorkerCompatibilityFleet::heartbeat(
+                is_string($this->connection ?? null) ? $this->connection : null,
+                is_string($this->queue ?? null) ? $this->queue : null,
+            );
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()

@@ -46,6 +46,7 @@ final class ReplayRegressionCorpusTest extends TestCase
     private const FIXTURE_SCHEMA = 'durable-workflow.replay-regression/v1';
 
     private const REPLAY_CONSUMERS = [
+        'embedded-runtime-profile-guard',
         'embedded-history-import',
         'query-state-replayer',
         'workflow-executor',

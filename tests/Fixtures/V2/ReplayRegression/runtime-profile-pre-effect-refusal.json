@@ -1,0 +1,58 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "runtime-profile-pre-effect-refusal",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner",
+    "embedded-runtime-profile-guard"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestRuntimeProfileProbeWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-04T00:00:00+00:00",
+      "payload": {}
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": "done",
+    "commands": [
+      {
+        "type": "complete_workflow"
+      }
+    ]
+  },
+  "runtime_profile_guard": {
+    "version": 1,
+    "retained_run": {
+      "instance_id": "runtime-profile-corpus",
+      "run_id": "01J00000000000000000000001",
+      "task_id": "01J00000000000000000000002",
+      "namespace": "runtime-profile-corpus",
+      "profile": "future"
+    },
+    "entry_points": [
+      "workflow-task-claim",
+      "query-state-replay"
+    ],
+    "expected": {
+      "reason": "runtime_profile_unsupported",
+      "unchanged": [
+        "durable-rows",
+        "queue",
+        "cache",
+        "application-invocations"
+      ]
+    }
+  }
+}

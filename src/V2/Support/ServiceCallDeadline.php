@@ -13,6 +13,8 @@ final class ServiceCallDeadline
 {
     public static function expire(WorkflowServiceCall $call): bool
     {
+        RuntimeProfileGuard::assertServiceCall((string) $call->getKey());
+
         if ($call->accepted_at === null || $call->call_deadline_at === null
             || ! in_array($call->status, ['pending', 'accepted', 'started'], true)) {
             return false;
@@ -91,6 +93,8 @@ final class ServiceCallDeadline
      */
     public static function expireLocked(WorkflowServiceCall $call, CarbonInterface $instant): bool
     {
+        RuntimeProfileGuard::assertServiceCall((string) $call->getKey());
+
         if (! in_array($call->status, ['pending', 'accepted', 'started'], true)
             || $call->accepted_at === null || $call->call_deadline_at === null
             || $call->call_deadline_at->gt($instant)) {

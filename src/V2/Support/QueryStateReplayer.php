@@ -48,6 +48,14 @@ final class QueryStateReplayer
 
     public function replayState(WorkflowRun $run): ReplayState
     {
+        if ($run instanceof OfflineHistoryRun) {
+            RuntimeProfileGuard::assertLegacySnapshot($run->getAttributes());
+            if (! $this->hasReplayRelationsLoaded($run)) {
+                throw new \Workflow\V2\Exceptions\RuntimeProfileRefusal('runtime_profile_identity');
+            }
+        } else {
+            RuntimeProfileGuard::assertRun($run);
+        }
         $this->loadReplayRelations($run);
 
         $workflowClass = WorkflowDefinitionFingerprint::resolveClassForRun($run);

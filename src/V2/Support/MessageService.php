@@ -20,6 +20,8 @@ class MessageService
         ?string $streamKey = null,
         ?int $defaultConsumedBySequence = null,
     ): MessageStream {
+        RuntimeProfileGuard::assertRun($run);
+
         return MessageStream::forRun($run, $streamKey, $this, $defaultConsumedBySequence);
     }
 
@@ -49,6 +51,9 @@ class MessageService
         array $metadata = [],
         ?\DateTimeInterface $expiresAt = null,
     ): WorkflowMessage {
+        RuntimeProfileGuard::assertRun($sourceRun);
+        RuntimeProfileGuard::assertScope(instanceId: $targetInstanceId);
+
         $channel = is_string($channel) ? $channel : $channel->value;
         $streamKey = $streamKey ?? "instance:{$targetInstanceId}";
 
@@ -152,6 +157,8 @@ class MessageService
         ?string $streamKey = null,
         int $limit = 100,
     ): \Illuminate\Database\Eloquent\Collection {
+        RuntimeProfileGuard::assertRun($run);
+
         $streamKey = $streamKey ?? "instance:{$run->workflow_instance_id}";
         // A stream message stays receivable until it is consumed or expires.
         // The run's message cursor is shared with signals, updates and other
@@ -178,6 +185,8 @@ class MessageService
         ?string $streamKey = null,
         int $limit = 100,
     ): \Illuminate\Database\Eloquent\Collection {
+        RuntimeProfileGuard::assertRun($run);
+
         return $this->peekMessages($run, $streamKey, $limit);
     }
 
@@ -190,6 +199,8 @@ class MessageService
      */
     public function consumeMessage(WorkflowRun $run, WorkflowMessage $message, int $consumedBySequence): void
     {
+        RuntimeProfileGuard::assertRun($run);
+
         if (! $message->isConsumable()) {
             throw new InvalidArgumentException(sprintf(
                 'Message %d is not consumable (state: %s)',
@@ -228,6 +239,8 @@ class MessageService
      */
     public function consumeMessages(WorkflowRun $run, array $messages, int $consumedBySequence): void
     {
+        RuntimeProfileGuard::assertRun($run);
+
         if (empty($messages)) {
             return;
         }
@@ -295,6 +308,8 @@ class MessageService
      */
     public function consumeMessageBatch(WorkflowRun $run, array $messages, int $consumedBySequence): void
     {
+        RuntimeProfileGuard::assertRun($run);
+
         $this->consumeMessages($run, $messages, $consumedBySequence);
     }
 
@@ -308,6 +323,8 @@ class MessageService
      */
     public function getUnconsumedCount(WorkflowRun $run, ?string $streamKey = null): int
     {
+        RuntimeProfileGuard::assertRun($run);
+
         $streamKey = $streamKey ?? "instance:{$run->workflow_instance_id}";
         // A stream message stays receivable until it is consumed or expires.
         // The run's message cursor is shared with signals, updates and other
@@ -327,6 +344,8 @@ class MessageService
      */
     public function hasUnconsumedMessages(WorkflowRun $run, ?string $streamKey = null): bool
     {
+        RuntimeProfileGuard::assertRun($run);
+
         $streamKey = $streamKey ?? "instance:{$run->workflow_instance_id}";
         // A stream message stays receivable until it is consumed or expires.
         // The run's message cursor is shared with signals, updates and other
@@ -346,6 +365,9 @@ class MessageService
      */
     public function transferMessagesToContinuedRun(WorkflowRun $closingRun, WorkflowRun $continuedRun): void
     {
+        RuntimeProfileGuard::assertRun($closingRun);
+        RuntimeProfileGuard::assertRun($continuedRun);
+
         ConfiguredV2Models::connection()->transaction(static function () use ($closingRun, $continuedRun): void {
             // Transfer pending inbound messages to new run
             WorkflowMessage::where('workflow_run_id', $closingRun->id)
