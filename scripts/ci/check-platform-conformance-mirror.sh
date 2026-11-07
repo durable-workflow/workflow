@@ -7,6 +7,7 @@ version="${WORKFLOW_PLATFORM_CONFORMANCE_VERSION:-${GITHUB_REF_NAME:-}}"
 mirror_file="${WORKFLOW_PLATFORM_CONFORMANCE_MIRROR_FILE:-}"
 attempts="${PLATFORM_CONFORMANCE_AUTHORITY_ATTEMPTS:-6}"
 sleep_seconds="${PLATFORM_CONFORMANCE_AUTHORITY_RETRY_SLEEP:-20}"
+composer_trust_verifier="${WORKFLOW_COMPOSER_TRUST_VERIFIER:-}"
 repo_root="$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)"
 tmp_dir="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/workflow-platform-conformance.XXXXXX")"
 authority_file="$tmp_dir/public-authority.json"
@@ -15,6 +16,12 @@ workflow_install_path_file="$tmp_dir/workflow-install-path.txt"
 history_resolver_file="$tmp_dir/history-export-resolver.json"
 worker_protocol_resolvers_file="$tmp_dir/worker-protocol-resolvers.tsv"
 trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
+
+verify_project_composer_trust() {
+    if [ -n "$composer_trust_verifier" ]; then
+        php "$composer_trust_verifier" "$(command -v composer)" "$tmp_dir"
+    fi
+}
 
 version="${version#v}"
 
@@ -55,7 +62,9 @@ else
         exit 2
     fi
 
+    verify_project_composer_trust
     composer --working-dir="$tmp_dir" init --name=durable-workflow/conformance-release-audit --no-interaction
+    verify_project_composer_trust
     composer --working-dir="$tmp_dir" require --no-interaction --no-progress --prefer-dist \
         "durable-workflow/workflow:$version"
 

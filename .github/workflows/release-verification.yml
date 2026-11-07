@@ -21,53 +21,224 @@ permissions:
 jobs:
   published-package:
     name: Verify published Workflow package
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GITHUB_TOKEN: ''
+      GH_TOKEN: ''
+      GITHUB_ENTERPRISE_TOKEN: ''
+      GH_ENTERPRISE_TOKEN: ''
+      COMPOSER_AUTH: ''
+      WORKFLOW_COMPOSER_TRUST_VERIFIER: ${{ github.workspace }}/.qualification-control/.github/actions/verify-composer-trust/verify.php
     outputs:
       laravel_published_matrix: ${{ steps.laravel-matrix.outputs.matrix }}
       release_tag: ${{ steps.release.outputs.tag }}
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
-        with:
-          persist-credentials: false
-
-      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
-        with:
-          php-version: '8.3'
-          tools: composer
-
-      - name: Derive supported Laravel upgrade matrix
-        id: laravel-matrix
-        run: echo "matrix=$(php scripts/ci/laravel-embedded-upgrade-matrix.php --scope=published)" >> "$GITHUB_OUTPUT"
-
-      - name: Resolve stable release tag
+      - name: Admit one stable release verification
         id: release
         shell: bash
         env:
           INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            tag="$INPUT_TAG"
-          else
-            tag="$GITHUB_REF_NAME"
-          fi
-          tag="${tag#v}"
-          if ! printf '%s\n' "$tag" | grep -Eq '^2\.[0-9]+\.[0-9]+$'; then
-            echo "::error::Expected a stable Workflow 2.x tag, got: $tag"
+          test "$GITHUB_REPOSITORY" = durable-workflow/workflow
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          [[ "$GITHUB_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          case "$GITHUB_EVENT_NAME" in
+            workflow_dispatch)
+              test "$GITHUB_REF" = refs/heads/main
+              tag="$INPUT_TAG"
+              ;;
+            push)
+              test "$GITHUB_REF_TYPE" = tag
+              tag="$GITHUB_REF_NAME"
+              test "$GITHUB_REF" = "refs/tags/$tag"
+              ;;
+            *) exit 1 ;;
+          esac
+          if [[ ! "$tag" =~ ^2\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo 'Expected one literal stable Workflow 2.x tag' >&2
             exit 1
           fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
 
+      - name: Check out the maintained verification harness
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind the immutable product tag to its commit
+        id: product
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_WORKFLOW_SHA"
+          revision="$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")"
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            test "$(git rev-parse --verify "$GITHUB_SHA^{commit}")" = "$revision"
+          fi
+          printf 'revision=%s\n' "$revision" >> "$GITHUB_OUTPUT"
+      - name: Check out immutable product metadata
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          ref: ${{ steps.product.outputs.revision }}
+          path: .release-product
+          persist-credentials: false
+      - name: Verify the product train without executing product source
+        id: product_metadata
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          /usr/bin/python3 -I -S -B - <<'PYTHON'
+          import json,os,pathlib,stat
+          path=pathlib.Path('.release-product/composer.json')
+          metadata=path.lstat()
+          if not stat.S_ISREG(metadata.st_mode) or metadata.st_size>65536:
+              raise ValueError('Product metadata must be a bounded regular file')
+          with path.open() as source:
+              product=json.load(source)
+          if (product.get('name')!='durable-workflow/workflow'
+              or product.get('extra',{}).get('durable-workflow',{}).get('product-train')!=os.environ['RELEASE_TAG']):
+              raise ValueError('The immutable product train differs from the selected tag')
+          PYTHON
+      - name: Check out the accepted PHP terminal control source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          repository: durable-workflow/.github
+          ref: 8ba5caae2546f3d5f41b7616c5722b9b337b8fc0
+          path: .qualification-control
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: '3.12'
+      - name: Create caller-owned Composer home, cache and scratch
+        id: composer_state
+        run: |
+          /usr/bin/python3 -I -S -B - <<'PYTHON'
+          import json,os,pathlib,shutil,stat,tempfile
+          root=pathlib.Path(tempfile.mkdtemp(prefix='workflow-release-composer-',dir=os.environ['RUNNER_TEMP']))
+          try:
+              for name in ('home','cache','tmp'):
+                  (root/name).mkdir(mode=0o700)
+              metadata=root.lstat()
+              identity=[metadata.st_dev,metadata.st_ino,metadata.st_uid,stat.S_IMODE(metadata.st_mode)]
+              with open(os.environ['GITHUB_ENV'],'a') as output:
+                  for name,child in (('COMPOSER_HOME','home'),('COMPOSER_CACHE_DIR','cache'),('TMPDIR','tmp')):
+                      output.write(f'{name}={root/child}\n')
+              with open(os.environ['GITHUB_OUTPUT'],'a') as output:
+                  output.write(f'directory={root}\nidentity={json.dumps(identity)}\n')
+          except BaseException:
+              shutil.rmtree(root)
+              raise
+          PYTHON
+      - name: Select authenticated dependency trust
+        id: pip_trust
+        uses: durable-workflow/.github/.github/actions/bootstrap-patched-pip@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
+        with:
+          clients: pip,python,composer,curl,git
+      - name: Set up the exact accepted initial PHP profile
+        id: php_setup
+        uses: durable-workflow/.github/.github/actions/setup-php-linux@8ba5caae2546f3d5f41b7616c5722b9b337b8fc0  # bound-linux-php
+        with:
+          php-version: '8.3'
+          ini-file: production
+          tools: composer:2.10.3,phpunit:11.5.57
+          coverage: none
+      - name: Derive the published matrix from immutable product metadata
+        id: laravel-matrix
+        run: |
+          matrix="$(php scripts/ci/laravel-embedded-upgrade-matrix.php --scope=published --contract-path=.release-product/resources/laravel-embedded-upgrade-contract.json)"
+          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
       - name: Wait for Packagist release
         env:
           PACKAGIST_PACKAGE_NAME: durable-workflow/workflow
           PACKAGIST_PACKAGE_VERSION: ${{ steps.release.outputs.tag }}
+          RUNNER_TEMP: ${{ env.TMPDIR }}
         run: scripts/ci/check-packagist-release.sh
-
+      - name: Verify Composer trust before published product requests
+        uses: durable-workflow/.github/.github/actions/verify-composer-trust@242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5  # clean-trust
       - name: Verify published platform contract
         env:
           WORKFLOW_PLATFORM_CONFORMANCE_VERSION: ${{ steps.release.outputs.tag }}
+          RUNNER_TEMP: ${{ env.TMPDIR }}
         run: scripts/ci/check-platform-conformance-mirror.sh
+      - name: Revalidate PHP after product commands and clean owned state
+        if: ${{ always() && steps.composer_state.outcome != 'skipped' }}
+        env:
+          SETUP_RECEIPT: ${{ steps.php_setup.outputs.bootstrap-receipt }}
+          PIP_RECEIPT: ${{ steps.pip_trust.outputs.pip-state }}
+          PIP_CREATED: ${{ steps.pip_trust.outputs.pip-created }}
+          PIP_ROOT_IDENTITY: ${{ steps.pip_trust.outputs.pip-root-identity }}
+          PIP_RECEIPT_IDENTITY: ${{ steps.pip_trust.outputs.pip-receipt-identity }}
+          COMPOSER_DIRECTORY: ${{ steps.composer_state.outputs.directory }}
+          COMPOSER_DIRECTORY_IDENTITY: ${{ steps.composer_state.outputs.identity }}
+          PRODUCT_STATUS: ${{ job.status }}
+          LD_PRELOAD: ''
+          LD_LIBRARY_PATH: ''
+          LD_AUDIT: ''
+        run: |
+          /usr/bin/python3 -I -S -B - <<'PY'
+          import json,os,pathlib,shutil,stat,subprocess,sys,tempfile
+          runner_temp=pathlib.Path(os.environ['RUNNER_TEMP'])
+          composer_text=os.environ.get('COMPOSER_DIRECTORY','')
+          composer_root=pathlib.Path(composer_text) if composer_text else None
+          composer_identity=os.environ.get('COMPOSER_DIRECTORY_IDENTITY','')
+          try:
+              control_source='8ba5caae2546f3d5f41b7616c5722b9b337b8fc0'
+              control_directory=pathlib.Path.cwd()/'.qualification-control'
+              def control_git(*arguments):
+                  return subprocess.check_output(['/usr/bin/git','-C',str(control_directory),*arguments],text=True).strip()
+              if control_git('rev-parse','HEAD')!=control_source:
+                  raise ValueError('PHP terminal control source differs from its immutable binding')
+              subprocess.run(['/usr/bin/git','-C',str(control_directory),'diff','--exit-code',control_source,'--'],check=True,stdout=subprocess.DEVNULL)
+              if control_git('ls-files','--others'):
+                  raise ValueError('PHP terminal control source contains untracked files')
+              sys.path.insert(0,str(control_directory))
+              from scripts import php_linux_bootstrap as bootstrap
+              from scripts import php_linux_qualification as qualification
+              pip_state={key:os.environ.get(name,'') for key,name in (
+                  ('receipt','PIP_RECEIPT'),('created','PIP_CREATED'),
+                  ('root_identity','PIP_ROOT_IDENTITY'),('receipt_identity','PIP_RECEIPT_IDENTITY'))}
+              receipt_text=os.environ.get('SETUP_RECEIPT','')
+              receipt=pathlib.Path(receipt_text) if receipt_text else None
+              product_status=os.environ['PRODUCT_STATUS']
+              context={key:os.environ[key] for key in ('GITHUB_REPOSITORY','GITHUB_WORKFLOW_SHA',
+                  'GITHUB_SHA','GITHUB_REF','GITHUB_EVENT_NAME','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT')}
+              with tempfile.TemporaryDirectory(prefix='workflow-release-terminal-',dir=runner_temp) as directory:
+                  private=pathlib.Path(directory)
+                  (private/'home').mkdir(mode=0o700)
+                  (private/'tmp').mkdir(mode=0o700)
+                  closed=bootstrap.clean_environment(dict(os.environ),str(private/'home'))
+                  os.environ.clear()
+                  os.environ.update(closed)
+                  def publish(evidence):
+                      evidence.update(source=control_source,php_helper_source=control_source,
+                          pip_predecessor_source='242c2a7fb23459db2e1ada5f84dbee6d61d9b1e5',control=context,
+                          caller_product_status=product_status)
+                      text=json.dumps(evidence,sort_keys=True)
+                      if len(text.encode())>65536:
+                          raise ValueError('PHP terminal evidence exceeds its fixed bound')
+                      print(text)
+                      with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as output:
+                          output.write('Workflow published-package post-product terminal qualification\n\n'+text+'\n')
+                  qualification.qualify(receipt,runner_temp,closed,publish,pip_state=pip_state)
+          finally:
+              if composer_root is not None:
+                  metadata=composer_root.lstat()
+                  actual=[metadata.st_dev,metadata.st_ino,metadata.st_uid,stat.S_IMODE(metadata.st_mode)]
+                  if (composer_root.parent!=runner_temp or not composer_root.name.startswith('workflow-release-composer-')
+                      or not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid!=os.getuid()
+                      or actual!=json.loads(composer_identity)):
+                      raise ValueError('Exact caller-owned Composer state changed; cleanup refused')
+                  shutil.rmtree(composer_root)
+                  if os.path.lexists(composer_root):
+                      raise ValueError('Caller-owned Composer state remains after cleanup')
+                  print(json.dumps({'composer_state_cleanup':'pass'}))
+          PY
 
   laravel-upgrade:
     name: Laravel ${{ matrix.laravel }} / PHP ${{ matrix.php }} published upgrade
