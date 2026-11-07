@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.21.0 - 2026-11-07
+
 - Workflow 2.21.0 requires PHP `^8.2` and patched Laravel
   `^12.69.0|^13.30.0`. Laravel 10/11 and PHP 8.1 are no longer supported.
   Upgrade the application platform first while preserving its existing
@@ -11,6 +13,17 @@
   on their supported PHP 8.2–8.4 intersection. Laravel 13 still requires
   PHP 8.3 or newer. Removed-framework constraints refuse before installation;
   retired-platform advisory exceptions are not carried into 2.21.
+
+## 2.20.5 - 2026-11-07
+
+- Prevent a successful parallel activity group from missing its continuation
+  under MySQL repeatable read (#1052). The terminal activity handler now reads
+  current history while holding the parent-run lock, so a sibling completion
+  committed after its earlier snapshot is visible. Named storage and nested
+  all groups follow the same path; duplicate completion still wakes once.
+- This is a prevention change with no schema, payload or public API change.
+  It does not automatically resume runs already waiting without a continuation.
+  Rolling back restores the missed-wake defect.
 
 ## 2.20.4 - 2026-11-05
 
