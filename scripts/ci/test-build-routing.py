@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -442,6 +444,137 @@ class BuildWorkflowTrustTest(unittest.TestCase):
 
     def job_source(self, name: str) -> str:
         return workflow_job_source(self.build, name)
+
+
+class PublishedPackageAdmissionTest(unittest.TestCase):
+    def step_script(self, identity: str) -> str:
+        source = workflow_job_source(RELEASE_VERIFICATION_WORKFLOW.read_text(), "published-package")
+        for step in source.split("      - "):
+            if re.search(rf"(?m)^        id: {re.escape(identity)}$", step):
+                return textwrap.dedent(step.split("        run: |\n", 1)[1]).rstrip()
+        self.fail(f"Missing executable release step {identity}")
+
+    def environment(self, output: Path) -> dict[str, str]:
+        return {
+            "PATH": os.defpath,
+            "GITHUB_REPOSITORY": "durable-workflow/workflow",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_WORKFLOW_SHA": "a" * 40,
+            "GITHUB_SHA": "b" * 40,
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_REF": "refs/heads/main",
+            "GITHUB_REF_TYPE": "branch",
+            "GITHUB_REF_NAME": "main",
+            "INPUT_TAG": "2.20.4",
+            "RELEASE_TAG": "2.20.4",
+            "GITHUB_OUTPUT": str(output),
+        }
+
+    def test_release_admission_accepts_only_the_bound_stable_context(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "outputs"
+            accepted = [
+                {},
+                {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "tag",
+                 "GITHUB_REF": "refs/tags/2.20.4", "GITHUB_REF_NAME": "2.20.4"},
+            ]
+            refused = [
+                {"GITHUB_REPOSITORY": "other/workflow"},
+                {"GITHUB_RUN_ATTEMPT": "2"},
+                {"GITHUB_WORKFLOW_SHA": "main"},
+                {"GITHUB_EVENT_NAME": "pull_request"},
+                {"GITHUB_REF": "refs/tags/2.20.4"},
+                {"INPUT_TAG": "v2.20.4"},
+                {"INPUT_TAG": "2.20.4-rc1"},
+                {"INPUT_TAG": "2.020.4"},
+                {"INPUT_TAG": "../../main"},
+                {"GITHUB_EVENT_NAME": "push", "GITHUB_REF_TYPE": "tag",
+                 "GITHUB_REF": "refs/tags/2.20.3", "GITHUB_REF_NAME": "2.20.4"},
+            ]
+            for changes, expected in [(case, True) for case in accepted] + [(case, False) for case in refused]:
+                with self.subTest(changes=changes):
+                    output.unlink(missing_ok=True)
+                    result = subprocess.run(
+                        ["bash", "-c", self.step_script("release")],
+                        env=self.environment(output) | changes, capture_output=True, text=True, timeout=5,
+                    )
+                    self.assertEqual(expected, result.returncode == 0, result.stderr)
+                    if expected:
+                        self.assertEqual("tag=2.20.4\n", output.read_text())
+                    else:
+                        self.assertFalse(output.exists())
+
+    def test_product_binding_peels_the_tag_without_replacing_the_harness(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "outputs"
+            def git(*arguments: str) -> str:
+                return subprocess.check_output(
+                    ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", *arguments],
+                    cwd=root, text=True, stderr=subprocess.DEVNULL, timeout=5,
+                ).strip()
+            git("init", "-q")
+            git("commit", "--allow-empty", "-qm", "Product")
+            product = git("rev-parse", "HEAD")
+            git("tag", "-am", "Product tag", "2.20.4")
+            git("commit", "--allow-empty", "-qm", "Maintained harness")
+            harness = git("rev-parse", "HEAD")
+            environment = self.environment(output) | {"GITHUB_WORKFLOW_SHA": harness}
+            result = subprocess.run(
+                ["bash", "-c", self.step_script("product")], cwd=root,
+                env=environment, capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(f"revision={product}\n", output.read_text())
+            self.assertEqual(harness, git("rev-parse", "HEAD"))
+            output.unlink()
+            result = subprocess.run(
+                ["bash", "-c", self.step_script("product")], cwd=root,
+                env=environment | {"GITHUB_EVENT_NAME": "push", "GITHUB_SHA": harness},
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertNotEqual(0, result.returncode)
+            self.assertFalse(output.exists())
+
+    def test_product_metadata_must_match_the_selected_tag(self) -> None:
+        script = self.step_script("product_metadata")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            product = root / ".release-product"
+            product.mkdir()
+            manifest = product / "composer.json"
+            for train, expected in [("2.20.4", True), ("2.21.0", False)]:
+                with self.subTest(train=train):
+                    manifest.write_text(json.dumps({"name": "durable-workflow/workflow", "extra": {
+                        "durable-workflow": {"product-train": train},
+                    }}))
+                    result = subprocess.run(
+                        ["bash", "-c", script], cwd=root,
+                        env=self.environment(root / "outputs"), capture_output=True, text=True, timeout=5,
+                    )
+                    self.assertEqual(expected, result.returncode == 0, result.stderr)
+
+    def test_matrix_failure_does_not_publish_an_empty_successful_output(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "outputs"
+            php = root / "php"
+            environment = self.environment(output) | {"PATH": str(root) + os.pathsep + os.defpath}
+            php.write_text("#!/bin/sh\nexit 23\n")
+            php.chmod(0o700)
+            result = subprocess.run(
+                ["bash", "-e", "-c", self.step_script("laravel-matrix")],
+                env=environment, capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(23, result.returncode)
+            self.assertFalse(output.exists())
+            php.write_text("#!/bin/sh\nprintf '%s\\n' '{\"include\":[]}'\n")
+            result = subprocess.run(
+                ["bash", "-e", "-c", self.step_script("laravel-matrix")],
+                env=environment, capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual('matrix={"include":[]}\n', output.read_text())
 
 
 if __name__ == "__main__":
