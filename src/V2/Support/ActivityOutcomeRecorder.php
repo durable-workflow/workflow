@@ -495,6 +495,7 @@ final class ActivityOutcomeRecorder
                     $run,
                     $parallelMetadataPath,
                     $closedStatus,
+                    lockHistoryForUpdate: true,
                 )
             ) {
                 self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
