@@ -14,6 +14,17 @@
   PHP 8.3 or newer. Removed-framework constraints refuse before installation;
   retired-platform advisory exceptions are not carried into 2.21.
 
+- Add namespace-bound schedule visibility predicates for `ScheduleId`,
+  `Status`, `WorkflowType`, `TaskQueue` and `Note`. Equality and `AND` use
+  bound values; unsupported fields and operators return typed refusals.
+- Add guarded prepared local-activity retry contract 2 helpers and an optional
+  task-bridge interface. Preparation snapshots, report validation, retry
+  decisions and lost-claim recovery retain original authority and fences.
+  The default bridge does not implement the new role; these helpers do not
+  enable a runtime capability or change existing v1 bridges.
+- Include the parallel activity continuation prevention fix described under
+  2.20.5 below. Existing stranded runs still require separate recovery.
+
 ## 2.20.5 - 2026-11-07
 
 - Prevent a successful parallel activity group from missing its continuation
