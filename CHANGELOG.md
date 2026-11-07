@@ -13,6 +13,15 @@
   It does not automatically resume runs already waiting without a continuation.
   Rolling back restores the missed-wake defect.
 
+## 2.20.4 - 2026-11-05
+
+- Fix an embedded MySQL/InnoDB REPEATABLE READ deadlock between
+  continue-as-new and unrelated signal admission. Caller-owned transactions
+  retain their original read views, pending default/named signal handoffs
+  remain durable, and user workflow code is not automatically replayed to
+  recover from the deadlock.
+
+
 ## 2.20.3 - 2026-11-04
 
 - Rollback, embedded Workflow package: 2.20.3 changes no schema, history
