@@ -112,9 +112,23 @@ jobs:
           ref: 8ba5caae2546f3d5f41b7616c5722b9b337b8fc0
           path: .qualification-control
           persist-credentials: false
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
-        with:
-          python-version: '3.12'
+      - name: Select the trusted system Python
+        env:
+          LD_PRELOAD: ''
+          LD_LIBRARY_PATH: ''
+          LD_AUDIT: ''
+        run: |
+          /usr/bin/python3 -I -S -B - <<'PYTHON'
+          import os,pathlib,sys
+          if sys.version_info[:2] != (3,12) or os.environ.get('pythonLocation'):
+              raise ValueError('Expected the Ubuntu 24 system Python without toolcache selection')
+          selected=pathlib.Path('/usr/bin/python').resolve(strict=True)
+          if (selected != pathlib.Path(sys.executable).resolve(strict=True)
+                  or selected != pathlib.Path('/usr/bin/python3.12')):
+              raise ValueError('System Python aliases do not share the exact reviewed origin')
+          with open(os.environ['GITHUB_PATH'],'a') as output:
+              output.write('/usr/bin\n')
+          PYTHON
       - name: Create caller-owned Composer home, cache and scratch
         id: composer_state
         run: |
