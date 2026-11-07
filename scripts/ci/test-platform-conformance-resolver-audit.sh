@@ -136,4 +136,64 @@ if run_audit > "$output_file" 2>&1; then
 fi
 
 printf '%s\n' 'Platform conformance resolver audit preserves byte checks and rejects non-HTTPS inputs.'
+
+# Exercise the actual project creation path without installing a package. The
+# final fake require always stops before any published-package PHP can execute.
+mkdir "$tmp_dir/composer-bin" "$tmp_dir/composer-scratch"
+cat > "$tmp_dir/composer-bin/curl" <<'CURL'
+#!/usr/bin/env sh
+set -eu
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = -o ]; then printf '{}\n' > "$2"; exit 0; fi
+    shift
+done
+exit 1
+CURL
+cat > "$tmp_dir/composer-bin/php" <<'PHP'
+#!/usr/bin/env sh
+set -eu
+test "$1" = "$COMPOSER_AUDIT_VERIFIER"
+test "$2" = "$COMPOSER_AUDIT_BIN/composer"
+test -d "$3"
+printf 'verify\n' >> "$COMPOSER_AUDIT_LOG"
+if [ "$COMPOSER_AUDIT_REFUSE" = before-init ]; then exit 71; fi
+if [ "$COMPOSER_AUDIT_REFUSE" = before-require ] && [ -f "$3/composer.json" ]; then exit 72; fi
+PHP
+cat > "$tmp_dir/composer-bin/composer" <<'COMPOSER'
+#!/usr/bin/env sh
+set -eu
+project="${1#--working-dir=}"
+test "$project" != "$1"
+printf '%s\n' "$2" >> "$COMPOSER_AUDIT_LOG"
+case "$2" in
+    init) printf '{}\n' > "$project/composer.json" ;;
+    require) exit 73 ;;
+    *) exit 1 ;;
+esac
+COMPOSER
+chmod 700 "$tmp_dir/composer-bin/"*
+
+for refusal in before-init before-require none; do
+    composer_log="$tmp_dir/composer-$refusal.log"
+    result=0
+    PATH="$tmp_dir/composer-bin:$PATH" \
+    COMPOSER_AUDIT_BIN="$tmp_dir/composer-bin" \
+    COMPOSER_AUDIT_VERIFIER="$tmp_dir/inert-verifier.php" \
+    COMPOSER_AUDIT_LOG="$composer_log" \
+    COMPOSER_AUDIT_REFUSE="$refusal" \
+    WORKFLOW_COMPOSER_TRUST_VERIFIER="$tmp_dir/inert-verifier.php" \
+    WORKFLOW_PLATFORM_CONFORMANCE_VERSION=2.20.4 \
+    WORKFLOW_PLATFORM_CONFORMANCE_MIRROR_FILE='' \
+    RUNNER_TEMP="$tmp_dir/composer-scratch" \
+        "$repo_root/scripts/ci/check-platform-conformance-mirror.sh" > "$output_file" 2>&1 || result=$?
+    case "$refusal" in
+        before-init) expected_status=71; expected_calls='verify' ;;
+        before-require) expected_status=72; expected_calls="$(printf 'verify\ninit\nverify')" ;;
+        none) expected_status=73; expected_calls="$(printf 'verify\ninit\nverify\nrequire')" ;;
+    esac
+    test "$result" -eq "$expected_status"
+    test "$(cat "$composer_log")" = "$expected_calls"
+    test -z "$(ls -A "$tmp_dir/composer-scratch")"
+done
+printf '%s\n' 'Composer trust is checked before init and again after project creation; refusals stop the request and clean scratch.'
 "$repo_root/scripts/ci/test-packagist-release.sh"
