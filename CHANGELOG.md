@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+## 2.20.5 - 2026-11-07
+
+- Prevent a successful parallel activity group from missing its continuation
+  under MySQL repeatable read (#1052). The terminal activity handler now reads
+  current history while holding the parent-run lock, so a sibling completion
+  committed after its earlier snapshot is visible. Named storage and nested
+  all groups follow the same path; duplicate completion still wakes once.
+- This is a prevention change with no schema, payload or public API change.
+  It does not automatically resume runs already waiting without a continuation.
+  Rolling back restores the missed-wake defect.
+
+## 2.20.4 - 2026-11-05
+
+- Fix an embedded MySQL/InnoDB REPEATABLE READ deadlock between
+  continue-as-new and unrelated signal admission. Caller-owned transactions
+  retain their original read views, pending default/named signal handoffs
+  remain durable, and user workflow code is not automatically replayed to
+  recover from the deadlock.
+
+
 ## 2.20.3 - 2026-11-04
 
 - Rollback, embedded Workflow package: 2.20.3 changes no schema, history

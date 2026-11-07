@@ -680,6 +680,7 @@ final class ActivityTimeoutEnforcer
                 $run,
                 $parallelMetadataPath,
                 ActivityStatus::Failed,
+                lockHistoryForUpdate: true,
             )
         ) {
             self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));

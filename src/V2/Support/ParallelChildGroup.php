@@ -276,13 +276,15 @@ final class ParallelChildGroup
     public static function shouldWakeParentOnActivityClosure(
         WorkflowRun $parentRun,
         array $metadata,
-        ActivityStatus $closedActivityStatus
+        ActivityStatus $closedActivityStatus,
+        bool $lockHistoryForUpdate = false,
     ): bool {
         return self::shouldWakeParentOnClosure(
             $parentRun,
             self::normalizedPath($metadata),
             'activity',
             $closedActivityStatus,
+            $lockHistoryForUpdate,
         );
     }
 
