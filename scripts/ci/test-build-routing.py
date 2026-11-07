@@ -8,9 +8,11 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 
@@ -575,6 +577,52 @@ class PublishedPackageAdmissionTest(unittest.TestCase):
             )
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertEqual('matrix={"include":[]}\n', output.read_text())
+
+
+class SystemPythonBootstrapSelectionTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        source = RELEASE_VERIFICATION_WORKFLOW.read_text()
+        step = source.split("      - name: Select the trusted system Python\n", 1)[1]
+        cls.script = textwrap.dedent(step.split("<<'PYTHON'\n", 1)[1].split("          PYTHON\n", 1)[0])
+
+    def selection(self, *, version=(3, 12, 3), location="", foreign_alias=False):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "github-path"
+            output.touch(mode=0o600)
+            def canonical(path, strict=False):
+                if foreign_alias and str(path) == "/usr/bin/python":
+                    return Path("/opt/shared/python")
+                return Path("/usr/bin/python3.12")
+            with patch.dict(os.environ, {"GITHUB_PATH": str(output), "pythonLocation": location}, clear=True), \
+                    patch.object(sys, "version_info", version), \
+                    patch.object(sys, "executable", "/usr/bin/python3"), \
+                    patch.object(Path, "resolve", autospec=True, side_effect=canonical):
+                try:
+                    exec(compile(self.script, "actual-system-python-step", "exec"), {})
+                except ValueError as error:
+                    return output.read_text(), str(error)
+            return output.read_text(), None
+
+    def test_exact_system_alias_is_selected_before_bootstrap(self):
+        output, error = self.selection()
+        self.assertEqual("/usr/bin\n", output)
+        self.assertIsNone(error)
+
+    def test_toolcache_selection_refuses_before_path_change(self):
+        output, error = self.selection(location="/opt/hostedtoolcache/Python/3.12.16/x64")
+        self.assertEqual("", output)
+        self.assertIn("without toolcache", error)
+
+    def test_changed_system_alias_refuses_before_path_change(self):
+        output, error = self.selection(foreign_alias=True)
+        self.assertEqual("", output)
+        self.assertIn("exact reviewed origin", error)
+
+    def test_other_python_version_refuses_before_path_change(self):
+        output, error = self.selection(version=(3, 13, 0))
+        self.assertEqual("", output)
+        self.assertIn("Ubuntu 24 system Python", error)
 
 
 if __name__ == "__main__":
