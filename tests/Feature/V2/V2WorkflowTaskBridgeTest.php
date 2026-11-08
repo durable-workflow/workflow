@@ -8506,6 +8506,15 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             $this->assertSame([20, 15], $events->pluck('payload.timeout_seconds')->all());
             if ($anchored) {
                 $this->assertSame($first->fire_at->toJSON(), $events[1]->payload['occurrence_deadline_at'] ?? null);
+                $this->assertSame([20, 20], $events->pluck('payload.condition_wait_timeout_budget_seconds')->all());
+                foreach ($run->historyEvents()->where(
+                    'event_type',
+                    HistoryEventType::TimerScheduled->value
+                )->get() as $scheduled) {
+                    $this->assertSame('occurrence', $scheduled->payload['deadline_policy']);
+                    $this->assertSame($first->fire_at->toJSON(), $scheduled->payload['occurrence_deadline_at']);
+                    $this->assertArrayNotHasKey('condition_wait_timeout_budget_seconds', $scheduled->payload);
+                }
             } else {
                 $this->assertArrayNotHasKey('occurrence_deadline_at', $events[1]->payload);
             }

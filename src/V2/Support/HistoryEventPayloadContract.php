@@ -398,7 +398,6 @@ final class HistoryEventPayloadContract
             'signal_wait_id',
             'signal_name',
             'deadline_policy',
-            'condition_wait_timeout_budget_seconds',
             'occurrence_deadline_at',
         ],
         'TimerFired' => [
