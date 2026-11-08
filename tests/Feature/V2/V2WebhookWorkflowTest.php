@@ -3326,7 +3326,7 @@ final class V2WebhookWorkflowTest extends TestCase
         yield 'missing' => [null, 'invalid_protocol_version'];
         yield 'empty' => ['', 'invalid_protocol_version'];
         yield 'malformed patch version' => ['1.21.0', 'invalid_protocol_version'];
-        yield 'future minor' => ['1.22', 'unsupported_protocol_version'];
+        yield 'future minor' => ['1.23', 'unsupported_protocol_version'];
         yield 'different major' => ['2.0', 'unsupported_protocol_version'];
         yield 'leading zero major' => ['01.21', 'invalid_protocol_version'];
         yield 'leading zero minor' => ['1.020', 'invalid_protocol_version'];
