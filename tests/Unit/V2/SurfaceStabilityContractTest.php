@@ -145,7 +145,7 @@ final class SurfaceStabilityContractTest extends TestCase
         $negotiation = $manifest['surface_families']['worker_protocol']['negotiation'];
 
         $this->assertSame('worker_protocol.version', $negotiation['advertised_version_path']);
-        $this->assertSame('1.21', $negotiation['default_advertised_version']);
+        $this->assertSame('1.22', $negotiation['default_advertised_version']);
         $this->assertSame(
             'same_major_and_minor_less_than_or_equal_to_advertised',
             $negotiation['request_header_rule'],
@@ -155,6 +155,7 @@ final class SurfaceStabilityContractTest extends TestCase
         $this->assertSame('1.19', $negotiation['accepted_request_versions_by_default'][19]);
         $this->assertSame('1.20', $negotiation['accepted_request_versions_by_default'][20]);
         $this->assertSame('1.21', $negotiation['accepted_request_versions_by_default'][21]);
+        $this->assertSame('1.22', $negotiation['accepted_request_versions_by_default'][22]);
         $this->assertSame('advertised_version', $negotiation['response_version']);
         $this->assertSame(
             ['missing_header', 'malformed_version', 'different_major', 'minor_greater_than_advertised'],
