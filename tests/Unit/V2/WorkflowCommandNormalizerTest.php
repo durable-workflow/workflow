@@ -1927,6 +1927,53 @@ final class WorkflowCommandNormalizerTest extends NonDatabaseTestCase
         );
     }
 
+    public function testOccurrenceDeadlineKeepsTheOriginalAndRemainingBudgetsDistinct(): void
+    {
+        $command = [
+            'type' => 'open_condition_wait',
+            'condition_wait_occurrence_id' => 'php:condition-wait:0',
+            'timeout_seconds' => 0,
+            'deadline_policy' => 'occurrence',
+            'condition_wait_timeout_budget_seconds' => 20,
+        ];
+        $this->assertSame([$command], WorkflowCommandNormalizer::normalize([$command]));
+        $this->assertSame([$command], WorkflowCommandNormalizer::normalize([$command], '1.20'));
+    }
+
+    public function testOccurrenceDeadlineRejectsMalformedMetadataBeforeExecution(): void
+    {
+        $command = [
+            'type' => 'open_condition_wait',
+            'condition_wait_occurrence_id' => 'php:condition-wait:0',
+            'timeout_seconds' => 10,
+            'deadline_policy' => 'occurrence',
+            'condition_wait_timeout_budget_seconds' => 20,
+        ];
+        foreach ([[
+            'deadline_policy' => 'another-policy',
+        ], [
+            'condition_wait_timeout_budget_seconds' => '20',
+        ],
+            [
+                'condition_wait_timeout_budget_seconds' => -1,
+            ], [
+                'timeout_seconds' => -1,
+            ],
+            [
+                'timeout_seconds' => 21,
+            ], [
+                'condition_wait_occurrence_id' => '',
+            ], [
+                'deadline_policy' => null,
+            ],
+            [
+                'condition_wait_timeout_budget_seconds' => null,
+            ]] as $change) {
+            $errors = $this->normalizeAndCaptureErrors([[...$command, ...$change]]);
+            $this->assertArrayHasKey('commands.0.deadline_policy', $errors);
+        }
+    }
+
     public function testOpenConditionWaitWithoutOptionalFieldsNormalizes(): void
     {
         $out = WorkflowCommandNormalizer::normalize([

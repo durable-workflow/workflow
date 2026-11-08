@@ -988,3 +988,31 @@ on a class in the list, or narrows a return type must either be shipped
 in a major version, or promote the class to a `Contracts\*` interface in
 the same change. Reviewers should treat unmotivated removals from this
 list as a breaking change.
+
+### Occurrence deadlines (worker protocol 1.22)
+
+A runtime advertising `condition_wait_occurrence_deadline` accepts the optional
+`deadline_policy: "occurrence"` and
+`condition_wait_timeout_budget_seconds` fields on `open_condition_wait`.
+The original budget is distinct from the physical open's remaining
+`timeout_seconds`; every open of one run/occurrence/key/fingerprint chain keeps
+the same policy and original budget. The first open's remaining timeout equals
+its full budget. The runtime owns the anchor A, records
+`occurrence_deadline_at`, and uses the first timer's exact stored `fire_at` for
+every reopen, including an already-due A. It does not fire inline or stamp a
+fictitious earlier dispatch time.
+
+Protocol 1.22 describes this additive command/history metadata. Existing request
+versions retain their support; this extension adds no new request-version floor
+above occurrence identity's 1.17 floor. Writers must observe the runtime
+capability before opting in. A recorded legacy chain stays legacy, and a
+recorded anchored chain keeps its policy even if the current advertisement
+changes. This does not opt grouped waits into the feature. The embedded runner
+continues its existing waiting behavior; the opt-in changes command application
+for callers that explicitly request this runtime capability.
+
+The entire completion rolls back on `condition_wait_occurrence_mismatch`,
+`condition_wait_occurrence_timed_out` or `condition_wait_anchor_unavailable`,
+including earlier sibling commands and signal application. Unknown or malformed
+policy metadata refuses validation. A missing anchor never starts a fresh
+budget. Commands without the policy keep their existing per-open semantics.

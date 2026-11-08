@@ -39,6 +39,7 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Enums\UpdateStatus;
 use Workflow\V2\Exceptions\ActivityTimeoutException;
+use Workflow\V2\Exceptions\ConditionOccurrenceDeadlineConflict;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Exceptions\HistoryTransactionLimitExceededException;
 use Workflow\V2\Exceptions\ServiceOperationAuthorizationException;
@@ -1509,7 +1510,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                     'reason' => null,
                 ];
             });
-        } catch (ServiceOperationAuthorizationException $refusal) {
+        } catch (ServiceOperationAuthorizationException|ConditionOccurrenceDeadlineConflict $refusal) {
             return [
                 'completed' => false,
                 'task_id' => $taskId,
@@ -1897,7 +1898,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                     'reason' => null,
                 ];
             }, 5);
-        } catch (ServiceOperationAuthorizationException $refusal) {
+        } catch (ServiceOperationAuthorizationException|ConditionOccurrenceDeadlineConflict $refusal) {
             return $refused($refusal->getMessage());
         } catch (HistoryTransactionLimitExceededException $refusal) {
             return $refused(self::meterRefusalReason($refusal));
@@ -4147,6 +4148,14 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         int $sequence,
         array &$createdTaskIds,
     ): int {
+        $deadline = ConditionOccurrenceDeadline::resolve($run, $command);
+        if ($deadline['keep_open']) {
+            return $sequence;
+        }
+        $deadlineMetadata = [
+            ...(ConditionOccurrenceDeadline::fields($command) ?? []),
+            'occurrence_deadline_at' => $deadline['deadline_at']?->toJSON(),
+        ];
         $conditionKey = self::nonEmptyString($command['condition_key'] ?? null);
         $conditionDefinitionFingerprint = self::nonEmptyString(
             $command['condition_definition_fingerprint'] ?? null,
@@ -4167,10 +4176,11 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
             'sequence' => $sequence,
             'timeout_seconds' => $timeoutSeconds,
+            ...$deadlineMetadata,
             ...$parallelMetadata,
         ], static fn (mixed $value): bool => $value !== null), $task);
 
-        if ($timeoutSeconds === 0) {
+        if ($timeoutSeconds === 0 && $deadline['deadline_at'] === null) {
             $firedEvent = $this->fireImmediateConditionTimeout(
                 $run,
                 $task,
@@ -4198,9 +4208,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             $createdTaskIds[] = $resumeTask->id;
         }
 
-        if ($timeoutSeconds !== null && $timeoutSeconds > 0) {
-            $fireAt = now()
-                ->addSeconds($timeoutSeconds);
+        if ($timeoutSeconds !== null && ($timeoutSeconds > 0 || $deadline['deadline_at'] !== null)) {
+            $fireAt = $deadline['deadline_at'] ?? now()->addSeconds($timeoutSeconds);
 
             /** @var WorkflowTimer $timer */
             $timer = WorkflowTimer::query()->create([
@@ -4217,6 +4226,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 'delay_seconds' => $timer->delay_seconds,
                 'fire_at' => $timer->fire_at?->toJSON(),
                 'timer_kind' => 'condition_timeout',
+                'deadline_policy' => $deadlineMetadata['deadline_policy'] ?? null,
+                'occurrence_deadline_at' => $deadlineMetadata['occurrence_deadline_at'],
                 'condition_wait_id' => $waitId,
                 'condition_wait_occurrence_id' => $conditionWaitOccurrenceId,
                 'condition_key' => $conditionKey,
@@ -6198,7 +6209,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
      */
     private static function normalizeOpenConditionWaitCommand(array $command): ?array
     {
-        if (self::hasInvalidWaitTimeoutSeconds($command)) {
+        $deadlineFields = ConditionOccurrenceDeadline::fields($command);
+        if ($deadlineFields === null || self::hasInvalidWaitTimeoutSeconds($command)) {
             return null;
         }
 
@@ -6217,6 +6229,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 $command['condition_wait_occurrence_id'] ?? null,
             ),
             'timeout_seconds' => self::normalizeWaitTimeoutSeconds($command),
+            ...$deadlineFields,
             ...$parallelMetadata,
         ], static fn (mixed $value): bool => $value !== null);
     }

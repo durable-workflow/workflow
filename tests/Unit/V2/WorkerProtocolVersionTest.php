@@ -19,7 +19,7 @@ final class WorkerProtocolVersionTest extends NonDatabaseTestCase
 
     public function testVersionTracksServiceOperationCommandShape(): void
     {
-        $this->assertSame('1.21', WorkerProtocolVersion::VERSION);
+        $this->assertSame('1.22', WorkerProtocolVersion::VERSION);
         $this->assertContains('start_service_operation', WorkerProtocolVersion::nonTerminalCommandTypes());
         $this->assertSame(0, WorkerProtocolVersion::longPollSemantics()['min_timeout_seconds']);
     }
@@ -39,7 +39,8 @@ final class WorkerProtocolVersionTest extends NonDatabaseTestCase
     {
         $this->assertTrue(WorkerProtocolVersion::isSupportedRequestVersion('1.20'));
         $this->assertTrue(WorkerProtocolVersion::isSupportedRequestVersion('1.21'));
-        $this->assertFalse(WorkerProtocolVersion::isSupportedRequestVersion('1.22'));
+        $this->assertTrue(WorkerProtocolVersion::isSupportedRequestVersion('1.22'));
+        $this->assertFalse(WorkerProtocolVersion::isSupportedRequestVersion('1.23'));
         $this->assertFalse(WorkerProtocolVersion::isSupportedRequestVersion('2.0'));
         $this->assertFalse(WorkerProtocolVersion::isSupportedRequestVersion('1.21.0'));
         $this->assertFalse(WorkerProtocolVersion::isSupportedRequestVersion('01.21'));
@@ -344,6 +345,9 @@ final class WorkerProtocolVersionTest extends NonDatabaseTestCase
             $shape['condition_wait_occurrence_id']['worker_capability'],
         );
         $this->assertSame('condition_wait_occurrence_id', $shape['history']['occurrence_field']);
+        $this->assertSame('condition_wait_occurrence_deadline', $shape['deadline_policy']['server_capability']);
+        $this->assertSame('condition_wait_timeout_budget_seconds', $shape['deadline_policy']['budget_field']);
+        $this->assertSame('occurrence_deadline_at', $shape['deadline_policy']['history_anchor_field']);
         $this->assertSame(
             [
                 'sequence',

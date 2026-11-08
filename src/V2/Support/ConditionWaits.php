@@ -41,6 +41,8 @@ final class ConditionWaits
      *     status: string,
      *     source_status: string,
      *     timeout_seconds: int|null,
+     *     deadline_policy: string|null,
+     *     condition_wait_timeout_budget_seconds: int|null,
      *     timer_id: string|null,
      *     opened_at: \Carbon\CarbonInterface|null,
      *     deadline_at: \Carbon\CarbonInterface|null,
@@ -367,6 +369,8 @@ final class ConditionWaits
      *     status: string,
      *     source_status: string,
      *     timeout_seconds: int|null,
+     *     deadline_policy: string|null,
+     *     condition_wait_timeout_budget_seconds: int|null,
      *     timer_id: string|null,
      *     opened_at: \Carbon\CarbonInterface|null,
      *     deadline_at: \Carbon\CarbonInterface|null,
@@ -400,6 +404,8 @@ final class ConditionWaits
      *     status: string,
      *     source_status: string,
      *     timeout_seconds: int|null,
+     *     deadline_policy: string|null,
+     *     condition_wait_timeout_budget_seconds: int|null,
      *     timer_id: string|null,
      *     opened_at: \Carbon\CarbonInterface|null,
      *     deadline_at: \Carbon\CarbonInterface|null,
@@ -426,6 +432,11 @@ final class ConditionWaits
             'sequence' => self::intValue($event->payload['sequence'] ?? null),
             'status' => 'open',
             'source_status' => 'waiting',
+            'deadline_policy' => self::stringValue($event->payload['deadline_policy'] ?? null),
+            'condition_wait_timeout_budget_seconds' => is_int(
+                $event->payload['condition_wait_timeout_budget_seconds'] ?? null
+            )
+                ? $event->payload['condition_wait_timeout_budget_seconds'] : null,
             'timeout_seconds' => self::intValue($event->payload['timeout_seconds'] ?? null)
                 ?? self::intValue($event->payload['delay_seconds'] ?? null),
             'timer_id' => $timerId,
