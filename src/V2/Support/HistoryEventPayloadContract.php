@@ -397,6 +397,9 @@ final class HistoryEventPayloadContract
             'condition_definition_fingerprint',
             'signal_wait_id',
             'signal_name',
+            'deadline_policy',
+            'condition_wait_timeout_budget_seconds',
+            'occurrence_deadline_at',
         ],
         'TimerFired' => [
             'reused_from_run_id',
@@ -586,6 +589,9 @@ final class HistoryEventPayloadContract
             'parallel_group_size',
             'parallel_group_index',
             'parallel_group_path',
+            'deadline_policy',
+            'condition_wait_timeout_budget_seconds',
+            'occurrence_deadline_at',
         ],
         'ConditionWaitSatisfied' => [
             'condition_wait_id',

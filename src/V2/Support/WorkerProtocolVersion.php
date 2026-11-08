@@ -30,7 +30,7 @@ final class WorkerProtocolVersion
      * pagination semantics). Bump the minor for additive changes (new
      * optional fields, new non-terminal command types).
      */
-    public const VERSION = '1.21';
+    public const VERSION = '1.22';
 
     /**
      * Worker registration capability for server-routed workflow query
@@ -677,6 +677,8 @@ final class WorkerProtocolVersion
                 'condition_definition_fingerprint',
                 'condition_wait_occurrence_id',
                 'timeout_seconds',
+                'deadline_policy',
+                'condition_wait_timeout_budget_seconds',
             ],
             'condition_wait_occurrence_id' => [
                 'shape' => 'non-empty string',
@@ -684,6 +686,28 @@ final class WorkerProtocolVersion
                 'minimum_protocol_version' => self::CONDITION_WAIT_OCCURRENCE_IDENTITY_MINIMUM_PROTOCOL_VERSION,
                 'worker_capability' => self::CAPABILITY_CONDITION_WAIT_OCCURRENCE_IDENTITY,
                 'meaning' => 'explicit deterministic identity of one authored wait occurrence',
+            ],
+            'deadline_policy' => [
+                'value' => 'occurrence',
+                'server_capability' => 'condition_wait_occurrence_deadline',
+                'negotiation' => 'opt in only when the runtime advertises the capability; keep recorded chains on their original policy',
+                'budget_field' => 'condition_wait_timeout_budget_seconds',
+                'budget_shape' => 'non-negative integer original timeout, at least timeout_seconds',
+                'required_with_policy' => [
+                    'condition_wait_occurrence_id',
+                    'timeout_seconds',
+                    'condition_wait_timeout_budget_seconds',
+                ],
+                'first_open' => 'timeout_seconds equals the original budget; the runtime sets A from its commit clock',
+                'reopen' => 'same run, occurrence, key, fingerprint and original budget reuse the first timer fire_at exactly',
+                'expired_anchor' => 'schedule due at A without firing inline or inventing a past dispatch time',
+                'refusal_reasons' => [
+                    'condition_wait_occurrence_mismatch',
+                    'condition_wait_occurrence_timed_out',
+                    'condition_wait_anchor_unavailable',
+                ],
+                'legacy_absence' => 'retain per-open scheduling and refuse a later opt-in to that chain',
+                'history_anchor_field' => 'occurrence_deadline_at',
             ],
             'history' => [
                 'lifecycle_event_types' => [

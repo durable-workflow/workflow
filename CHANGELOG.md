@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Add an opt-in first-open wall deadline for condition-wait commands. With
+  `deadline_policy: "occurrence"`, physical false-wake reopens retain the first
+  timer's exact deadline and original timeout budget. Conflicting, timed-out
+  or unprovable chains refuse with whole-completion rollback. Commands without
+  the policy retain their existing per-open behavior.
+
 ## 2.21.1 - 2026-11-07
 
 - Exclude the test tree from Composer distribution archives (#1064), avoiding

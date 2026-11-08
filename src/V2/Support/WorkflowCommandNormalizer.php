@@ -1213,6 +1213,13 @@ final class WorkflowCommandNormalizer
             }
 
             if ($type === 'open_condition_wait') {
+                $deadlineFields = ConditionOccurrenceDeadline::fields($command);
+                if ($deadlineFields === null) {
+                    $errors["commands.{$index}.deadline_policy"] = [
+                        'Occurrence deadlines require an occurrence id and integer remaining/original budgets with 0 <= remaining <= original.',
+                    ];
+                    continue;
+                }
                 $parallelMetadata = self::optionalParallelMetadataForCommand($command, $type, $index, $errors);
                 $conditionKey = self::optionalCommandString($command, 'condition_key', $index, $errors);
                 $conditionDefinitionFingerprint = self::optionalCommandString(
@@ -1247,6 +1254,7 @@ final class WorkflowCommandNormalizer
                     'condition_definition_fingerprint' => $conditionDefinitionFingerprint,
                     'condition_wait_occurrence_id' => $conditionWaitOccurrenceId,
                     'timeout_seconds' => $timeoutSeconds,
+                    ...$deadlineFields,
                     ...$scopeMetadata,
                     ...$parallelMetadata,
                 ], static fn (mixed $value): bool => $value !== null);
