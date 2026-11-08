@@ -2,11 +2,23 @@
 
 ## Unreleased
 
+## 2.22.0 - 2026-11-08
+
 - Add an opt-in first-open wall deadline for condition-wait commands. With
   `deadline_policy: "occurrence"`, physical false-wake reopens retain the first
   timer's exact deadline and original timeout budget. Conflicting, timed-out
-  or unprovable chains refuse with whole-completion rollback. Commands without
-  the policy retain their existing per-open behavior.
+  or unprovable chains refuse with whole-completion rollback. Legacy chains
+  first opened without the policy retain their existing per-open behavior;
+  an anchored chain must keep its policy on every reopen.
+- The embedded worker protocol advertises 1.22 and continues accepting 1.20
+  requests. This package adds no database migration and keeps the existing
+  PHP and Laravel support floors. PHP Server capability advertisement and an
+  SDK release containing the opt-in support remain separate delivery steps.
+- Rollback: after any workflow has used the occurrence deadline policy, do
+  not continue its history on a pre-2.22 runtime. Older command normalizers
+  can discard the new fields, so a false-wake reopen can mix a per-open wait
+  into an anchored chain. A later upgrade does not repair that mixed history.
+  Restore a backup taken before the upgrade if rolling back such histories.
 
 ## 2.21.1 - 2026-11-07
 
