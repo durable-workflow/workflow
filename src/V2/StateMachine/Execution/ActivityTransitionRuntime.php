@@ -34,11 +34,20 @@ final readonly class ActivityTransitionRuntime implements TransitionRuntime
         TransitionDefinition $transition,
         SnapshotPhase $phase
     ): FactSnapshot {
-        $result = Workflow::activity($this->snapshotActivity, [
+        $result = $this->shaped(Workflow::activity($this->snapshotActivity, [
             'execution' => $execution->toArray(),
             'transition' => get_object_vars($transition),
             'phase' => $phase->value,
-        ]);
+        ]), [
+            'execution',
+            'transitionKey',
+            'phase',
+            'snapshotId',
+            'state',
+            'revision',
+            'target',
+            'permission',
+        ], 'snapshot');
         return new FactSnapshot(
             $this->reference($result['execution']),
             $result['transitionKey'],
@@ -53,7 +62,11 @@ final readonly class ActivityTransitionRuntime implements TransitionRuntime
 
     public function admit(TransitionContext $context): Decision
     {
-        $result = Workflow::activity($this->admissionActivity, $this->payload($context));
+        $result = $this->shaped(
+            Workflow::activity($this->admissionActivity, $this->payload($context)),
+            ['execution', 'decision'],
+            'admission'
+        );
         if (! $context->execution()->equals($this->reference($result['execution']))) {
             throw new LogicException('The admission belongs to another execution.');
         }
@@ -62,7 +75,11 @@ final readonly class ActivityTransitionRuntime implements TransitionRuntime
 
     public function commit(TransitionContext $context): CommitResult
     {
-        $result = Workflow::activity($this->commitActivity, $this->payload($context));
+        $result = $this->shaped(
+            Workflow::activity($this->commitActivity, $this->payload($context)),
+            ['execution', 'status', 'reason'],
+            'commit'
+        );
         return new CommitResult($this->reference($result['execution']), TransitionStatus::from(
             $result['status']
         ), $result['reason']);
@@ -85,10 +102,40 @@ final readonly class ActivityTransitionRuntime implements TransitionRuntime
     }
 
     /**
+     * An adapter result missing a required field is refused explicitly, not read as a warning or a null.
+     *
+     * @param list<string> $keys
+     * @return array<string, mixed>
+     */
+    private function shaped(mixed $result, array $keys, string $boundary): array
+    {
+        if (! is_array($result)) {
+            throw new LogicException("The {$boundary} activity must return an object.");
+        }
+        foreach ($keys as $key) {
+            if (! array_key_exists($key, $result)) {
+                throw new LogicException("The {$boundary} activity result is missing {$key}.");
+            }
+        }
+        foreach (['execution', 'target', 'permission', 'decision'] as $nested) {
+            if (array_key_exists($nested, $result) && ! is_array($result[$nested])) {
+                throw new LogicException("The {$boundary} activity result field {$nested} must be an object.");
+            }
+        }
+
+        return $result;
+    }
+
+    /**
      * @param array<string, mixed> $payload
      */
     private function reference(array $payload): ExecutionReference
     {
+        foreach (['scope', 'subject', 'executionId', 'policyFingerprint', 'sourceState', 'sourceRevision'] as $key) {
+            if (! array_key_exists($key, $payload)) {
+                throw new LogicException("The execution reference is missing {$key}.");
+            }
+        }
         return new ExecutionReference(
             $payload['scope'],
             $payload['subject'],
@@ -104,6 +151,11 @@ final readonly class ActivityTransitionRuntime implements TransitionRuntime
      */
     private function decision(array $payload): Decision
     {
+        foreach (['verdict', 'reason', 'evidence'] as $key) {
+            if (! array_key_exists($key, $payload)) {
+                throw new LogicException("The recorded decision is missing {$key}.");
+            }
+        }
         return new Decision(Verdict::from($payload['verdict']), $payload['reason'], $payload['evidence']);
     }
 }

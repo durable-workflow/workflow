@@ -19,7 +19,11 @@ use Workflow\V2\StateMachine\Transition\TransitionStep;
 use Workflow\V2\Support\WorkflowFiberContext;
 use Workflow\V2\Workflow;
 
-/** Composes the four-step business protocol with the existing V2 runtime and native Saga. */
+/**
+ * Composes the four-step business protocol with the existing V2 runtime and native Saga.
+ *
+ * @experimental The StateMachine API may change in a minor release until its nested slices land.
+ */
 final class TransitionRunner
 {
     /**

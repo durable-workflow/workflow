@@ -1,8 +1,8 @@
 # Business state-machine transitions
 
-This is the first implementation slice of [#1069](https://github.com/durable-workflow/workflow/issues/1069). It provides an optional embedded V2 transition protocol with a four-method step contract, recorded assessments, versioned profiles and active-run native Saga integration. Existing workflows and `Workflow\States\StateMachine` are unchanged. Symfony Workflow is not a dependency.
+This is the first implementation slice of the composable business state-machine proposal. It provides an optional embedded V2 transition protocol with a four-method step contract, recorded assessments, versioned profiles and active-run native Saga integration. Existing workflows and `Workflow\States\StateMachine` are unchanged. Symfony Workflow is not a dependency.
 
-The proposed API is under review. This slice does not implement state-bound child start/adoption, retained compensation scopes, a business-state database schema or a persistence adapter for a specific application. It does not close #1069.
+**Experimental.** The `Workflow\V2\StateMachine` API is under review and may change in a minor release until the nested slices land; it carries no backward-compatibility promise yet. This slice does not implement state-bound child start/adoption, retained compensation scopes, a business-state database schema or a persistence adapter for a specific application. It does not complete that proposal.
 
 ## Responsibilities and flow
 
@@ -167,7 +167,7 @@ Registration happens before `execute()` can suspend or fail. The callback captur
 
 This uses the existing active-run Saga. Use sequential compensation and keep error propagation enabled when earlier callbacks depend on later ones. The package does not change the workflow's existing Saga configuration, retry behavior or cancellation defaults.
 
-[Retained scope issue #1063](https://github.com/durable-workflow/workflow/issues/1063) owns registration durability, recovery ownership and retained obligations after originating runs close. A run-local callback is not such a registry. This slice must not be used to claim closed-child/closed-parent compensation recovery or retained evidence after pruning.
+The durable Saga compensation-scope work owns registration durability, recovery ownership and retained obligations after originating runs close. A run-local callback is not such a registry. This slice must not be used to claim closed-child/closed-parent compensation recovery or retained evidence after pruning.
 
 The next nested slice must preserve the same four methods and add:
 
@@ -183,7 +183,7 @@ Existing `child()` can be called from a step and durably await a child result. T
 
 1. Qualify this transition slice against the upstream quality gates and review its public names and persistence boundary before expanding the API.
 2. Add state-bound machine definitions and a binding port with separate start/adopt and observe/await operations. Preserve scope, original parent owner, slot and generation. First prove duplicate-start and lost-acknowledgement recovery, stale-generation rejection and reuse across parent states with persisted worker tests.
-3. Integrate the accepted retained-scope implementation from #1063. Register the original owner before dispatch; route cancellation to the exact bound child and wait for verified child resolution before earlier parent Saga obligations. Do not replace this dependency with a private registry or compensation executor.
+3. Integrate the accepted durable compensation-scope implementation. Register the original owner before dispatch; route cancellation to the exact bound child and wait for verified child resolution before earlier parent Saga obligations. Do not replace this dependency with a private registry or compensation executor.
 4. Complete the two-integration application example and persistence crash/race matrix: cancelled-before-dispatch, cancellation-versus-commit, partial effects, lost commit acknowledgement, worker restart, closed-run recovery, failed compensation and resource limits. Only then claim end-to-end nested business-machine support.
 
 Each slice must preserve the four-method contract and existing DW workflow APIs. Supporting a child call inside `execute()` does not satisfy the binding and retained-recovery milestones by itself.
@@ -198,12 +198,12 @@ vendor/bin/phpunit tests/Unit/V2/StateMachine
 
 Tests exercise refusal/unknown outcomes, source and scope substitution, changed profile fingerprints, unavailable handlers, stale snapshots, protected-commit outcomes, compensation without a receipt, ordering and unresolved compensation. Cold replay reconstructs the original Saga after a recorded activity failure and reuses completed transition activities without scheduling new effects.
 
-| #1069 acceptance | Evidence in this slice | Remaining work |
+| Proposal acceptance item | Evidence in this slice | Remaining work |
 | --- | --- | --- |
 | 1–3 | Same generic contract, different profile actions, compensation, edges and fingerprints | Full nested example, rule/action configuration registry and policy migration |
 | 4–7 | Skip work, refuse execution, fresh recheck, typed decisions, explicit ambiguity | Application rule evaluator integration |
-| 8 | Two actions, partial failure and active-run compensation without receipt | Authoritative retained operation evidence through #1063 |
-| 9–13 | Contract permits existing child calls | State-bound bindings, start/adopt/observe protocol and #1063 integration |
+| 8 | Two actions, partial failure and active-run compensation without receipt | Authoritative retained operation evidence through durable compensation scopes |
+| 9–13 | Contract permits existing child calls | State-bound bindings, start/adopt/observe protocol and durable compensation-scope integration |
 | 14–16 | Unknown/refused results do not manufacture success; commit rejection is preserved | Provider reconciliation and real persistence cancellation/commit race tests |
 | 17 | Cold V2 replay consumes recorded activity results | Full nested and retained-recovery replay cases |
 | 18 | Snapshot/admission/commit scope substitution rejects | Live authorization, binding generation and adversarial persistence tests |
