@@ -874,6 +874,23 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         }
     }
 
+    public function testDeterminismScanCorpusFlagsImplicitCurrentTimeAndShuffles(): void
+    {
+        $path = self::FIXTURE_DIR . '/determinism-scan-implicit-time.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The implicit-time determinism scan evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['determinism_scan_implicit_time'];
+
+        $diagnostics = \Workflow\V2\Support\WorkflowDeterminismDiagnostics::forWorkflowClass(
+            $fixture['workflow']['type'],
+        );
+
+        $this->assertSame('warning', $diagnostics['status']);
+        $this->assertSame($scenario['flagged'], array_column($diagnostics['findings'], 'symbol'));
+    }
+
     public function testRedrivePendingMessageCorpusReachesTheSuccessor(): void
     {
         $path = self::FIXTURE_DIR . '/redrive-pending-message-transfer.json';

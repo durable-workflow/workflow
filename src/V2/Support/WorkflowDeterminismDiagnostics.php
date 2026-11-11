@@ -232,6 +232,20 @@ final class WorkflowDeterminismDiagnostics
                 continue;
             }
 
+            $constructorRule = self::constructorRule(self::tokenText($token), $tokens, $index);
+
+            if ($constructorRule !== null) {
+                $findings[] = self::finding(
+                    $constructorRule['rule'],
+                    $constructorRule['symbol'],
+                    $constructorRule['message'],
+                    $file,
+                    self::sourceLine($token, $startLine),
+                );
+
+                continue;
+            }
+
             $functionRule = self::functionRule(self::tokenText($token), $tokens, $index);
 
             if ($functionRule !== null) {
@@ -263,6 +277,63 @@ final class WorkflowDeterminismDiagnostics
     }
 
     /**
+     * A date object constructed from the current time: no argument, or a
+     * relative time string such as 'now' or '+1 day'. A fixed date string or
+     * any non-literal argument is not flagged.
+     *
+     * @param list<mixed> $tokens
+     * @return array{rule: string, symbol: string, message: string}|null
+     */
+    private static function constructorRule(string $className, array $tokens, int $index): ?array
+    {
+        if (self::tokenId(self::previousMeaningfulToken($tokens, $index)) !== T_NEW) {
+            return null;
+        }
+
+        if (! in_array(
+            self::baseName($className),
+            ['Carbon', 'CarbonImmutable', 'DateTime', 'DateTimeImmutable'],
+            true
+        )) {
+            return null;
+        }
+
+        $openIndex = self::nextMeaningfulIndex($tokens, $index);
+
+        if ($openIndex !== null && $tokens[$openIndex] === '(') {
+            $argumentIndex = self::nextMeaningfulIndex($tokens, $openIndex);
+            $argument = $argumentIndex === null ? null : $tokens[$argumentIndex];
+
+            if ($argument !== ')' && ! self::isCurrentTimeLiteral($argument)) {
+                return null;
+            }
+        }
+
+        return [
+            'rule' => 'workflow_wall_clock_call',
+            'symbol' => sprintf('new %s', ltrim($className, '\\')),
+            'message' => 'Workflow code reads wall-clock time. Pass time in as input, use a durable timer, or snapshot the value with sideEffect().',
+        ];
+    }
+
+    private static function isCurrentTimeLiteral(mixed $token): bool
+    {
+        if (self::tokenId($token) !== T_CONSTANT_ENCAPSED_STRING) {
+            return false;
+        }
+
+        $value = strtolower(trim(substr(self::tokenText($token), 1, -1)));
+
+        return $value === ''
+            || in_array($value, ['now', 'today', 'tomorrow', 'yesterday', 'midnight', 'noon'], true)
+            || str_starts_with($value, '+')
+            || str_starts_with($value, '-')
+            || str_starts_with($value, 'next ')
+            || str_starts_with($value, 'last ')
+            || str_starts_with($value, 'this ');
+    }
+
+    /**
      * @param list<mixed> $tokens
      * @return array{rule: string, message: string}|null
      */
@@ -288,7 +359,7 @@ final class WorkflowDeterminismDiagnostics
 
         $baseName = self::baseName($name);
 
-        $wallClockFunctions = ['date', 'gmdate', 'hrtime', 'microtime', 'now', 'time'];
+        $wallClockFunctions = ['date', 'gmdate', 'hrtime', 'microtime', 'now', 'time', 'today'];
 
         if (in_array($baseName, $wallClockFunctions, true)) {
             return [
@@ -297,7 +368,16 @@ final class WorkflowDeterminismDiagnostics
             ];
         }
 
-        $randomFunctions = ['random_bytes', 'random_int', 'rand', 'mt_rand', 'uniqid'];
+        $randomFunctions = [
+            'array_rand',
+            'mt_rand',
+            'rand',
+            'random_bytes',
+            'random_int',
+            'shuffle',
+            'str_shuffle',
+            'uniqid',
+        ];
 
         if (in_array($baseName, $randomFunctions, true)) {
             return [
