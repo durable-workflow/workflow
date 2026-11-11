@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 2.23.0 - 2026-11-11
+
+- Cap queue delays on Laravel Cloud's managed queues. Laravel Cloud's `cloud`
+  queue driver wraps Amazon SQS, which rejects delays over 900 seconds, but
+  the cap only applied to the `sqs` driver. On Laravel Cloud, timers,
+  `awaitWithTimeout()` and delayed v2 tasks longer than 15 minutes failed with
+  `DelaySeconds must be >= 0 and <= 900`. They now wait in steps of at most
+  900 seconds, as on plain SQS (#1074, reported in #1072).
+- Add experimental business transition contracts under
+  `Workflow\V2\StateMachine` with native Saga integration (#1071, see
+  `docs/business-state-machines.md`). The API is marked experimental and may
+  change in a minor release.
+- No database migration, history format or dependency floor change.
+
 ## 2.22.0 - 2026-11-08
 
 - Add an opt-in first-open wall deadline for condition-wait commands. With
