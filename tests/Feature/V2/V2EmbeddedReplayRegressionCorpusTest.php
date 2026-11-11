@@ -1006,7 +1006,9 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         ScheduleManager::update($schedule->fresh(), notes: $scenario['metadata_update']['notes']);
         $this->assertSame(
             $scenario['metadata_update']['changed_fields'],
-            $updates()->sole()->payload['changed_fields']
+            $updates()
+                ->sole()
+->payload['changed_fields']
         );
         $this->assertEquals($nextFire, $schedule->fresh()->next_fire_at);
     }
