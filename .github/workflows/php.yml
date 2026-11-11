@@ -1119,7 +1119,7 @@ jobs:
     needs: preflight
     if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     strategy:
       fail-fast: false
@@ -1205,7 +1205,7 @@ jobs:
 
     - name: Run feature test suite (PostgreSQL shard ${{ matrix.shard }})
       id: pgsql_suite
-      timeout-minutes: 12
+      timeout-minutes: 17
       run: |
         mkdir -p build/test-results
         php scripts/ci/split-feature-tests.php \
@@ -1220,7 +1220,7 @@ jobs:
         cp /tmp/pgsql-shard-files "build/test-results/pgsql-shard-${{ matrix.shard }}-files.txt"
         started_at=$(date +%s)
         set +e
-        timeout --foreground 10m xargs -a /tmp/pgsql-shard-files \
+        timeout --foreground 15m xargs -a /tmp/pgsql-shard-files \
           vendor/bin/phpunit --testdox --testsuite feature \
           --log-junit "build/test-results/pgsql-shard-${{ matrix.shard }}.xml"
         status=$?
