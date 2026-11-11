@@ -6,7 +6,7 @@
   "bindings": ["php"],
   "workflow": {
     "type": "Tests\\Fixtures\\V2\\TestRedriveWorkflow",
-    "arguments": ["Service Worker"],
+    "arguments": ["Payload Limit Worker"],
     "payload_codec": "avro"
   },
   "service_command_payload_limit": {
