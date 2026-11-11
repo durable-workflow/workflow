@@ -551,6 +551,7 @@ final class HistoryEventPayloadContract
             'update_name',
             'arguments',
             'sequence',
+            'message_receives',
             'reused_from_run_id',
             'reused_recorded_at',
         ],

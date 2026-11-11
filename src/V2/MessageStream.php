@@ -16,6 +16,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\MessageReplayLedger;
 use Workflow\V2\Support\MessageService;
 use Workflow\V2\Support\MessageStreamCursor;
+use Workflow\V2\Support\UpdateMessageReceives;
 
 /**
  * First-class v2 durable message stream facade.
@@ -33,6 +34,7 @@ final class MessageStream
         private readonly bool|Closure $readOnly = false,
         private readonly ?Closure $currentStep = null,
         private readonly ?Closure $runningLiveUpdate = null,
+        private readonly ?Closure $updateMessageReceives = null,
     ) {
         if ($streamKey === '') {
             throw new InvalidArgumentException('Message stream key must not be empty.');
@@ -70,6 +72,7 @@ final class MessageStream
         Closure $readOnly,
         ?Closure $currentStep = null,
         ?Closure $runningLiveUpdate = null,
+        ?Closure $updateMessageReceives = null,
     ): self {
         return new self(
             $run,
@@ -80,6 +83,7 @@ final class MessageStream
             $readOnly,
             $currentStep,
             $runningLiveUpdate,
+            $updateMessageReceives,
         );
     }
 
@@ -121,56 +125,23 @@ final class MessageStream
     public function receive(int $limit = 1, ?int $consumedBySequence = null): Collection
     {
         $limit = $this->positiveLimit($limit);
+        $updateReceives = $this->updateMessageReceives instanceof Closure
+            ? ($this->updateMessageReceives)()
+            : null;
 
-        if ($this->replayLedger instanceof MessageReplayLedger) {
-            // Without an explicit step, a receive records and finds its
-            // consumption at the step the code is at now, not the step a kept
-            // stream was opened at. Rows written by earlier releases sit at the
-            // opened step, so that step is the fallback.
-            $currentStep = $consumedBySequence === null && $this->currentStep instanceof Closure
-                ? (int) ($this->currentStep)()
-                : null;
-            $sequence = $currentStep ?? $this->consumedBySequence($consumedBySequence);
-            $recorded = $this->recordedReceive($sequence, $limit);
-
-            if (
-                $recorded->isEmpty()
-                && $currentStep !== null
-                && $this->defaultConsumedBySequence !== null
-                && $this->defaultConsumedBySequence !== $currentStep
-            ) {
-                $recorded = $this->recordedReceive($this->defaultConsumedBySequence, $limit);
-            }
-
-            // A receive this step already made returns what it consumed. A
-            // receive at a step history has already passed, with nothing
-            // recorded, found nothing the first time, so it consumes nothing
-            // now either.
-            if ($recorded->isNotEmpty() || $this->readOnly() || $this->historyPassedCurrentStep()) {
-                return $recorded;
-            }
-
-            $messages = $this->peek($limit);
-
-            if ($messages->isNotEmpty()) {
-                $this->messages->consumeMessageBatch($this->run, $messages->all(), $sequence);
-                $this->replayLedger->advanceReceive($this->streamKey, $sequence, $messages->count());
-            }
-
-            return $messages;
+        if (! $updateReceives instanceof UpdateMessageReceives) {
+            return $this->receiveAtStep($limit, $consumedBySequence);
         }
 
-        $messages = $this->peek($limit);
-
-        if ($messages->isEmpty()) {
-            return $messages;
+        if ($updateReceives->replaying()) {
+            return $this->replayUpdateReceive($updateReceives->next());
         }
 
-        $this->messages->consumeMessageBatch(
-            $this->run,
+        $messages = $this->receiveAtStep($limit, $consumedBySequence);
+        $updateReceives->record(array_values(array_map(
+            static fn (WorkflowMessage $message): int => (int) $message->id,
             $messages->all(),
-            $this->consumedBySequence($consumedBySequence),
-        );
+        )));
 
         return $messages;
     }
@@ -273,6 +244,64 @@ final class MessageStream
     }
 
     /**
+     * @return Collection<int, WorkflowMessage>
+     */
+    private function receiveAtStep(int $limit, ?int $consumedBySequence): Collection
+    {
+        if ($this->replayLedger instanceof MessageReplayLedger) {
+            // Without an explicit step, a receive records and finds its
+            // consumption at the step the code is at now, not the step a kept
+            // stream was opened at. Rows written by earlier releases sit at the
+            // opened step, so that step is the fallback.
+            $currentStep = $consumedBySequence === null && $this->currentStep instanceof Closure
+                ? (int) ($this->currentStep)()
+                : null;
+            $sequence = $currentStep ?? $this->consumedBySequence($consumedBySequence);
+            $recorded = $this->recordedReceive($sequence, $limit);
+
+            if (
+                $recorded->isEmpty()
+                && $currentStep !== null
+                && $this->defaultConsumedBySequence !== null
+                && $this->defaultConsumedBySequence !== $currentStep
+            ) {
+                $recorded = $this->recordedReceive($this->defaultConsumedBySequence, $limit);
+            }
+
+            // A receive this step already made returns what it consumed. A
+            // receive at a step history has already passed, with nothing
+            // recorded, found nothing the first time, so it consumes nothing
+            // now either.
+            if ($recorded->isNotEmpty() || $this->readOnly() || $this->historyPassedCurrentStep()) {
+                return $recorded;
+            }
+
+            $messages = $this->peek($limit);
+
+            if ($messages->isNotEmpty()) {
+                $this->messages->consumeMessageBatch($this->run, $messages->all(), $sequence);
+                $this->replayLedger->advanceReceive($this->streamKey, $sequence, $messages->count());
+            }
+
+            return $messages;
+        }
+
+        $messages = $this->peek($limit);
+
+        if ($messages->isEmpty()) {
+            return $messages;
+        }
+
+        $this->messages->consumeMessageBatch(
+            $this->run,
+            $messages->all(),
+            $this->consumedBySequence($consumedBySequence),
+        );
+
+        return $messages;
+    }
+
+    /**
      * The next outbound row for the same send, in sequence order, that this
      * run or a run it was redriven from wrote and this execution has not
      * matched yet.
@@ -332,6 +361,49 @@ final class MessageStream
         $message = $matches->get($this->replayLedger?->sendOffset($identity) ?? 0);
 
         return $message;
+    }
+
+    /**
+     * The messages a live update handler's receive returned, in the order it
+     * returned them. Each one also counts against its consumed step, so a
+     * later receive at that step does not return it again.
+     *
+     * @param list<int> $ids
+     *
+     * @return Collection<int, WorkflowMessage>
+     */
+    private function replayUpdateReceive(array $ids): Collection
+    {
+        if ($ids === []) {
+            return new Collection();
+        }
+
+        /** @var Collection<int, WorkflowMessage> $found */
+        $found = WorkflowMessage::query()
+            ->whereIn('id', $ids)
+            ->whereIn('workflow_run_id', $this->runIds())
+            ->where('direction', MessageDirection::Inbound->value)
+            ->get()
+            ->filter(fn (WorkflowMessage $message): bool => $message->getRawOriginal('stream_key') === $this->streamKey)
+            ->keyBy(static fn (WorkflowMessage $message): int => (int) $message->id);
+
+        $messages = new Collection();
+
+        foreach ($ids as $id) {
+            $message = $found->get($id);
+
+            if (! $message instanceof WorkflowMessage) {
+                continue;
+            }
+
+            $messages->push($message);
+
+            if ($this->replayLedger instanceof MessageReplayLedger && is_int($message->consumed_by_sequence)) {
+                $this->replayLedger->advanceReceive($this->streamKey, $message->consumed_by_sequence, 1);
+            }
+        }
+
+        return $messages;
     }
 
     /**

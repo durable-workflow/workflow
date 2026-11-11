@@ -2168,7 +2168,16 @@ final class QueryStateReplayer
                 new ReflectionMethod($workflow, $method),
             );
 
-            $workflow->{$method}(...$parameters);
+            $receives = UpdateMessageReceives::fromPayload(is_array($event->payload) ? $event->payload : []);
+
+            if ($receives instanceof UpdateMessageReceives) {
+                $workflow->withUpdateMessageReceives(
+                    $receives,
+                    static fn (): mixed => $workflow->{$method}(...$parameters),
+                );
+            } else {
+                $workflow->{$method}(...$parameters);
+            }
         }
     }
 
