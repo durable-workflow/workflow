@@ -1,0 +1,39 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "determinism-scan-implicit-time",
+  "protocol_version": "1.0",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestUnsafeImplicitTimeWorkflow",
+    "arguments": ["2026-01-01T00:00:00+00:00", ["a", "b"]],
+    "payload_codec": "avro"
+  },
+  "determinism_scan_implicit_time": {
+    "issue": "durable-workflow/workflow#888",
+    "flagged": [
+      "new DateTime",
+      "new DateTimeImmutable",
+      "new Carbon",
+      "new CarbonImmutable",
+      "new DateTime",
+      "today",
+      "array_rand",
+      "str_shuffle",
+      "shuffle"
+    ]
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-11T00:00:00+00:00",
+      "payload": {}
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": "scanned",
+    "commands": [{"type": "complete_workflow"}]
+  }
+}
