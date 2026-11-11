@@ -121,9 +121,11 @@ final class WorkflowTaskFailureLivenessTest extends TestCase
             'repair_needed' => 0,
             'resume_health' => 'ok',
         ], $this->classificationFor($runId));
+        $this->assertSame([1, 'warning'], $this->replayBlockedMetrics());
 
         TestAuthoredRetryReplayWorkflow::$overrides = null;
         $this->assertTrue($workflow->attemptRepair()->accepted());
+        $this->assertSame([0, 'ok'], $this->replayBlockedMetrics());
         $this->assertSame([
             'open' => true,
             'liveness' => 'workflow_task_ready',
@@ -158,6 +160,17 @@ final class WorkflowTaskFailureLivenessTest extends TestCase
     /**
      * @return array{open: bool, liveness: string|null, task_problem: bool, badge: string|null, repair_needed: int, resume_health: string}
      */
+    /**
+     * @return array{int, string}
+     */
+    private function replayBlockedMetrics(): array
+    {
+        $health = HealthCheck::snapshot();
+        $checks = array_column($health['checks'], 'status', 'name');
+
+        return [$health['operator_metrics']['runs']['replay_blocked'], $checks['replay_blocked_runs']];
+    }
+
     private function classificationFor(string $runId): array
     {
         $run = WorkflowRun::query()->findOrFail($runId);
