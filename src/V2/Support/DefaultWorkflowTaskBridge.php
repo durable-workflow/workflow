@@ -5250,6 +5250,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         }
 
         ksort($merged);
+        // The merged attributes get the size limit embedded mode applies (#865).
+        StructuralLimits::guardSearchAttributeSize(json_encode($merged, JSON_THROW_ON_ERROR));
         app(SearchAttributeUpsertService::class)->upsert($run, $call, $sequence, attributeTypes: $attributeTypes);
         $run->unsetRelation('searchAttributes');
 

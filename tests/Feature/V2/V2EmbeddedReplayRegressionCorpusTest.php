@@ -909,6 +909,64 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         );
     }
 
+    public function testServiceSearchAttributeLimitCorpusRefusesOversizedUpserts(): void
+    {
+        $path = self::FIXTURE_DIR . '/service-command-search-attribute-limit.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The search attribute limit evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['service_command_search_attribute_limit'];
+        self::stopWorkers();
+        config([
+            'queue.default' => 'sync',
+            'queue.connections.sync.driver' => 'sync',
+        ]);
+        $this->clearWorkflowState();
+        $attributes = [
+            $scenario['attribute'] => str_repeat('x', $scenario['value_bytes']),
+        ];
+        $start = app(WorkflowControlPlane::class)->start(
+            $scenario['service_workflow_type'],
+            'regression-corpus-search-attribute-limit',
+            [
+                'namespace' => 'regression-corpus-service',
+                'queue' => 'service-workflows',
+                'arguments' => Serializer::serializeWithCodec('avro', $fixture['workflow']['arguments']),
+            ],
+        );
+        $task = WorkflowTask::query()->where('workflow_run_id', $start['workflow_run_id'])->firstOrFail();
+        $task->forceFill([
+            'status' => TaskStatus::Leased,
+            'lease_owner' => 'service-worker',
+            'lease_expires_at' => now()
+                ->addMinute(),
+        ])->save();
+        $command = [
+            'type' => 'upsert_search_attributes',
+            'attributes' => $attributes,
+            'attribute_types' => [
+                $scenario['attribute'] => 'string',
+            ],
+        ];
+        $limit = strlen(json_encode($attributes, JSON_THROW_ON_ERROR));
+
+        config([
+            'workflows.v2.structural_limits.search_attribute_size_bytes' => $limit - 1,
+        ]);
+        try {
+            app(DefaultWorkflowTaskBridge::class)->complete($task->id, [$command]);
+            $this->fail('Oversized search attributes were accepted.');
+        } catch (\Workflow\V2\Exceptions\StructuralLimitExceededException $exception) {
+            $this->assertSame($scenario['refusal'], $exception->limitKind->value);
+        }
+
+        config([
+            'workflows.v2.structural_limits.search_attribute_size_bytes' => $limit,
+        ]);
+        $this->assertTrue(app(DefaultWorkflowTaskBridge::class)->complete($task->id, [$command])['completed']);
+    }
+
     public function testRedrivePendingMessageCorpusReachesTheSuccessor(): void
     {
         $path = self::FIXTURE_DIR . '/redrive-pending-message-transfer.json';

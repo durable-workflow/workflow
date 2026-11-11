@@ -1,0 +1,38 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "service-command-search-attribute-limit",
+  "protocol_version": "1.0",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestRedriveWorkflow",
+    "arguments": ["Search Attribute Limit Worker"],
+    "payload_codec": "avro"
+  },
+  "service_command_search_attribute_limit": {
+    "issue": "durable-workflow/workflow#865",
+    "service_workflow_type": "remote.search-attribute-limit",
+    "attribute": "note",
+    "value_bytes": 200,
+    "refusal": "search_attribute_size"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-11T00:00:00+00:00",
+      "payload": {}
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "schedule_activity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+        "payload_codec": "avro"
+      }
+    ]
+  }
+}
