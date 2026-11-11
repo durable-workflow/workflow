@@ -84,7 +84,8 @@ trait Timers
             $connection = self::connection() ?? config('queue.default');
             $driver = config('queue.connections.' . $connection . '.driver');
 
-            if ($driver === 'sqs') {
+            // Laravel Cloud's managed queues use the `cloud` driver, which is backed by SQS.
+            if (in_array($driver, ['sqs', 'cloud'], true)) {
                 $maxDelay = self::$context->now->copy()->addSeconds(900);
                 if ($timer->stop_at->greaterThan($maxDelay)) {
                     $delay = $maxDelay;
