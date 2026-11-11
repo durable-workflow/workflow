@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 2.23.2 - 2026-11-11
+
+- Service-mode worker commands get the remaining size limits embedded
+  workflows already apply: side-effect results, local activity arguments and
+  results, and update results are checked against the payload size limit, and
+  search attribute upserts against the search attribute size limit. An
+  oversized value refuses the whole completion with the typed
+  structural-limit failure (#865, #1086, #1087).
+- No database migration, history format or dependency floor change.
+
 ## 2.23.1 - 2026-11-11
 
 - A per-call activity `maxAttempts` below 1 is refused when a new activity or
