@@ -74,4 +74,32 @@ final class ActivityOptionsTest extends TestCase
         $this->assertNull($options->fairnessWeight);
         $this->assertFalse($options->hasSchedulingOverrides());
     }
+
+    /**
+     * @return iterable<string, array{int}>
+     */
+    public static function invalidMaxAttempts(): iterable
+    {
+        yield 'zero' => [0];
+        yield 'negative' => [-1];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('invalidMaxAttempts')]
+    public function testAnAttemptBudgetBelowOneIsRefused(int $maxAttempts): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Activity maxAttempts must be at least 1');
+
+        ActivityOptions::assertMaxAttempts($maxAttempts);
+    }
+
+    public function testOptionsCanStillBeBuiltWithAZeroBudget(): void
+    {
+        // The budget is checked when an activity is first scheduled, not when
+        // options are built during replay.
+        $this->assertSame(0, (new ActivityOptions(maxAttempts: 0))->maxAttempts);
+        $this->assertSame(0, (new \Workflow\V2\Support\LocalActivityOptions(maxAttempts: 0))->maxAttempts);
+        ActivityOptions::assertMaxAttempts(1);
+        ActivityOptions::assertMaxAttempts(null);
+    }
 }

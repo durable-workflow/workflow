@@ -95,7 +95,11 @@ final class ActivityReplayIdentity
         foreach ($snapshot as $field => $recorded) {
             $valid = match ($field) {
                 'snapshot_version' => $recorded === ActivityRetryPolicy::SNAPSHOT_VERSION,
-                'max_attempts' => $recorded === null || (is_int($recorded) && $recorded > 0),
+                // Older releases recorded an authored maxAttempts of 0. It still
+                // replays when the code authors 0, and means one attempt (#860).
+                'max_attempts' => $recorded === null
+                    || (is_int($recorded) && $recorded > 0)
+                    || ($recorded === 0 && $options?->maxAttempts === 0),
                 'backoff_seconds' => is_array($recorded) && array_is_list($recorded)
                     && array_filter($recorded, static fn (mixed $value): bool => ! is_int($value) || $value < 0) === [],
                 'non_retryable_error_types' => is_array($recorded) && array_is_list($recorded)

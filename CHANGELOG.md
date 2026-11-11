@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- A per-call activity `maxAttempts` below 1 is refused when a new activity or
+  local activity is scheduled, and fails the run with a message that the
+  budget counts the first attempt (#860). Previously it ran one attempt
+  silently. For unlimited attempts, omit `maxAttempts` and set the activity
+  class `$tries` to 0.
+- Histories that recorded `maxAttempts: 0` under an earlier release keep
+  replaying after an upgrade: replay accepts that recorded budget when the
+  code still passes 0, and it means one attempt. Before this change such runs
+  failed replay with a retry policy mismatch.
+
 ## 2.23.0 - 2026-11-11
 
 - Cap queue delays on Laravel Cloud's managed queues. Laravel Cloud's `cloud`
