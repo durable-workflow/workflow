@@ -1,0 +1,46 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "schedule-deleted-id-conflict",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestScheduledWorkflow",
+    "arguments": [
+      "conflicted"
+    ],
+    "payload_codec": "avro"
+  },
+  "schedule_deleted_id_conflict": {
+    "issue": "durable-workflow/workflow#876",
+    "schedule_id": "regression-corpus-deleted-schedule",
+    "cron": "*/5 * * * *",
+    "existing_status": "deleted"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-11T13:00:00.000000Z"
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "batch_id": "conflicted",
+      "workflow_id": "regression-corpus-schedule-deleted-id-conflict",
+      "run_id": "regression-corpus-run-schedule-deleted-id-conflict"
+    },
+    "commands": [
+      {
+        "type": "complete_workflow"
+      }
+    ]
+  }
+}
