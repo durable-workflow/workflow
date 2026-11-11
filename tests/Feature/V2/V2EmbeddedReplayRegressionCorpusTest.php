@@ -967,6 +967,50 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertTrue(app(DefaultWorkflowTaskBridge::class)->complete($task->id, [$command])['completed']);
     }
 
+    public function testScheduleUnchangedReapplyCorpusRecordsNothingAndKeepsTheNextFire(): void
+    {
+        $path = self::FIXTURE_DIR . '/schedule-unchanged-reapply.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The schedule reapply evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['schedule_unchanged_reapply'];
+        $this->clearWorkflowState();
+        $schedule = ScheduleManager::create(
+            scheduleId: 'regression-corpus-schedule-reapply',
+            workflowClass: $fixture['workflow']['type'],
+            cronExpression: $scenario['cron'],
+            timezone: $scenario['timezone'],
+            jitterSeconds: $scenario['jitter_seconds'],
+            notes: $scenario['notes'],
+        );
+        $nextFire = $schedule->fresh()
+->next_fire_at;
+        $updates = static fn () => \Workflow\V2\Models\WorkflowScheduleHistoryEvent::query()
+            ->where('workflow_schedule_id', $schedule->id)
+            ->where('event_type', HistoryEventType::ScheduleUpdated->value)
+            ->get();
+
+        for ($apply = 0; $apply < $scenario['applies']; ++$apply) {
+            ScheduleManager::update(
+                $schedule->fresh(),
+                cronExpression: $scenario['cron'],
+                timezone: $scenario['timezone'],
+                jitterSeconds: $scenario['jitter_seconds'],
+                notes: $scenario['notes'],
+            );
+        }
+        $this->assertCount(0, $updates());
+        $this->assertEquals($nextFire, $schedule->fresh()->next_fire_at);
+
+        ScheduleManager::update($schedule->fresh(), notes: $scenario['metadata_update']['notes']);
+        $this->assertSame(
+            $scenario['metadata_update']['changed_fields'],
+            $updates()->sole()->payload['changed_fields']
+        );
+        $this->assertEquals($nextFire, $schedule->fresh()->next_fire_at);
+    }
+
     public function testRedrivePendingMessageCorpusReachesTheSuccessor(): void
     {
         $path = self::FIXTURE_DIR . '/redrive-pending-message-transfer.json';

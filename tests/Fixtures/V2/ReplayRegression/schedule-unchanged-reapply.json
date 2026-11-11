@@ -1,0 +1,39 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "schedule-unchanged-reapply",
+  "protocol_version": "1.0",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestScheduledWorkflow",
+    "arguments": ["reapplied"],
+    "payload_codec": "avro"
+  },
+  "schedule_unchanged_reapply": {
+    "issue": "durable-workflow/workflow#876",
+    "cron": "0 * * * *",
+    "timezone": "UTC",
+    "jitter_seconds": 300,
+    "notes": "Hourly.",
+    "applies": 3,
+    "metadata_update": {"notes": "Now documented.", "changed_fields": ["note"]}
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-11T12:00:00.000000Z"
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "batch_id": "reapplied",
+      "workflow_id": "regression-corpus-schedule-unchanged-reapply",
+      "run_id": "regression-corpus-run-schedule-unchanged-reapply"
+    },
+    "commands": [{"type": "complete_workflow"}]
+  }
+}
