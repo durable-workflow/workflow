@@ -10,6 +10,7 @@ use React\Promise\PromiseInterface;
 use function React\Promise\resolve;
 use Workflow\Serializers\Serializer;
 use Workflow\Timer;
+use Workflow\V2\Support\BackendCapabilities;
 
 trait Timers
 {
@@ -84,7 +85,7 @@ trait Timers
             $connection = self::connection() ?? config('queue.default');
             $driver = config('queue.connections.' . $connection . '.driver');
 
-            if ($driver === 'sqs') {
+            if (BackendCapabilities::isSqsBackedDriver($driver)) {
                 $maxDelay = self::$context->now->copy()->addSeconds(900);
                 if ($timer->stop_at->greaterThan($maxDelay)) {
                     $delay = $maxDelay;
