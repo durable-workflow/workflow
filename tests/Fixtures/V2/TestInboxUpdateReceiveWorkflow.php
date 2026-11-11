@@ -29,9 +29,13 @@ final class TestInboxUpdateReceiveWorkflow extends Workflow
     /**
      * @return list<string|null>
      */
-    public function handle(): array
+    public function handle(bool $receiveAfterGo = false): array
     {
         await('go');
+        if ($receiveAfterGo) {
+            $this->inbox('chat')
+                ->receiveOne();
+        }
         activity(TestRedriveFirstActivity::class, 'step');
         await('done');
 
