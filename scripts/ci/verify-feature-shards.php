@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-const FEATURE_SHARDS = 4;
+const FEATURE_SHARDS = 6;
 const PULL_REQUEST_CONDITION = "github.event_name == 'pull_request'";
 
 $root = dirname(__DIR__, 2);
@@ -93,7 +93,7 @@ function verify_workflow_job(string $workflow, string $job, string $profile): vo
     $jobDefinition = workflow_job_definition($workflow, $job);
     $expectedMatrix = implode(', ', range(0, FEATURE_SHARDS - 1));
     $requirements = [
-        'repository preflight dependency' => "needs: preflight",
+        'repository preflight dependency' => 'needs: preflight',
         'target-branch routing' => "github.event_name != 'pull_request'",
         'complete shard matrix' => "shard: [{$expectedMatrix}]",
         'splitter shard count' => '--shards=' . FEATURE_SHARDS,
@@ -157,7 +157,7 @@ function verify_gate_wiring(string $workflow, string $publicBoundaryWorkflow): v
             'feature-shard dependency' => "    - feature-mysql\n",
             'feature report download' => 'pattern: feature-timing-mysql-*',
             'first feature report merge input' => '--clover=build/feature-coverage/mysql-shard-0-coverage.xml',
-            'last feature report merge input' => '--clover=build/feature-coverage/mysql-shard-3-coverage.xml',
+            'last feature report merge input' => '--clover=build/feature-coverage/mysql-shard-5-coverage.xml',
         ] as $description => $needle
     ) {
         if (! str_contains($coverage, $needle)) {
