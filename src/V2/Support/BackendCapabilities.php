@@ -29,6 +29,20 @@ final class BackendCapabilities
     ];
 
     /**
+     * Queue drivers backed by Amazon SQS, which rejects message delays over
+     * 900 seconds. Laravel Cloud's managed queues use the `cloud` driver,
+     * which wraps SQS.
+     *
+     * @var list<string>
+     */
+    private const SQS_BACKED_DRIVERS = ['sqs', 'cloud'];
+
+    public static function isSqsBackedDriver(mixed $driver): bool
+    {
+        return in_array($driver, self::SQS_BACKED_DRIVERS, true);
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public static function snapshot(
@@ -172,7 +186,7 @@ final class BackendCapabilities
                 'async_delivery' => $driver !== null && $driver !== 'sync',
                 'delayed_delivery' => $driver !== null && $driver !== 'sync',
                 'requires_worker' => ! $pollMode,
-                'max_delay_seconds' => $driver === 'sqs' ? 900 : null,
+                'max_delay_seconds' => self::isSqsBackedDriver($driver) ? 900 : null,
                 'after_commit_option' => $connection === null ? null : config(
                     sprintf('queue.connections.%s.after_commit', $connection)
                 ),

@@ -28,6 +28,24 @@ final class TimerTransportChunkerTest extends TestCase
         $this->assertSame(900, TimerTransportChunker::maxDispatchDelaySeconds());
     }
 
+    public function testMaxDispatchDelayReturns900ForLaravelCloudDriver(): void
+    {
+        config()->set('queue.default', 'cloud');
+        config()
+            ->set('queue.connections.cloud.driver', 'cloud');
+
+        $this->assertSame(900, TimerTransportChunker::maxDispatchDelaySeconds());
+    }
+
+    public function testMaxReleaseDelayReturns43200ForLaravelCloudDriver(): void
+    {
+        config()->set('queue.default', 'cloud');
+        config()
+            ->set('queue.connections.cloud.driver', 'cloud');
+
+        $this->assertSame(43200, TimerTransportChunker::maxReleaseDelaySeconds());
+    }
+
     public function testMaxReleaseDelayReturnsNullForNonSqsDriver(): void
     {
         config()->set('queue.default', 'redis');
