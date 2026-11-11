@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
 use Illuminate\Support\Str;
+use InvalidArgumentException;
 use LogicException;
 use ReflectionMethod;
 use RuntimeException;
@@ -622,6 +623,15 @@ final class WorkflowExecutor
             'activity_type' => $current->activity,
         ])) {
             return null;
+        }
+        if ($this->activityHistoryEvent($run, $sequence) === null) {
+            try {
+                ActivityOptions::assertMaxAttempts($current->options?->maxAttempts);
+            } catch (InvalidArgumentException $exception) {
+                $this->failRun($run, $task, $exception, 'workflow_run', $run->id);
+
+                return null;
+            }
         }
         $localOutcome = (new LocalActivityExecutor())->execute($run, $task, $sequence, $current);
         if ($localOutcome['status'] === 'waiting') {
@@ -2508,6 +2518,7 @@ final class WorkflowExecutor
         EntryMethod::describeActivity($activityCall->activity);
 
         $options = $activityCall->options;
+        ActivityOptions::assertMaxAttempts($options?->maxAttempts);
 
         $scheduleDeadlineAt = $options?->scheduleToStartTimeout !== null
             ? now()

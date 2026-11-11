@@ -823,6 +823,57 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertSame($scenario['output'], $stub->output());
     }
 
+    public function testActivityAttemptBudgetCorpusRefusesNewBudgetsBelowOne(): void
+    {
+        $path = self::FIXTURE_DIR . '/activity-attempt-budget-below-one.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The activity attempt budget evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['activity_attempt_budget_below_one'];
+        self::stopWorkers();
+        $this->clearWorkflowState();
+        Queue::fake();
+        config([
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+        $drain = function (): void {
+            for ($i = 0; $i < 50; ++$i) {
+                $task = \Workflow\V2\Models\WorkflowTask::query()
+                    ->where('status', \Workflow\V2\Enums\TaskStatus::Ready->value)
+                    ->orderBy('created_at')
+                    ->first();
+                if ($task === null) {
+                    return;
+                }
+                $job = match ($task->task_type) {
+                    \Workflow\V2\Enums\TaskType::Workflow => new RunWorkflowTask($task->id),
+                    \Workflow\V2\Enums\TaskType::Activity => new \Workflow\V2\Jobs\RunActivityTask($task->id),
+                    \Workflow\V2\Enums\TaskType::Timer => new \Workflow\V2\Jobs\RunTimerTask($task->id),
+                };
+                $this->app->call([$job, 'handle']);
+            }
+        };
+
+        foreach ([false, true] as $local) {
+            foreach ($scenario['refused_budgets'] as $budget) {
+                $stub = WorkflowStub::make($fixture['workflow']['type']);
+                $stub->start($budget, $local);
+                $drain();
+                $this->assertTrue($stub->refresh()->failed(), "budget {$budget}");
+                $this->assertSame(0, \Workflow\V2\Models\ActivityExecution::query()
+                    ->where('workflow_run_id', $stub->runId())
+                    ->count());
+            }
+
+            $stub = WorkflowStub::make($fixture['workflow']['type']);
+            $stub->start($scenario['accepted_budget'], $local);
+            $drain();
+            $this->assertTrue($stub->refresh()->completed());
+            $this->assertSame($scenario['output'], $stub->output());
+        }
+    }
+
     public function testRedrivePendingMessageCorpusReachesTheSuccessor(): void
     {
         $path = self::FIXTURE_DIR . '/redrive-pending-message-transfer.json';

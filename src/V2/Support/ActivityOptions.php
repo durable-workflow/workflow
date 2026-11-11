@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use InvalidArgumentException;
+
 /**
  * Per-call activity configuration overrides.
  *
@@ -167,5 +169,26 @@ final class ActivityOptions
         return $this->priority !== null
             || $this->fairnessKey !== null
             || $this->fairnessWeight !== null;
+    }
+
+    /**
+     * A per-call attempt budget counts the first attempt, so it must be at
+     * least 1. Leave it null to use the activity class's $tries, where 0
+     * means unlimited. This is checked when an activity is first scheduled,
+     * not when options are built, so workflow code replaying an activity
+     * that history already recorded with max_attempts 0 keeps working; that
+     * recorded budget still means one attempt.
+     *
+     * @internal
+     */
+    public static function assertMaxAttempts(?int $maxAttempts): void
+    {
+        if ($maxAttempts !== null && $maxAttempts < 1) {
+            throw new InvalidArgumentException(sprintf(
+                'Activity maxAttempts must be at least 1 because it counts the first attempt; got %d. '
+                . 'Omit it to use the activity class $tries.',
+                $maxAttempts,
+            ));
+        }
     }
 }
