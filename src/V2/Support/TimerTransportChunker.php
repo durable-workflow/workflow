@@ -53,7 +53,7 @@ final class TimerTransportChunker
         $snapshot = BackendCapabilities::snapshot(queueConnection: $connection);
         $driver = $snapshot['queue']['driver'] ?? null;
 
-        if ($driver === 'sqs') {
+        if (BackendCapabilities::isSqsBackedDriver($driver)) {
             return self::MAX_RELEASE_SECONDS_SQS;
         }
 
