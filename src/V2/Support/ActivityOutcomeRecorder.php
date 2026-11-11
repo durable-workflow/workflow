@@ -292,6 +292,13 @@ final class ActivityOutcomeRecorder
                 return $refusal;
             }
 
+            ActivityHeartbeatHistory::recordPendingBeforeClose(
+                $run,
+                $lockedExecution,
+                ActivityAttempt::query()->find($attemptId),
+                $task,
+            );
+
             if ($throwable === null) {
                 $lockedExecution->forceFill([
                     'status' => ActivityStatus::Completed,

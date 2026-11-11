@@ -59,7 +59,10 @@ final class ActivityAttemptSnapshots
 
                 $snapshot = self::fromAttempt($attempt);
                 $states[$execution->id][$attempt->id] = isset($states[$execution->id][$attempt->id])
-                    ? self::mergeMissing($states[$execution->id][$attempt->id], $snapshot)
+                    ? self::withLatestHeartbeat(
+                        self::mergeMissing($states[$execution->id][$attempt->id], $snapshot),
+                        $snapshot,
+                    )
                     : $snapshot;
 
                 $state = $states[$execution->id][$attempt->id];
@@ -217,9 +220,37 @@ final class ActivityAttemptSnapshots
             'lease_owner' => $attempt->lease_owner,
             'started_at' => self::timestamp($attempt->started_at),
             'last_heartbeat_at' => self::timestamp($attempt->last_heartbeat_at),
+            'last_heartbeat_progress' => HeartbeatProgress::fromStored($attempt->last_heartbeat_progress),
             'lease_expires_at' => self::timestamp($attempt->lease_expires_at),
             'closed_at' => self::timestamp($attempt->closed_at),
         ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * History records heartbeats only when progress changes, at a bounded
+     * rate (#870), so the attempt row holds the latest heartbeat time and
+     * progress. Older attempts have neither and keep their history values.
+     *
+     * @param array<string, mixed> $state
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    private static function withLatestHeartbeat(array $state, array $row): array
+    {
+        if (isset($row['last_heartbeat_progress'])) {
+            $state['last_heartbeat_progress'] = $row['last_heartbeat_progress'];
+        }
+
+        $rowHeartbeatAt = $row['last_heartbeat_at'] ?? null;
+        $stateHeartbeatAt = $state['last_heartbeat_at'] ?? null;
+        if (is_string($rowHeartbeatAt) && (! is_string($stateHeartbeatAt)
+            || \Carbon\CarbonImmutable::parse($rowHeartbeatAt)->gt(
+                \Carbon\CarbonImmutable::parse($stateHeartbeatAt)
+            ))) {
+            $state['last_heartbeat_at'] = $rowHeartbeatAt;
+        }
+
+        return $state;
     }
 
     /**

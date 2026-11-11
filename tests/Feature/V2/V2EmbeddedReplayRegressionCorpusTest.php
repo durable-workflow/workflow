@@ -1064,6 +1064,67 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertSame('warning', $checks[$scenario['health_check']]);
     }
 
+    public function testActivityHeartbeatHistoryCorpusBoundsRecordedHeartbeats(): void
+    {
+        $path = self::FIXTURE_DIR . '/activity-heartbeat-history-bound.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The activity heartbeat history evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['activity_heartbeat_history_bound'];
+        self::stopWorkers();
+        $this->clearWorkflowState();
+        Queue::fake();
+        config([
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+        $startedAt = Carbon::parse('2026-11-11 00:00:00');
+        $bridge = app(ActivityTaskBridge::class);
+
+        try {
+            foreach (['unchanged', 'changing'] as $mode) {
+                Carbon::setTestNow($startedAt);
+                $stub = WorkflowStub::make($fixture['workflow']['type'], "regression-corpus-heartbeat-{$mode}");
+                $stub->start(...$fixture['workflow']['arguments']);
+                $run = WorkflowRun::query()->findOrFail($stub->runId());
+                $this->runReadyWorkflowTask($run);
+                $activityTask = WorkflowTask::query()
+                    ->where('workflow_run_id', $run->id)
+                    ->where('task_type', TaskType::Activity->value)
+                    ->sole();
+                $claim = $bridge->claim($activityTask->id, 'corpus-heartbeat-worker');
+                $this->assertIsArray($claim);
+
+                for ($second = 1; $second <= $scenario['heartbeat_seconds']; ++$second) {
+                    Carbon::setTestNow($startedAt->copy()->addSeconds($second));
+                    $bridge->heartbeat($claim['activity_attempt_id'], $mode === 'unchanged'
+                        ? $scenario['unchanged_progress']
+                        : [
+                            'current' => $second,
+                        ]);
+                }
+
+                $recorded = WorkflowHistoryEvent::query()
+                    ->where('workflow_run_id', $run->id)
+                    ->where('event_type', HistoryEventType::ActivityHeartbeatRecorded->value)
+                    ->orderBy('sequence')
+                    ->get();
+                if ($mode === 'unchanged') {
+                    $this->assertCount($scenario['unchanged_events'], $recorded);
+                } else {
+                    $this->assertSame(
+                        $scenario['changing_recorded_current'],
+                        $recorded->map(
+                            static fn (WorkflowHistoryEvent $event): mixed => $event->payload['progress']['current'] ?? null,
+                        )->all(),
+                    );
+                }
+            }
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
     public function testRedrivePendingMessageCorpusReachesTheSuccessor(): void
     {
         $path = self::FIXTURE_DIR . '/redrive-pending-message-transfer.json';

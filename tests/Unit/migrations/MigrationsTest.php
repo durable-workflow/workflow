@@ -222,6 +222,8 @@ final class MigrationsTest extends SchemaTestCase
         $this->assertTrue(Schema::hasTable('workflow_links'));
         $this->assertTrue(Schema::hasTable('activity_attempts'));
         $this->assertTrue(Schema::hasColumn('activity_attempts', 'worker_attempt_id'));
+        $this->assertTrue(Schema::hasColumn('activity_attempts', 'last_heartbeat_progress'));
+        $this->assertTrue(Schema::hasColumn('activity_attempts', 'last_heartbeat_recorded_at'));
         $this->assertTrue(Schema::hasTable('workflow_signal_records'));
         $this->assertTrue(Schema::hasTable('workflow_run_timeline_entries'));
         $this->assertTrue(Schema::hasTable('workflow_run_timer_entries'));

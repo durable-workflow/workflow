@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Builder;
 use RuntimeException;
 use Throwable;
@@ -515,6 +516,25 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge, ActivityLea
             'lease_expires_at' => $leaseExpiresAt,
         ])->save();
 
+        // The attempt row keeps the latest progress; history records it only
+        // when it changed and the record interval has passed (#870).
+        if (ActivityHeartbeatHistory::observe($attempt, $execution, $progress, $heartbeatAt)) {
+            self::recordObservedHeartbeat($run, $execution, $attempt, $task, $heartbeatAt, $leaseExpiresAt);
+        }
+
+        self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
+
+        return self::attemptStatus($attemptId, $attempt, $execution, $run, $task, true, false, null, true);
+    }
+
+    private static function recordObservedHeartbeat(
+        WorkflowRun $run,
+        ActivityExecution $execution,
+        ActivityAttempt $attempt,
+        WorkflowTask $task,
+        CarbonInterface $heartbeatAt,
+        CarbonInterface $leaseExpiresAt,
+    ): void {
         $payload = [
             'activity_execution_id' => $execution->id,
             'activity_attempt_id' => $attempt->id,
@@ -537,15 +557,11 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge, ActivityLea
             ],
         ];
 
-        if ($progress !== null) {
-            $payload['progress'] = $progress;
+        if (is_array($attempt->last_heartbeat_progress)) {
+            $payload['progress'] = $attempt->last_heartbeat_progress;
         }
 
         WorkflowHistoryEvent::record($run, HistoryEventType::ActivityHeartbeatRecorded, $payload, $task);
-
-        self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
-
-        return self::attemptStatus($attemptId, $attempt, $execution, $run, $task, true, false, null, true);
     }
 
     /**
