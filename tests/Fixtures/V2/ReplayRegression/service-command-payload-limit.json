@@ -1,0 +1,43 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "service-command-payload-limit",
+  "protocol_version": "1.0",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestRedriveWorkflow",
+    "arguments": ["Payload Limit Worker"],
+    "payload_codec": "avro"
+  },
+  "service_command_payload_limit": {
+    "issue": "durable-workflow/workflow#865",
+    "service_workflow_type": "remote.payload-limit",
+    "payload_bytes": 2048,
+    "commands": [
+      {"type": "schedule_activity", "activity_type": "remote.activity", "field": "arguments"},
+      {"type": "start_child_workflow", "workflow_type": "remote.child", "field": "arguments"},
+      {"type": "continue_as_new", "field": "arguments"},
+      {"type": "complete_workflow", "field": "result"}
+    ],
+    "refusal": "payload_size"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-11T00:00:00+00:00",
+      "payload": {}
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "schedule_activity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+        "payload_codec": "avro"
+      }
+    ]
+  }
+}

@@ -5259,6 +5259,62 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
     }
 
+    /**
+     * External workers get the same payload size limit as embedded code
+     * (#865): an oversized activity, child or continue-as-new argument, or
+     * workflow result, refuses the whole completion with no durable effect.
+     */
+    #[DataProvider('payloadCommands')]
+    public function testCompleteRefusesAnOversizedPayloadBeforeAnyWrite(string $field, array $command): void
+    {
+        $run = $this->createWaitingRun();
+        $task = $this->createLeasedTask($run);
+        $payload = Serializer::serializeWithCodec('avro', [str_repeat('x', 2048)]);
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => strlen($payload) - 1,
+        ]);
+        $command[$field] = $payload;
+        $command['payload_codec'] = 'avro';
+        $leasedTask = $task->fresh()
+            ->getRawOriginal();
+        $before = self::pendingCountDurableState($run);
+
+        try {
+            $this->bridge->complete($task->id, [$command]);
+            $this->fail("An oversized {$command['type']} payload was accepted.");
+        } catch (StructuralLimitExceededException $exception) {
+            $this->assertSame('payload_size', $exception->limitKind->value);
+            $this->assertSame(strlen($payload), $exception->currentValue);
+        }
+
+        $this->assertSame($before, self::pendingCountDurableState($run));
+        $this->assertSame($leasedTask, $task->fresh()->getRawOriginal());
+
+        // A payload at the limit is admitted.
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => strlen($payload),
+        ]);
+        $this->assertTrue($this->bridge->complete($task->id, [$command])['completed']);
+    }
+
+    public static function payloadCommands(): iterable
+    {
+        yield 'activity arguments' => ['arguments', [
+            'type' => 'schedule_activity',
+            'activity_type' => 'bridge-activity',
+        ]];
+        yield 'child arguments' => ['arguments', [
+            'type' => 'start_child_workflow',
+            'workflow_type' => 'bridge-child',
+        ]];
+        yield 'continue-as-new arguments' => ['arguments', [
+            'type' => 'continue_as_new',
+        ]];
+        yield 'workflow result' => ['result', [
+            'type' => 'complete_workflow',
+        ]];
+    }
+
     public static function pendingCountCommands(): iterable
     {
         yield 'activity' => [
