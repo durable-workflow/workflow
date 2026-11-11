@@ -20,6 +20,27 @@ final class PendingMessageTask
         return self::nextEligibleSignal($run, $alreadyAttemptedSignalId, false) instanceof WorkflowSignal;
     }
 
+    /**
+     * Whether an update accepted while this task was leased, so its worker
+     * could not see it, can still run. A successful close waits one delivery
+     * turn for it, as it does for signals (#890). Updates the task could see
+     * keep their existing close behavior.
+     */
+    public static function hasUpdateAcceptedDuringTask(WorkflowRun $run, WorkflowTask $task): bool
+    {
+        if ($task->leased_at === null) {
+            return false;
+        }
+
+        $payload = is_array($task->payload) ? $task->payload : [];
+        $taskUpdateId = $payload['workflow_update_id'] ?? null;
+        $update = self::nextReadyUpdate($run, is_string($taskUpdateId) ? $taskUpdateId : null);
+
+        return $update instanceof WorkflowUpdate
+            && $update->accepted_at !== null
+            && $update->accepted_at->gte($task->leased_at);
+    }
+
     public static function createForRun(
         WorkflowRun $run,
         ?string $alreadyAttemptedSignalId = null,
@@ -131,12 +152,13 @@ final class PendingMessageTask
         return $candidate->id > $attempted->id;
     }
 
-    private static function nextReadyUpdate(WorkflowRun $run): ?WorkflowUpdate
+    private static function nextReadyUpdate(WorkflowRun $run, ?string $exceptUpdateId = null): ?WorkflowUpdate
     {
         /** @var WorkflowUpdate|null $update */
         $update = ConfiguredV2Models::query('update_model', WorkflowUpdate::class)
             ->where('workflow_run_id', $run->id)
             ->where('status', UpdateStatus::Accepted->value)
+            ->when($exceptUpdateId !== null, static fn ($query) => $query->whereKeyNot($exceptUpdateId))
             ->orderByRaw('CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END')
             ->orderBy('command_sequence')
             ->orderBy('accepted_at')
