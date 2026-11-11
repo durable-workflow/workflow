@@ -1,0 +1,45 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "operator-metrics-replay-blocked",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestScheduledWorkflow",
+    "arguments": [
+      "replay-blocked"
+    ],
+    "payload_codec": "avro"
+  },
+  "operator_metrics_replay_blocked": {
+    "issue": "durable-workflow/workflow#861",
+    "liveness_state": "workflow_replay_blocked",
+    "health_check": "replay_blocked_runs"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-11T14:00:00.000000Z"
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "batch_id": "replay-blocked",
+      "workflow_id": "regression-corpus-operator-metrics-replay-blocked",
+      "run_id": "regression-corpus-run-operator-metrics-replay-blocked"
+    },
+    "commands": [
+      {
+        "type": "complete_workflow"
+      }
+    ]
+  }
+}

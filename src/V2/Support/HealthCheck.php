@@ -38,6 +38,7 @@ final class HealthCheck
                 $metrics['repair'] ?? [],
                 $metrics['runs'] ?? [],
             ),
+            self::replayBlockedRunsCheck($metrics['runs'] ?? []),
             self::workerCompatibilityCheck($metrics['workers'] ?? []),
             self::schedulerRoleCheck($metrics['schedules'] ?? []),
             self::longPollWakeAccelerationCheck(),
@@ -457,6 +458,34 @@ final class HealthCheck
                     ? $runs['oldest_wait_started_at']
                     : null,
                 'max_wait_age_ms' => self::integer($runs['max_wait_age_ms'] ?? 0),
+            ],
+        );
+    }
+
+    /**
+     * Advisory: open runs whose workflow task cannot replay need a code or
+     * definition fix, then repair (#861).
+     *
+     * @param array<string, mixed> $runs
+     * @return array<string, mixed>
+     */
+    private static function replayBlockedRunsCheck(array $runs): array
+    {
+        $replayBlocked = self::integer($runs['replay_blocked'] ?? 0);
+
+        return self::check(
+            'replay_blocked_runs',
+            $replayBlocked === 0 ? 'ok' : 'warning',
+            $replayBlocked === 0
+                ? 'No open v2 run has a workflow task blocked on replay.'
+                : 'One or more open v2 runs have a workflow task that cannot replay. Fix the workflow code or definition, then repair the run.',
+            self::CATEGORY_CORRECTNESS,
+            [
+                'replay_blocked_runs' => $replayBlocked,
+                'oldest_replay_blocked_at' => is_string($runs['oldest_replay_blocked_at'] ?? null)
+                    ? $runs['oldest_replay_blocked_at']
+                    : null,
+                'max_replay_blocked_age_ms' => self::integer($runs['max_replay_blocked_age_ms'] ?? 0),
             ],
         );
     }

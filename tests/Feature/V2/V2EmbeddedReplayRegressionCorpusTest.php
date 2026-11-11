@@ -1037,6 +1037,33 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         }
     }
 
+    public function testOperatorMetricsCorpusCountsReplayBlockedRuns(): void
+    {
+        $path = self::FIXTURE_DIR . '/operator-metrics-replay-blocked.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The replay-blocked metrics evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['operator_metrics_replay_blocked'];
+        $this->clearWorkflowState();
+        Queue::fake();
+        config([
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+        $stub = WorkflowStub::make($fixture['workflow']['type'], 'regression-corpus-replay-blocked-metric');
+        $stub->start(...$fixture['workflow']['arguments']);
+        \Workflow\V2\Models\WorkflowRunSummary::query()->whereKey($stub->runId())->update([
+            'liveness_state' => $scenario['liveness_state'],
+        ]);
+
+        $health = \Workflow\V2\Support\HealthCheck::snapshot();
+        $checks = array_column($health['checks'], 'status', 'name');
+
+        $this->assertSame(1, $health['operator_metrics']['runs']['replay_blocked']);
+        $this->assertNotNull($health['operator_metrics']['runs']['oldest_replay_blocked_at']);
+        $this->assertSame('warning', $checks[$scenario['health_check']]);
+    }
+
     public function testRedrivePendingMessageCorpusReachesTheSuccessor(): void
     {
         $path = self::FIXTURE_DIR . '/redrive-pending-message-transfer.json';
