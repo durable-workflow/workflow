@@ -1,0 +1,42 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "message-stream-update-receive-query",
+  "protocol_version": "1.0",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestInboxUpdateReceiveWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "message_stream_update_receive_query": {
+    "issue": "durable-workflow/workflow#1024",
+    "stream": "chat",
+    "update": "take",
+    "query": "taken",
+    "steps": [
+      {"action": "signal", "signal": "go"},
+      {"action": "update", "message": "j1", "result": "j1"},
+      {"action": "query", "result": ["j1"]},
+      {"action": "update", "message": "j2", "result": "j2"},
+      {"action": "query", "result": ["j1", "j2"]},
+      {"action": "signal", "signal": "done"}
+    ],
+    "output": ["j1", "j2"]
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-11T00:00:00+00:00",
+      "payload": {}
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {"type": "open_signal_wait", "signal_name": "go"}
+    ]
+  }
+}
