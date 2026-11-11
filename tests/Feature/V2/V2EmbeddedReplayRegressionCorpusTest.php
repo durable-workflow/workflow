@@ -681,6 +681,86 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertSame($scenario['output'], $stub->output());
     }
 
+    public function testMessageStreamUpdateReceiveCorpusAnswersQueriesWithWhatTheHandlerTook(): void
+    {
+        $path = self::FIXTURE_DIR . '/message-stream-update-receive-query.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The message stream update-receive evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['message_stream_update_receive_query'];
+        self::stopWorkers();
+        $this->clearWorkflowState();
+        Queue::fake();
+        config([
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+        $drain = function (): void {
+            for ($i = 0; $i < 50; ++$i) {
+                $task = \Workflow\V2\Models\WorkflowTask::query()
+                    ->where('status', \Workflow\V2\Enums\TaskStatus::Ready->value)
+                    ->orderBy('created_at')
+                    ->first();
+                if ($task === null) {
+                    return;
+                }
+                $job = match ($task->task_type) {
+                    \Workflow\V2\Enums\TaskType::Workflow => new RunWorkflowTask($task->id),
+                    \Workflow\V2\Enums\TaskType::Activity => new \Workflow\V2\Jobs\RunActivityTask($task->id),
+                    \Workflow\V2\Enums\TaskType::Timer => new \Workflow\V2\Jobs\RunTimerTask($task->id),
+                };
+                $this->app->call([$job, 'handle']);
+            }
+        };
+        $messageRows = static fn (): array => \Workflow\V2\Models\WorkflowMessage::query()
+            ->orderBy('id')
+            ->get()
+            ->map(static fn ($message): array => $message->getRawOriginal())
+            ->all();
+
+        $instanceId = 'regression-corpus-update-receive-query';
+        $stub = WorkflowStub::make($fixture['workflow']['type'], $instanceId);
+        $stub->start(...$fixture['workflow']['arguments']);
+        $drain();
+        $run = WorkflowRun::query()->where('workflow_instance_id', $instanceId)->sole();
+
+        foreach ($scenario['steps'] as $index => $step) {
+            if ($step['action'] === 'signal') {
+                $stub->signal($step['signal']);
+                $drain();
+
+                continue;
+            }
+
+            if ($step['action'] === 'update') {
+                (new \Workflow\V2\Support\MessageService())->sendMessage(
+                    $run,
+                    \Workflow\V2\Enums\MessageChannel::WorkflowMessage,
+                    $instanceId,
+                    $step['message'],
+                    $scenario['stream'],
+                );
+                $this->assertSame(
+                    $step['result'],
+                    $stub->refresh()
+                        ->attemptUpdate($scenario['update'])
+                        ->result(),
+                    "step {$index}",
+                );
+
+                continue;
+            }
+
+            // A query answers with what each update handler took and writes nothing.
+            $before = $messageRows();
+            $this->assertSame($step['result'], $stub->refresh()->query($scenario['query']), "step {$index}");
+            $this->assertSame($before, $messageRows(), "step {$index}");
+        }
+
+        $this->assertTrue($stub->refresh()->completed());
+        $this->assertSame($scenario['output'], $stub->output());
+    }
+
     public function testDeterminismScanCorpusFlagsImplicitCurrentTimeAndShuffles(): void
     {
         $path = self::FIXTURE_DIR . '/determinism-scan-implicit-time.json';
