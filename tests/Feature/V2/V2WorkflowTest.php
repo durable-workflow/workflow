@@ -2143,16 +2143,12 @@ final class V2WorkflowTest extends TestCase
             $this->assertSame($leaseExpiresAt->jsonSerialize(), $task->lease_expires_at?->jsonSerialize());
             $this->assertSame($leaseExpiresAt->jsonSerialize(), $summary->next_task_lease_expires_at?->jsonSerialize());
 
-            /** @var WorkflowHistoryEvent $heartbeat */
-            $heartbeat = WorkflowHistoryEvent::query()
+            // A heartbeat without progress only proves liveness, so it writes
+            // no history event (#870). The backfilled identity lives on the rows.
+            $this->assertSame(0, WorkflowHistoryEvent::query()
                 ->where('workflow_run_id', $run->id)
                 ->where('event_type', HistoryEventType::ActivityHeartbeatRecorded->value)
-                ->sole();
-
-            $this->assertSame($execution->id, $heartbeat->payload['activity_execution_id'] ?? null);
-            $this->assertSame($attempt->id, $heartbeat->payload['activity_attempt_id'] ?? null);
-            $this->assertSame($heartbeatAt->toJSON(), $heartbeat->payload['heartbeat_at'] ?? null);
-            $this->assertSame($task->id, $heartbeat->workflow_task_id);
+                ->count());
         } finally {
             Carbon::setTestNow();
         }

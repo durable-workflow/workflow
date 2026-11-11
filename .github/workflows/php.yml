@@ -950,7 +950,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4, 5]
 
     services:
       mysql:
@@ -1050,7 +1050,7 @@ jobs:
         php scripts/ci/split-feature-tests.php \
           --dir=tests/Feature \
           --shard=${{ matrix.shard }} \
-          --shards=4 \
+          --shards=6 \
           --weights=.github/feature-test-timings.json \
           --weight-profile=mysql \
           --summary="build/test-results/mysql-shard-${{ matrix.shard }}-summary.txt" \
@@ -1124,7 +1124,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4, 5]
 
     services:
       postgres:
@@ -1211,7 +1211,7 @@ jobs:
         php scripts/ci/split-feature-tests.php \
           --dir=tests/Feature \
           --shard=${{ matrix.shard }} \
-          --shards=4 \
+          --shards=6 \
           --weights=.github/feature-test-timings.json \
           --weight-profile=postgresql \
           --summary="build/test-results/pgsql-shard-${{ matrix.shard }}-summary.txt" \
@@ -1563,6 +1563,8 @@ jobs:
         --clover=build/feature-coverage/mysql-shard-1-coverage.xml
         --clover=build/feature-coverage/mysql-shard-2-coverage.xml
         --clover=build/feature-coverage/mysql-shard-3-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-4-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-5-coverage.xml
 
     - name: Send Clover reports to the isolated Sonar job
       id: sonar_coverage
@@ -1575,6 +1577,8 @@ jobs:
           build/feature-coverage/mysql-shard-1-coverage.xml
           build/feature-coverage/mysql-shard-2-coverage.xml
           build/feature-coverage/mysql-shard-3-coverage.xml
+          build/feature-coverage/mysql-shard-4-coverage.xml
+          build/feature-coverage/mysql-shard-5-coverage.xml
         if-no-files-found: error
         retention-days: 1
 
@@ -1604,7 +1608,7 @@ jobs:
       with:
         binary: ${{ runner.temp }}/codecovcli
         flags: v2
-        files: ./coverage.xml,./build/feature-coverage/mysql-shard-0-coverage.xml,./build/feature-coverage/mysql-shard-1-coverage.xml,./build/feature-coverage/mysql-shard-2-coverage.xml,./build/feature-coverage/mysql-shard-3-coverage.xml
+        files: ./coverage.xml,./build/feature-coverage/mysql-shard-0-coverage.xml,./build/feature-coverage/mysql-shard-1-coverage.xml,./build/feature-coverage/mysql-shard-2-coverage.xml,./build/feature-coverage/mysql-shard-3-coverage.xml,./build/feature-coverage/mysql-shard-4-coverage.xml,./build/feature-coverage/mysql-shard-5-coverage.xml
         fail_ci_if_error: true
         name: v2
         override_branch: ${{ env.COVERAGE_BRANCH }}

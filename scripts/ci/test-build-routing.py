@@ -84,6 +84,11 @@ class FeatureShardRoutingTest(unittest.TestCase):
         "tests/Feature/SmokeQueryReplayTest.php",
         "tests/Feature/SmokePersistedPayloadTest.php",
     ]
+    # Enough profiled files for every feature shard to receive one.
+    filler_features = [
+        "tests/Feature/FillerOneTest.php",
+        "tests/Feature/FillerTwoTest.php",
+    ]
     unseen_feature = "tests/Feature/V2/UnprofiledFeatureTest.php"
 
     def setUp(self) -> None:
@@ -117,6 +122,8 @@ class FeatureShardRoutingTest(unittest.TestCase):
                 f"    public function {method}(): void {{}}\n"
                 "}\n",
             )
+        for feature in self.filler_features:
+            self.write(feature, "<?php\nfinal class FillerFeatureTest {}\n")
         self.write(
             self.unseen_feature,
             "<?php\nfinal class UnprofiledFeatureTest {}\n",
@@ -131,6 +138,7 @@ class FeatureShardRoutingTest(unittest.TestCase):
         profile = dict(
             zip(self.known_features, [40.0, 30.0, 20.0, 10.0], strict=True)
         )
+        profile.update(dict.fromkeys(self.filler_features, 5.0))
         self.write_json(
             ".github/feature-test-timings.json",
             {"mysql": profile, "postgresql": profile},
@@ -188,12 +196,12 @@ class FeatureShardRoutingTest(unittest.TestCase):
     def shard_assignments(self, profile: str) -> list[list[str]]:
         assignments = []
 
-        for shard in range(4):
+        for shard in range(6):
             result = self.run_php(
                 "scripts/ci/split-feature-tests.php",
                 "--dir=tests/Feature",
                 f"--shard={shard}",
-                "--shards=4",
+                "--shards=6",
                 "--weights=.github/feature-test-timings.json",
                 f"--weight-profile={profile}",
             )
@@ -218,13 +226,14 @@ class FeatureShardRoutingTest(unittest.TestCase):
 
                 self.assertEqual(first, second)
                 self.assertCountEqual(
-                    self.known_features + [self.unseen_feature],
+                    self.known_features + self.filler_features + [self.unseen_feature],
                     represented,
                 )
                 self.assertEqual(1, represented.count(self.unseen_feature))
+                unseen_shard = next(shard for shard in first if self.unseen_feature in shard)
                 self.assertEqual(
                     self.unseen_feature,
-                    first[3][-1],
+                    unseen_shard[-1],
                     "known timings should remain authoritative for shard balance",
                 )
 
@@ -288,11 +297,12 @@ class FeatureShardRoutingTest(unittest.TestCase):
                     self.known_features[0],
                     self.known_features[1],
                     self.known_features[2],
+                    *self.filler_features,
                 ],
                 f"Duplicated: [{self.known_features[0]}]",
             ),
             "unassigned": (
-                self.known_features,
+                self.known_features + self.filler_features,
                 f"Missing: [{self.unseen_feature}]",
             ),
         }
@@ -443,7 +453,7 @@ class BuildWorkflowTrustTest(unittest.TestCase):
         self.assertIn("artifact-ids: ${{ needs.coverage-unit.outputs.unit_artifact_id }}", aggregate)
         self.assertIn("digest-mismatch: error", aggregate)
         for report in ["coverage.xml"] + [
-            f"build/feature-coverage/mysql-shard-{shard}-coverage.xml" for shard in range(4)
+            f"build/feature-coverage/mysql-shard-{shard}-coverage.xml" for shard in range(6)
         ]:
             with self.subTest(report=report):
                 self.assertIn(f"--clover={report}", aggregate)
