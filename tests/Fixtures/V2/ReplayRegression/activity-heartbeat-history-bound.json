@@ -1,0 +1,34 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "activity-heartbeat-history-bound",
+  "protocol_version": "1.0",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestGreetingWorkflow",
+    "arguments": ["Heartbeat Bound"],
+    "payload_codec": "avro"
+  },
+  "activity_heartbeat_history_bound": {
+    "issue": "durable-workflow/workflow#870",
+    "heartbeat_seconds": 300,
+    "unchanged_progress": {"message": "copying"},
+    "unchanged_events": 1,
+    "changing_recorded_current": [1, 61, 121, 181, 241]
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-11T00:00:00+00:00",
+      "payload": {}
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {"type": "schedule_activity", "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity"}
+    ]
+  }
+}

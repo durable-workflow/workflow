@@ -357,6 +357,8 @@ final class ActivityTimeoutEnforcer
         string $timeoutKind,
         array $leaseMetadata,
     ): array {
+        ActivityHeartbeatHistory::recordPendingBeforeClose($run, $execution, $attempt, $task);
+
         $attemptCount = max(1, (int) $execution->attempt_count);
         $canRetry = $attemptCount < ActivityRetryPolicy::maxAttemptsFromSnapshot($execution);
         if ($timeoutKind === 'lease') {

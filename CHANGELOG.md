@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Activity heartbeats no longer grow run history with every heartbeat
+  (#870). Each heartbeat still renews the lease, moves the heartbeat
+  deadline and stores the latest progress on the attempt. An
+  `ActivityHeartbeatRecorded` event is written only when progress changed
+  since the last recorded event and at least max(heartbeat timeout, 60
+  seconds) has passed. Heartbeats without progress write none. Progress that
+  was not yet recorded is recorded once when the attempt closes. Run detail,
+  Waterline and history export read the latest progress from the attempt.
+  Liveness, timeouts and retries are unchanged, and older histories with one
+  event per heartbeat replay and export as before. This is a behavior change:
+  expect far fewer heartbeat events.
+- A migration adds nullable `last_heartbeat_progress`,
+  `last_heartbeat_progress_at` and `last_heartbeat_recorded_at` columns to
+  `activity_attempts`. It is additive, with no backfill.
+
 ## 2.23.2 - 2026-11-11
 
 - Service-mode worker commands get the remaining size limits embedded

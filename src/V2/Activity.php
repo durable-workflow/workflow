@@ -8,20 +8,18 @@ use Illuminate\Container\Container;
 use Workflow\Traits\ResolvesMethodDependencies;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
-use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
-use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityAttemptAuthority;
 use Workflow\V2\Support\ActivityAttemptNormalizer;
+use Workflow\V2\Support\ActivityHeartbeatHistory;
 use Workflow\V2\Support\ActivityLease;
 use Workflow\V2\Support\ActivityRowLockOrder;
-use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\HeartbeatProgress;
 use Workflow\V2\Support\LocalActivityRuntime;
@@ -347,6 +345,9 @@ abstract class Activity
             && $attempt->attempt_number === $execution->attempt_count;
     }
 
+    /**
+     * @param array<string, mixed>|null $progress
+     */
     private function recordHeartbeat(
         WorkflowRun $run,
         ActivityExecution $execution,
@@ -356,47 +357,16 @@ abstract class Activity
         mixed $leaseExpiresAt,
         ?array $progress,
     ): void {
-        $payload = [
-            'activity_execution_id' => $execution->id,
-            'activity_attempt_id' => $attempt->id,
-            'activity_class' => $execution->activity_class,
-            'activity_type' => $execution->activity_type,
-            'sequence' => $execution->sequence,
-            'attempt_number' => $attempt->attempt_number,
-            'heartbeat_at' => self::timestamp($heartbeatAt),
-            'lease_expires_at' => self::timestamp($leaseExpiresAt),
-            'activity' => ActivitySnapshot::fromExecution($execution),
-            'activity_attempt' => self::attemptSnapshot($attempt),
-        ];
-
-        if (LocalActivityRuntime::isExecution($execution)) {
-            $payload = LocalActivityRuntime::eventPayload($payload);
-            $payload['workflow_task_id'] = $task?->id;
+        // The attempt row always keeps the latest progress; history records
+        // it only when it changed and the record interval has passed (#870).
+        if (
+            ! $heartbeatAt instanceof \Carbon\CarbonInterface
+            || ! ActivityHeartbeatHistory::observe($attempt, $execution, $progress, $heartbeatAt)
+        ) {
+            return;
         }
 
-        if ($progress !== null) {
-            $payload['progress'] = $progress;
-        }
-
-        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityHeartbeatRecorded, $payload, $task);
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private static function attemptSnapshot(ActivityAttempt $attempt): array
-    {
-        return array_filter([
-            'id' => $attempt->id,
-            'attempt_number' => $attempt->attempt_number,
-            'status' => $attempt->status?->value,
-            'task_id' => $attempt->workflow_task_id,
-            'lease_owner' => $attempt->lease_owner,
-            'started_at' => self::timestamp($attempt->started_at),
-            'last_heartbeat_at' => self::timestamp($attempt->last_heartbeat_at),
-            'lease_expires_at' => self::timestamp($attempt->lease_expires_at),
-            'closed_at' => self::timestamp($attempt->closed_at),
-        ], static fn (mixed $value): bool => $value !== null);
+        ActivityHeartbeatHistory::record($run, $execution, $attempt, $task, $heartbeatAt, $leaseExpiresAt);
     }
 
     private static function stringValue(mixed $value): ?string
@@ -404,12 +374,5 @@ abstract class Activity
         return is_string($value) && $value !== ''
             ? $value
             : null;
-    }
-
-    private static function timestamp(mixed $value): ?string
-    {
-        return $value instanceof \Carbon\CarbonInterface
-            ? $value->toJSON()
-            : self::stringValue($value);
     }
 }

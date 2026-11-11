@@ -32,6 +32,9 @@ class ActivityAttempt extends Model
         'attempt_number' => 'integer',
         'started_at' => 'datetime',
         'last_heartbeat_at' => 'datetime',
+        'last_heartbeat_progress' => 'array',
+        'last_heartbeat_progress_at' => 'datetime',
+        'last_heartbeat_recorded_at' => 'datetime',
         'lease_expires_at' => 'datetime',
         'closed_at' => 'datetime',
     ];

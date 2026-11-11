@@ -129,8 +129,13 @@ final class EmbeddedActivityLeaseMaintenanceTest extends TestCase
                 'message' => $payload['message'] ?? null,
             ])->all());
         self::assertSame('completed', $stub->refresh()->status());
-        self::assertSame(4, WorkflowHistoryEvent::query()->where('workflow_run_id', $stub->runId())
-            ->where('event_type', HistoryEventType::ActivityHeartbeatRecorded)->count());
+        // Four progress heartbeats inside one record interval write the first
+        // progress and, at close, the final progress (#870).
+        $heartbeats = WorkflowHistoryEvent::query()->where('workflow_run_id', $stub->runId())
+            ->where('event_type', HistoryEventType::ActivityHeartbeatRecorded)->orderBy('sequence')->get();
+        self::assertSame([1, 4], $heartbeats->map(
+            static fn (WorkflowHistoryEvent $event): mixed => $event->payload['progress']['current'] ?? null,
+        )->all());
         self::assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $stub->runId())
             ->where('event_type', HistoryEventType::ActivityCompleted)->count());
         self::assertSame(0, DB::table('failed_jobs')->count());
@@ -174,7 +179,7 @@ final class EmbeddedActivityLeaseMaintenanceTest extends TestCase
             self::assertSame('completed', $stub->refresh()->status());
             $events = WorkflowHistoryEvent::query()->where('workflow_run_id', $stub->runId())->get();
             self::assertSame(0, $events->where('event_type', HistoryEventType::ActivityFailed)->count());
-            self::assertSame(4, $events->where('event_type', HistoryEventType::ActivityHeartbeatRecorded)->count());
+            self::assertSame(2, $events->where('event_type', HistoryEventType::ActivityHeartbeatRecorded)->count());
             self::assertSame(1, $events->where('event_type', HistoryEventType::ActivityCompleted)->count());
             self::assertSame(0, DB::table('failed_jobs')->count());
         } finally {

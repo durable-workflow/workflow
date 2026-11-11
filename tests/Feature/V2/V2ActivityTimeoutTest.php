@@ -791,10 +791,116 @@ final class V2ActivityTimeoutTest extends TestCase
             $this->assertFalse($result['enforced']);
             $this->assertSame('no_deadline_expired', $result['reason']);
             $this->assertSame(ActivityStatus::Running, $execution->fresh()->status);
-            $this->assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)
+            // A heartbeat without progress only proves liveness and writes no
+            // history (#870); the deadline still moved.
+            $this->assertSame($embedded ? 1 : 0, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)
                 ->where('event_type', HistoryEventType::ActivityHeartbeatRecorded)->count());
             $this->assertSame(0, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)
                 ->where('event_type', HistoryEventType::ActivityTimedOut)->count());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    /**
+     * #870: heartbeating every second for five minutes with the same progress
+     * keeps the lease alive but writes one history event, not three hundred.
+     */
+    #[DataProvider('heartbeatChannels')]
+    public function testUnchangedHeartbeatProgressForFiveMinutesWritesOneEvent(bool $embedded): void
+    {
+        $session = $this->startHeartbeatSession('unchanged-heartbeat-progress');
+
+        try {
+            for ($second = 1; $second <= 300; ++$second) {
+                $this->heartbeatAt($session, $embedded, $second, [
+                    'message' => 'copying',
+                ]);
+            }
+
+            $attempt = ActivityAttempt::query()->findOrFail($session['claim']['activity_attempt_id']);
+            $this->assertSame(1, $this->heartbeatEventCount($session));
+            $this->assertSame([
+                'message' => 'copying',
+            ], $attempt->last_heartbeat_progress);
+            $this->assertTrue($attempt->last_heartbeat_at->equalTo($session['started_at']->copy()->addSeconds(300)));
+            $this->assertSame(ActivityStatus::Running, $session['execution']->fresh()->status);
+            $this->assertFalse(ActivityTimeoutEnforcer::enforce($session['execution']->id)['enforced']);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    /**
+     * #870: progress that changes every second is recorded at most once per
+     * record interval, max(heartbeat timeout, 60 seconds), and the attempt row
+     * always holds the latest progress.
+     */
+    #[DataProvider('heartbeatChannels')]
+    public function testChangingHeartbeatProgressIsRecordedAtABoundedRate(bool $embedded): void
+    {
+        $session = $this->startHeartbeatSession('changing-heartbeat-progress');
+
+        try {
+            for ($second = 1; $second <= 300; ++$second) {
+                $this->heartbeatAt($session, $embedded, $second, [
+                    'current' => $second,
+                    'total' => 300,
+                ]);
+            }
+
+            $recorded = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $session['run']->id)
+                ->where('event_type', HistoryEventType::ActivityHeartbeatRecorded)
+                ->orderBy('sequence')
+                ->get()
+                ->map(static fn (WorkflowHistoryEvent $event): mixed => $event->payload['progress']['current'] ?? null)
+                ->all();
+            $this->assertSame([1, 61, 121, 181, 241], $recorded);
+            $this->assertSame(300, ActivityAttempt::query()->findOrFail($session['claim']['activity_attempt_id'])
+                ->last_heartbeat_progress['current']);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    /**
+     * #870: progress the record interval held back is recorded once when the
+     * attempt closes, before its completion.
+     */
+    #[DataProvider('heartbeatChannels')]
+    public function testClosingAnAttemptRecordsItsUnrecordedProgressOnce(bool $embedded): void
+    {
+        $session = $this->startHeartbeatSession('final-heartbeat-progress');
+
+        try {
+            $this->heartbeatAt($session, $embedded, 1, [
+                'current' => 1,
+            ]);
+            $this->heartbeatAt($session, $embedded, 2, [
+                'current' => 2,
+            ]);
+            $this->assertSame(1, $this->heartbeatEventCount($session));
+
+            Carbon::setTestNow($session['started_at']->copy()->addSeconds(3));
+            app(ActivityTaskBridge::class)->complete($session['claim']['activity_attempt_id'], 'done');
+
+            $events = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $session['run']->id)
+                ->whereIn('event_type', [
+                    HistoryEventType::ActivityHeartbeatRecorded->value,
+                    HistoryEventType::ActivityCompleted->value,
+                ])
+                ->orderBy('sequence')
+                ->get();
+            $this->assertSame([
+                [HistoryEventType::ActivityHeartbeatRecorded->value, 1],
+                [HistoryEventType::ActivityHeartbeatRecorded->value, 2],
+                [HistoryEventType::ActivityCompleted->value, null],
+            ], $events->map(static fn (WorkflowHistoryEvent $event): array => [
+                $event->event_type->value,
+                $event->payload['progress']['current'] ?? null,
+            ])->all());
         } finally {
             Carbon::setTestNow();
         }
@@ -1369,6 +1475,76 @@ final class V2ActivityTimeoutTest extends TestCase
         $this->assertNull($execution->schedule_deadline_at);
 
         Carbon::setTestNow();
+    }
+
+    /**
+     * @return array{started_at: Carbon, run: WorkflowRun, execution: ActivityExecution, task: WorkflowTask, claim: array<string, mixed>}
+     */
+    private function startHeartbeatSession(string $instanceId): array
+    {
+        WorkflowStub::fake();
+        $startedAt = Carbon::parse('2026-01-15 10:00:00');
+        Carbon::setTestNow($startedAt);
+        [$run, $execution, $task] = $this->createPendingActivity(
+            instanceId: $instanceId,
+            retryPolicy: [
+                'snapshot_version' => 1,
+                'max_attempts' => 1,
+                'backoff_seconds' => [],
+                'start_to_close_timeout' => 3600,
+                'schedule_to_start_timeout' => null,
+                'schedule_to_close_timeout' => null,
+                'heartbeat_timeout' => 10,
+            ],
+        );
+        $claim = app(ActivityTaskBridge::class)->claim($task->id, 'heartbeat-history-worker');
+        $this->assertIsArray($claim);
+
+        return [
+            'started_at' => $startedAt,
+            'run' => $run,
+            'execution' => $execution,
+            'task' => $task,
+            'claim' => $claim,
+        ];
+    }
+
+    /**
+     * @param array{started_at: Carbon, run: WorkflowRun, execution: ActivityExecution, task: WorkflowTask, claim: array<string, mixed>} $session
+     * @param array<string, mixed> $progress
+     */
+    private function heartbeatAt(array $session, bool $embedded, int $second, array $progress): void
+    {
+        Carbon::setTestNow($session['started_at']->copy()->addSeconds($second));
+
+        if ($embedded) {
+            RuntimeObjectFactory::activity(
+                TestGreetingActivity::class,
+                $session['execution']->fresh(),
+                $session['run']->fresh(),
+                $session['task']->id,
+            )->heartbeat($progress);
+
+            return;
+        }
+
+        $this->assertTrue(
+            app(ActivityTaskBridge::class)->heartbeat(
+                $session['claim']['activity_attempt_id'],
+                $progress
+            )['can_continue'],
+        );
+    }
+
+    /**
+     * @param array{run: WorkflowRun} $session
+     */
+    private function heartbeatEventCount(array $session): int
+    {
+        return WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $session['run']->id)
+            ->where('event_type', HistoryEventType::ActivityHeartbeatRecorded)
+            ->count();
     }
 
     private function scheduleLeaseTimeoutActivity(): WorkflowTask

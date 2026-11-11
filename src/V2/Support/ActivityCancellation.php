@@ -100,6 +100,8 @@ final class ActivityCancellation
             return null;
         }
 
+        ActivityHeartbeatHistory::recordPendingBeforeClose($run, $execution, $attempt, $task);
+
         $commandId = $command instanceof WorkflowCommand ? $command->id : (is_string($command) ? $command : null);
 
         $payload = [
