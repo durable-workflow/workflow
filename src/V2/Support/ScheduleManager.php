@@ -292,13 +292,24 @@ final class ScheduleManager
                 : (int) $schedule->remaining_actions;
         }
 
-        $changedFields = array_values(array_keys($updates));
+        $schedule->forceFill($updates);
+        // Only fields whose stored value changes count. Re-applying the same
+        // configuration, as deploy tooling does, records nothing and keeps
+        // the next fire time and its jitter (#876).
+        $changedFields = array_values(array_keys($schedule->getDirty()));
 
-        $schedule->forceFill($updates)
-            ->save();
+        if ($changedFields === []) {
+            return $schedule;
+        }
 
-        $schedule->next_fire_at = $schedule->computeNextFireAtWithJitter();
         $schedule->save();
+
+        // Only a timing change moves the next fire. Metadata-only updates keep
+        // it, so they cannot skip an occurrence that is already due.
+        if (array_intersect($changedFields, ['spec', 'jitter_seconds']) !== []) {
+            $schedule->next_fire_at = $schedule->computeNextFireAtWithJitter();
+            $schedule->save();
+        }
 
         self::recordScheduleEvent($schedule, HistoryEventType::ScheduleUpdated, [
             'changed_fields' => $changedFields,

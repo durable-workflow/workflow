@@ -238,6 +238,58 @@ final class V2ScheduleTest extends TestCase
         ScheduleManager::pause($schedule);
     }
 
+    public function testReapplyingAnUnchangedScheduleRecordsNothingAndKeepsTheNextFire(): void
+    {
+        $schedule = ScheduleManager::create(
+            scheduleId: 'reapply-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+            timezone: 'UTC',
+            jitterSeconds: 300,
+            notes: 'Hourly.',
+        );
+        $nextFire = $schedule->fresh()
+->next_fire_at;
+        $events = $this->scheduleEventTypes($schedule);
+
+        for ($apply = 0; $apply < 3; ++$apply) {
+            $updated = ScheduleManager::update(
+                $schedule->fresh(),
+                cronExpression: '0 * * * *',
+                timezone: 'UTC',
+                overlapPolicy: ScheduleOverlapPolicy::Skip,
+                jitterSeconds: 300,
+                notes: 'Hourly.',
+            );
+            $this->assertFalse($updated->wasChanged(), "apply {$apply}");
+        }
+
+        $this->assertSame($events, $this->scheduleEventTypes($schedule));
+        $this->assertEquals($nextFire, $schedule->fresh()->next_fire_at);
+    }
+
+    public function testAMetadataOnlyUpdateListsOnlyWhatChangedAndKeepsTheNextFire(): void
+    {
+        $schedule = ScheduleManager::create(
+            scheduleId: 'metadata-update-test',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+            timezone: 'UTC',
+            jitterSeconds: 300,
+        );
+        $nextFire = $schedule->fresh()
+->next_fire_at;
+
+        ScheduleManager::update($schedule->fresh(), cronExpression: '0 * * * *', notes: 'Now documented.');
+
+        $this->assertEquals($nextFire, $schedule->fresh()->next_fire_at);
+        $updated = WorkflowScheduleHistoryEvent::query()
+            ->where('workflow_schedule_id', $schedule->id)
+            ->where('event_type', HistoryEventType::ScheduleUpdated->value)
+            ->sole();
+        $this->assertSame(['note'], $updated->payload['changed_fields']);
+    }
+
     public function testUpdateScheduleCronAndTimezone(): void
     {
         $schedule = ScheduleManager::create(
@@ -2576,6 +2628,19 @@ final class V2ScheduleTest extends TestCase
             ->firstOrFail();
 
         $this->assertArrayNotHasKey('command_context', (array) $event->payload);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function scheduleEventTypes(WorkflowSchedule $schedule): array
+    {
+        return WorkflowScheduleHistoryEvent::query()
+            ->where('workflow_schedule_id', $schedule->id)
+            ->orderBy('sequence')
+            ->get()
+            ->map(static fn (WorkflowScheduleHistoryEvent $event): string => $event->event_type->value)
+            ->all();
     }
 
     private function newWaterlineRequest(): Request
