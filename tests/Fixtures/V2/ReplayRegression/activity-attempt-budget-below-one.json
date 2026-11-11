@@ -1,0 +1,33 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "activity-attempt-budget-below-one",
+  "protocol_version": "1.0",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestActivityAttemptBudgetWorkflow",
+    "arguments": [1, false],
+    "payload_codec": "avro"
+  },
+  "activity_attempt_budget_below_one": {
+    "issue": "durable-workflow/workflow#860",
+    "refused_budgets": [0, -1],
+    "accepted_budget": 1,
+    "output": "Hello, budget!"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-11T00:00:00+00:00",
+      "payload": {}
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {"type": "schedule_activity", "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity"}
+    ]
+  }
+}
