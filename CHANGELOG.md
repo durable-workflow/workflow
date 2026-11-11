@@ -20,11 +20,18 @@
   `awaitWithTimeout()` and delayed v2 tasks longer than 15 minutes failed with
   `DelaySeconds must be >= 0 and <= 900`. They now wait in steps of at most
   900 seconds, as on plain SQS (#1074, reported in #1072).
+- Answer queries with what an update handler's stream receive took. A query
+  replayed an update handler's `inbox()->receive()` at the wrong step and saw
+  nothing (#1024). Live update handlers now record the message ids each
+  receive returned on their `UpdateApplied` event, and replays return exactly
+  those messages. Updates applied by earlier releases keep the previous
+  lookup (#1076).
 - Add experimental business transition contracts under
   `Workflow\V2\StateMachine` with native Saga integration (#1071, see
   `docs/business-state-machines.md`). The API is marked experimental and may
   change in a minor release.
-- No database migration, history format or dependency floor change.
+- No database migration or dependency floor change. `UpdateApplied` history
+  gains an optional `message_receives` field. Older runtimes ignore it.
 
 ## 2.22.0 - 2026-11-08
 

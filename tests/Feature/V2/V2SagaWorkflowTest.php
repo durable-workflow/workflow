@@ -36,6 +36,46 @@ final class V2SagaWorkflowTest extends TestCase
         TestSagaFailingCancelActivity::resetLog();
     }
 
+    public function testCancellationRequestedDuringCompensationLetsEveryCompensationRun(): void
+    {
+        WorkflowStub::fake();
+
+        $bookingSequence = 0;
+        WorkflowStub::mock(TestSagaBookingActivity::class, static function ($ctx, string $service) use (
+            &$bookingSequence
+        ): string {
+            $bookingSequence++;
+
+            return "{$service}-id-{$bookingSequence}";
+        });
+
+        WorkflowStub::mock(TestFailingActivity::class, static function (): never {
+            throw new RuntimeException('payment failed');
+        });
+
+        $cancelLog = [];
+        WorkflowStub::mock(TestSagaCancelActivity::class, static function ($ctx, string $service, string $bookingId) use (
+            &$cancelLog
+        ): string {
+            if ($cancelLog === []) {
+                WorkflowStub::load('saga-cancel-during-compensation')
+                    ->requestCancellation('order cancelled during compensation', 300);
+            }
+
+            $cancelLog[] = "{$service}:{$bookingId}";
+
+            return "cancelled-{$bookingId}";
+        });
+
+        $workflow = WorkflowStub::make(TestSagaWorkflow::class, 'saga-cancel-during-compensation');
+        $workflow->start(true);
+
+        // The request arrives while the hotel is being cancelled. Compensation
+        // runs under a cancellation shield, so the flight is still cancelled.
+        $this->assertSame(['hotel:hotel-id-2', 'flight:flight-id-1'], $cancelLog);
+        WorkflowStub::assertDispatchedTimes(TestSagaCancelActivity::class, 2);
+    }
+
     public function testSagaCompensatesInReverseOrderOnFailure(): void
     {
         WorkflowStub::fake();
