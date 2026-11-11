@@ -73,6 +73,7 @@ final class OperatorMetrics
     {
         $oldestWaitStartedAt = self::oldestRunWaitStartedAt($namespace);
         $oldestRepairNeededAt = self::oldestRepairNeededRunAt($namespace);
+        $oldestReplayBlockedAt = self::oldestRunInLivenessStateAt('workflow_replay_blocked', $namespace);
 
         return [
             'total' => self::summaryQuery($namespace)->count(),
@@ -88,6 +89,17 @@ final class OperatorMetrics
             'max_repair_needed_age_ms' => $oldestRepairNeededAt === null
                 ? 0
                 : (int) $oldestRepairNeededAt->diffInMilliseconds($now),
+            // Open runs whose workflow task cannot replay (#861). They stay open
+            // with a failed task, so they are counted separately from runs
+            // missing a resume path.
+            'replay_blocked' => self::summaryQuery($namespace)->where(
+                'liveness_state',
+                'workflow_replay_blocked'
+            )->count(),
+            'oldest_replay_blocked_at' => $oldestReplayBlockedAt?->toJSON(),
+            'max_replay_blocked_age_ms' => $oldestReplayBlockedAt === null
+                ? 0
+                : (int) $oldestReplayBlockedAt->diffInMilliseconds($now),
             'claim_failed' => self::claimFailedRuns($namespace),
             'compatibility_blocked' => self::compatibilityBlockedRuns($namespace),
             'waiting' => self::waitingRuns($namespace),
@@ -977,9 +989,14 @@ final class OperatorMetrics
      */
     private static function oldestRepairNeededRunAt(?string $namespace): ?CarbonInterface
     {
+        return self::oldestRunInLivenessStateAt('repair_needed', $namespace);
+    }
+
+    private static function oldestRunInLivenessStateAt(string $livenessState, ?string $namespace): ?CarbonInterface
+    {
         /** @var WorkflowRunSummary|null $summary */
         $summary = self::summaryQuery($namespace)
-            ->where('liveness_state', 'repair_needed')
+            ->where('liveness_state', $livenessState)
             ->orderByRaw('COALESCE(updated_at, started_at) asc')
             ->first();
 
