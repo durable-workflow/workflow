@@ -571,7 +571,8 @@ final class V2MessageStreamReplayTest extends TestCase
         $this->assertSame('j1', $update->result());
 
         $beforeQuery = $this->queryReplayRows($run);
-        $taken = $workflow->refresh()->query('taken');
+        $taken = $workflow->refresh()
+            ->query('taken');
         $this->assertSame($beforeQuery, $this->queryReplayRows($run));
         $this->assertSame(['j1'], $taken);
 
@@ -581,7 +582,8 @@ final class V2MessageStreamReplayTest extends TestCase
         $this->sendToInbox($run, 'still-pending');
         $beforeQuery = $this->queryReplayRows($run);
         for ($query = 0; $query < 2; ++$query) {
-            $taken = $workflow->refresh()->query('taken');
+            $taken = $workflow->refresh()
+                ->query('taken');
             $this->assertSame($beforeQuery, $this->queryReplayRows($run));
             $this->assertSame(['j1', 'j2'], $taken);
         }
@@ -618,7 +620,8 @@ final class V2MessageStreamReplayTest extends TestCase
                 ->where('direction', MessageDirection::Inbound->value)->sole()->consume_state,
         );
         $before = $this->queryReplayRows($run);
-        $taken = $workflow->refresh()->query('taken');
+        $taken = $workflow->refresh()
+            ->query('taken');
         $this->assertSame($before, $this->queryReplayRows($run));
         $this->assertSame([null], $taken);
     }
@@ -747,7 +750,8 @@ final class V2MessageStreamReplayTest extends TestCase
                 ->get()
                 ->map(static fn (WorkflowHistoryEvent $event): array => $event->getRawOriginal())
                 ->all(),
-            'cursor' => $run->fresh()->getRawOriginal('message_cursor_position'),
+            'cursor' => $run->fresh()
+                ->getRawOriginal('message_cursor_position'),
         ];
     }
 

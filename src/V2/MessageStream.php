@@ -146,64 +146,6 @@ final class MessageStream
         return $messages;
     }
 
-    /**
-     * @return Collection<int, WorkflowMessage>
-     */
-    private function receiveAtStep(int $limit, ?int $consumedBySequence): Collection
-    {
-        if ($this->replayLedger instanceof MessageReplayLedger) {
-            // Without an explicit step, a receive records and finds its
-            // consumption at the step the code is at now, not the step a kept
-            // stream was opened at. Rows written by earlier releases sit at the
-            // opened step, so that step is the fallback.
-            $currentStep = $consumedBySequence === null && $this->currentStep instanceof Closure
-                ? (int) ($this->currentStep)()
-                : null;
-            $sequence = $currentStep ?? $this->consumedBySequence($consumedBySequence);
-            $recorded = $this->recordedReceive($sequence, $limit);
-
-            if (
-                $recorded->isEmpty()
-                && $currentStep !== null
-                && $this->defaultConsumedBySequence !== null
-                && $this->defaultConsumedBySequence !== $currentStep
-            ) {
-                $recorded = $this->recordedReceive($this->defaultConsumedBySequence, $limit);
-            }
-
-            // A receive this step already made returns what it consumed. A
-            // receive at a step history has already passed, with nothing
-            // recorded, found nothing the first time, so it consumes nothing
-            // now either.
-            if ($recorded->isNotEmpty() || $this->readOnly() || $this->historyPassedCurrentStep()) {
-                return $recorded;
-            }
-
-            $messages = $this->peek($limit);
-
-            if ($messages->isNotEmpty()) {
-                $this->messages->consumeMessageBatch($this->run, $messages->all(), $sequence);
-                $this->replayLedger->advanceReceive($this->streamKey, $sequence, $messages->count());
-            }
-
-            return $messages;
-        }
-
-        $messages = $this->peek($limit);
-
-        if ($messages->isEmpty()) {
-            return $messages;
-        }
-
-        $this->messages->consumeMessageBatch(
-            $this->run,
-            $messages->all(),
-            $this->consumedBySequence($consumedBySequence),
-        );
-
-        return $messages;
-    }
-
     public function receiveOne(?int $consumedBySequence = null): ?WorkflowMessage
     {
         /** @var WorkflowMessage|null $message */
@@ -299,6 +241,64 @@ final class MessageStream
         }
 
         return $message;
+    }
+
+    /**
+     * @return Collection<int, WorkflowMessage>
+     */
+    private function receiveAtStep(int $limit, ?int $consumedBySequence): Collection
+    {
+        if ($this->replayLedger instanceof MessageReplayLedger) {
+            // Without an explicit step, a receive records and finds its
+            // consumption at the step the code is at now, not the step a kept
+            // stream was opened at. Rows written by earlier releases sit at the
+            // opened step, so that step is the fallback.
+            $currentStep = $consumedBySequence === null && $this->currentStep instanceof Closure
+                ? (int) ($this->currentStep)()
+                : null;
+            $sequence = $currentStep ?? $this->consumedBySequence($consumedBySequence);
+            $recorded = $this->recordedReceive($sequence, $limit);
+
+            if (
+                $recorded->isEmpty()
+                && $currentStep !== null
+                && $this->defaultConsumedBySequence !== null
+                && $this->defaultConsumedBySequence !== $currentStep
+            ) {
+                $recorded = $this->recordedReceive($this->defaultConsumedBySequence, $limit);
+            }
+
+            // A receive this step already made returns what it consumed. A
+            // receive at a step history has already passed, with nothing
+            // recorded, found nothing the first time, so it consumes nothing
+            // now either.
+            if ($recorded->isNotEmpty() || $this->readOnly() || $this->historyPassedCurrentStep()) {
+                return $recorded;
+            }
+
+            $messages = $this->peek($limit);
+
+            if ($messages->isNotEmpty()) {
+                $this->messages->consumeMessageBatch($this->run, $messages->all(), $sequence);
+                $this->replayLedger->advanceReceive($this->streamKey, $sequence, $messages->count());
+            }
+
+            return $messages;
+        }
+
+        $messages = $this->peek($limit);
+
+        if ($messages->isEmpty()) {
+            return $messages;
+        }
+
+        $this->messages->consumeMessageBatch(
+            $this->run,
+            $messages->all(),
+            $this->consumedBySequence($consumedBySequence),
+        );
+
+        return $messages;
     }
 
     /**
