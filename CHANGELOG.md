@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.24.0 - 2026-11-11
+
 - Activity heartbeats no longer grow run history with every heartbeat
   (#870). Each heartbeat still renews the lease, moves the heartbeat
   deadline and stores the latest progress on the attempt. An
@@ -16,6 +18,19 @@
 - A migration adds nullable `last_heartbeat_progress`,
   `last_heartbeat_progress_at` and `last_heartbeat_recorded_at` columns to
   `activity_attempts`. It is additive, with no backfill.
+- Re-applying an unchanged schedule records nothing and keeps the next fire
+  time and its jitter. `changed_fields` lists only fields whose stored value
+  changed. Only a spec or jitter change moves the next fire, so
+  metadata-only updates cannot skip a due occurrence (#876, #1089).
+- Creating a schedule with a taken id, including a deleted or
+  `max_runs_exhausted` schedule, raises
+  `Workflow\V2\Exceptions\ScheduleAlreadyExistsException` instead of a raw
+  database error, matching the Server's `409 schedule_already_exists`
+  (#876, #1090).
+- Operator metrics report open runs whose workflow task cannot replay
+  (`runs.replay_blocked`, `oldest_replay_blocked_at`,
+  `max_replay_blocked_age_ms`), and a new advisory `replay_blocked_runs`
+  health check warns while any exist (#861, #1091).
 
 ## 2.23.2 - 2026-11-11
 
