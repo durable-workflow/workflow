@@ -78,6 +78,70 @@ final class V2ActivityAttemptBudgetTest extends TestCase
         $this->assertSame(1, $execution->retry_policy['max_attempts']);
     }
 
+    public function testAHistoryThatRecordedAZeroBudgetBeforeTheCheckStillReplays(): void
+    {
+        $workflow = WorkflowStub::make(TestActivityAttemptBudgetWorkflow::class);
+        $workflow->start(1, false);
+        $this->runReadyTask(TaskType::Workflow);
+
+        // Rewrite this run into what an older release recorded for code that
+        // passes maxAttempts 0: the run's input, the activity's options and
+        // retry snapshot, and the ActivityScheduled history.
+        $run = \Workflow\V2\Models\WorkflowRun::query()->findOrFail($workflow->runId());
+        $run->forceFill([
+            'arguments' => \Workflow\Serializers\Serializer::serializeWithCodec(
+                (string) $run->payload_codec,
+                [0, false]
+            ),
+        ])->save();
+        $execution = ActivityExecution::query()->where('workflow_run_id', $run->id)->sole();
+        $execution->forceFill([
+            'retry_policy' => array_merge($execution->retry_policy, [
+                'max_attempts' => 0,
+            ]),
+            'activity_options' => array_merge($execution->activity_options ?? [], [
+                'max_attempts' => 0,
+            ]),
+        ])->save();
+        foreach (\Workflow\V2\Models\WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', \Workflow\V2\Enums\HistoryEventType::ActivityScheduled->value)
+            ->get() as $event) {
+            $payload = $event->payload;
+            foreach (['activity_options', 'retry_policy'] as $key) {
+                if (is_array($payload[$key] ?? null)) {
+                    $payload[$key]['max_attempts'] = 0;
+                }
+                if (is_array($payload['activity'][$key] ?? null)) {
+                    $payload['activity'][$key]['max_attempts'] = 0;
+                }
+            }
+            $event->forceFill([
+                'payload' => $payload,
+            ])->save();
+        }
+
+        $this->drainReadyTasks();
+
+        $this->assertTrue($workflow->refresh()->completed(), $workflow->status());
+        $this->assertSame('Hello, budget!', $workflow->output());
+        $this->assertSame(
+            1,
+            \Workflow\V2\Support\ActivityRetryPolicy::maxAttemptsFromSnapshot($execution->fresh()),
+        );
+    }
+
+    private function runReadyTask(TaskType $type): void
+    {
+        $task = WorkflowTask::query()
+            ->where('status', TaskStatus::Ready->value)
+            ->where('task_type', $type->value)
+            ->orderBy('created_at')
+            ->firstOrFail();
+        $job = $type === TaskType::Workflow ? new RunWorkflowTask($task->id) : new RunActivityTask($task->id);
+        $this->app->call([$job, 'handle']);
+    }
+
     private function drainReadyTasks(): void
     {
         for ($i = 0; $i < 50; ++$i) {
