@@ -2012,6 +2012,11 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 is_string($run->namespace) ? $run->namespace : null,
             )
             : null;
+        // Payload limits hold for external workers as they do in embedded
+        // mode (#865). A refusal rolls back the whole completion.
+        if ($result !== null) {
+            StructuralLimits::guardPayloadSize($result);
+        }
         $resultCodec = $result === null ? null : $outputCodec;
 
         $run->forceFill([
@@ -3635,6 +3640,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 is_string($run->namespace) ? $run->namespace : null,
             )
             : null;
+        if ($arguments !== null) {
+            StructuralLimits::guardPayloadSize($arguments);
+        }
         $connection = $command['connection'] ?? $run->connection;
         $queue = $command['queue'] ?? $run->queue;
         $options = self::activityOptionsFromCommand($command);
@@ -4537,6 +4545,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 is_string($run->namespace) ? $run->namespace : null,
             )
             : null;
+        if ($arguments !== null) {
+            StructuralLimits::guardPayloadSize($arguments);
+        }
         $connection = $command['connection'] ?? $run->connection;
         $queue = $command['queue'] ?? $run->queue;
         $now = now();
@@ -5335,6 +5346,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         $arguments = is_string($arguments)
             ? ExternalPayloads::externalizeForNamespace($arguments, $argumentsPayloadCodec, $namespace)
             : null;
+        if ($arguments !== null) {
+            StructuralLimits::guardPayloadSize($arguments);
+        }
         $workflowType = is_string($command['workflow_type'] ?? null) ? $command['workflow_type'] : $run->workflow_type;
         $queue = is_string($command['queue'] ?? null) ? $command['queue'] : $run->queue;
         $runTimeoutSeconds = is_int($run->run_timeout_seconds) ? $run->run_timeout_seconds : null;
