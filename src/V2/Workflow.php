@@ -14,6 +14,7 @@ use Workflow\V2\Support\HistoryBudget;
 use Workflow\V2\Support\MessageReplayLedger;
 use Workflow\V2\Support\MessageService;
 use Workflow\V2\Support\ServiceOperationOptions;
+use Workflow\V2\Support\UpdateMessageReceives;
 use Workflow\V2\Support\WorkerSession;
 use Workflow\V2\Support\WorkerSessionOptions;
 
@@ -64,6 +65,8 @@ abstract class Workflow
     private ?MessageReplayLedger $messageReplayLedger = null;
 
     private bool $runningLiveUpdate = false;
+
+    private ?UpdateMessageReceives $updateMessageReceives = null;
 
     /**
      * @var list<callable>
@@ -197,6 +200,7 @@ abstract class Workflow
             readOnly: fn (): bool => ! $this->commandDispatchEnabled,
             currentStep: fn (): int => $this->visibleSequence,
             runningLiveUpdate: fn (): bool => $this->runningLiveUpdate,
+            updateMessageReceives: fn (): ?UpdateMessageReceives => $this->updateMessageReceives,
         );
     }
 
@@ -301,6 +305,24 @@ abstract class Workflow
             return $handler();
         } finally {
             $this->runningLiveUpdate = $previous;
+        }
+    }
+
+    /**
+     * Run an update handler while its stream receives are recorded or, for a
+     * replay, answered from what the live handler recorded.
+     *
+     * @internal
+     */
+    public function withUpdateMessageReceives(UpdateMessageReceives $receives, callable $handler): mixed
+    {
+        $previous = $this->updateMessageReceives;
+        $this->updateMessageReceives = $receives;
+
+        try {
+            return $handler();
+        } finally {
+            $this->updateMessageReceives = $previous;
         }
     }
 

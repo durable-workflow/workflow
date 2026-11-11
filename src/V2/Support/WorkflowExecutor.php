@@ -6525,7 +6525,16 @@ final class WorkflowExecutor
                     new ReflectionMethod($workflow, $method),
                 );
 
-                $workflow->{$method}(...$parameters);
+                $receives = UpdateMessageReceives::fromPayload(is_array($event->payload) ? $event->payload : []);
+
+                if ($receives instanceof UpdateMessageReceives) {
+                    $workflow->withUpdateMessageReceives(
+                        $receives,
+                        static fn (): mixed => $workflow->{$method}(...$parameters),
+                    );
+                } else {
+                    $workflow->{$method}(...$parameters);
+                }
             }
         } finally {
             $workflow->setCommandDispatchEnabled(true);
@@ -6606,11 +6615,15 @@ final class WorkflowExecutor
                 if ($command instanceof WorkflowCommand && ExecutionTracing::enabled()) {
                     ExecutionTracing::linkUpdate($run, $command);
                 }
+                $receives = UpdateMessageReceives::recording();
                 $result = $workflow->runLiveUpdateHandler(
-                    static fn (): mixed => $workflow->{$resolvedTarget['method']}(...$parameters),
+                    static fn (): mixed => $workflow->withUpdateMessageReceives(
+                        $receives,
+                        static fn (): mixed => $workflow->{$resolvedTarget['method']}(...$parameters),
+                    ),
                 );
 
-                $appliedEvent = WorkflowHistoryEvent::record($run, HistoryEventType::UpdateApplied, [
+                $appliedPayload = [
                     'workflow_command_id' => $command?->id,
                     'update_id' => $update->id,
                     'workflow_instance_id' => $run->workflow_instance_id,
@@ -6618,7 +6631,19 @@ final class WorkflowExecutor
                     'update_name' => $target,
                     'arguments' => $update->arguments,
                     'sequence' => $sequence,
-                ], $task, $command);
+                ];
+
+                if ($receives->all() !== []) {
+                    $appliedPayload[UpdateMessageReceives::PAYLOAD_KEY] = $receives->all();
+                }
+
+                $appliedEvent = WorkflowHistoryEvent::record(
+                    $run,
+                    HistoryEventType::UpdateApplied,
+                    $appliedPayload,
+                    $task,
+                    $command,
+                );
                 $run->historyEvents->push($appliedEvent);
 
                 $updateCodec = self::payloadCodecForUpdate($update, $run);
