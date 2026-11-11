@@ -16,6 +16,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\MessageReplayLedger;
 use Workflow\V2\Support\MessageService;
 use Workflow\V2\Support\MessageStreamCursor;
+use Workflow\V2\Support\UpdateMessageReceives;
 
 /**
  * First-class v2 durable message stream facade.
@@ -33,6 +34,7 @@ final class MessageStream
         private readonly bool|Closure $readOnly = false,
         private readonly ?Closure $currentStep = null,
         private readonly ?Closure $runningLiveUpdate = null,
+        private readonly ?Closure $updateMessageReceives = null,
     ) {
         if ($streamKey === '') {
             throw new InvalidArgumentException('Message stream key must not be empty.');
@@ -70,6 +72,7 @@ final class MessageStream
         Closure $readOnly,
         ?Closure $currentStep = null,
         ?Closure $runningLiveUpdate = null,
+        ?Closure $updateMessageReceives = null,
     ): self {
         return new self(
             $run,
@@ -80,6 +83,7 @@ final class MessageStream
             $readOnly,
             $currentStep,
             $runningLiveUpdate,
+            $updateMessageReceives,
         );
     }
 
@@ -121,7 +125,32 @@ final class MessageStream
     public function receive(int $limit = 1, ?int $consumedBySequence = null): Collection
     {
         $limit = $this->positiveLimit($limit);
+        $updateReceives = $this->updateMessageReceives instanceof Closure
+            ? ($this->updateMessageReceives)()
+            : null;
 
+        if (! $updateReceives instanceof UpdateMessageReceives) {
+            return $this->receiveAtStep($limit, $consumedBySequence);
+        }
+
+        if ($updateReceives->replaying()) {
+            return $this->replayUpdateReceive($updateReceives->next());
+        }
+
+        $messages = $this->receiveAtStep($limit, $consumedBySequence);
+        $updateReceives->record(array_values(array_map(
+            static fn (WorkflowMessage $message): int => (int) $message->id,
+            $messages->all(),
+        )));
+
+        return $messages;
+    }
+
+    /**
+     * @return Collection<int, WorkflowMessage>
+     */
+    private function receiveAtStep(int $limit, ?int $consumedBySequence): Collection
+    {
         if ($this->replayLedger instanceof MessageReplayLedger) {
             // Without an explicit step, a receive records and finds its
             // consumption at the step the code is at now, not the step a kept
@@ -332,6 +361,49 @@ final class MessageStream
         $message = $matches->get($this->replayLedger?->sendOffset($identity) ?? 0);
 
         return $message;
+    }
+
+    /**
+     * The messages a live update handler's receive returned, in the order it
+     * returned them. Each one also counts against its consumed step, so a
+     * later receive at that step does not return it again.
+     *
+     * @param list<int> $ids
+     *
+     * @return Collection<int, WorkflowMessage>
+     */
+    private function replayUpdateReceive(array $ids): Collection
+    {
+        if ($ids === []) {
+            return new Collection();
+        }
+
+        /** @var Collection<int, WorkflowMessage> $found */
+        $found = WorkflowMessage::query()
+            ->whereIn('id', $ids)
+            ->whereIn('workflow_run_id', $this->runIds())
+            ->where('direction', MessageDirection::Inbound->value)
+            ->get()
+            ->filter(fn (WorkflowMessage $message): bool => $message->getRawOriginal('stream_key') === $this->streamKey)
+            ->keyBy(static fn (WorkflowMessage $message): int => (int) $message->id);
+
+        $messages = new Collection();
+
+        foreach ($ids as $id) {
+            $message = $found->get($id);
+
+            if (! $message instanceof WorkflowMessage) {
+                continue;
+            }
+
+            $messages->push($message);
+
+            if ($this->replayLedger instanceof MessageReplayLedger && is_int($message->consumed_by_sequence)) {
+                $this->replayLedger->advanceReceive($this->streamKey, $message->consumed_by_sequence, 1);
+            }
+        }
+
+        return $messages;
     }
 
     /**
