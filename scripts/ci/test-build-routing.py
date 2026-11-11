@@ -396,7 +396,6 @@ class BuildWorkflowTrustTest(unittest.TestCase):
         for job in (
             "feature-mysql",
             "feature-mariadb",
-            "feature-postgresql",
             "coverage-unit",
             "coverage",
         ):
@@ -443,6 +442,14 @@ class BuildWorkflowTrustTest(unittest.TestCase):
         gate = self.job_source("build")
         self.assertIn('test "${{ needs.pr-unit.result }}" = "success"', gate)
         self.assertIn('test "${{ needs.pr-unit.result }}" = "skipped"', gate)
+
+    def test_pull_requests_run_the_postgresql_feature_suite(self) -> None:
+        source = self.job_source("feature-postgresql")
+        self.assertNotIn("github.event_name != 'pull_request'", source)
+        self.assertIn("feature-postgresql", workflow_job_needs(self.build, "build"))
+        gate = self.job_source("build")
+        self.assertIn('test "${{ needs.feature-postgresql.result }}" = "success"', gate)
+        self.assertNotIn('test "${{ needs.feature-postgresql.result }}" = "skipped"', gate)
 
     def test_combined_coverage_waits_for_both_producers_and_requires_every_report(self) -> None:
         self.assertEqual(
