@@ -8,6 +8,7 @@ use Cron\CronExpression;
 use DateTimeInterface;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Database\UniqueConstraintViolationException;
 use LogicException;
 use PDOException;
 use Throwable;
@@ -17,6 +18,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\ScheduleOverlapPolicy;
 use Workflow\V2\Enums\ScheduleStatus;
+use Workflow\V2\Exceptions\ScheduleAlreadyExistsException;
 use Workflow\V2\Exceptions\WorkflowExecutionUnavailableException;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
@@ -132,26 +134,41 @@ final class ScheduleManager
 
         self::assertValidSpec($spec);
 
-        /** @var WorkflowSchedule $schedule */
-        $schedule = WorkflowSchedule::query()->create([
-            'schedule_id' => $scheduleId,
-            'namespace' => $namespace,
-            'spec' => $spec,
-            'action' => $action,
-            'status' => ScheduleStatus::Active->value,
-            'overlap_policy' => $overlapPolicy->value,
-            'memo' => $memo !== [] ? $memo : null,
-            'search_attributes' => $searchAttributes !== [] ? $searchAttributes : null,
-            'visibility_labels' => $labels !== [] ? $labels : null,
-            'jitter_seconds' => $jitterSeconds,
-            'max_runs' => $maxRuns,
-            'remaining_actions' => $maxRuns,
-            'fires_count' => 0,
-            'failures_count' => 0,
-            'connection' => $connection,
-            'queue' => $queue,
-            'note' => $note,
-        ]);
+        // A deleted or exhausted schedule keeps its id, as on the Server (#876).
+        /** @var WorkflowSchedule|null $existing */
+        $existing = WorkflowSchedule::query()
+            ->where('namespace', $namespace)
+            ->where('schedule_id', $scheduleId)
+            ->first();
+
+        if ($existing instanceof WorkflowSchedule) {
+            throw new ScheduleAlreadyExistsException($scheduleId, $namespace, $existing->status?->value);
+        }
+
+        try {
+            /** @var WorkflowSchedule $schedule */
+            $schedule = WorkflowSchedule::query()->create([
+                'schedule_id' => $scheduleId,
+                'namespace' => $namespace,
+                'spec' => $spec,
+                'action' => $action,
+                'status' => ScheduleStatus::Active->value,
+                'overlap_policy' => $overlapPolicy->value,
+                'memo' => $memo !== [] ? $memo : null,
+                'search_attributes' => $searchAttributes !== [] ? $searchAttributes : null,
+                'visibility_labels' => $labels !== [] ? $labels : null,
+                'jitter_seconds' => $jitterSeconds,
+                'max_runs' => $maxRuns,
+                'remaining_actions' => $maxRuns,
+                'fires_count' => 0,
+                'failures_count' => 0,
+                'connection' => $connection,
+                'queue' => $queue,
+                'note' => $note,
+            ]);
+        } catch (UniqueConstraintViolationException $exception) {
+            throw new ScheduleAlreadyExistsException($scheduleId, $namespace, null, $exception);
+        }
 
         $schedule->next_fire_at = $schedule->computeNextFireAtWithJitter();
         $schedule->save();

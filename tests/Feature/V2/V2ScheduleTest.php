@@ -17,6 +17,7 @@ use Workflow\V2\Contracts\ScheduleWorkflowStarter;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\ScheduleOverlapPolicy;
 use Workflow\V2\Enums\ScheduleStatus;
+use Workflow\V2\Exceptions\ScheduleAlreadyExistsException;
 use Workflow\V2\Exceptions\WorkflowExecutionUnavailableException;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
@@ -85,13 +86,37 @@ final class V2ScheduleTest extends TestCase
             cronExpression: '*/5 * * * *',
         );
 
-        $this->expectException(\Illuminate\Database\QueryException::class);
+        $this->expectException(ScheduleAlreadyExistsException::class);
 
         ScheduleManager::create(
             scheduleId: 'unique-schedule',
             workflowClass: TestScheduledWorkflow::class,
             cronExpression: '*/10 * * * *',
         );
+    }
+
+    public function testADeletedScheduleIdIsRefusedWithATypedConflict(): void
+    {
+        $schedule = ScheduleManager::create(
+            scheduleId: 'deleted-schedule',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '*/5 * * * *',
+        );
+        ScheduleManager::delete($schedule);
+
+        try {
+            ScheduleManager::create(
+                scheduleId: 'deleted-schedule',
+                workflowClass: TestScheduledWorkflow::class,
+                cronExpression: '*/5 * * * *',
+            );
+            $this->fail('A deleted schedule id was reused.');
+        } catch (ScheduleAlreadyExistsException $exception) {
+            $this->assertSame('deleted-schedule', $exception->scheduleId);
+            $this->assertSame(ScheduleStatus::Deleted->value, $exception->existingStatus);
+        }
+
+        $this->assertSame(1, WorkflowSchedule::query()->where('schedule_id', 'deleted-schedule')->count());
     }
 
     public function testPauseAndResumeSchedule(): void

@@ -1013,6 +1013,30 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertEquals($nextFire, $schedule->fresh()->next_fire_at);
     }
 
+    public function testScheduleDeletedIdConflictCorpusRefusesReuseWithATypedConflict(): void
+    {
+        $path = self::FIXTURE_DIR . '/schedule-deleted-id-conflict.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The schedule id conflict evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['schedule_deleted_id_conflict'];
+        $this->clearWorkflowState();
+        $create = static fn () => ScheduleManager::create(
+            scheduleId: $scenario['schedule_id'],
+            workflowClass: $fixture['workflow']['type'],
+            cronExpression: $scenario['cron'],
+        );
+        ScheduleManager::delete($create());
+
+        try {
+            $create();
+            $this->fail('A deleted schedule id was reused.');
+        } catch (\Workflow\V2\Exceptions\ScheduleAlreadyExistsException $exception) {
+            $this->assertSame($scenario['existing_status'], $exception->existingStatus);
+        }
+    }
+
     public function testActivityHeartbeatHistoryCorpusBoundsRecordedHeartbeats(): void
     {
         $path = self::FIXTURE_DIR . '/activity-heartbeat-history-bound.json';
