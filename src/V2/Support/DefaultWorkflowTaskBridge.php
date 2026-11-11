@@ -1483,6 +1483,16 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                     $terminal = null;
                 }
 
+                // An update accepted while this task was leased gets the same
+                // turn before a successful close, instead of being failed by
+                // the close. Continue-as-new already hands updates to the
+                // continued run.
+                if (($terminal['type'] ?? null) === 'complete_workflow'
+                    && ! is_string($run->cancellation_request_command_id)
+                    && PendingMessageTask::hasUpdateAcceptedDuringTask($run, $task)) {
+                    $terminal = null;
+                }
+
                 if ($terminal !== null) {
                     if ($terminal['type'] === 'continue_as_new') {
                         $this->applyContinueAsNew($run, $task, $sequence, $terminal, $createdTaskIds);

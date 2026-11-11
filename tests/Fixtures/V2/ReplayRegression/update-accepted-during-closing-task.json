@@ -1,0 +1,34 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "update-accepted-during-closing-task",
+  "protocol_version": "1.0",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestUpdateBeforeCloseWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "update_accepted_during_closing_task": {
+    "issue": "durable-workflow/workflow#890",
+    "update": "note",
+    "argument": "late",
+    "result": "late",
+    "output": ["late"]
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-11T00:00:00+00:00",
+      "payload": {}
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {"type": "schedule_activity", "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity"}
+    ]
+  }
+}
