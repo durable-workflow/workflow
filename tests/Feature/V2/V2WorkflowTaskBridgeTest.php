@@ -5297,6 +5297,42 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertTrue($this->bridge->complete($task->id, [$command])['completed']);
     }
 
+    public function testUpsertSearchAttributesRefusesOversizedMergedAttributesBeforeAnyWrite(): void
+    {
+        $run = $this->createWaitingRun();
+        $task = $this->createLeasedTask($run);
+        $command = [
+            'type' => 'upsert_search_attributes',
+            'attributes' => [
+                'note' => str_repeat('x', 200),
+            ],
+            'attribute_types' => [
+                'note' => WorkflowSearchAttribute::TYPE_STRING,
+            ],
+        ];
+        $merged = json_encode([
+            'note' => str_repeat('x', 200),
+        ], JSON_THROW_ON_ERROR);
+        config([
+            'workflows.v2.structural_limits.search_attribute_size_bytes' => strlen($merged) - 1,
+        ]);
+        $before = self::pendingCountDurableState($run);
+
+        try {
+            $this->bridge->complete($task->id, [$command]);
+            $this->fail('Oversized search attributes were accepted.');
+        } catch (StructuralLimitExceededException $exception) {
+            $this->assertSame('search_attribute_size', $exception->limitKind->value);
+        }
+        $this->assertSame($before, self::pendingCountDurableState($run));
+        $this->assertSame([], $run->fresh()->typedSearchAttributes());
+
+        config([
+            'workflows.v2.structural_limits.search_attribute_size_bytes' => strlen($merged),
+        ]);
+        $this->assertTrue($this->bridge->complete($task->id, [$command])['completed']);
+    }
+
     public static function payloadCommands(): iterable
     {
         yield 'activity arguments' => ['arguments', [
