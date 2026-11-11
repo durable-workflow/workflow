@@ -2015,18 +2015,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         $outputCodec = is_string($command['payload_codec'] ?? null) && $command['payload_codec'] !== ''
             ? $command['payload_codec']
             : ($run->payload_codec ?? CodecRegistry::defaultCodec());
-        $result = isset($command['result']) && is_string($command['result'])
-            ? ExternalPayloads::externalizeForNamespace(
-                $command['result'],
-                $outputCodec,
-                is_string($run->namespace) ? $run->namespace : null,
-            )
-            : null;
-        // Payload limits hold for external workers as they do in embedded
-        // mode (#865). A refusal rolls back the whole completion.
-        if ($result !== null) {
-            StructuralLimits::guardPayloadSize($result);
-        }
+        $result = self::storedWorkerPayload($command['result'] ?? null, $outputCodec, $run);
         $resultCodec = $result === null ? null : $outputCodec;
 
         $run->forceFill([
@@ -2366,6 +2355,27 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         }
 
         return false;
+    }
+
+    /**
+     * Store a payload from a worker command the way it is persisted, then
+     * apply the payload size limit embedded mode applies (#865). A refusal
+     * throws before anything else in the completion is written.
+     */
+    private static function storedWorkerPayload(mixed $payload, string $codec, WorkflowRun $run): ?string
+    {
+        if (! is_string($payload)) {
+            return null;
+        }
+
+        $stored = ExternalPayloads::externalizeForNamespace(
+            $payload,
+            $codec,
+            is_string($run->namespace) ? $run->namespace : null,
+        );
+        StructuralLimits::guardPayloadSize($stored);
+
+        return $stored;
     }
 
     private static function workflowSignalIdForTask(WorkflowTask $task): ?string
@@ -3643,16 +3653,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         $payloadCodec = is_string($command['payload_codec'] ?? null) && $command['payload_codec'] !== ''
             ? $command['payload_codec']
             : ($run->payload_codec ?? CodecRegistry::defaultCodec());
-        $arguments = isset($command['arguments']) && is_string($command['arguments'])
-            ? ExternalPayloads::externalizeForNamespace(
-                $command['arguments'],
-                $payloadCodec,
-                is_string($run->namespace) ? $run->namespace : null,
-            )
-            : null;
-        if ($arguments !== null) {
-            StructuralLimits::guardPayloadSize($arguments);
-        }
+        $arguments = self::storedWorkerPayload($command['arguments'] ?? null, $payloadCodec, $run);
         $connection = $command['connection'] ?? $run->connection;
         $queue = $command['queue'] ?? $run->queue;
         $options = self::activityOptionsFromCommand($command);
@@ -4548,16 +4549,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         $payloadCodec = is_string($command['payload_codec'] ?? null) && $command['payload_codec'] !== ''
             ? $command['payload_codec']
             : ($run->payload_codec ?? CodecRegistry::defaultCodec());
-        $arguments = isset($command['arguments']) && is_string($command['arguments'])
-            ? ExternalPayloads::externalizeForNamespace(
-                $command['arguments'],
-                $payloadCodec,
-                is_string($run->namespace) ? $run->namespace : null,
-            )
-            : null;
-        if ($arguments !== null) {
-            StructuralLimits::guardPayloadSize($arguments);
-        }
+        $arguments = self::storedWorkerPayload($command['arguments'] ?? null, $payloadCodec, $run);
         $connection = $command['connection'] ?? $run->connection;
         $queue = $command['queue'] ?? $run->queue;
         $now = now();
@@ -5353,12 +5345,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             : null;
         $argumentsPayloadCodec = $commandPayloadCodec ?? ($run->payload_codec ?? CodecRegistry::defaultCodec());
         $arguments = $hasReplacementArguments ? $command['arguments'] : $run->arguments;
-        $arguments = is_string($arguments)
-            ? ExternalPayloads::externalizeForNamespace($arguments, $argumentsPayloadCodec, $namespace)
-            : null;
-        if ($arguments !== null) {
-            StructuralLimits::guardPayloadSize($arguments);
-        }
+        $arguments = self::storedWorkerPayload($arguments, $argumentsPayloadCodec, $run);
         $workflowType = is_string($command['workflow_type'] ?? null) ? $command['workflow_type'] : $run->workflow_type;
         $queue = is_string($command['queue'] ?? null) ? $command['queue'] : $run->queue;
         $runTimeoutSeconds = is_int($run->run_timeout_seconds) ? $run->run_timeout_seconds : null;
