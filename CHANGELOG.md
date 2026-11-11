@@ -19,8 +19,8 @@
   `last_heartbeat_progress_at` and `last_heartbeat_recorded_at` columns to
   `activity_attempts`. It is additive, with no backfill.
 - Re-applying an unchanged schedule records nothing and keeps the next fire
-  time and its jitter; `changed_fields` lists only fields whose stored value
-  changed, and only a spec or jitter change moves the next fire, so
+  time and its jitter. `changed_fields` lists only fields whose stored value
+  changed. Only a spec or jitter change moves the next fire, so
   metadata-only updates cannot skip a due occurrence (#876, #1089).
 - Creating a schedule with a taken id, including a deleted or
   `max_runs_exhausted` schedule, raises
