@@ -17,6 +17,7 @@ use Workflow\V2\Support\ServiceOperationOptions;
 use Workflow\V2\Support\UpdateMessageReceives;
 use Workflow\V2\Support\WorkerSession;
 use Workflow\V2\Support\WorkerSessionOptions;
+use Workflow\V2\Support\WorkflowFiberContext;
 
 /**
  * Base class for v2 workflows.
@@ -241,37 +242,22 @@ abstract class Workflow
         return $this;
     }
 
+    /**
+     * Run registered compensations in reverse order. They run under a
+     * cancellation shield, as SDK sagas do, so a cooperative cancellation
+     * request that arrives during compensation does not skip the remaining
+     * compensations. The cleanup deadline, termination and run timeouts
+     * still apply.
+     */
     public function compensate(): void
     {
-        $reversed = array_reverse($this->compensations);
+        if (WorkflowFiberContext::active()) {
+            WorkflowFiberContext::cancellationShield(fn () => $this->runCompensations());
 
-        if ($this->parallelCompensation) {
-            // Pass each compensation closure directly to all(): it uses
-            // whileInactive() to capture the ActivityCall/ChildWorkflowCall the
-            // closure produces without executing it serially in-fiber. Calling
-            // $compensation() here would resolve the activity synchronously and
-            // hand all() plain string results, which it rejects (AllCall only
-            // accepts the call objects).
-            if ($this->continueWithError) {
-                try {
-                    all($reversed);
-                } catch (Throwable) {
-                    // continueWithError applies uniformly: swallow parallel compensation failures
-                }
-            } else {
-                all($reversed);
-            }
-        } else {
-            foreach ($reversed as $compensation) {
-                try {
-                    $compensation();
-                } catch (Throwable $e) {
-                    if (! $this->continueWithError) {
-                        throw $e;
-                    }
-                }
-            }
+            return;
         }
+
+        $this->runCompensations();
     }
 
     public function syncExecutionCursor(int $visibleSequence): void
@@ -677,5 +663,38 @@ abstract class Workflow
     public static function years(int $years): mixed
     {
         return years($years);
+    }
+
+    private function runCompensations(): void
+    {
+        $reversed = array_reverse($this->compensations);
+
+        if ($this->parallelCompensation) {
+            // Pass each compensation closure directly to all(): it uses
+            // whileInactive() to capture the ActivityCall/ChildWorkflowCall the
+            // closure produces without executing it serially in-fiber. Calling
+            // $compensation() here would resolve the activity synchronously and
+            // hand all() plain string results, which it rejects (AllCall only
+            // accepts the call objects).
+            if ($this->continueWithError) {
+                try {
+                    all($reversed);
+                } catch (Throwable) {
+                    // continueWithError applies uniformly: swallow parallel compensation failures
+                }
+            } else {
+                all($reversed);
+            }
+        } else {
+            foreach ($reversed as $compensation) {
+                try {
+                    $compensation();
+                } catch (Throwable $e) {
+                    if (! $this->continueWithError) {
+                        throw $e;
+                    }
+                }
+            }
+        }
     }
 }

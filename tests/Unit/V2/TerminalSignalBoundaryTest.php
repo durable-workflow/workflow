@@ -87,6 +87,62 @@ final class TerminalSignalBoundaryTest extends TestCase
             ->where('event_type', HistoryEventType::SignalApplied->value)->count());
     }
 
+    public function testServiceCompletionDeliversAnUpdateAcceptedWhileItsTaskWasLeased(): void
+    {
+        [$stub, $run, $task] = $this->externalRun('default');
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $this->assertTrue($bridge->claimStatus($task->id, 'original-worker')['claimed']);
+        $instance = WorkflowInstance::query()->findOrFail($run->workflow_instance_id);
+        $command = WorkflowCommand::record($instance, $run, [
+            'command_type' => 'update',
+            'target_scope' => 'run',
+            'status' => 'accepted',
+            'payload_codec' => 'avro',
+            'payload' => Serializer::serializeWithCodec('avro', [
+                'name' => 'note',
+                'arguments' => [],
+            ]),
+            'source' => 'worker-protocol',
+            'accepted_at' => now(),
+        ]);
+        /** @var WorkflowUpdate $update */
+        $update = WorkflowUpdate::query()->create([
+            'workflow_command_id' => $command->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'update_name' => 'note',
+            'status' => 'accepted',
+            'arguments' => Serializer::serializeWithCodec('avro', []),
+            'payload_codec' => 'avro',
+            'command_sequence' => $command->command_sequence,
+            'accepted_at' => now(),
+        ]);
+
+        $completion = $bridge->complete($task->id, [[
+            'type' => 'complete_workflow',
+        ]]);
+        $this->assertTrue($completion['completed']);
+        $this->assertFalse($run->fresh()->status->isTerminal());
+        $this->assertSame('accepted', $update->fresh()->status->value);
+        $this->assertCount(1, $completion['created_task_ids']);
+        $delivery = WorkflowTask::query()->findOrFail($completion['created_task_ids'][0]);
+        $this->assertSame($update->id, $delivery->payload['workflow_update_id']);
+
+        // The delivery task carries the update, so its own close does not
+        // wait for that update again.
+        $this->assertTrue($bridge->claimStatus($delivery->id, 'cold-worker')['claimed']);
+        $this->assertTrue($bridge->complete($delivery->id, [[
+            'type' => 'complete_update',
+            'update_id' => $update->id,
+            'result' => Serializer::serializeWithCodec('avro', 'noted'),
+            'payload_codec' => 'avro',
+        ], [
+            'type' => 'complete_workflow',
+        ]])['completed']);
+        $this->assertSame('completed', $update->fresh()->status->value);
+        $this->assertSame('completed', $run->fresh()->closed_reason);
+    }
+
     public static function embeddedModes(): iterable
     {
         yield 'complete instance' => ['complete', false];
@@ -481,8 +537,11 @@ final class TerminalSignalBoundaryTest extends TestCase
                 'name' => 'message',
                 'parameters' => [],
             ]],
-            'declared_updates' => [],
-            'declared_update_contracts' => [],
+            'declared_updates' => ['note'],
+            'declared_update_contracts' => [[
+                'name' => 'note',
+                'parameters' => [],
+            ]],
             'declared_entry_method' => 'handle',
             'declared_entry_mode' => 'canonical',
             'declared_entry_declaring_class' => $class,
