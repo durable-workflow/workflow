@@ -4131,6 +4131,16 @@ final class WorkflowExecutor
             return;
         }
 
+        // An update accepted while this task ran gets a delivery turn before
+        // the run closes, instead of being failed by the close (#890). The
+        // next task replays the run and applies it. Updates accepted before
+        // that task's lease, including its own, do not defer it again.
+        if (PendingMessageTask::hasUpdateAcceptedDuringTask($run, $task)) {
+            $this->markRunWaiting($run, $task);
+
+            return;
+        }
+
         $outputCodec = is_string($run->payload_codec) && $run->payload_codec !== ''
             ? $run->payload_codec
             : CodecRegistry::defaultCodec();

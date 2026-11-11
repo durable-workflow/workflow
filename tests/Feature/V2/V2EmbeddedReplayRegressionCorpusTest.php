@@ -761,6 +761,68 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertSame($scenario['output'], $stub->output());
     }
 
+    public function testUpdateAcceptedDuringClosingTaskCorpusRunsBeforeTheRunCompletes(): void
+    {
+        $path = self::FIXTURE_DIR . '/update-accepted-during-closing-task.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The update-before-close evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['update_accepted_during_closing_task'];
+        self::stopWorkers();
+        $this->clearWorkflowState();
+        Queue::fake();
+        config([
+            'workflows.v2.task_dispatch_mode' => 'poll',
+        ]);
+        $drain = function (): void {
+            for ($i = 0; $i < 50; ++$i) {
+                $task = \Workflow\V2\Models\WorkflowTask::query()
+                    ->where('status', \Workflow\V2\Enums\TaskStatus::Ready->value)
+                    ->orderBy('created_at')
+                    ->first();
+                if ($task === null) {
+                    return;
+                }
+                $job = match ($task->task_type) {
+                    \Workflow\V2\Enums\TaskType::Workflow => new RunWorkflowTask($task->id),
+                    \Workflow\V2\Enums\TaskType::Activity => new \Workflow\V2\Jobs\RunActivityTask($task->id),
+                    \Workflow\V2\Enums\TaskType::Timer => new \Workflow\V2\Jobs\RunTimerTask($task->id),
+                };
+                $this->app->call([$job, 'handle']);
+            }
+        };
+
+        $workflowClass = $fixture['workflow']['type'];
+        $stub = WorkflowStub::make($workflowClass, 'regression-corpus-update-before-close');
+        $stub->start(...$fixture['workflow']['arguments']);
+
+        // The workflow's hook runs inside the task that completes the run, so
+        // the update is accepted while that task is leased. It runs in
+        // workflow code, where now() is the workflow clock; a real caller
+        // accepts the update at wall time.
+        $updateId = null;
+        $workflowClass::$beforeReturn = static function (string $instanceId) use (&$updateId, $scenario): void {
+            $updateId = WorkflowStub::load($instanceId)
+                ->submitUpdate($scenario['update'], $scenario['argument'])
+                ->updateId();
+            \Workflow\V2\Models\WorkflowUpdate::query()->findOrFail($updateId)->forceFill([
+                'accepted_at' => \Carbon\CarbonImmutable::createFromFormat('U.u', sprintf('%.6F', microtime(true))),
+            ])->save();
+        };
+
+        try {
+            $drain();
+        } finally {
+            $workflowClass::$beforeReturn = null;
+        }
+
+        $this->assertIsString($updateId);
+        $this->assertSame($scenario['result'], $stub->refresh()->inspectUpdate($updateId)->result());
+        $this->assertTrue($stub->refresh()->completed());
+        $this->assertSame($scenario['output'], $stub->output());
+    }
+
     public function testActivityAttemptBudgetCorpusRefusesNewBudgetsBelowOne(): void
     {
         $path = self::FIXTURE_DIR . '/activity-attempt-budget-below-one.json';
