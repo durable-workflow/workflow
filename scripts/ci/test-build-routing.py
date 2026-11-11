@@ -422,6 +422,18 @@ class BuildWorkflowTrustTest(unittest.TestCase):
 
         self.assertIn('test "${{ needs.pr-tracing.result }}" = "skipped"', gate)
 
+    def test_pull_requests_run_the_same_unit_suite_as_coverage_unit(self) -> None:
+        self.assertEqual({"preflight"}, workflow_job_ancestors(self.build, "pr-unit"))
+        source = self.job_source("pr-unit")
+        self.assertIn("github.event_name == 'pull_request'", source)
+        self.assertIn("vendor/bin/phpunit --testsuite unit", source)
+        self.assertIn("image: redis", source)
+        self.assertIn("pr-unit", workflow_job_needs(self.build, "build"))
+
+        gate = self.job_source("build")
+        self.assertIn('test "${{ needs.pr-unit.result }}" = "success"', gate)
+        self.assertIn('test "${{ needs.pr-unit.result }}" = "skipped"', gate)
+
     def test_combined_coverage_waits_for_both_producers_and_requires_every_report(self) -> None:
         self.assertEqual(
             {"preflight", "feature-mysql", "coverage-unit"},

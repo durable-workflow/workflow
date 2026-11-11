@@ -492,6 +492,74 @@ jobs:
         vendor/bin/phpunit tests/Unit/V2/CancellationHistoryTimelineTest.php
         --fail-on-warning --log-junit build/test-results/pr-cancellation-timeline.xml
 
+  # Runs the same unit suite as coverage-unit, without coverage, so a pull
+  # request cannot merge a unit test that only fails after merge.
+  pr-unit:
+    needs: preflight
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      XDEBUG_MODE: 'off'
+
+    services:
+      redis:
+        image: redis
+        ports:
+        - 6379
+
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      with:
+          fetch-depth: 10
+          persist-credentials: false
+
+    - name: Cache Composer packages
+      if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5
+      with:
+        path: vendor
+        key: ${{ github.event_name }}-${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
+        restore-keys: |
+          ${{ github.event_name }}-${{ runner.os }}-php-
+
+    - name: Install dependencies
+      run: composer install --prefer-dist --no-progress
+
+    - name: Create SQLite database and export the coverage-unit test defaults
+      env:
+        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports['6379'] }}
+      run: |
+        if [ -d /dev/shm ] && [ -w /dev/shm ]; then
+          temporary_root=/dev/shm
+        else
+          temporary_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
+        fi
+        unit_db="${temporary_root}/workflow-pr-unit-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}.sqlite"
+        touch "$unit_db"
+        {
+          echo "UNIT_DB_PATH=$unit_db"
+          echo "TMPDIR=$temporary_root"
+          echo "REDIS_HOST=127.0.0.1"
+          echo "REDIS_PORT=$REDIS_PUBLISHED_PORT"
+          echo "APP_KEY=base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI="
+          echo "REDIS_PASSWORD="
+          echo "QUEUE_FAILED_DRIVER=null"
+        } >> "$GITHUB_ENV"
+
+    - name: Run the unit suite
+      run: >-
+        vendor/bin/phpunit --testsuite unit
+        --log-junit build/test-results/pr-unit.xml
+      env:
+        DB_CONNECTION: sqlite
+        DB_DATABASE: ${{ env.UNIT_DB_PATH }}
+        QUEUE_CONNECTION: sync
+
+    - name: Remove SQLite database
+      if: ${{ always() }}
+      run: rm -f "$UNIT_DB_PATH" "$UNIT_DB_PATH-journal" "$UNIT_DB_PATH-wal" "$UNIT_DB_PATH-shm"
+
   pr-tracing:
     needs: preflight
     if: ${{ github.event_name == 'pull_request' }}
@@ -1577,6 +1645,7 @@ jobs:
     - quality
     - tracing-http
     - pr-unit-contracts
+    - pr-unit
     - pr-tracing
     - pr-feature-mysql
     - feature-mysql
@@ -1607,6 +1676,7 @@ jobs:
         test "${{ needs.regression-corpus.result }}" = "success"
         test "${{ needs.quality.result }}" = "success"
         test "${{ needs.pr-unit-contracts.result }}" = "success"
+        test "${{ needs.pr-unit.result }}" = "success"
         test "${{ needs.pr-tracing.result }}" = "success"
         test "${{ needs.pr-feature-mysql.result }}" = "success"
         test "${{ needs.feature-mysql.result }}" = "skipped"
@@ -1623,6 +1693,7 @@ jobs:
         test "${{ needs.regression-corpus.result }}" = "success"
         test "${{ needs.quality.result }}" = "success"
         test "${{ needs.pr-unit-contracts.result }}" = "skipped"
+        test "${{ needs.pr-unit.result }}" = "skipped"
         test "${{ needs.pr-tracing.result }}" = "skipped"
         test "${{ needs.pr-feature-mysql.result }}" = "skipped"
         test "${{ needs.feature-mysql.result }}" = "success"
