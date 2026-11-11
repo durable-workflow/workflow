@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.23.1 - 2026-11-11
+
 - A per-call activity `maxAttempts` below 1 is refused when a new activity or
   local activity is scheduled, and fails the run with a message that the
   budget counts the first attempt (#860). Previously it ran one attempt
@@ -11,6 +13,23 @@
   replaying after an upgrade: replay accepts that recorded budget when the
   code still passes 0, and it means one attempt. Before this change such runs
   failed replay with a retry policy mismatch.
+- Embedded saga `compensate()` runs under a cancellation shield, as the PHP
+  and Python SDK sagas do. A cooperative cancellation request that arrives
+  during compensation no longer skips the remaining compensations. The cleanup
+  deadline, termination and run timeouts still apply (#872, #1077).
+- An update accepted while the workflow task that completes the run is running
+  gets one delivery turn before the run closes, as a signal does. Its handler
+  runs and the caller gets its result instead of a closed-run failure. Updates
+  the task could already see keep the previous behavior (#890, #1078).
+- The embedded determinism scan flags `new DateTime()`, `new
+  DateTimeImmutable()`, `new Carbon()` and `new CarbonImmutable()` when they
+  read the current time, plus `today()`, `shuffle`, `array_rand` and
+  `str_shuffle`. Fixed dates are not flagged (#888, #1080).
+- Service-mode worker commands get the payload size limit embedded workflows
+  already have: oversized activity, child or continue-as-new arguments and
+  workflow results refuse the whole completion with the typed structural-limit
+  failure (#865, #1083).
+- No database migration, history format or dependency floor change.
 
 ## 2.23.0 - 2026-11-11
 
