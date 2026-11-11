@@ -893,62 +893,20 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
     public function testServiceCommandPayloadLimitCorpusRefusesOversizedWorkerPayloads(): void
     {
-        $path = self::FIXTURE_DIR . '/service-command-payload-limit.json';
-        if (! is_file($path)) {
-            $this->markTestSkipped('The service command payload limit evidence is absent.');
-        }
-        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
-        $scenario = $fixture['service_command_payload_limit'];
-        self::stopWorkers();
-        config([
-            'queue.default' => 'sync',
-            'queue.connections.sync.driver' => 'sync',
-        ]);
-        $this->clearWorkflowState();
-        $payload = Serializer::serializeWithCodec('avro', [str_repeat('x', $scenario['payload_bytes'])]);
-        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $this->assertServiceCommandPayloadLimitCorpus(
+            'service-command-payload-limit.json',
+            'service_command_payload_limit',
+            'regression-corpus-payload-limit',
+        );
+    }
 
-        foreach ($scenario['commands'] as $index => $command) {
-            $field = $command['field'];
-            unset($command['field']);
-            $command[$field] = $payload;
-            $command['payload_codec'] = 'avro';
-            $start = app(WorkflowControlPlane::class)->start(
-                $scenario['service_workflow_type'],
-                "regression-corpus-payload-limit-{$index}",
-                [
-                    'namespace' => 'regression-corpus-service',
-                    'queue' => 'service-workflows',
-                    'arguments' => Serializer::serializeWithCodec('avro', $fixture['workflow']['arguments']),
-                ],
-            );
-            $this->assertTrue($start['started']);
-            $task = WorkflowTask::query()->where('workflow_run_id', $start['workflow_run_id'])->firstOrFail();
-            $task->forceFill([
-                'status' => TaskStatus::Leased,
-                'lease_owner' => 'service-worker',
-                'lease_expires_at' => now()
-                    ->addMinute(),
-            ])->save();
-            $events = WorkflowHistoryEvent::query()->count();
-
-            config([
-                'workflows.v2.structural_limits.payload_size_bytes' => strlen($payload) - 1,
-            ]);
-            try {
-                $bridge->complete($task->id, [$command]);
-                $this->fail("An oversized {$command['type']} payload was accepted.");
-            } catch (\Workflow\V2\Exceptions\StructuralLimitExceededException $exception) {
-                $this->assertSame($scenario['refusal'], $exception->limitKind->value);
-            }
-            $this->assertSame($events, WorkflowHistoryEvent::query()->count());
-            $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
-
-            config([
-                'workflows.v2.structural_limits.payload_size_bytes' => strlen($payload),
-            ]);
-            $this->assertTrue($bridge->complete($task->id, [$command])['completed'], $command['type']);
-        }
+    public function testServiceCommandResultPayloadLimitCorpusRefusesOversizedWorkerResults(): void
+    {
+        $this->assertServiceCommandPayloadLimitCorpus(
+            'service-command-result-payload-limit.json',
+            'service_command_result_payload_limit',
+            'regression-corpus-result-payload-limit',
+        );
     }
 
     public function testRedrivePendingMessageCorpusReachesTheSuccessor(): void
@@ -2147,6 +2105,71 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $fixture = json_decode((string) file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertDurableOnlyTimelineProjection($fixture);
+    }
+
+    /**
+     * Runs each worker command from a payload-limit fixture against a fresh
+     * service-mode run: one byte over the limit refuses with no history
+     * written, and a payload at the limit completes (#865).
+     */
+    private function assertServiceCommandPayloadLimitCorpus(string $file, string $section, string $instancePrefix): void
+    {
+        $path = self::FIXTURE_DIR . '/' . $file;
+        if (! is_file($path)) {
+            $this->markTestSkipped("The {$file} evidence is absent.");
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture[$section];
+        self::stopWorkers();
+        config([
+            'queue.default' => 'sync',
+            'queue.connections.sync.driver' => 'sync',
+        ]);
+        $this->clearWorkflowState();
+        $payload = Serializer::serializeWithCodec('avro', [str_repeat('x', $scenario['payload_bytes'])]);
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+
+        foreach ($scenario['commands'] as $index => $command) {
+            $field = $command['field'];
+            unset($command['field']);
+            $command[$field] = $payload;
+            $command['payload_codec'] = 'avro';
+            $start = app(WorkflowControlPlane::class)->start(
+                $scenario['service_workflow_type'],
+                "{$instancePrefix}-{$index}",
+                [
+                    'namespace' => 'regression-corpus-service',
+                    'queue' => 'service-workflows',
+                    'arguments' => Serializer::serializeWithCodec('avro', $fixture['workflow']['arguments']),
+                ],
+            );
+            $this->assertTrue($start['started']);
+            $task = WorkflowTask::query()->where('workflow_run_id', $start['workflow_run_id'])->firstOrFail();
+            $task->forceFill([
+                'status' => TaskStatus::Leased,
+                'lease_owner' => 'service-worker',
+                'lease_expires_at' => now()
+                    ->addMinute(),
+            ])->save();
+            $events = WorkflowHistoryEvent::query()->count();
+
+            config([
+                'workflows.v2.structural_limits.payload_size_bytes' => strlen($payload) - 1,
+            ]);
+            try {
+                $bridge->complete($task->id, [$command]);
+                $this->fail("An oversized {$command['type']} payload was accepted.");
+            } catch (\Workflow\V2\Exceptions\StructuralLimitExceededException $exception) {
+                $this->assertSame($scenario['refusal'], $exception->limitKind->value);
+            }
+            $this->assertSame($events, WorkflowHistoryEvent::query()->count());
+            $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+
+            config([
+                'workflows.v2.structural_limits.payload_size_bytes' => strlen($payload),
+            ]);
+            $this->assertTrue($bridge->complete($task->id, [$command])['completed'], $command['type']);
+        }
     }
 
     private function assertStorageCorpusFixture(string $id, bool $interleaved): void

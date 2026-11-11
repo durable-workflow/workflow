@@ -5280,8 +5280,8 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $before = self::pendingCountDurableState($run);
 
         try {
-            $this->bridge->complete($task->id, [$command]);
-            $this->fail("An oversized {$command['type']} payload was accepted.");
+            $outcome = $this->bridge->complete($task->id, [$command]);
+            $this->fail("An oversized {$command['type']} payload was accepted: " . json_encode($outcome));
         } catch (StructuralLimitExceededException $exception) {
             $this->assertSame('payload_size', $exception->limitKind->value);
             $this->assertSame(strlen($payload), $exception->currentValue);
@@ -5313,6 +5313,96 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         yield 'workflow result' => ['result', [
             'type' => 'complete_workflow',
         ]];
+        yield 'side effect result' => ['result', [
+            'type' => 'record_side_effect',
+        ]];
+        yield 'local activity arguments' => ['arguments', [
+            'type' => 'record_local_activity',
+            'activity_type' => 'bridge-local-activity',
+            'result' => Serializer::serializeWithCodec('avro', 'ok'),
+            'outcome' => 'completed',
+            'attempts' => [[
+                'attempt_number' => 1,
+                'outcome' => 'completed',
+            ]],
+            'retry_policy' => [
+                'max_attempts' => 1,
+                'backoff_seconds' => [],
+            ],
+            'start_to_close_timeout' => 10,
+        ]];
+        yield 'local activity result' => ['result', [
+            'type' => 'record_local_activity',
+            'activity_type' => 'bridge-local-activity',
+            'outcome' => 'completed',
+            'attempts' => [[
+                'attempt_number' => 1,
+                'outcome' => 'completed',
+            ]],
+            'retry_policy' => [
+                'max_attempts' => 1,
+                'backoff_seconds' => [],
+            ],
+            'start_to_close_timeout' => 10,
+        ]];
+    }
+
+    public function testCompleteUpdateRefusesAnOversizedResultBeforeAnyWrite(): void
+    {
+        $run = $this->createWaitingRun();
+        $instance = WorkflowInstance::query()->findOrFail($run->workflow_instance_id);
+        $workflowCommand = WorkflowCommand::record($instance, $run, [
+            'command_type' => 'update',
+            'target_scope' => 'run',
+            'status' => 'accepted',
+            'payload_codec' => 'avro',
+            'payload' => Serializer::serializeWithCodec('avro', [
+                'name' => 'approve',
+                'arguments' => [],
+            ]),
+            'source' => 'worker-protocol',
+            'accepted_at' => now(),
+        ]);
+        /** @var WorkflowUpdate $update */
+        $update = WorkflowUpdate::query()->create([
+            'workflow_command_id' => $workflowCommand->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'update_name' => 'approve',
+            'status' => 'accepted',
+            'arguments' => Serializer::serializeWithCodec('avro', []),
+            'payload_codec' => 'avro',
+            'command_sequence' => $workflowCommand->command_sequence,
+            'accepted_at' => now(),
+        ]);
+        $task = $this->createLeasedTask($run);
+        $task->forceFill([
+            'payload' => WorkflowTaskPayload::forUpdate($update),
+        ])->save();
+        $payload = Serializer::serializeWithCodec('avro', [str_repeat('x', 2048)]);
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => strlen($payload) - 1,
+        ]);
+        $command = [
+            'type' => 'complete_update',
+            'update_id' => $update->id,
+            'result' => $payload,
+            'payload_codec' => 'avro',
+        ];
+
+        try {
+            $this->bridge->complete($task->id, [$command]);
+            $this->fail('An oversized update result was accepted.');
+        } catch (StructuralLimitExceededException $exception) {
+            $this->assertSame('payload_size', $exception->limitKind->value);
+        }
+        $this->assertSame('accepted', $update->fresh()->status->value);
+
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => strlen($payload),
+        ]);
+        $this->assertTrue($this->bridge->complete($task->id, [$command])['completed']);
+        $this->assertSame('completed', $update->fresh()->status->value);
     }
 
     public static function pendingCountCommands(): iterable

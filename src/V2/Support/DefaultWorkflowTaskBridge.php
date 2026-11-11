@@ -3397,9 +3397,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         $fallbackCodec = self::payloadCodecForUpdate($update, $run);
         $payloadCodec = self::payloadCodecForCommand($command) ?? $fallbackCodec;
         $namespace = is_string($run->namespace) ? $run->namespace : null;
-        $result = isset($command['result']) && is_string($command['result'])
-            ? ExternalPayloads::externalizeForNamespace($command['result'], $payloadCodec, $namespace)
-            : null;
+        $result = self::storedWorkerPayload($command['result'] ?? null, $payloadCodec, $run);
         $now = now();
 
         WorkflowHistoryEvent::record($run, HistoryEventType::UpdateApplied, [
@@ -4750,6 +4748,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         $payloadCodec = self::payloadCodecForCommand($command) ?? $fallbackCodec;
         $namespace = is_string($run->namespace) ? $run->namespace : null;
         $result = ExternalPayloads::externalizeForNamespace($command['result'], $payloadCodec, $namespace);
+        StructuralLimits::guardPayloadSize($result);
 
         WorkflowHistoryEvent::record($run, HistoryEventType::SideEffectRecorded, [
             'sequence' => $sequence,
@@ -4781,12 +4780,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             : CodecRegistry::defaultCodec();
         $payloadCodec = self::payloadCodecForCommand($command) ?? $fallbackCodec;
         $namespace = is_string($run->namespace) ? $run->namespace : null;
-        $arguments = isset($command['arguments']) && is_string($command['arguments'])
-            ? ExternalPayloads::externalizeForNamespace($command['arguments'], $payloadCodec, $namespace)
-            : null;
-        $result = isset($command['result']) && is_string($command['result'])
-            ? ExternalPayloads::externalizeForNamespace($command['result'], $payloadCodec, $namespace)
-            : null;
+        $arguments = self::storedWorkerPayload($command['arguments'] ?? null, $payloadCodec, $run);
+        $result = self::storedWorkerPayload($command['result'] ?? null, $payloadCodec, $run);
         $outcome = (string) ($command['outcome'] ?? 'failed');
         $status = match ($outcome) {
             'completed' => ActivityStatus::Completed,
