@@ -94,7 +94,7 @@ final class FailedRunRedrivePlanTest extends TestCase
     {
         $history = $this->linearFailureHistory();
         array_splice($history, 3, 0, [[
-            'event_type' => HistoryEventType::ChildWorkflowScheduled,
+            'event_type' => HistoryEventType::ConditionWaitOpened,
             'payload' => [
                 // Distinct from the activity steps (1 and 2) so the refusal
                 // can only come from the unsupported event type.
@@ -106,6 +106,26 @@ final class FailedRunRedrivePlanTest extends TestCase
 
         self::assertFalse($plan['eligible']);
         self::assertSame('unsupported_history', $plan['reason']);
+    }
+
+    public function testRefusesAChildCallThatNeverClosed(): void
+    {
+        $history = $this->linearFailureHistory();
+        array_splice($history, 3, 0, [[
+            'event_type' => HistoryEventType::ChildWorkflowScheduled,
+            'payload' => [
+                'sequence' => 3,
+                'workflow_link_id' => 'link-1',
+                'child_workflow_instance_id' => 'child-1',
+                'child_workflow_run_id' => 'child-run-1',
+                'child_workflow_type' => 'child',
+            ],
+        ]]);
+
+        $plan = FailedRunRedrivePlan::forRun($this->runWithHistory($history));
+
+        self::assertFalse($plan['eligible']);
+        self::assertSame('unsupported_open_child', $plan['reason']);
     }
 
     public function testRefusesCompletedLocalActivityThatWouldRunAgain(): void

@@ -222,6 +222,7 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
         yield 'search attribute upsert' => ['search_attributes'];
         yield 'signal wait' => ['signal'];
         yield 'applied update' => ['update'];
+        yield 'completed child workflow' => ['child'];
     }
 
     #[DataProvider('serviceUnqualifiedSteps')]
@@ -259,6 +260,7 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
                 ],
             ]),
             'signal' => $this->recordAppliedSignal($source),
+            'child' => $this->recordCompletedChild($source),
             'update' => null,
         };
         $this->recordFailure($source, includeCompletedPrefix: $step === 'update', beforeFailure: $step === 'update'
@@ -750,6 +752,30 @@ final class DefaultWorkflowControlPlaneRedriveRejectionTest extends TestCase
         WorkflowHistoryEvent::record($source, HistoryEventType::UpdateCompleted, $identity + [
             'sequence' => 1,
             'result' => Serializer::serializeWithCodec('avro', 'noted urgent'),
+        ]);
+    }
+
+    private function recordCompletedChild(WorkflowRun $source): WorkflowHistoryEvent
+    {
+        $identity = [
+            'sequence' => 1,
+            'workflow_link_id' => (string) Str::ulid(),
+            'child_call_id' => (string) Str::ulid(),
+            'child_workflow_instance_id' => 'remote-child-instance',
+            'child_workflow_run_id' => (string) Str::ulid(),
+            'child_workflow_class' => 'remote.child',
+            'child_workflow_type' => 'remote.child',
+        ];
+        WorkflowHistoryEvent::record($source, HistoryEventType::ChildWorkflowScheduled, $identity);
+        WorkflowHistoryEvent::record($source, HistoryEventType::ChildRunStarted, $identity + [
+            'child_run_number' => 1,
+        ]);
+
+        return WorkflowHistoryEvent::record($source, HistoryEventType::ChildRunCompleted, $identity + [
+            'child_run_number' => 1,
+            'child_status' => 'completed',
+            'output' => Serializer::serializeWithCodec('avro', 'Hello, Taylor!'),
+            'payload_codec' => 'avro',
         ]);
     }
 

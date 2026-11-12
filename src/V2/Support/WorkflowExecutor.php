@@ -1659,16 +1659,17 @@ final class WorkflowExecutor
         $sequence = &$frame->sequence;
         try {
             $this->syncWorkflowCursor($workflow, $sequence + 1);
+            // A child call that redrive reused keeps the time it first closed.
             if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
                 $current = $workflowExecution->send(
                     ChildRunHistory::outputForResolution($resolutionEvent, $childRun),
-                    $resolutionEvent->recorded_at
+                    RedriveReplayClock::recordedAt($resolutionEvent)
                 );
             } else {
                 $failureId = $resolutionEvent->payload['failure_id'] ?? null;
                 $current = $workflowExecution->throw(
                     ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun),
-                    $resolutionEvent->recorded_at
+                    RedriveReplayClock::recordedAt($resolutionEvent)
                 );
                 $this->recordFailureHandled(
                     $run,
@@ -4867,39 +4868,21 @@ final class WorkflowExecutor
         return FailureCategory::Application->value;
     }
 
-    /**
-     * A child whose parent continued as new is retried under the parent's
-     * recorded retry policy while a later run of the chain supervises it.
-     */
-    private function retryHandedOverChild(WorkflowRun $parentRun, ?int $sequence, WorkflowRun $childRun): void
-    {
-        if ($sequence !== null && ChildSupervision::prepareHandedOverRetry($parentRun, $sequence, $childRun)) {
-            $this->startChildRetryIfAvailable($parentRun, $sequence, $childRun, true);
-        }
-    }
-
-    /**
-     * @param bool $handedOver The parent continued as new and a later run of its chain supervises the child.
-     */
     private function startChildRetryIfAvailable(
         WorkflowRun $parentRun,
         int $sequence,
         WorkflowRun $failedChildRun,
         bool $handedOver = false,
     ): ?WorkflowTask {
-        $started = ChildRetryStart::start($parentRun, $sequence, $failedChildRun, $handedOver);
-
-        if ($started === null) {
-            return null;
-        }
-
-        [$retryTask, $retryRun] = $started;
-
-        $this->projectRun(
-            $retryRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        return ChildRetryStart::start(
+            $parentRun,
+            $sequence,
+            $failedChildRun,
+            $handedOver,
+            fn (WorkflowRun $retryRun) => $this->projectRun(
+                $retryRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+            ),
         );
-
-        return $retryTask;
     }
 
     private function dispatchParentResumeTasks(WorkflowRun $childRun): void
@@ -4950,7 +4933,11 @@ final class WorkflowExecutor
             if ($parentRun !== null
                 && $parentRun->workflow_instance_id === $parentReference['parent_workflow_instance_id']
                 && $parentRun->status->isTerminal()) {
-                $this->retryHandedOverChild($parentRun, $parentReference['parent_sequence'], $childRun);
+                $handedOverSequence = $parentReference['parent_sequence'];
+                if (is_int($handedOverSequence)
+                    && ChildSupervision::prepareHandedOverRetry($parentRun, $handedOverSequence, $childRun)) {
+                    $this->startChildRetryIfAvailable($parentRun, $handedOverSequence, $childRun, true);
+                }
 
                 continue;
             }

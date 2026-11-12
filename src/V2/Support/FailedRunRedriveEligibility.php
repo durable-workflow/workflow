@@ -38,7 +38,7 @@ final class FailedRunRedriveEligibility
      *         reason: string|null,
      *         resume_step_sequence: int|null,
      *         completed: list<array<string, mixed>>,
-     *         reused_steps: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null, scheduled_payload?: array<string, mixed>, signal_events?: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null}>}>
+     *         reused_steps: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null, scheduled_payload?: array<string, mixed>, signal_events?: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null}>, child_events?: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null}>}>
      *     }|null,
      *     started_payload: array<string, mixed>,
      *     definition_change?: array{workflow_class: class-string<Workflow>, from: string, to: string}|null,
@@ -109,8 +109,9 @@ final class FailedRunRedriveEligibility
 
         // Service-mode SDK workers are qualified to replay reused activities,
         // side effects, version markers and timers. Reused signal, memo,
-        // search-attribute and update steps are not qualified yet, so a run a
-        // service worker started refuses them before anything is written.
+        // search-attribute, update and child workflow steps are not qualified
+        // yet, so a run a service worker started refuses them before anything
+        // is written.
         if (
             ($startedPayload['workflow_definition_fingerprint_source'] ?? null) === 'worker'
             && (self::reusesServiceUnqualifiedSteps($plan['reused_steps']) || ($plan['update_bundles'] ?? []) !== [])
@@ -202,13 +203,14 @@ final class FailedRunRedriveEligibility
     }
 
     /**
-     * @param list<array{event_type: HistoryEventType, signal_events?: list<mixed>}> $reusedSteps
+     * @param list<array{event_type: HistoryEventType, signal_events?: list<mixed>, child_events?: list<mixed>}> $reusedSteps
      */
     private static function reusesServiceUnqualifiedSteps(array $reusedSteps): bool
     {
         foreach ($reusedSteps as $step) {
             if (
                 isset($step['signal_events'])
+                || isset($step['child_events'])
                 || in_array($step['event_type'], [
                     HistoryEventType::MemoUpserted,
                     HistoryEventType::SearchAttributesUpserted,

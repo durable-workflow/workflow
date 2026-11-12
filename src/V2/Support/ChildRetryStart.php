@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Closure;
 use Illuminate\Support\Str;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\V2\Enums\ParentClosePolicy;
@@ -28,14 +29,16 @@ use Workflow\V2\Models\WorkflowTask;
 final class ChildRetryStart
 {
     /**
-     * @return array{WorkflowTask, WorkflowRun}|null The dispatched retry task and run, or null when the failure is final.
+     * @param (Closure(WorkflowRun): mixed)|null $project Projects the retry run after its task is dispatched.
+     * @return WorkflowTask|null The dispatched retry task, or null when the failure is final.
      */
     public static function start(
         WorkflowRun $parentRun,
         int $sequence,
         WorkflowRun $failedChildRun,
         bool $handedOver = false,
-    ): ?array {
+        ?Closure $project = null,
+    ): ?WorkflowTask {
         if (ChildRunHistory::resolvedStatus(null, $failedChildRun) !== RunStatus::Failed) {
             return null;
         }
@@ -220,7 +223,11 @@ final class ChildRetryStart
 
         TaskDispatcher::dispatch($retryTask);
 
-        return [$retryTask, $retryRun];
+        if ($project !== null) {
+            $project($retryRun);
+        }
+
+        return $retryTask;
     }
 
     /**

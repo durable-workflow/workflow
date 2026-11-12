@@ -5541,41 +5541,23 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         self::projectRun($continuedRun, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
     }
 
-    /**
-     * A child whose parent continued as new is retried under the parent's
-     * recorded retry policy while a later run of the chain supervises it.
-     */
-    private function retryHandedOverChild(WorkflowRun $parentRun, ?int $sequence, WorkflowRun $childRun): void
-    {
-        if ($sequence !== null && ChildSupervision::prepareHandedOverRetry($parentRun, $sequence, $childRun)) {
-            $this->startChildRetryIfAvailable($parentRun, $sequence, $childRun, true);
-        }
-    }
-
-    /**
-     * @param bool $handedOver The parent continued as new and a later run of its chain supervises the child.
-     */
     private function startChildRetryIfAvailable(
         WorkflowRun $parentRun,
         int $sequence,
         WorkflowRun $failedChildRun,
         bool $handedOver = false,
     ): ?WorkflowTask {
-        $started = ChildRetryStart::start($parentRun, $sequence, $failedChildRun, $handedOver);
-
-        if ($started === null) {
-            return null;
-        }
-
-        [$retryTask, $retryRun] = $started;
-
-        self::projectRunBestEffort(
-            $retryRun,
-            self::PROJECTION_RUN_RELATIONS_WITH_HISTORY,
-            'child_workflow_retry_start'
+        return ChildRetryStart::start(
+            $parentRun,
+            $sequence,
+            $failedChildRun,
+            $handedOver,
+            static fn (WorkflowRun $retryRun) => self::projectRunBestEffort(
+                $retryRun,
+                self::PROJECTION_RUN_RELATIONS_WITH_HISTORY,
+                'child_workflow_retry_start'
+            ),
         );
-
-        return $retryTask;
     }
 
     /**
@@ -5608,11 +5590,11 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             }
 
             if ($parentRun->status->isTerminal()) {
-                $this->retryHandedOverChild(
-                    $parentRun,
-                    is_int($parentLink->sequence) ? $parentLink->sequence : null,
-                    $childRun,
-                );
+                $handedOverSequence = is_int($parentLink->sequence) ? $parentLink->sequence : null;
+                if ($handedOverSequence !== null
+                    && ChildSupervision::prepareHandedOverRetry($parentRun, $handedOverSequence, $childRun)) {
+                    $this->startChildRetryIfAvailable($parentRun, $handedOverSequence, $childRun, true);
+                }
 
                 continue;
             }

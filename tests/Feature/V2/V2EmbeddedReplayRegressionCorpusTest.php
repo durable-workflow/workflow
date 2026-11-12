@@ -1460,6 +1460,64 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertSame($sourceFiredAt, $successor->workflowOutput()['time_after_timer']);
     }
 
+    public function testRedriveReusedChildCorpusDoesNotRunTheChildAgain(): void
+    {
+        $path = self::FIXTURE_DIR . '/redrive-reused-child-workflow.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The redrive reused-child evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['redrive_reused_child_workflow'];
+        self::stopWorkers();
+        config([
+            'queue.default' => 'sync',
+            'queue.connections.sync.driver' => 'sync',
+        ]);
+        Cache::forget('test:redrive:first-calls');
+        Cache::forget('test:redrive:second-calls');
+        $this->clearWorkflowState();
+        WorkflowStub::fake();
+
+        $stub = WorkflowStub::make($fixture['workflow']['type'], 'regression-corpus-redrive-child');
+        $stub->start(...$fixture['workflow']['arguments']);
+        $this->assertTrue($stub->refresh()->failed());
+        $sourceRunId = $stub->runId();
+        $sourceCompletedAt = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $sourceRunId)
+            ->where('event_type', HistoryEventType::ChildRunCompleted->value)
+            ->sole()
+            ->recorded_at?->toIso8601String();
+
+        $this->travel($scenario['redrive_after_minutes'])
+            ->minutes();
+        $result = app(WorkflowControlPlane::class)->redrive('regression-corpus-redrive-child', $sourceRunId);
+
+        $this->assertSame($scenario['redrive'] === 'accepted', $result['accepted'], (string) $result['reason']);
+        $this->assertSame($scenario['resume_step_sequence'], $result['resume_step_sequence']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertSame($scenario['successor_status'], $successor->status->value);
+        $this->assertSame($scenario['result'], $successor->workflowOutput()['result']);
+        // A successor that ran the child again, or resumed it at its own
+        // event time, would report the redrive time instead.
+        $this->assertSame($sourceCompletedAt, $successor->workflowOutput()['time_after_child']);
+        $this->assertSame($scenario['child_activity_calls'], (int) Cache::get('test:redrive:first-calls'));
+        $this->assertSame(
+            $scenario['child_links'],
+            WorkflowLink::query()->where('link_type', 'child_workflow')->count()
+        );
+        $this->assertSame(
+            $scenario['child_runs'],
+            WorkflowRun::query()->where('workflow_type', 'test-redrive-greeting-child-workflow')->count()
+        );
+        foreach ($scenario['reused_events'] as $type) {
+            $reused = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $successor->id)
+                ->where('event_type', $type)
+                ->sole();
+            $this->assertSame($sourceRunId, $reused->payload['reused_from_run_id'] ?? null);
+        }
+    }
+
     public function testRedriveEligibilityCorpusReportsWhatRedriveDoes(): void
     {
         $path = self::FIXTURE_DIR . '/redrive-eligibility-report.json';
