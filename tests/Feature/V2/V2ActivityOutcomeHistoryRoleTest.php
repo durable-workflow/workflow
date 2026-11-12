@@ -132,6 +132,59 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
         }
     }
 
+    /**
+     * #1000: lease renewal locks the attempt before the execution, run and task. An outcome must
+     * never request the attempt row lock after it holds any of those, or a concurrent renewal of
+     * the same attempt deadlocks with it. Lock clauses only appear on PostgreSQL and MySQL; on
+     * SQLite this still checks that the attempt closes correctly.
+     */
+    public function testOutcomesCloseTheAttemptWithoutLockingItAfterTheTaskExecutionOrRun(): void
+    {
+        config()->set('workflows.v2.task_dispatch_mode', 'poll');
+
+        foreach ([
+            'completed' => ActivityAttemptStatus::Completed,
+            'failed' => ActivityAttemptStatus::Failed,
+            'run cancelled' => ActivityAttemptStatus::Cancelled,
+        ] as $case => $expected) {
+            [$run, , , $attempt] = $this->scaffoldLeasedAttempt('attempt-close-'.Str::slug($case));
+            if ($case === 'run cancelled') {
+                $run->forceFill(['status' => RunStatus::Cancelled])->save();
+            }
+
+            DB::flushQueryLog();
+            DB::enableQueryLog();
+            $bridge = app(ActivityTaskBridge::class);
+            $case === 'failed'
+                ? $bridge->fail($attempt->id, new RuntimeException('attempt close failure'))
+                : $bridge->complete($attempt->id, 'attempt close result');
+            $queries = array_map(static fn (array $query): string => strtolower($query['query']), DB::getQueryLog());
+            DB::disableQueryLog();
+            DB::flushQueryLog();
+
+            $firstOtherLock = null;
+            foreach ($queries as $index => $sql) {
+                $locks = str_contains($sql, 'for update') || str_contains($sql, 'lock in share mode');
+                if (! $locks) {
+                    continue;
+                }
+                if (str_contains($sql, 'activity_attempts')) {
+                    $this->assertNull(
+                        $firstOtherLock,
+                        "{$case}: the attempt row lock was requested after query #{$firstOtherLock} locked the task, execution or run: {$sql}",
+                    );
+                } elseif ($firstOtherLock === null) {
+                    $firstOtherLock = $index;
+                }
+            }
+
+            $closed = ActivityAttempt::query()->findOrFail($attempt->id);
+            $this->assertSame($expected, $closed->status, $case);
+            $this->assertNull($closed->lease_expires_at, $case);
+            $this->assertNotNull($closed->closed_at, $case);
+        }
+    }
+
     public function testCustomRoleCanRefreshTheRunBeforeDelegatingActivityOutcomeProjection(): void
     {
         [$run, , , $attempt] = $this->scaffoldLeasedAttempt('bounded-activity-custom-refresh');

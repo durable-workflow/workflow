@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- An activity outcome no longer locks the attempt row after it holds the task,
+  execution and run (#1000). It closes the attempt with one guarded conditional
+  update instead. Lease renewal locks the attempt first, so the old order could
+  deadlock a renewal against an outcome for the same attempt on PostgreSQL and
+  MySQL, mainly on the stale, cancelled and terminated paths.
+
 ## 2.25.0 - 2026-11-12
 
 - Changing a schedule's action now drops fires buffered under the old
