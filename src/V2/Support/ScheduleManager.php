@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Carbon\CarbonInterface;
 use Cron\CronExpression;
 use DateTimeInterface;
 use Illuminate\Database\Eloquent\Builder;
@@ -428,6 +429,13 @@ final class ScheduleManager
         // Only this app's namespaces: firing resolves the workflow type with
         // this app's registry and starts the run with its configuration.
         $namespaces ??= NamespaceScope::configured();
+        NamespaceScopeRefusals::sample(
+            NamespaceScopeRefusals::PATH_SCHEDULE_TICK,
+            $namespaces,
+            static fn (CarbonInterface $staleBefore): array => [
+                [self::dueSchedules($staleBefore), NamespaceScopeRefusals::NAMESPACE_OWN],
+            ],
+        );
 
         // Phase 1: drain buffered actions for schedules whose last run finished.
         $buffered = WorkflowSchedule::query()
@@ -535,11 +543,7 @@ final class ScheduleManager
 
         // Phase 2: evaluate due schedules.
         // DateTime query bindings otherwise lose the model's fractional precision.
-        $dueAt = UtcScheduleTimestamp::databaseValue(now());
-        $dueSchedules = WorkflowSchedule::query()
-            ->where('status', ScheduleStatus::Active->value)
-            ->whereNotNull('next_fire_at')
-            ->where('next_fire_at', '<=', $dueAt);
+        $dueSchedules = self::dueSchedules(now());
         $namespaces->apply($dueSchedules);
         $due = self::fairScheduleBatch($dueSchedules, $limit, 'next_fire_at');
 
@@ -766,6 +770,17 @@ final class ScheduleManager
 
             return new ScheduleTriggerResult('triggered', $startResult->instanceId, $startResult->runId, null);
         });
+    }
+
+    /**
+     * Active schedules due at `$at`, in every namespace.
+     */
+    private static function dueSchedules(CarbonInterface $at): Builder
+    {
+        return WorkflowSchedule::query()
+            ->where('status', ScheduleStatus::Active->value)
+            ->whereNotNull('next_fire_at')
+            ->where('next_fire_at', '<=', UtcScheduleTimestamp::databaseValue($at));
     }
 
     /**

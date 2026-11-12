@@ -46,7 +46,23 @@ final class ActivityTimeoutEnforcer
         ?string $queue = null,
         ?NamespaceScope $namespaces = null,
     ): array {
-        $now = now();
+        return self::expiredExecutionQuery(now(), $connection, $queue, $namespaces)
+            ->limit($limit)
+            ->pluck('id')
+            ->all();
+    }
+
+    /**
+     * Activity executions with a deadline at or before `$now`.
+     *
+     * @internal Also samples the timeouts other namespaces leave waiting.
+     */
+    public static function expiredExecutionQuery(
+        CarbonInterface $now,
+        ?string $connection = null,
+        ?string $queue = null,
+        ?NamespaceScope $namespaces = null,
+    ) {
         $deadlineBoundary = self::deadlineBoundary($now);
 
         $query = ActivityExecution::query()
@@ -68,14 +84,12 @@ final class ActivityTimeoutEnforcer
                         ->whereNotNull('heartbeat_deadline_at')
                         ->where('heartbeat_deadline_at', '<=', $deadlineBoundary);
                 });
-            })
-            ->limit($limit);
+            });
 
         // Executions carry no namespace column; their run owns it.
         RequestedTaskScope::applyThroughRun($query, $connection, $queue, $namespaces);
 
-        return $query->pluck('id')
-            ->all();
+        return $query;
     }
 
     /**

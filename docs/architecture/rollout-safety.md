@@ -538,6 +538,7 @@ change.
 | `backend` | `issues`, `severity` | admission check roll-up from `BackendCapabilities` |
 | `structural_limits` | per-limit snapshot | payload/memo/history size gates |
 | `repair_policy` | `redispatch_after_seconds`, `loop_throttle_seconds`, `scan_limit`, `failure_backoff_max_seconds` | tuning knobs consulted by `TaskRepair` |
+| `namespace_scope_refusals` | `scope`, `scope_error`, `window_seconds`, `bucket_seconds`, `stale_after_seconds`, `window_started_at`, `total`, `by_path`, `namespaces`, `truncated`, `available` | work refused because its namespace is outside the app's allowlist (`DW_V2_NAMESPACES`) over the trailing window. `by_path` has `job`, `repair`, `timeout` and `schedule_tick`; each `namespaces` entry has `namespace`, `path`, `count` and `last_seen_at` (start of the latest minute with a refusal). See [Task matching](task-matching.md) |
 
 Consumers (Waterline, cloud, CLI, test coverage) may add their own
 derived keys; they MUST NOT rename the frozen keys above.
@@ -558,6 +559,7 @@ entry per named check. The following names are frozen:
 - `durable_resume_paths`
 - `worker_compatibility`
 - `scheduler_role`
+- `namespace_scope_refusals`
 
 Each check carries `status`, `message`, and `data`. `routing_health`
 is the authoritative drain-focused roll-up: it combines
@@ -795,7 +797,7 @@ change only in a major version bump.
 | Variable | Purpose |
 | -------- | ------- |
 | `DW_V2_NAMESPACE` | Default namespace for v2 surfaces when the host does not pin one. |
-| `DW_V2_NAMESPACES` | Comma-separated namespaces this app's watchdog, repair, timeout enforcement, schedule tick and queue jobs act on. Unset means exactly `DW_V2_NAMESPACE`; empty means none; `*` is refused. |
+| `DW_V2_NAMESPACES` | Comma-separated namespaces this app's watchdog, repair, timeout enforcement, schedule tick and queue jobs act on. Unset means exactly `DW_V2_NAMESPACE`; empty means none; `*` is refused. Work outside it is counted in the `namespace_scope_refusals` metric and health check. |
 | `DW_V2_ALL_NAMESPACES` | Administrative opt-in to act on every namespace in the database (for example the standalone server's matching role). Defaults to `false`. |
 | `DW_V2_CURRENT_COMPATIBILITY` | The compatibility marker the process advertises and, on the control plane, the marker ready tasks require. |
 | `DW_V2_SUPPORTED_COMPATIBILITIES` | Comma-separated list of markers this worker can safely execute; falls back to the current marker. |
