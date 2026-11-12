@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2;
 
+use Carbon\CarbonInterface;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Schema;
@@ -27,6 +28,7 @@ use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\LinkedServiceCallCloser;
 use Workflow\V2\Support\NamespaceScope;
+use Workflow\V2\Support\NamespaceScopeRefusals;
 use Workflow\V2\Support\RequestedTaskScope;
 use Workflow\V2\Support\ServiceCallDeadline;
 use Workflow\V2\Support\ServiceCallScheduler;
@@ -132,6 +134,10 @@ final class TaskWatchdog
         $namespaces ??= NamespaceScope::configured();
 
         WorkerCompatibilityFleet::heartbeat($connection, $queue);
+
+        if ($runIds === [] && $instanceId === null) {
+            self::sampleNamespaceScopeRefusals($namespaces, $connection, $queue);
+        }
 
         if ($namespaces->isEmpty()) {
             return self::emptyReport($connection, $queue, $respectThrottle, $runIds, $instanceId);
@@ -584,8 +590,66 @@ final class TaskWatchdog
         ?string $queue = null,
         ?NamespaceScope $namespaces = null,
     ): array {
-        $now = now()
-            ->format('Y-m-d H:i:s.u');
+        return self::deadlineExpiredRunQuery(now(), $runIds, $instanceId, $connection, $queue, $namespaces)
+            ->limit(TaskRepairPolicy::scanLimit())
+            ->pluck('id')
+            ->all();
+    }
+
+    /**
+     * Count repair and timeout work this app leaves in namespaces outside its
+     * allowlist, so a namespace no app serves shows up in operator metrics.
+     */
+    private static function sampleNamespaceScopeRefusals(
+        NamespaceScope $namespaces,
+        ?string $connection,
+        ?string $queue,
+    ): void {
+        $key = json_encode([$connection, $queue], JSON_THROW_ON_ERROR);
+
+        NamespaceScopeRefusals::sample(
+            NamespaceScopeRefusals::PATH_REPAIR,
+            $namespaces,
+            static fn (CarbonInterface $staleBefore): array => [[
+                TaskRepairCandidates::candidateQueryAcrossNamespaces($staleBefore, $connection, $queue),
+                NamespaceScopeRefusals::NAMESPACE_TASK,
+            ]],
+            $key,
+        );
+        NamespaceScopeRefusals::sample(
+            NamespaceScopeRefusals::PATH_TIMEOUT,
+            $namespaces,
+            static fn (CarbonInterface $staleBefore): array => [
+                [
+                    ActivityTimeoutEnforcer::expiredExecutionQuery(
+                        $staleBefore,
+                        $connection,
+                        $queue,
+                        NamespaceScope::all(),
+                    ),
+                    NamespaceScopeRefusals::NAMESPACE_RUN,
+                ],
+                [
+                    self::deadlineExpiredRunQuery($staleBefore, [], null, $connection, $queue, NamespaceScope::all()),
+                    NamespaceScopeRefusals::NAMESPACE_OWN,
+                ],
+            ],
+            $key,
+        );
+    }
+
+    /**
+     * @param list<string> $runIds
+     */
+    private static function deadlineExpiredRunQuery(
+        CarbonInterface $at,
+        array $runIds,
+        ?string $instanceId,
+        ?string $connection,
+        ?string $queue,
+        ?NamespaceScope $namespaces,
+    ) {
+        $now = $at->format('Y-m-d H:i:s.u');
 
         $query = WorkflowRun::query()
             ->whereIn('status', [RunStatus::Pending->value, RunStatus::Running->value, RunStatus::Waiting->value])
@@ -623,7 +687,7 @@ final class TaskWatchdog
 
         RequestedTaskScope::apply($query, $connection, $queue, $namespaces);
 
-        return $query->limit(TaskRepairPolicy::scanLimit())->pluck('id')->all();
+        return $query;
     }
 
     private static function tablesReady(): bool

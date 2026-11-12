@@ -174,6 +174,20 @@ final class TaskRepairCandidates
     }
 
     /**
+     * Existing-task repair candidates in every namespace as of `$asOf`.
+     *
+     * @internal Samples the repair work other namespaces leave waiting. Never
+     *     use it to select work: it ignores the namespace allowlist.
+     */
+    public static function candidateQueryAcrossNamespaces(
+        CarbonInterface $asOf,
+        ?string $connection = null,
+        ?string $queue = null,
+    ) {
+        return self::existingTaskQuery($asOf, [], null, $connection, $queue, NamespaceScope::all());
+    }
+
+    /**
      * @return list<array{
      *     scope_key: string,
      *     connection: string|null,

@@ -39,6 +39,7 @@ final class HealthCheck
                 $metrics['runs'] ?? [],
             ),
             self::replayBlockedRunsCheck($metrics['runs'] ?? []),
+            self::namespaceScopeRefusalsCheck($metrics['namespace_scope_refusals'] ?? []),
             self::workerCompatibilityCheck($metrics['workers'] ?? []),
             self::schedulerRoleCheck($metrics['schedules'] ?? []),
             self::longPollWakeAccelerationCheck(),
@@ -486,6 +487,48 @@ final class HealthCheck
                     ? $runs['oldest_replay_blocked_at']
                     : null,
                 'max_replay_blocked_age_ms' => self::integer($runs['max_replay_blocked_age_ms'] ?? 0),
+            ],
+        );
+    }
+
+    /**
+     * Advisory: this app keeps refusing work in namespaces outside its
+     * allowlist. Usually an upgraded app that forgot to list a namespace it
+     * uses in `DW_V2_NAMESPACES`, so those tasks wait for an app that serves
+     * them. Clears once a full window passes without a refusal.
+     *
+     * @param array<string, mixed> $refusals
+     * @return array<string, mixed>
+     */
+    private static function namespaceScopeRefusalsCheck(array $refusals): array
+    {
+        $total = self::integer($refusals['total'] ?? 0);
+        $windowSeconds = self::integer($refusals['window_seconds'] ?? 0);
+        $minutes = max(1, intdiv($windowSeconds, 60));
+
+        return self::check(
+            'namespace_scope_refusals',
+            $total === 0 ? 'ok' : 'warning',
+            $total === 0
+                ? sprintf('No work outside this app\'s namespaces was refused in the last %d minutes.', $minutes)
+                : sprintf(
+                    'This app refused work in namespaces outside its allowlist in the last %d minutes. '
+                    . 'List each namespace this app serves in DW_V2_NAMESPACES, or check that the app '
+                    . 'that serves it is running.',
+                    $minutes,
+                ),
+            self::CATEGORY_CORRECTNESS,
+            [
+                'total' => $total,
+                'by_path' => is_array($refusals['by_path'] ?? null) ? $refusals['by_path'] : [],
+                'namespaces' => is_array($refusals['namespaces'] ?? null) ? $refusals['namespaces'] : [],
+                'window_seconds' => $windowSeconds,
+                'window_started_at' => is_string($refusals['window_started_at'] ?? null)
+                    ? $refusals['window_started_at']
+                    : null,
+                'truncated' => ($refusals['truncated'] ?? false) === true,
+                'available' => ($refusals['available'] ?? true) === true,
+                'scope' => is_array($refusals['scope'] ?? null) ? $refusals['scope'] : null,
             ],
         );
     }

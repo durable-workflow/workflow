@@ -262,12 +262,13 @@ final class NamespaceScope
     public static function admitsQueuedTask(string $taskId, string $job): bool
     {
         $scope = self::configured();
+        $refused = $scope->refusedTaskNamespace($taskId);
 
-        if ($scope->admitsTask($taskId)) {
+        if ($refused === null) {
             return true;
         }
 
-        self::logRefusal($scope, $job, [
+        self::refuseQueuedJob($scope, $job, $refused, [
             'task_id' => $taskId,
         ]);
 
@@ -280,12 +281,13 @@ final class NamespaceScope
     public static function admitsQueuedServiceCall(string $serviceCallId, string $job): bool
     {
         $scope = self::configured();
+        $refused = $scope->refusedServiceCallNamespace($serviceCallId);
 
-        if ($scope->admitsServiceCall($serviceCallId)) {
+        if ($refused === null) {
             return true;
         }
 
-        self::logRefusal($scope, $job, [
+        self::refuseQueuedJob($scope, $job, $refused, [
             'service_call_id' => $serviceCallId,
         ]);
 
@@ -298,28 +300,7 @@ final class NamespaceScope
      */
     public function admitsTask(string $taskId): bool
     {
-        if ($this->namespaces === null) {
-            return true;
-        }
-
-        /** @var WorkflowTask|null $task */
-        $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
-            ->select(['id', 'namespace', 'workflow_run_id'])
-            ->find($taskId);
-
-        if ($task === null) {
-            return true;
-        }
-
-        $namespace = $task->namespace;
-
-        if ($namespace === null && is_string($task->workflow_run_id)) {
-            $namespace = ConfiguredV2Models::query('run_model', WorkflowRun::class)
-                ->whereKey($task->workflow_run_id)
-                ->value('namespace');
-        }
-
-        return $this->allows(is_string($namespace) ? $namespace : null);
+        return $this->refusedTaskNamespace($taskId) === null;
     }
 
     /**
@@ -328,17 +309,7 @@ final class NamespaceScope
      */
     public function admitsServiceCall(string $serviceCallId): bool
     {
-        if ($this->namespaces === null) {
-            return true;
-        }
-
-        $call = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
-            ->whereKey($serviceCallId)
-            ->first(['id', 'caller_namespace']);
-
-        return $call === null || $this->allows(
-            is_string($call->caller_namespace) ? $call->caller_namespace : null
-        );
+        return $this->refusedServiceCallNamespace($serviceCallId) === null;
     }
 
     /**
@@ -353,13 +324,76 @@ final class NamespaceScope
     }
 
     /**
+     * The canonical namespace of a task outside this scope, or null when the
+     * task is admitted or missing.
+     */
+    private function refusedTaskNamespace(string $taskId): ?string
+    {
+        if ($this->namespaces === null) {
+            return null;
+        }
+
+        /** @var WorkflowTask|null $task */
+        $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+            ->select(['id', 'namespace', 'workflow_run_id'])
+            ->find($taskId);
+
+        if ($task === null) {
+            return null;
+        }
+
+        $namespace = $task->namespace;
+
+        if ($namespace === null && is_string($task->workflow_run_id)) {
+            $namespace = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->whereKey($task->workflow_run_id)
+                ->value('namespace');
+        }
+
+        return $this->refused(is_string($namespace) ? $namespace : null);
+    }
+
+    /**
+     * The canonical caller namespace of a service call outside this scope, or
+     * null when the call is admitted or missing.
+     */
+    private function refusedServiceCallNamespace(string $serviceCallId): ?string
+    {
+        if ($this->namespaces === null) {
+            return null;
+        }
+
+        $call = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
+            ->whereKey($serviceCallId)
+            ->first(['id', 'caller_namespace']);
+
+        return $call === null
+            ? null
+            : $this->refused(is_string($call->caller_namespace) ? $call->caller_namespace : null);
+    }
+
+    private function refused(?string $namespace): ?string
+    {
+        return $this->allows($namespace) ? null : self::canonical($namespace);
+    }
+
+    /**
+     * Count every refused job, and log the first per namespace each minute so
+     * a stalled upgrade cannot flood the log. The rest are in the
+     * `namespace_scope_refusals` operator metric.
+     *
      * @param array<string, string> $context
      */
-    private static function logRefusal(self $scope, string $job, array $context): void
+    private static function refuseQueuedJob(self $scope, string $job, string $namespace, array $context): void
     {
+        if (! NamespaceScopeRefusals::record(NamespaceScopeRefusals::PATH_JOB, $namespace)) {
+            return;
+        }
+
         Log::warning('Durable Workflow skipped a queued job outside this application\'s namespaces.', [
             'job' => $job,
             ...$context,
+            'namespace' => $namespace,
             'namespaces' => $scope->namespaces(),
         ]);
     }
