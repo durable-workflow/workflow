@@ -244,7 +244,7 @@ final class WorkflowFiberRunner
                     $this->pendingYielded = null;
                 }
 
-                $this->execution->send($resumeWith);
+                $this->sendToWorkflow($resumeWith);
             }
         }
 
@@ -350,7 +350,7 @@ final class WorkflowFiberRunner
                 }
 
                 $this->sequence += $current instanceof AllCall ? $current->leafCount() : 1;
-                $this->execution->throw(
+                $this->throwIntoWorkflow(
                     new WorkflowCancellationRequestedException(cancellation: $cancellation['context']),
                     $cancellation['recorded_at'],
                 );
@@ -382,7 +382,7 @@ final class WorkflowFiberRunner
                     );
                 }
 
-                $this->execution->send(null, $cancelled?->recorded_at);
+                $this->sendToWorkflow(null, $cancelled?->recorded_at);
 
                 continue;
             }
@@ -398,9 +398,9 @@ final class WorkflowFiberRunner
                 }
 
                 if ($resolution['failure'] instanceof Throwable) {
-                    $this->execution->throw($resolution['failure'], $resolution['recorded_at']);
+                    $this->throwIntoWorkflow($resolution['failure'], $resolution['recorded_at']);
                 } else {
-                    $this->execution->send($resolution['value'], $resolution['recorded_at']);
+                    $this->sendToWorkflow($resolution['value'], $resolution['recorded_at']);
                 }
 
                 continue;
@@ -414,7 +414,7 @@ final class WorkflowFiberRunner
                 $groupSize = count($leafDescriptors);
 
                 if ($groupSize === 0) {
-                    $this->execution->send($current->nestedResults([]));
+                    $this->sendToWorkflow($current->nestedResults([]));
 
                     continue;
                 }
@@ -467,7 +467,7 @@ final class WorkflowFiberRunner
                             $selection,
                         );
                         $this->sequence += $groupSize;
-                        $this->execution->send(
+                        $this->sendToWorkflow(
                             $current->resolved(
                                 $baseSequence,
                                 $winner,
@@ -490,7 +490,7 @@ final class WorkflowFiberRunner
 
                 if ($failure !== null) {
                     $this->sequence += $groupSize;
-                    $this->execution->throw($failure['failure'], $failure['recorded_at']);
+                    $this->throwIntoWorkflow($failure['failure'], $failure['recorded_at']);
 
                     continue;
                 }
@@ -504,7 +504,7 @@ final class WorkflowFiberRunner
 
                 ksort($results);
                 $this->sequence += $groupSize;
-                $this->execution->send($current->nestedResults(array_values($results)), $latest);
+                $this->sendToWorkflow($current->nestedResults(array_values($results)), $latest);
 
                 continue;
             }
@@ -517,7 +517,7 @@ final class WorkflowFiberRunner
 
                 if ($recorded !== null) {
                     ++$this->sequence;
-                    $this->execution->send(
+                    $this->sendToWorkflow(
                         $recorded['result'],
                         $recorded['recorded_at'],
                         advanceCancellationTime: false
@@ -531,7 +531,7 @@ final class WorkflowFiberRunner
                 $immediateCommands[] = self::singleCommand($step);
 
                 ++$this->sequence;
-                $this->execution->send($result, advanceCancellationTime: false);
+                $this->sendToWorkflow($result, advanceCancellationTime: false);
 
                 continue;
             }
@@ -559,7 +559,7 @@ final class WorkflowFiberRunner
                     ++$this->sequence;
                 }
 
-                $this->execution->send(
+                $this->sendToWorkflow(
                     $current->resolveValue($resolution->version),
                     RedriveReplayClock::recordedAt($versionMarkerEvent),
                     advanceCancellationTime: false,
@@ -582,7 +582,7 @@ final class WorkflowFiberRunner
                     );
 
                     ++$this->sequence;
-                    $this->execution->send(null, $recorded['recorded_at'], advanceCancellationTime: false);
+                    $this->sendToWorkflow(null, $recorded['recorded_at'], advanceCancellationTime: false);
 
                     continue;
                 }
@@ -591,7 +591,7 @@ final class WorkflowFiberRunner
                 $immediateCommands[] = self::singleCommand($step);
 
                 ++$this->sequence;
-                $this->execution->send(null, advanceCancellationTime: false);
+                $this->sendToWorkflow(null, advanceCancellationTime: false);
 
                 continue;
             }
@@ -610,7 +610,7 @@ final class WorkflowFiberRunner
                     );
 
                     ++$this->sequence;
-                    $this->execution->send(null, $recorded['recorded_at'], advanceCancellationTime: false);
+                    $this->sendToWorkflow(null, $recorded['recorded_at'], advanceCancellationTime: false);
 
                     continue;
                 }
@@ -619,7 +619,7 @@ final class WorkflowFiberRunner
                 $immediateCommands[] = self::singleCommand($step);
 
                 ++$this->sequence;
-                $this->execution->send(null, advanceCancellationTime: false);
+                $this->sendToWorkflow(null, advanceCancellationTime: false);
 
                 continue;
             }
@@ -636,9 +636,9 @@ final class WorkflowFiberRunner
                 if ($recorded !== null) {
                     ++$this->sequence;
                     if ($recorded['status'] === 'completed') {
-                        $this->execution->send($recorded['result'] ?? null, $recorded['recorded_at']);
+                        $this->sendToWorkflow($recorded['result'] ?? null, $recorded['recorded_at']);
                     } else {
-                        $this->execution->throw(
+                        $this->throwIntoWorkflow(
                             $recorded['exception'] ?? new RuntimeException('Local activity failed during replay.'),
                             $recorded['recorded_at'],
                         );
@@ -667,9 +667,9 @@ final class WorkflowFiberRunner
                 if ($recorded !== null) {
                     ++$this->sequence;
                     if ($recorded['status'] === 'completed') {
-                        $this->execution->send($recorded['result'] ?? null, $recorded['recorded_at']);
+                        $this->sendToWorkflow($recorded['result'] ?? null, $recorded['recorded_at']);
                     } else {
-                        $this->execution->throw(
+                        $this->throwIntoWorkflow(
                             $recorded['exception'] ?? new RuntimeException('Activity failed during replay.'),
                             $recorded['recorded_at'],
                         );
@@ -694,7 +694,7 @@ final class WorkflowFiberRunner
 
                 if ($recorded !== null) {
                     ++$this->sequence;
-                    $this->execution->send($recorded['result'], $recorded['recorded_at']);
+                    $this->sendToWorkflow($recorded['result'], $recorded['recorded_at']);
 
                     continue;
                 }
@@ -715,7 +715,7 @@ final class WorkflowFiberRunner
 
                 if ($recorded !== null) {
                     ++$this->sequence;
-                    $this->execution->send($recorded['result'], $recorded['recorded_at']);
+                    $this->sendToWorkflow($recorded['result'], $recorded['recorded_at']);
 
                     continue;
                 }
@@ -723,7 +723,7 @@ final class WorkflowFiberRunner
                 if ($historySequence !== null && isset($this->openConditionWaits[$historySequence])) {
                     if (self::conditionSatisfied($current)) {
                         ++$this->sequence;
-                        $this->execution->send(true);
+                        $this->sendToWorkflow(true);
 
                         continue;
                     }
@@ -735,13 +735,13 @@ final class WorkflowFiberRunner
                 }
 
                 if (self::conditionSatisfied($current)) {
-                    $this->execution->send(true);
+                    $this->sendToWorkflow(true);
 
                     continue;
                 }
 
                 if ($current instanceof AwaitWithTimeoutCall && $current->seconds === 0) {
-                    $this->execution->send(false);
+                    $this->sendToWorkflow(false);
 
                     continue;
                 }
@@ -755,7 +755,7 @@ final class WorkflowFiberRunner
 
                 if ($recorded !== null && $recorded['signal_name'] === $current->name) {
                     ++$this->sequence;
-                    $this->execution->send($recorded['result'], $recorded['recorded_at']);
+                    $this->sendToWorkflow($recorded['result'], $recorded['recorded_at']);
 
                     continue;
                 }
@@ -789,9 +789,9 @@ final class WorkflowFiberRunner
 
                     ++$this->sequence;
                     if (isset($recorded['exception'])) {
-                        $this->execution->throw($recorded['exception'], $recorded['recorded_at']);
+                        $this->throwIntoWorkflow($recorded['exception'], $recorded['recorded_at']);
                     } else {
-                        $this->execution->send($recorded['result'] ?? null, $recorded['recorded_at']);
+                        $this->sendToWorkflow($recorded['result'] ?? null, $recorded['recorded_at']);
                     }
 
                     continue;
@@ -814,9 +814,9 @@ final class WorkflowFiberRunner
                 if ($recorded !== null) {
                     ++$this->sequence;
                     if ($recorded['status'] === 'completed') {
-                        $this->execution->send($recorded['result'] ?? null, $recorded['recorded_at']);
+                        $this->sendToWorkflow($recorded['result'] ?? null, $recorded['recorded_at']);
                     } else {
-                        $this->execution->throw(
+                        $this->throwIntoWorkflow(
                             $recorded['exception'] ?? new RuntimeException('Child workflow failed during replay.'),
                             $recorded['recorded_at'],
                         );
@@ -2650,5 +2650,24 @@ final class WorkflowFiberRunner
         return is_string($value) && $value !== ''
             ? $value
             : null;
+    }
+
+    /**
+     * Resume workflow code at the runner's current step. Workflow code reads its step through
+     * {@see Workflow::syncExecutionCursor()} (child handles, message streams, the step-stable
+     * history budget, #859), so the runner keeps it in step as the executor does.
+     */
+    private function sendToWorkflow(mixed ...$arguments): mixed
+    {
+        $this->workflow->syncExecutionCursor($this->sequence);
+
+        return $this->execution->send(...$arguments);
+    }
+
+    private function throwIntoWorkflow(mixed ...$arguments): mixed
+    {
+        $this->workflow->syncExecutionCursor($this->sequence);
+
+        return $this->execution->throw(...$arguments);
     }
 }

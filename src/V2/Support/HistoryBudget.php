@@ -77,10 +77,12 @@ final class HistoryBudget
      *
      * A workflow task runs holding the run lock, and every history write takes that lock, so no
      * event is appended while workflow code executes. Workflow code at step S therefore saw exactly
-     * the events recorded before the first event a workflow task recorded for step S or later (or
+     * the events recorded before the first event for step S or later (or
      * for the run's terminal outcome). That boundary exists on replay. At the live frontier it does
-     * not exist yet, and the run's whole stored history is the same prefix. Events recorded outside
-     * workflow tasks (for example by the control plane) never move the boundary.
+     * not exist yet, and the run's whole stored history is the same prefix. Control-plane arrivals
+     * such as SignalReceived and UpdateAccepted carry no step, so they never move the boundary; the
+     * step events (SignalApplied, UpdateApplied, scheduled commands) are written when workflow code
+     * reaches that step.
      *
      * @return array{
      *     history_event_count: int,
@@ -94,20 +96,10 @@ final class HistoryBudget
      */
     public static function forRunAtStep(WorkflowRun $run, int $step): array
     {
-        $run->loadMissing(['historyEvents', 'tasks']);
-        $workflowTaskIds = [];
-        foreach ($run->tasks as $task) {
-            $type = $task->task_type instanceof \BackedEnum ? $task->task_type->value : $task->task_type;
-            if ($type === 'workflow') {
-                $workflowTaskIds[(string) $task->id] = true;
-            }
-        }
+        $run->loadMissing('historyEvents');
 
         $boundary = null;
         foreach ($run->historyEvents as $event) {
-            if (! is_string($event->workflow_task_id) || ! isset($workflowTaskIds[$event->workflow_task_id])) {
-                continue;
-            }
             $payload = is_array($event->payload) ? $event->payload : [];
             $eventStep = $payload['sequence'] ?? null;
             $type = $event->event_type instanceof \BackedEnum ? $event->event_type->value : (string) $event->event_type;
@@ -116,9 +108,10 @@ final class HistoryBudget
             }
         }
 
+        // At the frontier a stored run reads its history fresh, so events this task already wrote
+        // count, as they will on replay. A run replayed from memory (no stored row) uses what it holds.
         $events = $boundary === null
-            ? $run->historyEvents()
-                ->get()
+            ? ($run->exists ? $run->historyEvents()->get() : $run->historyEvents)
             : $run->historyEvents->filter(
                 static fn (WorkflowHistoryEvent $event): bool => (int) $event->sequence < $boundary
             );

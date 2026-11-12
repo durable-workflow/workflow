@@ -1,0 +1,885 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "history-budget-step-loop-rolls-over-once",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner"
+  ],
+  "config": {
+    "workflows.v2.history_budget.continue_as_new_event_threshold": 14,
+    "workflows.v2.history_budget.event_warning_threshold": 12
+  },
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestHistoryBudgetLoopWorkflow",
+    "arguments": [
+      true,
+      20
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "StartAccepted",
+      "payload": {
+        "workflow_command_id": "01m77knkz6rs3a13vcrckvmmvc",
+        "workflow_instance_id": "gen-budget",
+        "workflow_run_id": "01m77knkz2q406sat5j5zqm1cr",
+        "workflow_class": "Tests\\Fixtures\\V2\\TestHistoryBudgetLoopWorkflow",
+        "workflow_type": "test-history-budget-loop-workflow",
+        "business_key": null,
+        "visibility_labels": null,
+        "memo": null,
+        "search_attributes": null,
+        "outcome": "started_new",
+        "command": {
+          "id": "01m77knkz6rs3a13vcrckvmmvc",
+          "sequence": 1,
+          "type": "start",
+          "target_scope": "instance",
+          "resolved_run_id": "01m77knkz2q406sat5j5zqm1cr",
+          "payload_codec": "avro",
+          "payload": "wwHioz3/VYAiNwwEAgEEKAA=",
+          "source": "php",
+          "caller_label": "PHP API",
+          "auth_status": "not_applicable",
+          "auth_method": "none",
+          "status": "accepted",
+          "outcome": "started_new",
+          "accepted_at": "2026-11-12T10:08:20.452636Z",
+          "applied_at": "2026-11-12T10:08:20.452640Z"
+        }
+      },
+      "recorded_at": "2026-11-12T10:08:20.455687Z"
+    },
+    {
+      "sequence": 2,
+      "event_type": "WorkflowStarted",
+      "payload": {
+        "workflow_class": "Tests\\Fixtures\\V2\\TestHistoryBudgetLoopWorkflow",
+        "workflow_type": "test-history-budget-loop-workflow",
+        "workflow_instance_id": "gen-budget",
+        "workflow_run_id": "01m77knkz2q406sat5j5zqm1cr",
+        "workflow_command_id": "01m77knkz6rs3a13vcrckvmmvc",
+        "business_key": null,
+        "visibility_labels": null,
+        "memo": null,
+        "search_attributes": null,
+        "execution_timeout_seconds": null,
+        "run_timeout_seconds": null,
+        "execution_deadline_at": null,
+        "run_deadline_at": null,
+        "workflow_definition_fingerprint": "sha256:ed3b6b66e31e3c308c75325f4126cb23cafab41de3866e012829b75e89daa927",
+        "declared_queries": [],
+        "declared_query_contracts": [],
+        "declared_signals": [],
+        "declared_signal_contracts": [],
+        "declared_updates": [],
+        "declared_update_contracts": [],
+        "declared_entry_method": "handle",
+        "declared_entry_mode": "canonical",
+        "declared_entry_declaring_class": "Tests\\Fixtures\\V2\\TestHistoryBudgetLoopWorkflow",
+        "command": {
+          "id": "01m77knkz6rs3a13vcrckvmmvc",
+          "sequence": 1,
+          "type": "start",
+          "target_scope": "instance",
+          "resolved_run_id": "01m77knkz2q406sat5j5zqm1cr",
+          "payload_codec": "avro",
+          "payload": "wwHioz3/VYAiNwwEAgEEKAA=",
+          "source": "php",
+          "caller_label": "PHP API",
+          "auth_status": "not_applicable",
+          "auth_method": "none",
+          "status": "accepted",
+          "outcome": "started_new",
+          "accepted_at": "2026-11-12T10:08:20.452636Z",
+          "applied_at": "2026-11-12T10:08:20.452640Z"
+        }
+      },
+      "recorded_at": "2026-11-12T10:08:20.460068Z"
+    },
+    {
+      "sequence": 3,
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "activity_execution_id": "01m77knm1zay65b477cprw9qmq",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "sequence": 1,
+        "activity": {
+          "id": "01m77knm1zay65b477cprw9qmq",
+          "idempotency_key": "01m77knm1zay65b477cprw9qmq",
+          "sequence": 1,
+          "type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "local_activity": false,
+          "status": "pending",
+          "payload_codec": "avro",
+          "attempt_count": 0,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [
+              1,
+              2,
+              5,
+              10,
+              15,
+              30,
+              60,
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "connection": "redis",
+          "queue": "default",
+          "created_at": "2026-11-12T10:08:20.543270Z",
+          "arguments": "wwHioz3/VYAiNwwCChZpdGVyYXRpb24tMAA="
+        },
+        "task": {
+          "id": "01m77knkzdr8g4vwg2qhx2g2h0",
+          "type": "workflow",
+          "status": "leased",
+          "available_at": "2026-11-12T10:08:20.461138Z",
+          "leased_at": "2026-11-12T10:08:20.522032Z",
+          "lease_owner": "01m77knkzdr8g4vwg2qhx2g2h0",
+          "lease_expires_at": "2026-11-12T10:13:20.522038Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "default",
+          "last_dispatch_attempt_at": "2026-11-12T10:08:20.484993Z",
+          "last_dispatched_at": "2026-11-12T10:08:20.484993Z"
+        }
+      },
+      "recorded_at": "2026-11-12T10:08:20.545903Z"
+    },
+    {
+      "sequence": 4,
+      "event_type": "ActivityStarted",
+      "payload": {
+        "activity_execution_id": "01m77knm1zay65b477cprw9qmq",
+        "activity_attempt_id": "01M77KNM4988PRGQQ85AZKSA7K",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "sequence": 1,
+        "attempt_number": 1,
+        "activity": {
+          "id": "01m77knm1zay65b477cprw9qmq",
+          "idempotency_key": "01m77knm1zay65b477cprw9qmq",
+          "sequence": 1,
+          "type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "local_activity": false,
+          "attempt_id": "01M77KNM4988PRGQQ85AZKSA7K",
+          "status": "running",
+          "payload_codec": "avro",
+          "attempt_count": 1,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [
+              1,
+              2,
+              5,
+              10,
+              15,
+              30,
+              60,
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "connection": "redis",
+          "queue": "default",
+          "created_at": "2026-11-12T10:08:20.543270Z",
+          "started_at": "2026-11-12T10:08:20.616675Z",
+          "arguments": "wwHioz3/VYAiNwwCChZpdGVyYXRpb24tMAA="
+        },
+        "task": {
+          "id": "01m77knm23zxtjyf39kv22zwpy",
+          "type": "activity",
+          "status": "leased",
+          "available_at": "2026-11-12T10:08:20.547011Z",
+          "leased_at": "2026-11-12T10:08:20.616675Z",
+          "lease_owner": "01m77knm23zxtjyf39kv22zwpy",
+          "lease_expires_at": "2026-11-12T10:13:20.617473Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "default",
+          "last_dispatch_attempt_at": "2026-11-12T10:08:20.581803Z",
+          "last_dispatched_at": "2026-11-12T10:08:20.581803Z"
+        }
+      },
+      "recorded_at": "2026-11-12T10:08:20.619750Z"
+    },
+    {
+      "sequence": 5,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "activity_execution_id": "01m77knm1zay65b477cprw9qmq",
+        "activity_attempt_id": "01M77KNM4988PRGQQ85AZKSA7K",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "sequence": 1,
+        "attempt_number": 1,
+        "result": "wwHioz3/VYAiNwomSGVsbG8sIGl0ZXJhdGlvbi0wIQ==",
+        "payload_codec": "avro",
+        "activity": {
+          "id": "01m77knm1zay65b477cprw9qmq",
+          "idempotency_key": "01m77knm1zay65b477cprw9qmq",
+          "sequence": 1,
+          "type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "local_activity": false,
+          "attempt_id": "01M77KNM4988PRGQQ85AZKSA7K",
+          "status": "completed",
+          "payload_codec": "avro",
+          "attempt_count": 1,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [
+              1,
+              2,
+              5,
+              10,
+              15,
+              30,
+              60,
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "connection": "redis",
+          "queue": "default",
+          "created_at": "2026-11-12T10:08:20.543270Z",
+          "started_at": "2026-11-12T10:08:20.616675Z",
+          "closed_at": "2026-11-12T10:08:20.761132Z",
+          "arguments": "wwHioz3/VYAiNwwCChZpdGVyYXRpb24tMAA=",
+          "result": "wwHioz3/VYAiNwomSGVsbG8sIGl0ZXJhdGlvbi0wIQ=="
+        },
+        "task": {
+          "id": "01m77knm23zxtjyf39kv22zwpy",
+          "type": "activity",
+          "status": "leased",
+          "available_at": "2026-11-12T10:08:20.547011Z",
+          "leased_at": "2026-11-12T10:08:20.616675Z",
+          "lease_owner": "01m77knm23zxtjyf39kv22zwpy",
+          "lease_expires_at": "2026-11-12T10:13:20.699437Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "default",
+          "last_dispatch_attempt_at": "2026-11-12T10:08:20.581803Z",
+          "last_dispatched_at": "2026-11-12T10:08:20.581803Z"
+        }
+      },
+      "recorded_at": "2026-11-12T10:08:20.761941Z"
+    },
+    {
+      "sequence": 6,
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "activity_execution_id": "01m77knmbs28p6ynxr4h0r5kag",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "sequence": 2,
+        "activity": {
+          "id": "01m77knmbs28p6ynxr4h0r5kag",
+          "idempotency_key": "01m77knmbs28p6ynxr4h0r5kag",
+          "sequence": 2,
+          "type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "local_activity": false,
+          "status": "pending",
+          "payload_codec": "avro",
+          "attempt_count": 0,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [
+              1,
+              2,
+              5,
+              10,
+              15,
+              30,
+              60,
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "connection": "redis",
+          "queue": "default",
+          "created_at": "2026-11-12T10:08:20.857705Z",
+          "arguments": "wwHioz3/VYAiNwwCChZpdGVyYXRpb24tMQA="
+        },
+        "task": {
+          "id": "01m77knm8w5yr2rabwg4t3my5w",
+          "type": "workflow",
+          "status": "leased",
+          "available_at": "2026-11-12T10:08:20.764212Z",
+          "leased_at": "2026-11-12T10:08:20.825390Z",
+          "lease_owner": "01m77knm8w5yr2rabwg4t3my5w",
+          "lease_expires_at": "2026-11-12T10:13:20.825399Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "default",
+          "last_dispatch_attempt_at": "2026-11-12T10:08:20.786710Z",
+          "last_dispatched_at": "2026-11-12T10:08:20.786710Z"
+        }
+      },
+      "recorded_at": "2026-11-12T10:08:20.858444Z"
+    },
+    {
+      "sequence": 7,
+      "event_type": "ActivityStarted",
+      "payload": {
+        "activity_execution_id": "01m77knmbs28p6ynxr4h0r5kag",
+        "activity_attempt_id": "01M77KNMDT89R4SAFATC43A97R",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "sequence": 2,
+        "attempt_number": 1,
+        "activity": {
+          "id": "01m77knmbs28p6ynxr4h0r5kag",
+          "idempotency_key": "01m77knmbs28p6ynxr4h0r5kag",
+          "sequence": 2,
+          "type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "local_activity": false,
+          "attempt_id": "01M77KNMDT89R4SAFATC43A97R",
+          "status": "running",
+          "payload_codec": "avro",
+          "attempt_count": 1,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [
+              1,
+              2,
+              5,
+              10,
+              15,
+              30,
+              60,
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "connection": "redis",
+          "queue": "default",
+          "created_at": "2026-11-12T10:08:20.857705Z",
+          "started_at": "2026-11-12T10:08:20.922608Z",
+          "arguments": "wwHioz3/VYAiNwwCChZpdGVyYXRpb24tMQA="
+        },
+        "task": {
+          "id": "01m77knmbvknsjh9h7x11zffgc",
+          "type": "activity",
+          "status": "leased",
+          "available_at": "2026-11-12T10:08:20.859355Z",
+          "leased_at": "2026-11-12T10:08:20.922608Z",
+          "lease_owner": "01m77knmbvknsjh9h7x11zffgc",
+          "lease_expires_at": "2026-11-12T10:13:20.922649Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "default",
+          "last_dispatch_attempt_at": "2026-11-12T10:08:20.882509Z",
+          "last_dispatched_at": "2026-11-12T10:08:20.882509Z"
+        }
+      },
+      "recorded_at": "2026-11-12T10:08:20.924914Z"
+    },
+    {
+      "sequence": 8,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "activity_execution_id": "01m77knmbs28p6ynxr4h0r5kag",
+        "activity_attempt_id": "01M77KNMDT89R4SAFATC43A97R",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "sequence": 2,
+        "attempt_number": 1,
+        "result": "wwHioz3/VYAiNwomSGVsbG8sIGl0ZXJhdGlvbi0xIQ==",
+        "payload_codec": "avro",
+        "activity": {
+          "id": "01m77knmbs28p6ynxr4h0r5kag",
+          "idempotency_key": "01m77knmbs28p6ynxr4h0r5kag",
+          "sequence": 2,
+          "type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "local_activity": false,
+          "attempt_id": "01M77KNMDT89R4SAFATC43A97R",
+          "status": "completed",
+          "payload_codec": "avro",
+          "attempt_count": 1,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [
+              1,
+              2,
+              5,
+              10,
+              15,
+              30,
+              60,
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "connection": "redis",
+          "queue": "default",
+          "created_at": "2026-11-12T10:08:20.857705Z",
+          "started_at": "2026-11-12T10:08:20.922608Z",
+          "closed_at": "2026-11-12T10:08:21.068585Z",
+          "arguments": "wwHioz3/VYAiNwwCChZpdGVyYXRpb24tMQA=",
+          "result": "wwHioz3/VYAiNwomSGVsbG8sIGl0ZXJhdGlvbi0xIQ=="
+        },
+        "task": {
+          "id": "01m77knmbvknsjh9h7x11zffgc",
+          "type": "activity",
+          "status": "leased",
+          "available_at": "2026-11-12T10:08:20.859355Z",
+          "leased_at": "2026-11-12T10:08:20.922608Z",
+          "lease_owner": "01m77knmbvknsjh9h7x11zffgc",
+          "lease_expires_at": "2026-11-12T10:13:21.014121Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "default",
+          "last_dispatch_attempt_at": "2026-11-12T10:08:20.882509Z",
+          "last_dispatched_at": "2026-11-12T10:08:20.882509Z"
+        }
+      },
+      "recorded_at": "2026-11-12T10:08:21.070963Z"
+    },
+    {
+      "sequence": 9,
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "activity_execution_id": "01m77knmqdqd92n5ftw19gthx7",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "sequence": 3,
+        "activity": {
+          "id": "01m77knmqdqd92n5ftw19gthx7",
+          "idempotency_key": "01m77knmqdqd92n5ftw19gthx7",
+          "sequence": 3,
+          "type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "local_activity": false,
+          "status": "pending",
+          "payload_codec": "avro",
+          "attempt_count": 0,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [
+              1,
+              2,
+              5,
+              10,
+              15,
+              30,
+              60,
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "connection": "redis",
+          "queue": "default",
+          "created_at": "2026-11-12T10:08:21.229413Z",
+          "arguments": "wwHioz3/VYAiNwwCChZpdGVyYXRpb24tMgA="
+        },
+        "task": {
+          "id": "01m77knmjk9hg6bqdqpqff503k",
+          "type": "workflow",
+          "status": "leased",
+          "available_at": "2026-11-12T10:08:21.075576Z",
+          "leased_at": "2026-11-12T10:08:21.180271Z",
+          "lease_owner": "01m77knmjk9hg6bqdqpqff503k",
+          "lease_expires_at": "2026-11-12T10:13:21.180281Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "default",
+          "last_dispatch_attempt_at": "2026-11-12T10:08:21.114124Z",
+          "last_dispatched_at": "2026-11-12T10:08:21.114124Z"
+        }
+      },
+      "recorded_at": "2026-11-12T10:08:21.230297Z"
+    },
+    {
+      "sequence": 10,
+      "event_type": "ActivityStarted",
+      "payload": {
+        "activity_execution_id": "01m77knmqdqd92n5ftw19gthx7",
+        "activity_attempt_id": "01M77KNMTWMNTK47AQ5D9JB7DP",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "sequence": 3,
+        "attempt_number": 1,
+        "activity": {
+          "id": "01m77knmqdqd92n5ftw19gthx7",
+          "idempotency_key": "01m77knmqdqd92n5ftw19gthx7",
+          "sequence": 3,
+          "type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "local_activity": false,
+          "attempt_id": "01M77KNMTWMNTK47AQ5D9JB7DP",
+          "status": "running",
+          "payload_codec": "avro",
+          "attempt_count": 1,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [
+              1,
+              2,
+              5,
+              10,
+              15,
+              30,
+              60,
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "connection": "redis",
+          "queue": "default",
+          "created_at": "2026-11-12T10:08:21.229413Z",
+          "started_at": "2026-11-12T10:08:21.340242Z",
+          "arguments": "wwHioz3/VYAiNwwCChZpdGVyYXRpb24tMgA="
+        },
+        "task": {
+          "id": "01m77knmqf1v8fed7r1bgegkmv",
+          "type": "activity",
+          "status": "leased",
+          "available_at": "2026-11-12T10:08:21.231378Z",
+          "leased_at": "2026-11-12T10:08:21.340242Z",
+          "lease_owner": "01m77knmqf1v8fed7r1bgegkmv",
+          "lease_expires_at": "2026-11-12T10:13:21.340287Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "default",
+          "last_dispatch_attempt_at": "2026-11-12T10:08:21.266994Z",
+          "last_dispatched_at": "2026-11-12T10:08:21.266994Z"
+        }
+      },
+      "recorded_at": "2026-11-12T10:08:21.342850Z"
+    },
+    {
+      "sequence": 11,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "activity_execution_id": "01m77knmqdqd92n5ftw19gthx7",
+        "activity_attempt_id": "01M77KNMTWMNTK47AQ5D9JB7DP",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "sequence": 3,
+        "attempt_number": 1,
+        "result": "wwHioz3/VYAiNwomSGVsbG8sIGl0ZXJhdGlvbi0yIQ==",
+        "payload_codec": "avro",
+        "activity": {
+          "id": "01m77knmqdqd92n5ftw19gthx7",
+          "idempotency_key": "01m77knmqdqd92n5ftw19gthx7",
+          "sequence": 3,
+          "type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "local_activity": false,
+          "attempt_id": "01M77KNMTWMNTK47AQ5D9JB7DP",
+          "status": "completed",
+          "payload_codec": "avro",
+          "attempt_count": 1,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [
+              1,
+              2,
+              5,
+              10,
+              15,
+              30,
+              60,
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "connection": "redis",
+          "queue": "default",
+          "created_at": "2026-11-12T10:08:21.229413Z",
+          "started_at": "2026-11-12T10:08:21.340242Z",
+          "closed_at": "2026-11-12T10:08:21.506976Z",
+          "arguments": "wwHioz3/VYAiNwwCChZpdGVyYXRpb24tMgA=",
+          "result": "wwHioz3/VYAiNwomSGVsbG8sIGl0ZXJhdGlvbi0yIQ=="
+        },
+        "task": {
+          "id": "01m77knmqf1v8fed7r1bgegkmv",
+          "type": "activity",
+          "status": "leased",
+          "available_at": "2026-11-12T10:08:21.231378Z",
+          "leased_at": "2026-11-12T10:08:21.340242Z",
+          "lease_owner": "01m77knmqf1v8fed7r1bgegkmv",
+          "lease_expires_at": "2026-11-12T10:13:21.442593Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "default",
+          "last_dispatch_attempt_at": "2026-11-12T10:08:21.266994Z",
+          "last_dispatched_at": "2026-11-12T10:08:21.266994Z"
+        }
+      },
+      "recorded_at": "2026-11-12T10:08:21.507885Z"
+    },
+    {
+      "sequence": 12,
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "activity_execution_id": "01m77knn4m1af5xz3nzzc2w83f",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "sequence": 4,
+        "activity": {
+          "id": "01m77knn4m1af5xz3nzzc2w83f",
+          "idempotency_key": "01m77knn4m1af5xz3nzzc2w83f",
+          "sequence": 4,
+          "type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "local_activity": false,
+          "status": "pending",
+          "payload_codec": "avro",
+          "attempt_count": 0,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [
+              1,
+              2,
+              5,
+              10,
+              15,
+              30,
+              60,
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "connection": "redis",
+          "queue": "default",
+          "created_at": "2026-11-12T10:08:21.652985Z",
+          "arguments": "wwHioz3/VYAiNwwCChZpdGVyYXRpb24tMwA="
+        },
+        "task": {
+          "id": "01m77knn06ebe77hqmeyxv7qh4",
+          "type": "workflow",
+          "status": "leased",
+          "available_at": "2026-11-12T10:08:21.510206Z",
+          "leased_at": "2026-11-12T10:08:21.600115Z",
+          "lease_owner": "01m77knn06ebe77hqmeyxv7qh4",
+          "lease_expires_at": "2026-11-12T10:13:21.600123Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "default",
+          "last_dispatch_attempt_at": "2026-11-12T10:08:21.548884Z",
+          "last_dispatched_at": "2026-11-12T10:08:21.548884Z"
+        }
+      },
+      "recorded_at": "2026-11-12T10:08:21.653836Z"
+    },
+    {
+      "sequence": 13,
+      "event_type": "ActivityStarted",
+      "payload": {
+        "activity_execution_id": "01m77knn4m1af5xz3nzzc2w83f",
+        "activity_attempt_id": "01M77KNN7X9A1W0KZ8QHYB6P0Q",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "sequence": 4,
+        "attempt_number": 1,
+        "activity": {
+          "id": "01m77knn4m1af5xz3nzzc2w83f",
+          "idempotency_key": "01m77knn4m1af5xz3nzzc2w83f",
+          "sequence": 4,
+          "type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "local_activity": false,
+          "attempt_id": "01M77KNN7X9A1W0KZ8QHYB6P0Q",
+          "status": "running",
+          "payload_codec": "avro",
+          "attempt_count": 1,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [
+              1,
+              2,
+              5,
+              10,
+              15,
+              30,
+              60,
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "connection": "redis",
+          "queue": "default",
+          "created_at": "2026-11-12T10:08:21.652985Z",
+          "started_at": "2026-11-12T10:08:21.757806Z",
+          "arguments": "wwHioz3/VYAiNwwCChZpdGVyYXRpb24tMwA="
+        },
+        "task": {
+          "id": "01m77knn4qgav22x8nw8s93m91",
+          "type": "activity",
+          "status": "leased",
+          "available_at": "2026-11-12T10:08:21.654970Z",
+          "leased_at": "2026-11-12T10:08:21.757806Z",
+          "lease_owner": "01m77knn4qgav22x8nw8s93m91",
+          "lease_expires_at": "2026-11-12T10:13:21.757849Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "default",
+          "last_dispatch_attempt_at": "2026-11-12T10:08:21.699535Z",
+          "last_dispatched_at": "2026-11-12T10:08:21.699535Z"
+        }
+      },
+      "recorded_at": "2026-11-12T10:08:21.760648Z"
+    },
+    {
+      "sequence": 14,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "activity_execution_id": "01m77knn4m1af5xz3nzzc2w83f",
+        "activity_attempt_id": "01M77KNN7X9A1W0KZ8QHYB6P0Q",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "sequence": 4,
+        "attempt_number": 1,
+        "result": "wwHioz3/VYAiNwomSGVsbG8sIGl0ZXJhdGlvbi0zIQ==",
+        "payload_codec": "avro",
+        "activity": {
+          "id": "01m77knn4m1af5xz3nzzc2w83f",
+          "idempotency_key": "01m77knn4m1af5xz3nzzc2w83f",
+          "sequence": 4,
+          "type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "local_activity": false,
+          "attempt_id": "01M77KNN7X9A1W0KZ8QHYB6P0Q",
+          "status": "completed",
+          "payload_codec": "avro",
+          "attempt_count": 1,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [
+              1,
+              2,
+              5,
+              10,
+              15,
+              30,
+              60,
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "connection": "redis",
+          "queue": "default",
+          "created_at": "2026-11-12T10:08:21.652985Z",
+          "started_at": "2026-11-12T10:08:21.757806Z",
+          "closed_at": "2026-11-12T10:08:21.931584Z",
+          "arguments": "wwHioz3/VYAiNwwCChZpdGVyYXRpb24tMwA=",
+          "result": "wwHioz3/VYAiNwomSGVsbG8sIGl0ZXJhdGlvbi0zIQ=="
+        },
+        "task": {
+          "id": "01m77knn4qgav22x8nw8s93m91",
+          "type": "activity",
+          "status": "leased",
+          "available_at": "2026-11-12T10:08:21.654970Z",
+          "leased_at": "2026-11-12T10:08:21.757806Z",
+          "lease_owner": "01m77knn4qgav22x8nw8s93m91",
+          "lease_expires_at": "2026-11-12T10:13:21.864055Z",
+          "attempt_count": 1,
+          "repair_count": 0,
+          "connection": "sqlite",
+          "queue": "default",
+          "last_dispatch_attempt_at": "2026-11-12T10:08:21.699535Z",
+          "last_dispatched_at": "2026-11-12T10:08:21.699535Z"
+        }
+      },
+      "recorded_at": "2026-11-12T10:08:21.933877Z"
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "continue_as_new",
+        "payload_codec": "avro"
+      }
+    ]
+  }
+}
