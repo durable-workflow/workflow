@@ -867,16 +867,16 @@ final class ActivityOutcomeRecorder
     private static function closeAttempt(string $attemptId, ActivityAttemptStatus $status): void
     {
         $query = ActivityAttempt::query();
-        $closedAt = $query->getQuery()->getGrammar()->quoteString(
-            now()->format((new ActivityAttempt())->getDateFormat()),
-        );
+        $closedAt = $query->getQuery()
+            ->getGrammar()
+            ->quoteString(now() ->format((new ActivityAttempt())->getDateFormat()));
 
         $query->whereKey($attemptId)
             ->where('status', ActivityAttemptStatus::Running->value)
             ->update([
                 'status' => $status->value,
                 'lease_expires_at' => null,
-                'closed_at' => DB::raw('COALESCE(closed_at, '.$closedAt.')'),
+                'closed_at' => DB::raw('COALESCE(closed_at, ' . $closedAt . ')'),
             ]);
     }
 

@@ -147,9 +147,11 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
             'failed' => ActivityAttemptStatus::Failed,
             'run cancelled' => ActivityAttemptStatus::Cancelled,
         ] as $case => $expected) {
-            [$run, , , $attempt] = $this->scaffoldLeasedAttempt('attempt-close-'.Str::slug($case));
+            [$run, , , $attempt] = $this->scaffoldLeasedAttempt('attempt-close-' . Str::slug($case));
             if ($case === 'run cancelled') {
-                $run->forceFill(['status' => RunStatus::Cancelled])->save();
+                $run->forceFill([
+                    'status' => RunStatus::Cancelled,
+                ])->save();
             }
 
             DB::flushQueryLog();
