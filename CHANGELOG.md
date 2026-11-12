@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Changing a schedule's action now drops fires buffered under the old
+  action (#876). Each dropped fire is recorded as a `ScheduleTriggerSkipped`
+  event with reason `action_changed` and its `occurrence_time`. Updates that
+  leave the action unchanged keep the buffer.
+
 ## 2.24.0 - 2026-11-11
 
 - Activity heartbeats no longer grow run history with every heartbeat
