@@ -1,0 +1,51 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "embedded-namespace-boundary-foreign-task",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestGreetingWorkflow",
+    "arguments": [
+      "Taylor"
+    ],
+    "payload_codec": "avro"
+  },
+  "embedded_namespace_boundary": {
+    "issue": "durable-workflow/workflow#889",
+    "note": "Two embedded apps share one database and the same connection and queue names, separated only by namespace. A run started in namespace app-b replays like any first run, but app-a's queue job and watchdog pass refuse its task before any effect; app-b, the owning app, still executes it."
+  },
+  "history": [
+    {
+      "id": "01m78a0n889bndry000000001x",
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-12T12:00:00.000000Z",
+      "payload": {
+        "workflow_class": "Tests\\Fixtures\\V2\\TestGreetingWorkflow",
+        "workflow_type": "test-greeting-workflow",
+        "workflow_instance_id": "01m78a0n889bndry000000002x",
+        "workflow_run_id": "01m78a0n889bndry000000003x",
+        "execution_timeout_seconds": null,
+        "run_timeout_seconds": null,
+        "execution_deadline_at": null,
+        "run_deadline_at": null
+      }
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "schedule_activity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity"
+      }
+    ]
+  }
+}
