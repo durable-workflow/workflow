@@ -14,6 +14,7 @@ use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowChildCall;
 use Workflow\V2\Models\WorkflowChildProjectionRepair;
+use Workflow\V2\Models\WorkflowChildSupervision;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -107,7 +108,13 @@ final class WorkflowRunRetentionCleanup
                 'parent_workflow_run_id',
                 $runId,
             );
-            $report['links_deleted'] = self::deleteLinks($runId);
+            // A supervised child's row belongs to the run that applies its
+            // policy; it outlives the earlier run that started the child.
+            $report['links_deleted'] = self::deleteLinks($runId) + self::deleteByColumn(
+                ConfiguredV2Models::query('child_supervision_model', WorkflowChildSupervision::class),
+                'supervising_workflow_run_id',
+                $runId,
+            );
             $report['activity_executions_deleted'] = self::deleteByRun(
                 ConfiguredV2Models::query('activity_execution_model', ActivityExecution::class),
                 $runId,

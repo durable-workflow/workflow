@@ -51,6 +51,7 @@ use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowChildCall;
 use Workflow\V2\Models\WorkflowChildProjectionRepair;
+use Workflow\V2\Models\WorkflowChildSupervision;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -10458,6 +10459,130 @@ final class V2WorkflowTaskBridgeTest extends TestCase
 
         $this->assertSame('request_cancel', $applied->payload['policy'] ?? null);
         $this->assertSame($continuedRun->id, $applied->payload['child_run_id'] ?? null);
+    }
+
+    /**
+     * @return array<string, array{string, RunStatus, bool}>
+     */
+    public static function continuedParentOpenChildPolicyProvider(): array
+    {
+        return [
+            'request_cancel' => ['request_cancel', RunStatus::Cancelled, true],
+            'terminate' => ['terminate', RunStatus::Terminated, true],
+            'abandon' => ['abandon', RunStatus::Pending, false],
+        ];
+    }
+
+    #[DataProvider('continuedParentOpenChildPolicyProvider')]
+    public function testContinueAsNewHandsOpenChildToTheContinuedRunWhichAppliesItsPolicy(
+        string $policy,
+        RunStatus $expectedChildStatus,
+        bool $expectApplied,
+    ): void {
+        $run = $this->createWaitingRun();
+
+        $started = $this->bridge->complete($this->createLeasedTask($run)->id, [
+            [
+                'type' => 'start_child_workflow',
+                'workflow_type' => 'test-greeting-workflow',
+                'arguments' => Serializer::serialize(['child-arg']),
+                'parent_close_policy' => $policy,
+            ],
+        ]);
+        $this->assertTrue($started['completed']);
+
+        /** @var WorkflowLink $childLink */
+        $childLink = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'child_workflow')
+            ->sole();
+
+        $continued = $this->bridge->complete($this->createLeasedTask($run->fresh())->id, [
+            [
+                'type' => 'continue_as_new',
+                'arguments' => Serializer::serialize(['next']),
+            ],
+        ]);
+        $this->assertTrue($continued['completed']);
+
+        /** @var WorkflowLink $continueLink */
+        $continueLink = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'continue_as_new')
+            ->sole();
+        /** @var WorkflowRun $continuedRun */
+        $continuedRun = WorkflowRun::query()->findOrFail($continueLink->child_workflow_run_id);
+
+        /** @var WorkflowChildSupervision $supervision */
+        $supervision = WorkflowChildSupervision::query()
+            ->where('supervising_workflow_run_id', $continuedRun->id)
+            ->sole();
+        $this->assertSame($childLink->id, $supervision->workflow_link_id);
+        $this->assertSame($run->id, $supervision->parent_workflow_run_id);
+        $this->assertSame($childLink->sequence, $supervision->sequence);
+        $this->assertSame($childLink->child_workflow_run_id, $supervision->child_workflow_run_id);
+        $this->assertSame($policy, $supervision->parent_close_policy);
+
+        $predecessorEventCount = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->count();
+
+        /** @var WorkflowTask $continuedTask */
+        $continuedTask = WorkflowTask::query()
+            ->where('workflow_run_id', $continuedRun->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->sole();
+        $this->bridge->claimStatus($continuedTask->id, 'external-worker-2');
+
+        $closed = $this->bridge->complete($continuedTask->id, [
+            [
+                'type' => 'complete_workflow',
+                'result' => Serializer::serialize([
+                    'parent' => 'done',
+                ]),
+            ],
+        ]);
+        $this->assertTrue($closed['completed']);
+
+        $this->assertSame(RunStatus::Completed, $continuedRun->refresh()->status);
+        $this->assertSame(
+            $expectedChildStatus,
+            WorkflowRun::query()->findOrFail($childLink->child_workflow_run_id)->status,
+        );
+
+        $applied = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $continuedRun->id)
+            ->where('event_type', HistoryEventType::ParentClosePolicyApplied->value)
+            ->get();
+        $this->assertCount($expectApplied ? 1 : 0, $applied);
+        if ($expectApplied) {
+            $this->assertSame($policy, $applied->first()->payload['policy'] ?? null);
+            $this->assertSame($childLink->child_workflow_run_id, $applied->first()->payload['child_run_id'] ?? null);
+        }
+
+        // Nothing is appended to the closed predecessor.
+        $this->assertSame($predecessorEventCount, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->count());
+        $this->assertSame(
+            HistoryEventType::WorkflowContinuedAsNew,
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $run->id)
+                ->orderByDesc('sequence')
+                ->firstOrFail()
+                ->event_type,
+        );
+
+        /** @var WorkflowChildCall $childCall */
+        $childCall = WorkflowChildCall::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->where('sequence', $childLink->sequence)
+            ->sole();
+        $this->assertSame(match ($policy) {
+            'request_cancel' => ChildCallStatus::Cancelled,
+            'terminate' => ChildCallStatus::Terminated,
+            default => ChildCallStatus::Started,
+        }, $childCall->status);
     }
 
     public function testChildStartAuthoritativeStateSurvivesChildCallProjectionInsertFailure(): void

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- A parent that continues as new while children it started are still open
+  now hands them to the continued run (#868). Embedded and service-mode
+  continue-as-new record one `workflow_child_supervisions` row per open child,
+  in the same transaction. The child link, child call, sequence, deadlines and
+  parent-close policy stay as recorded. When the chain's final run completes,
+  fails, is cancelled, is terminated or times out, it applies each child's
+  `request_cancel`, `request_cancellation` or `terminate` policy and records
+  the outcome in its own history. `abandon` stays `abandon`. Before, these
+  children kept running and their policy was never applied. Nothing is
+  appended to the closed predecessor, and the continued run gets no handle on
+  the children. The unused `ChildCallService::transferChildCallsToContinuedRun()`
+  is removed: it re-keyed child calls to the continued run, where their
+  sequences could collide with its own children. Run the new migration.
 - An activity outcome no longer locks the attempt row after it holds the task,
   execution and run (#1000). It closes the attempt with one guarded conditional
   update instead. Lease renewal locks the attempt first, so the old order could

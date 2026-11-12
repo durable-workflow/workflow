@@ -56,6 +56,7 @@ use Workflow\V2\Support\CancellationScopeDescendants;
 use Workflow\V2\Support\CancellationScopeHistory;
 use Workflow\V2\Support\CancellationScopeRequests;
 use Workflow\V2\Support\ChildRunHistory;
+use Workflow\V2\Support\ChildSupervision;
 use Workflow\V2\Support\CommandIntent;
 use Workflow\V2\Support\CommandRequestIdentity;
 use Workflow\V2\Support\ConfiguredV2Models;
@@ -2237,7 +2238,9 @@ final class WorkflowStub
                     ->where('child_workflow_run_id', $run->id)
                     ->where('child_workflow_instance_id', $instance->id)
                     ->where('link_type', 'child_workflow')
-                    ->exists();
+                    ->exists()
+                    // A continued run applies the policy of a child its chain handed to it (#868).
+                    || ChildSupervision::supervisesTransferredChild($parentWorkflowRunId, $instance->id);
                 /** @var WorkflowRun|null $parent */
                 $parent = $linked ? self::runQuery()->find($parentWorkflowRunId) : null;
                 /** @var WorkflowCommand|null $parentCommand */
