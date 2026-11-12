@@ -5542,10 +5542,40 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         self::projectRun($continuedRun, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY);
     }
 
+    /**
+     * A child whose parent continued as new is retried under the parent's
+     * recorded retry policy while a later run of the chain supervises it.
+     */
+    private function retryHandedOverChild(WorkflowRun $parentRun, ?int $sequence, WorkflowRun $childRun): void
+    {
+        if ($sequence === null || ChildSupervision::openSupervisorOfHandedOverChild(
+            $parentRun,
+            $sequence,
+            (string) $childRun->workflow_instance_id,
+        ) === null) {
+            return;
+        }
+
+        $parentRun->loadMissing([
+            'historyEvents',
+            'childLinks.childRun.instance.currentRun',
+            'childLinks.childRun.failures',
+            'childLinks.childRun.historyEvents',
+        ]);
+
+        $this->startChildRetryIfAvailable($parentRun, $sequence, $childRun, true);
+    }
+
+    /**
+     * @param bool $handedOver The parent continued as new and a later run of
+     *                         its chain supervises the child. The closed parent's history is final, so
+     *                         the retry is recorded on the child, its link, its call and the supervision.
+     */
     private function startChildRetryIfAvailable(
         WorkflowRun $parentRun,
         int $sequence,
         WorkflowRun $failedChildRun,
+        bool $handedOver = false,
     ): ?WorkflowTask {
         if (ChildRunHistory::resolvedStatus(null, $failedChildRun) !== RunStatus::Failed) {
             return null;
@@ -5681,26 +5711,30 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'parent_close_policy' => $parentClosePolicy,
         ]);
 
-        WorkflowHistoryEvent::record($parentRun, HistoryEventType::ChildRunStarted, array_filter(array_merge([
-            'sequence' => $sequence,
-            'workflow_link_id' => $retryLink->id,
-            'child_call_id' => $childCallId,
-            'child_workflow_instance_id' => $retryRun->workflow_instance_id,
-            'child_workflow_run_id' => $retryRun->id,
-            'child_workflow_class' => $retryRun->workflow_class,
-            'child_workflow_type' => $retryRun->workflow_type,
-            'child_run_number' => $retryRun->run_number,
-            'parent_close_policy' => $parentClosePolicy,
-            'retry_attempt' => $attemptCount + 1,
-            'retry_of_child_workflow_run_id' => $failedChildRun->id,
-            'retry_backoff_seconds' => $backoffSeconds,
-            'retry_policy' => $retryPolicy,
-            'timeout_policy' => $timeoutPolicy,
-            'execution_timeout_seconds' => $executionTimeoutSeconds,
-            'run_timeout_seconds' => $runTimeoutSeconds,
-            'execution_deadline_at' => $executionDeadlineAt?->toIso8601String(),
-            'run_deadline_at' => $runDeadlineAt?->toIso8601String(),
-        ], $parallelMetadata), static fn (mixed $value): bool => $value !== null));
+        if ($handedOver) {
+            ChildSupervision::followRetry($parentRun, $sequence, $retryRun);
+        } else {
+            WorkflowHistoryEvent::record($parentRun, HistoryEventType::ChildRunStarted, array_filter(array_merge([
+                'sequence' => $sequence,
+                'workflow_link_id' => $retryLink->id,
+                'child_call_id' => $childCallId,
+                'child_workflow_instance_id' => $retryRun->workflow_instance_id,
+                'child_workflow_run_id' => $retryRun->id,
+                'child_workflow_class' => $retryRun->workflow_class,
+                'child_workflow_type' => $retryRun->workflow_type,
+                'child_run_number' => $retryRun->run_number,
+                'parent_close_policy' => $parentClosePolicy,
+                'retry_attempt' => $attemptCount + 1,
+                'retry_of_child_workflow_run_id' => $failedChildRun->id,
+                'retry_backoff_seconds' => $backoffSeconds,
+                'retry_policy' => $retryPolicy,
+                'timeout_policy' => $timeoutPolicy,
+                'execution_timeout_seconds' => $executionTimeoutSeconds,
+                'run_timeout_seconds' => $runTimeoutSeconds,
+                'execution_deadline_at' => $executionDeadlineAt?->toIso8601String(),
+                'run_deadline_at' => $runDeadlineAt?->toIso8601String(),
+            ], $parallelMetadata), static fn (mixed $value): bool => $value !== null));
+        }
 
         WorkflowHistoryEvent::record($retryRun, HistoryEventType::WorkflowStarted, [
             'workflow_class' => $retryRun->workflow_class,
@@ -5781,7 +5815,17 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 ->lockForUpdate()
                 ->find($parentLink->parent_workflow_run_id);
 
-            if ($parentRun === null || $parentRun->status->isTerminal()) {
+            if ($parentRun === null) {
+                continue;
+            }
+
+            if ($parentRun->status->isTerminal()) {
+                $this->retryHandedOverChild(
+                    $parentRun,
+                    is_int($parentLink->sequence) ? $parentLink->sequence : null,
+                    $childRun,
+                );
+
                 continue;
             }
 

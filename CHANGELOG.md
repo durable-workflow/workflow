@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- A child handed to a continued run now gets its retries (#1105). Before, a
+  child that failed after its parent continued as new was never retried,
+  because the retry needed the parent to be waiting. It is now retried under
+  the retry policy the parent recorded, with the same child call identity and
+  attempt count, while a run of the chain still supervises it. The retry run's
+  `WorkflowStarted` names the original parent run, and the supervision moves to
+  the retry run, so the chain's final run applies the parent-close policy to it.
+  Nothing is appended to the closed predecessor. Once the attempts are spent,
+  the failure is non-retryable, or the chain has closed, the failure is final.
+  Embedded and service-mode runs behave the same. No migration.
 - Upgrade migrations that fill in existing rows no longer lock the table for
   the whole backfill on PostgreSQL (#871). The output codec (`2026_07_13`),
   local activity exception (`2026_09_24`), schedule occurrence (`2026_09_29`)

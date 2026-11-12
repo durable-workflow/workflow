@@ -1,0 +1,67 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "handed-over-child-retry-run-replays",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestGreetingWorkflow",
+    "arguments": [
+      "child-arg"
+    ],
+    "payload_codec": "avro"
+  },
+  "handed_over_child_retry": {
+    "issue": "durable-workflow/workflow#1105",
+    "note": "A child whose parent continued as new failed and was retried under the parent's recorded retry policy. The retry run names the closed predecessor as its parent, keeps the original child call identity and counts the attempt. It replays like any first run."
+  },
+  "history": [
+    {
+      "id": "01m77s1tysrjczm882hygmrjpm",
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-12T11:42:23.705265Z",
+      "payload": {
+        "workflow_class": "Tests\\Fixtures\\V2\\TestGreetingWorkflow",
+        "workflow_type": "test-greeting-workflow",
+        "workflow_instance_id": "01m77s1tqas1bx46pggq6dtp05",
+        "workflow_run_id": "01m77s1tymk23vczs3axbsvehw",
+        "parent_workflow_instance_id": "01m77s1tq27ccr5g00dj3qq8n1",
+        "parent_workflow_run_id": "01m77s1tq331cg003204dfr1q3",
+        "parent_sequence": 1,
+        "workflow_link_id": "01m77s1tyq680j7txscw12m840",
+        "child_call_id": "01M77S1TQCX0JRMX0FC7023T60",
+        "retry_attempt": 2,
+        "retry_of_child_workflow_run_id": "01m77s1tqbettvf62mpapr1f3z",
+        "retry_policy": {
+          "snapshot_version": 1,
+          "max_attempts": 3,
+          "backoff_seconds": [
+            0
+          ],
+          "non_retryable_error_types": []
+        },
+        "timeout_policy": null,
+        "execution_timeout_seconds": null,
+        "run_timeout_seconds": null,
+        "execution_deadline_at": null,
+        "run_deadline_at": null
+      }
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "schedule_activity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity"
+      }
+    ]
+  }
+}

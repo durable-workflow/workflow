@@ -175,6 +175,59 @@ final class ChildSupervision
     }
 
     /**
+     * The open run that supervises a child its chain handed over, if any.
+     *
+     * A child that fails after the run that started it continued as new is
+     * retried under the retry policy that run recorded, with the same call
+     * identity and attempt count, but only while a run of the chain still
+     * supervises it. Once the chain has closed, its parent-close policy has
+     * been applied and a later failure of the child is final.
+     */
+    public static function openSupervisorOfHandedOverChild(
+        WorkflowRun $parentRun,
+        int $sequence,
+        string $childInstanceId,
+    ): ?WorkflowRun {
+        if ($parentRun->closed_reason !== 'continued') {
+            return null;
+        }
+
+        $supervisingRunIds = ConfiguredV2Models::query('child_supervision_model', WorkflowChildSupervision::class)
+            ->where('parent_workflow_run_id', $parentRun->id)
+            ->where('sequence', $sequence)
+            ->where('child_workflow_instance_id', $childInstanceId)
+            ->pluck('supervising_workflow_run_id')
+            ->all();
+
+        if ($supervisingRunIds === []) {
+            return null;
+        }
+
+        /** @var WorkflowRun|null $openRun */
+        $openRun = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+            ->whereIn('id', $supervisingRunIds)
+            ->get()
+            ->first(static fn (WorkflowRun $run): bool => ! self::isTerminal($run));
+
+        return $openRun;
+    }
+
+    /**
+     * Point every supervision of a handed-over child at its retry run, so the
+     * chain applies its parent-close policy to the run that is now open.
+     */
+    public static function followRetry(WorkflowRun $parentRun, int $sequence, WorkflowRun $retryRun): void
+    {
+        ConfiguredV2Models::query('child_supervision_model', WorkflowChildSupervision::class)
+            ->where('parent_workflow_run_id', $parentRun->id)
+            ->where('sequence', $sequence)
+            ->where('child_workflow_instance_id', $retryRun->workflow_instance_id)
+            ->update([
+                'child_workflow_run_id' => $retryRun->id,
+            ]);
+    }
+
+    /**
      * A child that continued as new after its parent stopped watching it is
      * still the same child: follow it to its current run.
      */

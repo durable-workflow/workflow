@@ -2278,6 +2278,12 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 continue;
             }
 
+            if ($fixture['id'] === 'handed-over-child-retry-run-replays') {
+                $this->assertHandedOverChildFailureStartsTheRecordedRetry($fixture);
+
+                continue;
+            }
+
             if ($fixture['id'] === 'cooperative-delivery-before-wait-sequence') {
                 $run = $this->createRunFromFixture($fixture);
                 $this->assertSame(2, WorkflowStepHistory::nextDurableCommandSequence($run->fresh()));
@@ -2395,6 +2401,127 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
      * service-mode run: one byte over the limit refuses with no history
      * written, and a payload at the limit completes (#865).
      */
+    /**
+     * A child that fails after its parent continued as new is retried under
+     * the retry policy the parent recorded, while the continued run still
+     * supervises it (#1105). The retry run's start event matches the evidence.
+     *
+     * @param array<string, mixed> $fixture
+     */
+    private function assertHandedOverChildFailureStartsTheRecordedRetry(array $fixture): void
+    {
+        $this->clearWorkflowState();
+        $expected = $fixture['history'][0]['payload'];
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+
+        /** @var WorkflowInstance $instance */
+        $instance = WorkflowInstance::query()->create([
+            'workflow_class' => 'handed-over-child-parent',
+            'workflow_type' => 'handed-over-child-parent',
+            'run_count' => 1,
+            'reserved_at' => now(),
+            'started_at' => now(),
+        ]);
+        /** @var WorkflowRun $parentRun */
+        $parentRun = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => 'handed-over-child-parent',
+            'workflow_type' => 'handed-over-child-parent',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serializeWithCodec('avro', []),
+            'payload_codec' => 'avro',
+            'connection' => 'database',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'started_at' => now(),
+            'last_progress_at' => now(),
+        ]);
+        $instance->forceFill([
+            'current_run_id' => $parentRun->id,
+        ])->save();
+
+        $leasedParentTask = static function (WorkflowRun $run): WorkflowTask {
+            /** @var WorkflowTask $task */
+            $task = WorkflowTask::query()->create([
+                'workflow_run_id' => $run->id,
+                'namespace' => $run->namespace,
+                'task_type' => TaskType::Workflow->value,
+                'status' => TaskStatus::Leased->value,
+                'available_at' => now()
+                    ->subSecond(),
+                'payload' => [],
+                'connection' => 'database',
+                'queue' => 'default',
+                'compatibility' => 'build-a',
+                'lease_owner' => 'external-parent-worker',
+                'lease_expires_at' => now()
+                    ->addMinutes(5),
+            ]);
+
+            return $task;
+        };
+
+        $this->assertTrue($bridge->complete($leasedParentTask($parentRun)->id, [[
+            'type' => 'start_child_workflow',
+            'workflow_type' => $expected['workflow_type'],
+            'arguments' => Serializer::serializeWithCodec('avro', $fixture['workflow']['arguments']),
+            'payload_codec' => 'avro',
+            'parent_close_policy' => 'request_cancel',
+            'retry_policy' => [
+                'max_attempts' => $expected['retry_policy']['max_attempts'],
+                'backoff_seconds' => $expected['retry_policy']['backoff_seconds'],
+            ],
+        ]])['completed']);
+        /** @var WorkflowLink $childLink */
+        $childLink = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRun->id)
+            ->where('link_type', 'child_workflow')
+            ->sole();
+
+        $this->assertTrue($bridge->complete($leasedParentTask($parentRun->fresh())->id, [[
+            'type' => 'continue_as_new',
+            'arguments' => Serializer::serializeWithCodec('avro', []),
+            'payload_codec' => 'avro',
+        ]])['completed']);
+        $this->assertSame('continued', $parentRun->refresh()->closed_reason);
+
+        /** @var WorkflowTask $childTask */
+        $childTask = WorkflowTask::query()
+            ->where('workflow_run_id', $childLink->child_workflow_run_id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->sole();
+        $bridge->claimStatus($childTask->id, 'external-child-worker');
+        $failed = $bridge->complete($childTask->id, [[
+            'type' => 'fail_workflow',
+            'message' => 'handed-over child failure',
+            'exception_class' => \RuntimeException::class,
+        ]]);
+        $this->assertSame('failed', $failed['run_status'] ?? null);
+
+        /** @var WorkflowLink|null $retryLink */
+        $retryLink = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRun->id)
+            ->where('link_type', 'child_workflow')
+            ->where('child_workflow_run_id', '!=', $childLink->child_workflow_run_id)
+            ->first();
+        $this->assertNotNull($retryLink, 'A handed-over child failure did not start the recorded retry.');
+
+        /** @var WorkflowHistoryEvent $started */
+        $started = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $retryLink->child_workflow_run_id)
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->sole();
+        foreach (['workflow_type', 'parent_sequence', 'retry_attempt', 'retry_policy'] as $key) {
+            $this->assertSame($expected[$key], $started->payload[$key] ?? null, $key);
+        }
+        $this->assertSame($parentRun->id, $started->payload['parent_workflow_run_id'] ?? null);
+        $this->assertSame(
+            $childLink->child_workflow_run_id,
+            $started->payload['retry_of_child_workflow_run_id'] ?? null
+        );
+    }
+
     private function assertServiceCommandPayloadLimitCorpus(string $file, string $section, string $instancePrefix): void
     {
         $path = self::FIXTURE_DIR . '/' . $file;
