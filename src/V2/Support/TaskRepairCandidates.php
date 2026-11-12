@@ -822,14 +822,7 @@ final class TaskRepairCandidates
         }
 
         // The run, not its summary projection, owns the namespace.
-        RequestedTaskScope::applyThroughRun(
-            $query,
-            $connection,
-            $queue,
-            $namespaces,
-            $query->getModel()
-                ->getKeyName(),
-        );
+        RequestedTaskScope::applyToRunSummaries($query, $connection, $queue, $namespaces);
 
         return $query;
     }

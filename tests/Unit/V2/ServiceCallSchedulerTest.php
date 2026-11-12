@@ -47,6 +47,10 @@ final class ServiceCallSchedulerTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        // These fixtures run one app across several namespaces (#889).
+        config()
+            ->set('workflows.v2.all_namespaces', true);
         config()
             ->set('queue.default', 'redis');
         Carbon::setTestNow('2026-10-26T01:30:00Z');

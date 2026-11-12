@@ -29,6 +29,9 @@ final class V2ScheduleTickBurstTest extends TestCase
             ->set('queue.default', 'sync');
         config()
             ->set('queue.connections.sync.driver', 'sync');
+        // These passes span several namespaces, like the server's ticker (#889).
+        config()
+            ->set('workflows.v2.all_namespaces', true);
 
         WorkflowStub::fake();
         Carbon::setTestNowAndTimezone(Carbon::parse('2026-11-02 12:00:30', 'UTC'), 'UTC');

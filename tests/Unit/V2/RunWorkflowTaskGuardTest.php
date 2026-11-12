@@ -32,6 +32,10 @@ final class RunWorkflowTaskGuardTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        // These fixtures run one app across several namespaces (#889).
+        config()
+            ->set('workflows.v2.all_namespaces', true);
         $this->travelTo(Carbon::parse('2026-10-07T12:00:00Z'));
         config([
             'workflows.v2.task_dispatch_mode' => 'poll',

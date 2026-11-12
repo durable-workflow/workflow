@@ -27,6 +27,10 @@ final class DatabaseQueueRecoveryTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        // These fixtures run one app across several namespaces (#889).
+        config()
+            ->set('workflows.v2.all_namespaces', true);
         Carbon::setTestNow(Carbon::parse('2026-10-16T06:00:00.123456Z'));
         $this->artisan('migrate', [
             '--force' => true,

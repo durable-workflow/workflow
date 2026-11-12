@@ -386,6 +386,8 @@ final class TracingProcessApplication extends Application
             'workflows.storage.connection' => 'tracing',
             'workflows.v1.enabled' => false,
             'workflows.v2.compatibility.namespace' => '0',
+            // The process runs fixtures in namespace "0" and the default one (#889).
+            'workflows.v2.namespaces' => '0,default',
             'workflows.v2.task_dispatch_mode' => 'queue',
             'workflows.v2.matching_role.queue_wake_enabled' => getenv('DW_TEST_TRACING_LARGE_FAN_OUT') !== 'true'
                 || getenv('DW_TEST_TRACING_LARGE_FAN_OUT_QUEUE_WAKE') !== 'false',

@@ -796,6 +796,9 @@ final class V2ScheduleTest extends TestCase
                 ->subMinute(),
         ])->save();
 
+        // One app that serves both namespaces shares the pass between them (#889).
+        config()
+            ->set('workflows.v2.namespaces', 'noisy,quiet');
         $results = ScheduleManager::tick(2);
 
         $this->assertSame(['noisy-1', 'quiet-1'], array_column($results, 'schedule_id'));

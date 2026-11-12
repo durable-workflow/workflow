@@ -174,6 +174,40 @@ final class NamespaceScope
     }
 
     /**
+     * Limit run summaries by their run's namespace. A summary whose run row
+     * is gone keeps its own recorded namespace, so repair can still report it.
+     */
+    public function applyToRunSummaries($query): void
+    {
+        if ($this->namespaces === null) {
+            return;
+        }
+
+        if ($this->namespaces === []) {
+            $query->whereRaw('1 = 0');
+
+            return;
+        }
+
+        $summary = $query->getModel();
+        $summaryKey = $summary->qualifyColumn($summary->getKeyName());
+        $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)->getModel();
+        $runKey = $run->qualifyColumn($run->getKeyName());
+
+        $query->where(function ($scoped) use ($summary, $summaryKey, $run, $runKey): void {
+            $scoped->whereIn($summaryKey, $this->runIdsInScope())
+                ->orWhere(function ($orphaned) use ($summary, $summaryKey, $run, $runKey): void {
+                    $this->whereColumnAllowed($orphaned, $summary->qualifyColumn('namespace'), nullIsDefault: true);
+                    $orphaned->whereNotExists(static function ($runs) use ($summaryKey, $run, $runKey): void {
+                        $runs->selectRaw('1')
+                            ->from($run->getTable())
+                            ->whereColumn($runKey, $summaryKey);
+                    });
+                });
+        });
+    }
+
+    /**
      * Limit rows by the namespace of the run named in `$runColumn`.
      */
     public function applyThroughRun($query, string $runColumn = 'workflow_run_id'): void

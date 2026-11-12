@@ -165,8 +165,11 @@ trait NexusCallerDeliveryScenario
         $previousControlPlane = $this->app->make(ServiceControlPlane::class);
         $previousAuthority = $this->installNexusServiceAuthority();
         $previousNow = Carbon::getTestNow();
+        $previousNamespaces = config('workflows.v2.namespaces');
         config([
             'workflows.v2.task_dispatch_mode' => 'poll',
+            // This app runs both the caller and the service workflow (#889).
+            'workflows.v2.namespaces' => 'caller,service',
         ]);
 
         try {
@@ -298,6 +301,7 @@ trait NexusCallerDeliveryScenario
             Carbon::setTestNow($previousNow);
             config([
                 'workflows.v2.task_dispatch_mode' => $previousDispatchMode,
+                'workflows.v2.namespaces' => $previousNamespaces,
             ]);
             $this->app->instance(ServiceControlPlane::class, $previousControlPlane);
             if ($previousAuthority !== null) {

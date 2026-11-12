@@ -44,6 +44,20 @@ final class RequestedTaskScope
     }
 
     /**
+     * Scope run summaries by their run's namespace.
+     */
+    public static function applyToRunSummaries(
+        $query,
+        ?string $connection,
+        ?string $queue,
+        ?NamespaceScope $namespaces = null,
+    ): void {
+        self::applyValue($query, 'connection', $connection);
+        self::applyValue($query, 'queue', $queue);
+        ($namespaces ?? NamespaceScope::configured())->applyToRunSummaries($query);
+    }
+
+    /**
      * Scope rows that carry no namespace by their run's namespace.
      */
     public static function applyThroughRun(

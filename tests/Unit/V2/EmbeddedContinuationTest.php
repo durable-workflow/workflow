@@ -71,6 +71,10 @@ final class EmbeddedContinuationTest extends TestCase
     {
         $this->path = tempnam(sys_get_temp_dir(), 'dw-continuation-');
         parent::setUp();
+
+        // These fixtures run one app across several namespaces (#889).
+        config()
+            ->set('workflows.v2.all_namespaces', true);
         Carbon::setTestNow('2026-10-17 15:15:00.123456');
         $this->artisan('migrate', [
             '--force' => true,
