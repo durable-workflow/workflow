@@ -4,12 +4,58 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+/**
+ * The task scope a repair, timeout or matching pass may act on: the requested
+ * connection and queue, always inside the application's namespace allowlist.
+ *
+ * A missing namespace scope resolves to the configured allowlist, never to
+ * every namespace in storage.
+ */
 final class RequestedTaskScope
 {
-    public static function apply($query, ?string $connection, ?string $queue): void
-    {
+    /**
+     * Scope rows that record their namespace in `$namespaceColumn`.
+     */
+    public static function apply(
+        $query,
+        ?string $connection,
+        ?string $queue,
+        ?NamespaceScope $namespaces = null,
+        string $namespaceColumn = 'namespace',
+    ): void {
         self::applyValue($query, 'connection', $connection);
         self::applyValue($query, 'queue', $queue);
+        ($namespaces ?? NamespaceScope::configured())->apply($query, $namespaceColumn);
+    }
+
+    /**
+     * Scope workflow tasks by their authoritative namespace, which is the
+     * run's namespace when the task has none recorded.
+     */
+    public static function applyToTasks(
+        $query,
+        ?string $connection,
+        ?string $queue,
+        ?NamespaceScope $namespaces = null,
+    ): void {
+        self::applyValue($query, 'connection', $connection);
+        self::applyValue($query, 'queue', $queue);
+        ($namespaces ?? NamespaceScope::configured())->applyToTasks($query);
+    }
+
+    /**
+     * Scope rows that carry no namespace by their run's namespace.
+     */
+    public static function applyThroughRun(
+        $query,
+        ?string $connection,
+        ?string $queue,
+        ?NamespaceScope $namespaces = null,
+        string $runColumn = 'workflow_run_id',
+    ): void {
+        self::applyValue($query, 'connection', $connection);
+        self::applyValue($query, 'queue', $queue);
+        ($namespaces ?? NamespaceScope::configured())->applyThroughRun($query, $runColumn);
     }
 
     private static function applyValue($query, string $column, ?string $value): void

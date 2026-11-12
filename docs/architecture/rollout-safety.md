@@ -795,6 +795,8 @@ change only in a major version bump.
 | Variable | Purpose |
 | -------- | ------- |
 | `DW_V2_NAMESPACE` | Default namespace for v2 surfaces when the host does not pin one. |
+| `DW_V2_NAMESPACES` | Comma-separated namespaces this app's watchdog, repair, timeout enforcement, schedule tick and queue jobs act on. Unset means exactly `DW_V2_NAMESPACE`; empty means none; `*` is refused. |
+| `DW_V2_ALL_NAMESPACES` | Administrative opt-in to act on every namespace in the database (for example the standalone server's matching role). Defaults to `false`. |
 | `DW_V2_CURRENT_COMPATIBILITY` | The compatibility marker the process advertises and, on the control plane, the marker ready tasks require. |
 | `DW_V2_SUPPORTED_COMPATIBILITIES` | Comma-separated list of markers this worker can safely execute; falls back to the current marker. |
 | `DW_V2_COMPATIBILITY_NAMESPACE` | Isolated compatibility namespace for multi-tenant deployments. |

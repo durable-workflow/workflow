@@ -26,6 +26,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\LinkedServiceCallCloser;
+use Workflow\V2\Support\NamespaceScope;
 use Workflow\V2\Support\RequestedTaskScope;
 use Workflow\V2\Support\ServiceCallDeadline;
 use Workflow\V2\Support\ServiceCallScheduler;
@@ -105,6 +106,7 @@ final class TaskWatchdog
         bool $respectThrottle = false,
         array $runIds = [],
         ?string $instanceId = null,
+        ?NamespaceScope $namespaces = null,
     ): array {
         if (! self::tablesReady()) {
             return self::emptyReport($connection, $queue, $respectThrottle, $runIds, $instanceId);
@@ -125,19 +127,29 @@ final class TaskWatchdog
             Cache::put(self::LOOP_THROTTLE_KEY, true, TaskRepairPolicy::loopThrottleSeconds());
         }
 
+        // Every candidate family below acts only inside this app's namespace
+        // allowlist. A missing scope is the configured one, never all.
+        $namespaces ??= NamespaceScope::configured();
+
         WorkerCompatibilityFleet::heartbeat($connection, $queue);
+
+        if ($namespaces->isEmpty()) {
+            return self::emptyReport($connection, $queue, $respectThrottle, $runIds, $instanceId);
+        }
 
         $existingTaskCandidateIds = TaskRepairCandidates::taskIds(
             runIds: $runIds,
             instanceId: $instanceId,
             connection: $connection,
             queue: $queue,
+            namespaces: $namespaces,
         );
         $missingRunIds = TaskRepairCandidates::runIds(
             runIds: $runIds,
             instanceId: $instanceId,
             connection: $connection,
             queue: $queue,
+            namespaces: $namespaces,
         );
         $report = self::emptyReport($connection, $queue, $respectThrottle, $runIds, $instanceId);
         $report['selected_existing_task_candidates'] = count($existingTaskCandidateIds);
@@ -185,7 +197,7 @@ final class TaskWatchdog
             SqliteMaintenanceYield::pause((new WorkflowRun())->getConnection());
         }
 
-        $deadlineExpiredRunIds = self::deadlineExpiredRunIds($runIds, $instanceId, $connection, $queue);
+        $deadlineExpiredRunIds = self::deadlineExpiredRunIds($runIds, $instanceId, $connection, $queue, $namespaces);
         $report['deadline_expired_candidates'] = count($deadlineExpiredRunIds);
 
         foreach ($deadlineExpiredRunIds as $deadlineRunId) {
@@ -215,6 +227,7 @@ final class TaskWatchdog
             $instanceId,
             $connection,
             $queue,
+            $namespaces,
         );
         $report['service_call_timeout_candidates'] = count($serviceCallIds);
         foreach ($serviceCallIds as $callId) {
@@ -244,6 +257,7 @@ final class TaskWatchdog
             $instanceId,
             $connection,
             $queue,
+            $namespaces,
         );
         $report['service_call_dispatch_candidates'] = $serviceCallDispatch['candidates'];
         $report['service_call_dispatches_enqueued'] = $serviceCallDispatch['enqueued'];
@@ -254,7 +268,8 @@ final class TaskWatchdog
             $runIds,
             $instanceId,
             $connection,
-            $queue
+            $queue,
+            $namespaces,
         );
         $report['service_call_linked_candidates'] = $linkedCalls['candidates'];
         $report['service_call_links_reconciled'] = $linkedCalls['reconciled'];
@@ -264,6 +279,7 @@ final class TaskWatchdog
             TaskRepairPolicy::scanLimit(),
             $connection,
             $queue,
+            $namespaces,
         );
         $report['activity_timeout_candidates'] = count($activityTimeoutIds);
 
@@ -566,6 +582,7 @@ final class TaskWatchdog
         ?string $instanceId = null,
         ?string $connection = null,
         ?string $queue = null,
+        ?NamespaceScope $namespaces = null,
     ): array {
         $now = now()
             ->format('Y-m-d H:i:s.u');
@@ -604,7 +621,7 @@ final class TaskWatchdog
             $query->where('workflow_instance_id', $instanceId);
         }
 
-        RequestedTaskScope::apply($query, $connection, $queue);
+        RequestedTaskScope::apply($query, $connection, $queue, $namespaces);
 
         return $query->limit(TaskRepairPolicy::scanLimit())->pluck('id')->all();
     }

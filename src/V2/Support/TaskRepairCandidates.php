@@ -35,6 +35,7 @@ final class TaskRepairCandidates
         ?string $instanceId = null,
         ?string $connection = null,
         ?string $queue = null,
+        ?NamespaceScope $namespaces = null,
     ): array {
         $limit ??= TaskRepairPolicy::scanLimit();
         $pages = self::existingTaskPages(
@@ -45,6 +46,7 @@ final class TaskRepairCandidates
             $connection,
             $queue,
             rotate: config('workflows.v2.task_dispatch_mode') !== 'poll',
+            namespaces: $namespaces ?? NamespaceScope::configured(),
         );
         $selected = self::roundRobinCandidates($pages['buckets'], $limit);
         $cursors = [];
@@ -73,6 +75,7 @@ final class TaskRepairCandidates
         ?string $instanceId = null,
         ?string $connection = null,
         ?string $queue = null,
+        ?NamespaceScope $namespaces = null,
     ): array {
         return self::roundRobinCandidateIds(
             self::missingTaskRunIdsByScope(
@@ -81,6 +84,7 @@ final class TaskRepairCandidates
                 $instanceId,
                 $connection,
                 $queue,
+                $namespaces ?? NamespaceScope::configured(),
             ),
             $limit ?? TaskRepairPolicy::scanLimit(),
         );
@@ -266,8 +270,9 @@ final class TaskRepairCandidates
         ?string $instanceId = null,
         ?string $connection = null,
         ?string $queue = null,
+        ?NamespaceScope $namespaces = null,
     ) {
-        return self::existingTaskQuery($now, $runIds, $instanceId, $connection, $queue)
+        return self::existingTaskQuery($now, $runIds, $instanceId, $connection, $queue, $namespaces)
             ->select(['connection', 'queue', 'compatibility'])
             ->selectRaw('COUNT(*) as candidate_count')
             ->selectRaw('MIN(created_at) as oldest_candidate_at')
@@ -280,8 +285,9 @@ final class TaskRepairCandidates
         ?string $instanceId = null,
         ?string $connection = null,
         ?string $queue = null,
+        ?NamespaceScope $namespaces = null,
     ) {
-        return self::missingTaskRunQuery($runIds, $instanceId, $connection, $queue)
+        return self::missingTaskRunQuery($runIds, $instanceId, $connection, $queue, $namespaces)
             ->select(['connection', 'queue', 'compatibility'])
             ->selectRaw('COUNT(*) as candidate_count')
             ->selectRaw('MIN(COALESCE(wait_started_at, started_at, created_at)) as oldest_candidate_at')
@@ -394,8 +400,10 @@ final class TaskRepairCandidates
         ?string $connection,
         ?string $queue,
         bool $rotate = false,
+        ?NamespaceScope $namespaces = null,
     ): array {
         $now ??= now();
+        $namespaces ??= NamespaceScope::configured();
         $buckets = [];
         $positions = [];
 
@@ -405,8 +413,9 @@ final class TaskRepairCandidates
             $instanceId,
             $connection,
             $queue,
+            $namespaces,
         )) as $scope) {
-            $query = self::existingTaskQuery($now, $runIds, $instanceId, $connection, $queue)
+            $query = self::existingTaskQuery($now, $runIds, $instanceId, $connection, $queue, $namespaces)
                 ->where(static function ($query) use ($scope): void {
                     self::applyScope($query, $scope['connection'], $scope['queue'], $scope['compatibility']);
                 });
@@ -421,7 +430,7 @@ final class TaskRepairCandidates
                 ->orderBy('id')
                 ->limit($limit);
             $cacheKey = 'workflow:v2:repair-scan:' . hash('sha256', json_encode([
-                $runIds, $instanceId, $connection, $queue, $scope['scope_key'],
+                $runIds, $instanceId, $connection, $queue, $scope['scope_key'], $namespaces->key(),
             ], JSON_THROW_ON_ERROR));
             $cursor = self::cachedCursor($cacheKey, $rotate);
             $rows = self::readTaskPage($query, $cursor);
@@ -519,17 +528,20 @@ final class TaskRepairCandidates
         ?string $instanceId = null,
         ?string $connection = null,
         ?string $queue = null,
+        ?NamespaceScope $namespaces = null,
     ): array {
         $buckets = [];
+        $namespaces ??= NamespaceScope::configured();
 
         foreach (self::normalizedScopes(self::missingTaskScopeRows(
             $runIds,
             $instanceId,
             $connection,
             $queue,
+            $namespaces,
         )) as $scope) {
             /** @var list<string> $ids */
-            $ids = self::missingTaskRunQuery($runIds, $instanceId, $connection, $queue)
+            $ids = self::missingTaskRunQuery($runIds, $instanceId, $connection, $queue, $namespaces)
                 ->where(static function ($query) use ($scope): void {
                     self::applyScope($query, $scope['connection'], $scope['queue'], $scope['compatibility']);
                 })
@@ -683,6 +695,7 @@ final class TaskRepairCandidates
         ?string $instanceId = null,
         ?string $connection = null,
         ?string $queue = null,
+        ?NamespaceScope $namespaces = null,
     ) {
         $now ??= now();
         $staleDispatchCutoff = $now->copy()
@@ -758,7 +771,7 @@ final class TaskRepairCandidates
             });
 
         self::applyRunSelection($query, $runIds, $instanceId);
-        RequestedTaskScope::apply($query, $connection, $queue);
+        RequestedTaskScope::applyToTasks($query, $connection, $queue, $namespaces);
 
         return $query;
     }
@@ -768,6 +781,7 @@ final class TaskRepairCandidates
         ?string $instanceId = null,
         ?string $connection = null,
         ?string $queue = null,
+        ?NamespaceScope $namespaces = null,
     ) {
         $query = WorkflowRunSummary::query()
             ->where(static function ($candidate): void {
@@ -807,7 +821,15 @@ final class TaskRepairCandidates
             $query->where('workflow_instance_id', $instanceId);
         }
 
-        RequestedTaskScope::apply($query, $connection, $queue);
+        // The run, not its summary projection, owns the namespace.
+        RequestedTaskScope::applyThroughRun(
+            $query,
+            $connection,
+            $queue,
+            $namespaces,
+            $query->getModel()
+                ->getKeyName(),
+        );
 
         return $query;
     }

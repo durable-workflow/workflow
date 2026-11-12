@@ -86,6 +86,9 @@ All nodes should have identical configuration for workflow behavior:
 ```env
 # Namespace (consistent across nodes)
 DW_V2_NAMESPACE=production
+# Optional: the namespaces this app repairs and executes. Unset means
+# exactly DW_V2_NAMESPACE. Apps sharing a database must not overlap.
+# DW_V2_NAMESPACES=production,reporting
 
 # Compatibility (deploy same build to all nodes)
 DW_V2_CURRENT_COMPATIBILITY=build-20260415-1a2b3c4

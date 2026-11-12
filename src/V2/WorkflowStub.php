@@ -65,6 +65,7 @@ use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\LifecycleEventDispatcher;
 use Workflow\V2\Support\MemoUpsertService;
+use Workflow\V2\Support\NamespaceScope;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\ParentCloseCancellation;
 use Workflow\V2\Support\ParentClosePolicyEnforcer;
@@ -2844,6 +2845,11 @@ final class WorkflowStub
                 ->first();
 
             if (! $task instanceof WorkflowTask) {
+                return;
+            }
+
+            // Another app's run keeps its task for that app's own workers.
+            if (! NamespaceScope::configured()->admitsTask($task->id)) {
                 return;
             }
 

@@ -55,6 +55,24 @@ return [
         // isolate multi-namespace deployments.
         'namespace' => Env::dw('DW_V2_NAMESPACE', 'WORKFLOW_V2_NAMESPACE', null),
 
+        // The namespaces this application's embedded workers repair,
+        // redispatch, time out and execute. Apps that share one database
+        // can share connection and queue names; this allowlist keeps each
+        // app's watchdog and queue jobs to its own runs.
+        //
+        // - null (default): exactly `namespace` above. When `namespace` is
+        //   null too, that is the unscoped default namespace (null, empty or
+        //   "default" stored values).
+        // - a comma-separated string or a list: exactly those namespaces.
+        //   Use "default" for the unscoped namespace.
+        // - an empty string or empty list: no namespace.
+        //
+        // "*" is refused here. Serving every namespace is an administrative
+        // opt-in, `all_namespaces`, for a process such as the standalone
+        // server's matching role that owns every namespace in the database.
+        'namespaces' => Env::dw('DW_V2_NAMESPACES', 'WORKFLOW_V2_NAMESPACES', null),
+        'all_namespaces' => (bool) Env::dw('DW_V2_ALL_NAMESPACES', 'WORKFLOW_V2_ALL_NAMESPACES', false),
+
         'instance_model' => Workflow\V2\Models\WorkflowInstance::class,
         'run_model' => Workflow\V2\Models\WorkflowRun::class,
         'history_event_model' => Workflow\V2\Models\WorkflowHistoryEvent::class,

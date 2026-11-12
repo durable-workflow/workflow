@@ -31,6 +31,27 @@
   update instead. Lease renewal locks the attempt first, so the old order could
   deadlock a renewal against an outcome for the same attempt on PostgreSQL and
   MySQL, mainly on the stale, cancelled and terminated paths.
+- Embedded task repair and execution now stay inside the app's namespaces
+  (#889). Before, apps sharing one database with the same connection and
+  queue names could repair, redispatch, time out and run each other's tasks
+  with the wrong app's code and credentials. The watchdog (including the
+  queue worker's wake and `workflow:v2:repair-pass`), existing and missing
+  task repair, run deadlines, activity timeouts, service-call deadline,
+  dispatch and linked-call repair, `workflow:v2:schedule-tick`, and the
+  `RunWorkflowTask`,
+  `RunActivityTask`, `RunTimerTask` and `RunServiceCall` jobs now act only on
+  the new `workflows.v2.namespaces` allowlist (`DW_V2_NAMESPACES`). Unset, it
+  is exactly `workflows.v2.namespace`, so a single-namespace app behaves as
+  before. A comma-separated list serves each listed namespace (`default` is
+  the unscoped one); an empty value serves none; `*` is refused. A queued
+  job outside the allowlist, including one queued before upgrading, is
+  skipped before any effect and logged as a warning. Serving every namespace
+  needs the separate `workflows.v2.all_namespaces` (`DW_V2_ALL_NAMESPACES`)
+  opt-in. Upgrade note: an embedded app that starts, schedules or signals
+  workflows in namespaces other than `DW_V2_NAMESPACE` must list them in
+  `DW_V2_NAMESPACES`, or their tasks and schedules wait for an app that
+  serves them. A process that repairs or ticks every namespace, such as the
+  standalone server, must set `DW_V2_ALL_NAMESPACES=true`.
 
 ## 2.25.0 - 2026-11-12
 
