@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+- A child handed to a continued run now gets its retries (#1105). Before, a
+  child that failed after its parent continued as new was never retried,
+  because the retry needed the parent to be waiting. It is now retried under
+  the retry policy the parent recorded, with the same child call identity and
+  attempt count, while a run of the chain still supervises it. The retry run's
+  `WorkflowStarted` names the original parent run, and the supervision moves to
+  the retry run, so the chain's final run applies the parent-close policy to it.
+  Nothing is appended to the closed predecessor. Once the attempts are spent,
+  the failure is non-retryable, or the chain has closed, the failure is final.
+  Embedded and service-mode runs behave the same. No migration.
+- Failed-run redrive now reuses a completed child workflow call (#864).
+  Before, any child workflow in the failed run's history refused redrive with
+  `unsupported_history`. The successor records the child's
+  `ChildWorkflowScheduled`, `ChildRunStarted` and `ChildRunCompleted` events
+  with `reused_from_run_id` and `reused_recorded_at`, keeps the original child
+  instance, run, link id and call id, and does not start the child again or
+  write a child link of its own. Executor, query and fiber replay resume the
+  call with the recorded output at the time it first closed, so `now()` after
+  the call matches the failed run. Redrive chains carry the reuse forward.
+  Child steps that replay would not reproduce are refused before any write,
+  with new reasons: `unsupported_open_child`, `unsupported_child_outcome`
+  (failed, cancelled or terminated children), `unsupported_child_workflow`
+  (parallel, scoped, retried or continued children, or mismatched call
+  identity), `external_child_result_not_supported` and
+  `unavailable_child_result`. Runs a service worker started stay refused with
+  `service_redrive_history_not_qualified` when they would reuse a child step.
+  Runs that are themselves children are still refused. No migration.
+  Rollback: earlier releases ignore `reused_recorded_at` on child events, so
+  replaying such a successor there can give a different workflow time, and
+  deadlines derived from it, after the reused call; they also refuse to
+  redrive it again (`unsupported_history`). Once a successor with a reused
+  child call exists, keep workers on this release or later, or confirm that
+  no such history can replay before rolling back.
+- Workflow code can read the history budget replay-safely with
+  `historyBudgetAtStep()` and `shouldContinueAsNewAtStep()` (#859). They count
+  only the history recorded before the current workflow step, so the same line
+  returns the same value on every replay, and a loop that checks the budget
+  each iteration continues as new once, at the first iteration that crosses the
+  threshold. The existing `historyLength()`, `historySize()`, `historyFanOut()`,
+  `shouldContinueAsNew()` and `historyBudgetPressure()` still read the whole
+  current history and are unchanged, so runs that already decided with them
+  keep replaying. Inside a loop they can answer differently on replay; use the
+  new methods there.
+
 - Upgrade migrations that fill in existing rows no longer lock the table for
   the whole backfill on PostgreSQL (#871). The output codec (`2026_07_13`),
   local activity exception (`2026_09_24`), schedule occurrence (`2026_09_29`)

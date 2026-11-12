@@ -656,6 +656,8 @@ final class HistoryEventPayloadContract
             'parallel_group_size',
             'parallel_group_index',
             'parallel_group_path',
+            'reused_from_run_id',
+            'reused_recorded_at',
         ],
         'ChildRunStarted' => [
             'sequence',
@@ -685,6 +687,8 @@ final class HistoryEventPayloadContract
             'parallel_group_size',
             'parallel_group_index',
             'parallel_group_path',
+            'reused_from_run_id',
+            'reused_recorded_at',
         ],
         'ChildRunCompleted' => [
             'sequence',
@@ -707,6 +711,8 @@ final class HistoryEventPayloadContract
             'parallel_group_size',
             'parallel_group_index',
             'parallel_group_path',
+            'reused_from_run_id',
+            'reused_recorded_at',
         ],
         'ChildRunFailed' => [
             'sequence',

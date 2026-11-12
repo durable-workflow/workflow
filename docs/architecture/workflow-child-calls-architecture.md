@@ -286,8 +286,17 @@ embedded executor and the service-mode workflow task bridge.
   `abandon` stays `abandon`. The closed predecessor gets no history and no
   resume task.
 - The continued run has no handle on transferred children: their results are
-  not delivered to it, and child retries that depend on a waiting parent do not
-  run after the transfer.
+  not delivered to it.
+- A transferred child that fails is retried under the retry policy the run
+  that started it recorded, while a run of the chain still supervises it. The
+  retry keeps the original child call identity and attempt count: its
+  `WorkflowStarted` names the run that started the child as parent, with
+  `retry_attempt` and `retry_of_child_workflow_run_id`, and a new child link
+  records it under the original sequence. The closed predecessor gets no
+  `ChildRunStarted`, since its history is final. Every supervision row of the
+  child moves to the retry run, so the chain's final run applies the
+  parent-close policy to it. A failure is final once the attempts are spent, the
+  failure is non-retryable, or the chain has closed.
 
 ## Reference Resolution
 
