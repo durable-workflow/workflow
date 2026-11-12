@@ -8453,6 +8453,66 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame('payment-cleared', $timerTask->payload['condition_key'] ?? null);
     }
 
+    #[DataProvider('conditionOccurrenceDeadlinePolicies')]
+    public function testFalseWakeUsesTheSelectedOccurrenceDeadlinePolicy(bool $anchored, int $deadlineSeconds): void
+    {
+        $origin = Carbon::parse('2026-11-08T04:00:00.000000Z');
+        Carbon::setTestNow($origin);
+
+        try {
+            $run = $this->createWaitingRun();
+            $command = [
+                'type' => 'open_condition_wait',
+                'condition_key' => 'approval.ready',
+                'condition_definition_fingerprint' => 'condition-fp-1',
+                'condition_wait_occurrence_id' => 'php:condition-wait:0',
+                'timeout_seconds' => 20,
+            ];
+            if ($anchored) {
+                $command['deadline_policy'] = 'occurrence';
+                $command['condition_wait_timeout_budget_seconds'] = 20;
+            }
+            $opened = $this->bridge->complete($this->createLeasedTask($run)->id, [$command]);
+            $this->assertTrue($opened['completed']);
+            $first = $run->timers()->sole();
+            $this->assertTrue($first->fire_at->equalTo($origin->copy()->addSeconds(20)));
+
+            // S is the signal/replay clock. R is three seconds later; the
+            // worker's remaining 15 seconds must not add those three to A.
+            Carbon::setTestNow($origin->copy()->addSeconds(5));
+            $signal = $this->recordReceivedSignal($run);
+            $task = $this->createLeasedTask($run);
+            $task->forceFill(['payload' => WorkflowTaskPayload::forSignal($signal)])->save();
+            Carbon::setTestNow($origin->copy()->addSeconds(8));
+            $command['timeout_seconds'] = 15;
+            $reopened = $this->bridge->complete($task->id, [$command]);
+
+            $this->assertTrue($reopened['completed']);
+            $timers = $run->timers()->orderBy('sequence')->get();
+            $this->assertCount(2, $timers);
+            $this->assertSame(TimerStatus::Cancelled, $timers[0]->status);
+            $this->assertSame(15, $timers[1]->delay_seconds);
+            $this->assertTrue($timers[1]->fire_at->equalTo($origin->copy()->addSeconds($deadlineSeconds)));
+            $events = $run->historyEvents()->where('event_type', HistoryEventType::ConditionWaitOpened->value)
+                ->orderBy('sequence')->get();
+            $this->assertCount(2, $events);
+            $this->assertSame([20, 15], $events->pluck('payload.timeout_seconds')->all());
+            if ($anchored) {
+                $this->assertSame($first->fire_at->toJSON(), $events[1]->payload['occurrence_deadline_at'] ?? null);
+            } else {
+                $this->assertArrayNotHasKey('occurrence_deadline_at', $events[1]->payload);
+            }
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public static function conditionOccurrenceDeadlinePolicies(): iterable
+    {
+        yield 'legacy keeps per-open scheduling' => [false, 23];
+        yield 'anchored false wake keeps its first wall deadline' => [true, 20];
+    }
+
     public function testCompleteOpenConditionWaitWithZeroTimeoutFiresWithoutSchedulingTimerTask(): void
     {
         $run = $this->createWaitingRun();
