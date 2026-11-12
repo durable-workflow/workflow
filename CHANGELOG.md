@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Workflow code can read the history budget replay-safely with
+  `historyBudgetAtStep()` and `shouldContinueAsNewAtStep()` (#859). They count
+  only the history recorded before the current workflow step, so the same line
+  returns the same value on every replay, and a loop that checks the budget
+  each iteration continues as new once, at the first iteration that crosses the
+  threshold. The existing `historyLength()`, `historySize()`, `historyFanOut()`,
+  `shouldContinueAsNew()` and `historyBudgetPressure()` still read the whole
+  current history and are unchanged, so runs that already decided with them
+  keep replaying. Inside a loop they can answer differently on replay; use the
+  new methods there.
+
 - Upgrade migrations that fill in existing rows no longer lock the table for
   the whole backfill on PostgreSQL (#871). The output codec (`2026_07_13`),
   local activity exception (`2026_09_24`), schedule occurrence (`2026_09_29`)
