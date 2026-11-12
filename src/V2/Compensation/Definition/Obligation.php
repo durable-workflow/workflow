@@ -6,6 +6,9 @@ namespace Workflow\V2\Compensation\Definition;
 
 use InvalidArgumentException;
 
+/**
+ * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
+ */
 final readonly class Obligation
 {
     public function __construct(

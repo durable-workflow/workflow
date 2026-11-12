@@ -148,6 +148,42 @@ abstract class Workflow
         return ChildWorkflowHandles::forRun($this->run, $this->visibleSequence, $this->commandDispatchEnabled);
     }
 
+    /**
+     * The history budget as of the current workflow step: the same value on every replay (#859).
+     *
+     * Use this, not historyLength()/shouldContinueAsNew(), when workflow code checks the budget
+     * more than once in a run, for example inside a loop. Those older methods read the run's whole
+     * current history, so on replay an earlier iteration can see a later total and take a different
+     * branch than it did originally. They are kept unchanged so runs that already decided with them
+     * still replay.
+     *
+     * @return array{
+     *     history_event_count: int,
+     *     history_size_bytes: int,
+     *     history_fan_out: int,
+     *     continue_as_new_recommended: bool,
+     *     pressure: string,
+     *     pressure_dimensions: list<string>,
+     *     observation: string
+     * }
+     */
+    public function historyBudgetAtStep(): array
+    {
+        return HistoryBudget::forRunAtStep($this->run, $this->visibleSequence);
+    }
+
+    /**
+     * Whether continue-as-new is recommended as of the current workflow step, the same on every replay (#859).
+     */
+    public function shouldContinueAsNewAtStep(): bool
+    {
+        return $this->historyBudgetAtStep()['continue_as_new_recommended'];
+    }
+
+    /**
+     * Whole current history length. Not replay-stable when read more than once per run: prefer
+     * {@see historyBudgetAtStep()}.
+     */
     public function historyLength(): int
     {
         return HistoryBudget::forRun($this->run)['history_event_count'];
@@ -168,6 +204,10 @@ abstract class Workflow
         return HistoryBudget::forRun($this->run)['history_fan_out'];
     }
 
+    /**
+     * Reads the run's whole current history. Inside a loop this is not replay-stable: prefer
+     * {@see shouldContinueAsNewAtStep()}.
+     */
     public function shouldContinueAsNew(): bool
     {
         return HistoryBudget::forRun($this->run)['continue_as_new_recommended'];

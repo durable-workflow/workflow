@@ -14,7 +14,11 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\SqliteTransaction;
 
-/** Explicit retirement. Normal run-history pruning never removes retained obligations. */
+/**
+ * Explicit retirement. Normal run-history pruning never removes retained obligations.
+ *
+ * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
+ */
 final readonly class ScopeRetention
 {
     public function __construct(

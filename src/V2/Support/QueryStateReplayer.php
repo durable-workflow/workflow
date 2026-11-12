@@ -539,12 +539,12 @@ final class QueryStateReplayer
                     if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
                         $current = $workflowExecution->send(
                             ChildRunHistory::outputForResolution($resolutionEvent, $childRun),
-                            $resolutionEvent->recorded_at,
+                            RedriveReplayClock::recordedAt($resolutionEvent),
                         );
                     } else {
                         $current = $workflowExecution->throw(
                             ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun),
-                            $resolutionEvent->recorded_at,
+                            RedriveReplayClock::recordedAt($resolutionEvent),
                         );
                     }
 

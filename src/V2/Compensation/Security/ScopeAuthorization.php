@@ -6,7 +6,11 @@ namespace Workflow\V2\Compensation\Security;
 
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
 
-/** The host derives a trusted principal and authorizes the exact scope, generation and operation. */
+/**
+ * The host derives a trusted principal and authorizes the exact scope, generation and operation.
+ *
+ * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
+ */
 interface ScopeAuthorization
 {
     /**

@@ -11,6 +11,15 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Support\ExternalPayloads;
 
 return new class() extends WorkflowMigration {
+    /**
+     * Each batch commits on its own instead of holding row locks for the
+     * whole rewrite. Converted values are no longer legacy text, so a re-run
+     * after an interruption skips them.
+     */
+    public $withinTransaction = false;
+
+    public int $backfillBatchSize = 250;
+
     public function up(): void
     {
         if (Schema::hasTable('activity_executions')) {
@@ -19,7 +28,9 @@ return new class() extends WorkflowMigration {
                 ->whereNotNull('exception')
                 ->select(['id', 'activity_options', 'exception'])
                 ->orderBy('id')
-                ->chunkById(250, function ($executions): void {
+                ->chunkById($this->backfillBatchSize, fn ($executions) => DB::transaction(function () use (
+                    $executions
+                ): void {
                     foreach ($executions as $execution) {
                         $options = is_string($execution->activity_options)
                             ? json_decode($execution->activity_options, true)
@@ -36,7 +47,7 @@ return new class() extends WorkflowMigration {
                                 'exception' => Avro::serialize($execution->exception),
                             ]);
                     }
-                }, 'id');
+                }), 'id');
         }
 
         if (! Schema::hasTable('workflow_history_events')) {
@@ -51,7 +62,7 @@ return new class() extends WorkflowMigration {
             ])
             ->select(['id', 'payload'])
             ->orderBy('id')
-            ->chunkById(250, function ($events): void {
+            ->chunkById($this->backfillBatchSize, fn ($events) => DB::transaction(function () use ($events): void {
                 foreach ($events as $event) {
                     $payload = is_string($event->payload)
                         ? json_decode($event->payload, true, 512, JSON_THROW_ON_ERROR)
@@ -77,7 +88,7 @@ return new class() extends WorkflowMigration {
                             ),
                         ]);
                 }
-            }, 'id');
+            }), 'id');
     }
 
     public function down(): void

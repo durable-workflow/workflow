@@ -170,6 +170,57 @@ observation references are recorded in the immutable journal before release.
 The journal does not retain the forward business value or obligation input.
 No automatic expiry is added. Ordinary run-detail pruning cannot cascade into this ledger.
 
+## Continue-as-new and originating-run redrive
+
+Scope identity and native child supervision are separate. When a workflow
+continues as new, native DW can hand its still-open children to the continued
+run. This does not transfer the parent's compensation scope or the children's
+own scopes. Each retained scope keeps its `original_run_id`. A parent that must
+compensate a child registers it with `participate()` before dispatch, regardless
+of which run later supervises that child.
+
+New registration from a continued or redriven origin is refused by the retained
+original-run binding. A redrive may replay an observed activity prefix, but it
+cannot use that prefix to dispatch new work in the old scope. Resuming an
+uncertain forward activity in the successor is also refused by `ScopeBoundary`
+before provider dispatch. The original obligations and provider evidence remain
+available. Hosts request `ScopeRecovery` for that exact identity and generation
+to resolve them. This increment does not silently create replacement scopes,
+move obligations to a new generation or infer compensation from run closure.
+
+`V2CompensationScopeRunBoundaryTest` exercises real continue-as-new with an open
+scoped child, native supervision handoff, refused successor work and verified
+child-first recovery. It also checks originating-run redrive after an unrelated
+failed activity and after an uncertain scoped forward effect. Recovery preserves
+the original terminal history in all cases.
+
+## Core redrive regression evidence
+
+The replay corpus policy explicitly guards `FailedRunRedrivePlan` and
+`ActivityRetryHistory`, so changes to either require executable regression evidence.
+
+The planner changes are independent of compensation scopes. They accept native
+`ActivityRetryScheduled` lineage only when execution, attempt, task and attempt
+number references agree. A valid native active-start adoption receipt must also
+match the run and accepted command snapshot. The planner keeps current main's
+completed-child reuse behavior.
+
+The `redrive-retried-completed-activity`, `redrive-retried-failed-activity` and
+`redrive-retried-activity-after-completed-child` regression-corpus fixtures retain
+both a cold replay prefix and the failed source history. The official
+`ReplayRegressionCorpusTest` consumer executes `FailedRunRedrivePlan` against the
+source and its identity-substitution cases, then executes the cold workflow
+replay. This provides planner evidence separately from the scope integration
+tests. `FailedRunRedrivePlanTest` separately covers start-adoption receipt
+substitution. The separate `redrive-native-active-start-adoption` corpus fixture
+executes the same acceptance and substitution checks for recorded start receipts.
+Its planner source retains the native audit-enriched command snapshot. Its cold
+replay prefix contains the authored event payload, which is checked against the
+strict event payload contract before native audit enrichment.
+Existing completed-child corpus and feature regressions remain
+applicable. These evidence paths allow the core planner change to be reviewed
+or extracted separately from the experimental scope API.
+
 ## Authoring and host setup
 
 The embedded host binds `ScopeAuthorization` to its authorization policy and

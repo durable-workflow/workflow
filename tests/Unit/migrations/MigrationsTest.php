@@ -236,6 +236,7 @@ final class MigrationsTest extends SchemaTestCase
         $this->assertTrue(Schema::hasTable('workflow_service_operations'));
         $this->assertTrue(Schema::hasTable('workflow_service_calls'));
         $this->assertTrue(Schema::hasTable('workflow_service_call_dispatches'));
+        $this->assertTrue(Schema::hasTable('workflow_child_supervisions'));
         $this->assertTrue(Schema::hasColumn('workflow_service_endpoints', 'boundary_policy'));
         $this->assertTrue(Schema::hasColumn('workflow_services', 'boundary_policy'));
         $this->assertTrue(Schema::hasColumn('workflow_service_operations', 'boundary_policy'));
@@ -322,6 +323,7 @@ final class MigrationsTest extends SchemaTestCase
         $this->assertFalse(Schema::hasTable('workflow_service_operations'));
         $this->assertFalse(Schema::hasTable('workflow_service_calls'));
         $this->assertFalse(Schema::hasTable('workflow_service_call_dispatches'));
+        $this->assertFalse(Schema::hasTable('workflow_child_supervisions'));
     }
 
     /**
@@ -600,6 +602,7 @@ final class MigrationsTest extends SchemaTestCase
             'workflow_service_operations',
             'workflow_service_calls',
             'workflow_service_call_dispatches',
+            'workflow_child_supervisions',
         ];
     }
 }

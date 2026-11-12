@@ -10,7 +10,11 @@ use Workflow\V2\Compensation\Activities\PrepareRecoveryActivity;
 use Workflow\V2\Compensation\Activities\VerifyScopeActivity;
 use Workflow\V2\Workflow;
 
-/** A normal native workflow with native Saga ordering and native activity retries. */
+/**
+ * A normal native workflow with native Saga ordering and native activity retries.
+ *
+ * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
+ */
 #[Type('dw.compensation.recovery.v1')]
 final class RecoveryWorkflow extends Workflow
 {

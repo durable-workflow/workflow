@@ -7,7 +7,11 @@ namespace Workflow\V2\Compensation\Execution;
 use Workflow\Exceptions\NonRetryableException;
 use Workflow\V2\Compensation\Definition\Obligation;
 
-/** Configured by trusted host code. Stored descriptors select keys, never executable classes. */
+/**
+ * Configured by trusted host code. Stored descriptors select keys, never executable classes.
+ *
+ * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
+ */
 final readonly class HandlerRegistry
 {
     /**

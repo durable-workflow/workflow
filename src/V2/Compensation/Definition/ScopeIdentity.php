@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Compensation\Definition;
 
+/**
+ * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
+ */
 final readonly class ScopeIdentity
 {
     public function __construct(

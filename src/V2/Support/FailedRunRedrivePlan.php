@@ -19,7 +19,9 @@ final class FailedRunRedrivePlan
 {
     /**
      * Reused steps are every step before the failed activity, in step order.
-     * `completed` lists only the reused activity completions.
+     * `completed` lists only the reused activity completions. A completed
+     * child workflow call is reused with its scheduled, started and completed
+     * events; the child itself does not run again.
      *
      * @return array{
      *     eligible: bool,
@@ -32,7 +34,8 @@ final class FailedRunRedrivePlan
      *         payload: array<string, mixed>,
      *         recorded_at: string|null,
      *         scheduled_payload?: array<string, mixed>,
-     *         signal_events?: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null}>
+     *         signal_events?: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null}>,
+     *         child_events?: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null}>
      *     }>
      * }
      */
@@ -53,6 +56,7 @@ final class FailedRunRedrivePlan
         $timerEvents = [];
         $signalEvents = [];
         $updateEvents = [];
+        $childEvents = [];
         $lastActivityEvent = null;
 
         foreach ($events as $event) {
@@ -156,6 +160,28 @@ final class FailedRunRedrivePlan
                 continue;
             }
 
+            if (in_array($event->event_type, [
+                HistoryEventType::ChildWorkflowScheduled,
+                HistoryEventType::ChildRunStarted,
+                HistoryEventType::ChildRunCompleted,
+                HistoryEventType::ChildRunFailed,
+                HistoryEventType::ChildRunCancelled,
+                HistoryEventType::ChildRunTerminated,
+                HistoryEventType::ChildCancellationRequested,
+                HistoryEventType::ChildCancellationResolved,
+            ], true)) {
+                $payload = $event->payload;
+                $sequence = is_array($payload) ? ($payload['sequence'] ?? null) : null;
+
+                if ($started === null || ! is_int($sequence) || $sequence < 1) {
+                    return self::reject('invalid_step_sequence');
+                }
+
+                $childEvents[$sequence][] = $event;
+
+                continue;
+            }
+
             if (in_array($event->event_type, [HistoryEventType::TimerScheduled, HistoryEventType::TimerFired], true)) {
                 $payload = $event->payload;
                 $sequence = is_array($payload) ? ($payload['sequence'] ?? null) : null;
@@ -245,10 +271,23 @@ final class FailedRunRedrivePlan
             return self::reject($updateBundles);
         }
 
+        $childSteps = [];
+
+        foreach ($childEvents as $sequence => $events) {
+            $childStep = self::completedChildStep($events, $run, $provenance);
+
+            if (is_string($childStep)) {
+                return self::reject($childStep);
+            }
+
+            $childSteps[$sequence] = $childStep;
+        }
+
         foreach ([
             ...array_keys($markerEvents),
             ...array_keys($timerEvents),
             ...array_keys($signalSteps),
+            ...array_keys($childSteps),
         ] as $sequence) {
             if ($sequence >= $boundary) {
                 return self::reject('invalid_failed_step');
@@ -273,8 +312,19 @@ final class FailedRunRedrivePlan
             }
         }
 
-        if (count($activityEvents) + count($markerEvents) + count($timerEvents) + count(
-            $signalSteps
+        foreach (array_keys($childSteps) as $sequence) {
+            if (
+                isset($activityEvents[$sequence])
+                || isset($markerEvents[$sequence])
+                || isset($timerEvents[$sequence])
+                || isset($signalSteps[$sequence])
+            ) {
+                return self::reject('duplicate_step_sequence');
+            }
+        }
+
+        if (count($activityEvents) + count($markerEvents) + count($timerEvents) + count($signalSteps) + count(
+            $childSteps
         ) !== $expectedSteps) {
             return self::reject('activity_sequence_gap');
         }
@@ -303,6 +353,14 @@ final class FailedRunRedrivePlan
 
             if (is_array($signalStep)) {
                 $reusedSteps[] = $signalStep;
+
+                continue;
+            }
+
+            $childStep = $childSteps[$sequence] ?? null;
+
+            if (is_array($childStep)) {
+                $reusedSteps[] = $childStep;
 
                 continue;
             }
@@ -467,6 +525,24 @@ final class FailedRunRedrivePlan
             $reusedRecordedAt = is_string($reused['reused_recorded_at'] ?? null)
                 ? $reused['reused_recorded_at']
                 : $step['recorded_at'];
+
+            if (isset($step['child_events'])) {
+                // A completed child call: the successor records the call and
+                // its result. The child is not started again and the
+                // successor gets no child link of its own.
+                foreach ($step['child_events'] as $childEvent) {
+                    $childPayload = $childEvent['payload'];
+                    $events[] = [
+                        'event_type' => $childEvent['event_type'],
+                        'payload' => array_merge($childPayload, [
+                            'reused_from_run_id' => $sourceRunId,
+                            'reused_recorded_at' => self::originalRecordedAt($childPayload, $childEvent['recorded_at']),
+                        ]),
+                    ];
+                }
+
+                continue;
+            }
 
             if (isset($step['signal_events'])) {
                 // A completed signal wait: the successor records the wait, the
@@ -868,9 +944,9 @@ final class FailedRunRedrivePlan
     /**
      * An inline payload the successor's replay can decode with the run's codec.
      */
-    private static function decodesInline(mixed $value, WorkflowRun $run): bool
+    private static function decodesInline(mixed $value, WorkflowRun $run, ?string $codec = null): bool
     {
-        $codec = is_string($run->payload_codec) && $run->payload_codec !== '' ? $run->payload_codec : 'avro';
+        $codec ??= is_string($run->payload_codec) && $run->payload_codec !== '' ? $run->payload_codec : 'avro';
 
         try {
             $blob = ExternalPayloads::payloadBlob($value, $codec, $run->namespace);
@@ -1127,6 +1203,136 @@ final class FailedRunRedrivePlan
         }
 
         return $steps;
+    }
+
+    /**
+     * A plain child call that completed before the failure: exactly one
+     * scheduled, started and completed event, in that order, all naming the
+     * same child call and child run. A child in a parallel group or a
+     * cancellation scope, a retried or continued child, and a child that
+     * failed, was cancelled or was terminated stay refused, because replay
+     * would not reproduce what the source did with them.
+     *
+     * @param list<WorkflowHistoryEvent> $events
+     * @param array{immediate_source: string|null, earlier_runs: array<string, true>} $provenance
+     *
+     * @return array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null, child_events: list<array{event_type: HistoryEventType, payload: array<string, mixed>, recorded_at: string|null}>}|string
+     */
+    private static function completedChildStep(array $events, WorkflowRun $run, array $provenance): array|string
+    {
+        $types = array_map(static fn (WorkflowHistoryEvent $event): HistoryEventType => $event->event_type, $events);
+
+        foreach ($types as $type) {
+            if (in_array($type, [
+                HistoryEventType::ChildRunFailed,
+                HistoryEventType::ChildRunCancelled,
+                HistoryEventType::ChildRunTerminated,
+            ], true)) {
+                return 'unsupported_child_outcome';
+            }
+        }
+
+        if (! in_array(HistoryEventType::ChildRunCompleted, $types, true)) {
+            return in_array(HistoryEventType::ChildCancellationRequested, $types, true)
+                || in_array(HistoryEventType::ChildCancellationResolved, $types, true)
+                ? 'unsupported_child_workflow'
+                : 'unsupported_open_child';
+        }
+
+        if ($types !== [
+            HistoryEventType::ChildWorkflowScheduled,
+            HistoryEventType::ChildRunStarted,
+            HistoryEventType::ChildRunCompleted,
+        ]) {
+            return 'unsupported_child_workflow';
+        }
+
+        $first = is_array($events[0]->payload) ? $events[0]->payload : [];
+
+        foreach ($events as $event) {
+            $payload = is_array($event->payload) ? $event->payload : [];
+
+            foreach ([
+                'child_workflow_instance_id',
+                'child_workflow_run_id',
+                'child_workflow_type',
+                'workflow_link_id',
+            ] as $key) {
+                if (! is_string($payload[$key] ?? null) || $payload[$key] === '' || $payload[$key] !== $first[$key]) {
+                    return 'unsupported_child_workflow';
+                }
+            }
+
+            if (($payload['child_call_id'] ?? null) !== ($first['child_call_id'] ?? null)) {
+                return 'unsupported_child_workflow';
+            }
+
+            foreach ([
+                'cancellation_scope_id',
+                'parallel_group_id',
+                'parallel_group_path',
+                'retry_attempt',
+                'retry_of_child_workflow_run_id',
+            ] as $key) {
+                if (($payload[$key] ?? null) !== null) {
+                    return 'unsupported_child_workflow';
+                }
+            }
+
+            // All three events come from the same run, with the same reuse
+            // provenance when an earlier redrive already reused them.
+            if (
+                ! self::hasReuseProvenance($payload, $provenance)
+                || ($payload['reused_from_run_id'] ?? null) !== ($first['reused_from_run_id'] ?? null)
+                || (! array_key_exists('reused_from_run_id', $payload) && $event->recorded_at === null)
+            ) {
+                return 'unsupported_child_workflow';
+            }
+        }
+
+        $completed = is_array($events[2]->payload) ? $events[2]->payload : [];
+
+        if (($completed['child_status'] ?? RunStatus::Completed->value) !== RunStatus::Completed->value) {
+            return 'unsupported_child_outcome';
+        }
+
+        // Every replay path resumes the call with the recorded output, so it
+        // must be recorded inline.
+        if (! array_key_exists('output', $completed)) {
+            return 'unavailable_child_result';
+        }
+
+        if (self::holdsExternalPayload($completed['output'])) {
+            return 'external_child_result_not_supported';
+        }
+
+        $codec = is_string($completed['payload_codec'] ?? null) && $completed['payload_codec'] !== ''
+            ? $completed['payload_codec']
+            : null;
+
+        if (! self::decodesInline($completed['output'], $run, $codec)) {
+            return 'unavailable_child_result';
+        }
+
+        $childEvents = [];
+
+        foreach ($events as $event) {
+            $eventPayload = $event->payload;
+            // The task and command are the source run's recording context.
+            unset($eventPayload['task'], $eventPayload['command']);
+            $childEvents[] = [
+                'event_type' => $event->event_type,
+                'payload' => $eventPayload,
+                'recorded_at' => $event->recorded_at?->toIso8601String(),
+            ];
+        }
+
+        return [
+            'event_type' => HistoryEventType::ChildRunCompleted,
+            'payload' => $childEvents[2]['payload'],
+            'recorded_at' => $childEvents[2]['recorded_at'],
+            'child_events' => $childEvents,
+        ];
     }
 
     private static function isExternalResult(mixed $result): bool

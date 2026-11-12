@@ -9,7 +9,9 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Symfony\Component\Process\Process;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
+use Tests\Fixtures\V2\TestParentFailingChildWorkflow;
 use Tests\Fixtures\V2\TestRedriveBuggyWorkflow;
+use Tests\Fixtures\V2\TestRedriveChildWorkflow;
 use Tests\Fixtures\V2\TestRedriveFinishesEarlyWorkflow;
 use Tests\Fixtures\V2\TestRedriveFixedWorkflow;
 use Tests\Fixtures\V2\TestRedriveIncompatibleWorkflow;
@@ -1951,6 +1953,254 @@ final class V2FailedRunRedriveTest extends TestCase
         $this->assertSame($output, $fiber->result);
     }
 
+    public function testRedriveReusesACompletedChildWorkflowAtItsRecordedTime(): void
+    {
+        // The successor fails once more, so the chain reuses the child twice.
+        config()
+            ->set('workflows.v2.testing.redrive_failures_before_success', 2);
+        WorkflowStub::fake();
+        $controlPlane = app(WorkflowControlPlane::class);
+
+        $workflow = WorkflowStub::make(TestRedriveChildWorkflow::class, 'redrive-child-1');
+        $workflow->start('Taylor');
+        $this->assertTrue($workflow->refresh()->failed());
+        $sourceRunId = $workflow->runId();
+        $sourceChildEvents = $this->childEvents($sourceRunId);
+        $this->assertCount(3, $sourceChildEvents);
+        $childRunId = $sourceChildEvents[2]->payload['child_workflow_run_id'];
+        $childInstanceId = $sourceChildEvents[2]->payload['child_workflow_instance_id'];
+        $this->assertSame(1, (int) Cache::get('test:redrive:first-calls'));
+        $this->assertRedriveAction($controlPlane, 'redrive-child-1', $sourceRunId, true, null);
+
+        // Redrive later than the source, so a successor that ran the child
+        // again or used its own event times would report a different time.
+        $this->travel(5)
+            ->minutes();
+        $first = $controlPlane->redrive('redrive-child-1', $sourceRunId);
+        $this->assertTrue($first['accepted'], (string) $first['reason']);
+        $this->assertSame(2, $first['resume_step_sequence']);
+        $middle = WorkflowRun::query()->findOrFail($first['workflow_run_id']);
+        $this->assertSame(RunStatus::Failed, $middle->status);
+
+        $this->travel(5)
+            ->minutes();
+        $second = $controlPlane->redrive('redrive-child-1', $middle->id);
+        $this->assertTrue($second['accepted'], (string) $second['reason']);
+        $this->assertSame(2, $second['resume_step_sequence']);
+        $successor = WorkflowRun::query()->findOrFail($second['workflow_run_id']);
+        $this->assertSame(RunStatus::Completed, $successor->status);
+
+        // The child ran once: one child run, one child activity call, and the
+        // only child link is the source's.
+        $this->assertSame(1, (int) Cache::get('test:redrive:first-calls'));
+        $this->assertSame(1, WorkflowRun::query()->where('workflow_instance_id', $childInstanceId)->count());
+        $childLinks = WorkflowLink::query()
+            ->where('link_type', 'child_workflow')
+            ->get();
+        $this->assertCount(1, $childLinks);
+        $this->assertSame($sourceRunId, $childLinks[0]->parent_workflow_run_id);
+        $this->assertSame($childRunId, $childLinks[0]->child_workflow_run_id);
+
+        foreach ([[$middle->id, $sourceRunId], [$successor->id, $middle->id]] as [$runId, $immediateSource]) {
+            $reused = $this->childEvents($runId);
+            $this->assertSame(
+                [
+                    HistoryEventType::ChildWorkflowScheduled,
+                    HistoryEventType::ChildRunStarted,
+                    HistoryEventType::ChildRunCompleted,
+                ],
+                array_map(static fn (WorkflowHistoryEvent $event): HistoryEventType => $event->event_type, $reused),
+            );
+
+            foreach ($reused as $index => $event) {
+                $original = $sourceChildEvents[$index];
+                $this->assertSame($immediateSource, $event->payload['reused_from_run_id'] ?? null);
+                $this->assertSame(
+                    $original->recorded_at?->toIso8601String(),
+                    $event->payload['reused_recorded_at'] ?? null,
+                );
+                $this->assertSame($childRunId, $event->payload['child_workflow_run_id']);
+                $this->assertSame($original->payload['workflow_link_id'], $event->payload['workflow_link_id']);
+                $this->assertArrayNotHasKey('task', $event->payload);
+            }
+        }
+
+        $expectedTime = $sourceChildEvents[2]->recorded_at?->toIso8601String();
+        $output = $successor->workflowOutput();
+        $this->assertSame('Hello, Taylor! Redrive completed.', $output['result']);
+        $this->assertSame($expectedTime, $output['time_after_child']);
+
+        $children = RunDetailView::forRun($successor->fresh())['continuedWorkflows'];
+        $this->assertSame(
+            [$childRunId],
+            array_column(
+                array_filter(
+                    $children,
+                    static fn (array $entry): bool => ($entry['link_type'] ?? null) === 'child_workflow'
+                ),
+                'child_workflow_run_id',
+            ),
+        );
+
+        $export = json_decode(
+            json_encode(HistoryExport::forRun($successor->fresh()), JSON_THROW_ON_ERROR),
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+        $this->assertSame([
+            'time_after_child' => $expectedTime,
+        ], (new WorkflowReplayer())->replayExport($export)
+            ->workflow->replayTimes());
+        $this->assertSame([
+            'time_after_child' => $expectedTime,
+        ], (new WorkflowReplayer())->replay($successor->fresh())
+            ->workflow->replayTimes());
+
+        $history = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $successor->id)
+            ->orderBy('sequence')
+            ->get()
+            ->map(static fn (WorkflowHistoryEvent $event): array => [
+                'sequence' => $event->sequence,
+                'event_type' => $event->event_type->value,
+                'payload' => $event->payload,
+                'recorded_at' => $event->recorded_at?->toIso8601String(),
+            ])
+            ->all();
+        $fiber = WorkflowFiberRunner::forClass(
+            TestRedriveChildWorkflow::class,
+            'redrive-child-1',
+            $successor->id,
+            ['Taylor'],
+            (string) $successor->payload_codec,
+            $history,
+        )->step();
+        $this->assertTrue($fiber->completed);
+        $this->assertSame($output, $fiber->result);
+    }
+
+    /**
+     * @return iterable<string, array{string, string}>
+     */
+    public static function unsupportedChildSteps(): iterable
+    {
+        yield 'child never closed' => ['open', 'unsupported_open_child'];
+        yield 'child failed' => ['failed', 'unsupported_child_outcome'];
+        yield 'completion naming another status' => ['failed_status', 'unsupported_child_outcome'];
+        yield 'child in a parallel group' => ['parallel', 'unsupported_child_workflow'];
+        yield 'child in a cancellation scope' => ['scoped', 'unsupported_child_workflow'];
+        yield 'events naming another child run' => ['foreign_child_run', 'unsupported_child_workflow'];
+        yield 'lone reuse time' => ['lone_recorded_at', 'unsupported_child_workflow'];
+        yield 'completion before start' => ['reversed_order', 'unsupported_child_workflow'];
+        yield 'output in external storage' => ['external_output', 'external_child_result_not_supported'];
+        yield 'undecodable output' => ['undecodable_output', 'unavailable_child_result'];
+        yield 'no output' => ['missing_output', 'unavailable_child_result'];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('unsupportedChildSteps')]
+    public function testRedriveRefusesAnUnsupportedChildStepWithoutMutation(string $mutation, string $reason): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestRedriveChildWorkflow::class, 'redrive-child-refused');
+        $workflow->start('Taylor');
+        $this->assertTrue($workflow->refresh()->failed());
+        $source = WorkflowRun::query()->findOrFail($workflow->runId());
+        [$scheduled, $started, $completed] = $this->childEvents($source->id);
+        $merge = static function (WorkflowHistoryEvent $event, array $values): void {
+            $event->forceFill([
+                'payload' => array_merge($event->payload, $values),
+            ])->save();
+        };
+
+        match ($mutation) {
+            'open' => $completed->delete(),
+            'failed' => $completed->forceFill([
+                'event_type' => HistoryEventType::ChildRunFailed,
+            ])->save(),
+            'failed_status' => $merge($completed, [
+                'child_status' => 'failed',
+            ]),
+            'parallel' => array_map(static fn (WorkflowHistoryEvent $event) => $merge($event, [
+                'parallel_group_id' => 'group-1',
+            ]), [$scheduled, $started, $completed]),
+            'scoped' => array_map(static fn (WorkflowHistoryEvent $event) => $merge($event, [
+                'cancellation_scope_id' => 'scope-1',
+            ]), [$scheduled, $started, $completed]),
+            'foreign_child_run' => $merge($started, [
+                'child_workflow_run_id' => 'another-child-run',
+            ]),
+            'lone_recorded_at' => $merge($completed, [
+                'reused_recorded_at' => now()
+                    ->toIso8601String(),
+            ]),
+            'reversed_order' => (static function () use ($started, $completed): void {
+                [$startedSequence, $completedSequence] = [$started->sequence, $completed->sequence];
+                $started->forceFill([
+                    'sequence' => 100000,
+                ])->save();
+                $completed->forceFill([
+                    'sequence' => $startedSequence,
+                ])->save();
+                $started->forceFill([
+                    'sequence' => $completedSequence,
+                ])->save();
+            })(),
+            'external_output' => $merge($completed, [
+                'output' => [
+                    'codec' => 'avro',
+                    'external_storage' => [
+                        'key' => 'source-run-only',
+                    ],
+                ],
+            ]),
+            'undecodable_output' => $merge($completed, [
+                'output' => 'not-an-avro-payload',
+            ]),
+            'missing_output' => $completed->forceFill([
+                'payload' => array_diff_key($completed->payload, [
+                    'output' => true,
+                ]),
+            ])->save(),
+        };
+
+        $this->assertRedriveAction(
+            app(WorkflowControlPlane::class),
+            'redrive-child-refused',
+            $source->id,
+            false,
+            $reason
+        );
+        $before = $this->engineSnapshot();
+        $currentRun = $source->instance->fresh()
+            ->current_run_id;
+
+        $result = app(WorkflowControlPlane::class)->redrive('redrive-child-refused', $source->id);
+
+        $this->assertFalse($result['accepted']);
+        $this->assertSame($reason, $result['reason']);
+        $this->assertSame($before, $this->engineSnapshot());
+        $this->assertSame($currentRun, $source->instance->fresh()->current_run_id);
+    }
+
+    public function testRedriveRefusesARunWhoseChildFailed(): void
+    {
+        WorkflowStub::fake();
+
+        $workflow = WorkflowStub::make(TestParentFailingChildWorkflow::class, 'redrive-child-failed');
+        $workflow->start();
+        $this->assertTrue($workflow->refresh()->failed());
+        $source = WorkflowRun::query()->findOrFail($workflow->runId());
+        $before = $this->engineSnapshot();
+
+        $result = app(WorkflowControlPlane::class)->redrive('redrive-child-failed', $source->id);
+
+        $this->assertFalse($result['accepted']);
+        $this->assertSame('unsupported_child_outcome', $result['reason']);
+        $this->assertSame($before, $this->engineSnapshot());
+    }
+
     public function testRunDetailAndDescribeReportTheRedriveDecision(): void
     {
         WorkflowStub::fake();
@@ -2227,6 +2477,23 @@ final class V2FailedRunRedriveTest extends TestCase
         }
 
         return $snapshot;
+    }
+
+    /**
+     * @return list<WorkflowHistoryEvent>
+     */
+    private function childEvents(string $runId): array
+    {
+        return WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->whereIn('event_type', [
+                HistoryEventType::ChildWorkflowScheduled->value,
+                HistoryEventType::ChildRunStarted->value,
+                HistoryEventType::ChildRunCompleted->value,
+            ])
+            ->orderBy('sequence')
+            ->get()
+            ->all();
     }
 
     private function sourceEvent(WorkflowRun $source, HistoryEventType $type): WorkflowHistoryEvent

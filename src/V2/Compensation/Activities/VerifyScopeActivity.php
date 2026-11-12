@@ -9,6 +9,9 @@ use Workflow\V2\Compensation\Definition\ScopeIdentity;
 use Workflow\V2\Compensation\Persistence\ScopeProgress;
 use Workflow\V2\Compensation\Security\ScopeBoundary;
 
+/**
+ * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
+ */
 final class VerifyScopeActivity extends Activity
 {
     public function handle(array $identity): array

@@ -17,6 +17,9 @@ use Workflow\V2\Compensation\Persistence\ScopeProgress;
 use Workflow\V2\Compensation\Recovery\ChildResolution;
 use Workflow\V2\Compensation\Security\ScopeBoundary;
 
+/**
+ * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
+ */
 final class CompensateObligationActivity extends Activity
 {
     public int $tries = 3;

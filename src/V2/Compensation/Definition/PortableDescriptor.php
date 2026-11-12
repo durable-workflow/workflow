@@ -7,7 +7,11 @@ namespace Workflow\V2\Compensation\Definition;
 use InvalidArgumentException;
 use JsonException;
 
-/** Canonical, bounded data only. This format never resolves classes or callables. */
+/**
+ * Canonical, bounded data only. This format never resolves classes or callables.
+ *
+ * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
+ */
 final class PortableDescriptor
 {
     public const MAX_BYTES = 16_384;

@@ -11,7 +11,11 @@ use Workflow\V2\Compensation\Definition\ScopeIdentity;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\SqliteTransaction;
 
-/** @internal Scope lock, bounded journal and ledger mutations on the native storage connection. */
+/**
+ * @internal Scope lock, bounded journal and ledger mutations on the native storage connection.
+ *
+ * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
+ */
 final class ScopeStorage
 {
     public const SCOPES = 'workflow_compensation_scopes';

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Carbon\CarbonInterface;
 use RuntimeException;
 use Throwable;
 use Workflow\Serializers\Serializer;
@@ -101,6 +102,78 @@ final class ChildRunHistory
                 ], static fn (mixed $value): bool => $value !== null)),
             ])->save();
         });
+    }
+
+    /**
+     * Record a child retry's start: the retry run's WorkflowStarted and, unless
+     * the parent handed the child over, the parent's ChildRunStarted. A
+     * handed-over parent's history is final, so the child's supervision rows
+     * move to the retry run instead.
+     *
+     * @param array<string, mixed>|null $retryPolicy
+     * @param array<string, mixed>|null $timeoutPolicy
+     * @param array<string, mixed> $parallelMetadata
+     */
+    public static function recordRetryStarted(
+        WorkflowRun $parentRun,
+        int $sequence,
+        WorkflowRun $retryRun,
+        WorkflowLink $retryLink,
+        WorkflowRun $failedChildRun,
+        string $childCallId,
+        string $parentClosePolicy,
+        int $attemptCount,
+        int $backoffSeconds,
+        ?array $retryPolicy,
+        ?array $timeoutPolicy,
+        ?int $executionTimeoutSeconds,
+        ?int $runTimeoutSeconds,
+        ?CarbonInterface $executionDeadlineAt,
+        ?CarbonInterface $runDeadlineAt,
+        array $parallelMetadata,
+        bool $handedOver,
+    ): void {
+        $policies = [
+            'retry_policy' => $retryPolicy,
+            'timeout_policy' => $timeoutPolicy,
+            'execution_timeout_seconds' => $executionTimeoutSeconds,
+            'run_timeout_seconds' => $runTimeoutSeconds,
+            'execution_deadline_at' => $executionDeadlineAt?->toIso8601String(),
+            'run_deadline_at' => $runDeadlineAt?->toIso8601String(),
+        ];
+
+        if ($handedOver) {
+            ChildSupervision::followRetry($parentRun, $sequence, $retryRun);
+        } else {
+            WorkflowHistoryEvent::record($parentRun, HistoryEventType::ChildRunStarted, array_filter(array_merge([
+                'sequence' => $sequence,
+                'workflow_link_id' => $retryLink->id,
+                'child_call_id' => $childCallId,
+                'child_workflow_instance_id' => $retryRun->workflow_instance_id,
+                'child_workflow_run_id' => $retryRun->id,
+                'child_workflow_class' => $retryRun->workflow_class,
+                'child_workflow_type' => $retryRun->workflow_type,
+                'child_run_number' => $retryRun->run_number,
+                'parent_close_policy' => $parentClosePolicy,
+                'retry_attempt' => $attemptCount + 1,
+                'retry_of_child_workflow_run_id' => $failedChildRun->id,
+                'retry_backoff_seconds' => $backoffSeconds,
+            ], $policies, $parallelMetadata), static fn (mixed $value): bool => $value !== null));
+        }
+
+        WorkflowHistoryEvent::record($retryRun, HistoryEventType::WorkflowStarted, array_merge([
+            'workflow_class' => $retryRun->workflow_class,
+            'workflow_type' => $retryRun->workflow_type,
+            'workflow_instance_id' => $retryRun->workflow_instance_id,
+            'workflow_run_id' => $retryRun->id,
+            'parent_workflow_instance_id' => $parentRun->workflow_instance_id,
+            'parent_workflow_run_id' => $parentRun->id,
+            'parent_sequence' => $sequence,
+            'workflow_link_id' => $retryLink->id,
+            'child_call_id' => $childCallId,
+            'retry_attempt' => $attemptCount + 1,
+            'retry_of_child_workflow_run_id' => $failedChildRun->id,
+        ], $policies));
     }
 
     public static function markChildCallRetryStarted(

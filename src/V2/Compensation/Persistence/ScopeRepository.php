@@ -13,7 +13,11 @@ use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\SqliteTransaction;
 use Workflow\V2\Support\WorkflowFiberContext;
 
-/** @internal Live storage boundary. Call from activities, never from workflow replay. */
+/**
+ * @internal Live storage boundary. Call from activities, never from workflow replay.
+ *
+ * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
+ */
 final class ScopeRepository
 {
     public const MAX_OBLIGATIONS = 256;

@@ -15,7 +15,11 @@ use Workflow\V2\Compensation\Recovery\RecoveryWorkflow;
 use Workflow\V2\Support\DefaultActivityTaskBridge;
 use Workflow\V2\Support\SqliteTransaction;
 
-/** @internal Retains native attempt locks until the ledger transaction commits; owns no new lease. */
+/**
+ * @internal Retains native attempt locks until the ledger transaction commits; owns no new lease.
+ *
+ * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
+ */
 final readonly class ScopeBoundary
 {
     public function __construct(

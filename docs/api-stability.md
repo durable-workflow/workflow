@@ -114,7 +114,26 @@ The workflow package is consumed by three distinct audiences:
    into the workflow package as a library but do not author workflows.
 
 The semver guarantee below covers all three surfaces. Breaking changes to
-anything marked `@api` require a major version bump.
+anything marked `@api` require a major version bump, except surfaces explicitly
+marked `@experimental` as described below.
+
+## Experimental compensation scopes
+
+The entire `Workflow\V2\Compensation` namespace is experimental, including
+its authoring helpers, handler and authorization contracts, activities,
+recovery helpers and persisted ledger implementation. Its types carry
+`@experimental` in code. This namespace is not covered by the stability
+guarantees in this document. Its API and storage contract may change in a
+minor release while the first increment is evaluated. `@experimental` takes
+precedence over any otherwise applicable public-API classification below.
+`@internal` types remain internal and do not become supported host entry points.
+
+This first increment supports embedded Laravel, sequential compensation, one
+nesting level and explicit release. It does not transfer forward scope ownership
+across continue-as-new or originating-run redrive. Retained obligations stay
+attached to the original run and remain recoverable through `ScopeRecovery`.
+See [durable compensation scopes](compensation-scopes.md) for the operational
+boundaries. Existing run-local Saga and its stability contract are unchanged.
 
 ## What is covered
 
@@ -795,9 +814,9 @@ class, source file path, or stack trace to replay or handle a failure.
 | `ConditionWaitCancelled` (candidate 1.20) | `condition_wait_id`, `condition_wait_occurrence_id`, `condition_key`, `condition_definition_fingerprint`, `sequence`, `timer_id`, `timeout_seconds`, `cancelled_at`, `cancellation_scope` | `ScopedWaitCancellation`, `ConditionWaits`, `HistoryTimeline`, scope delivery and worker history consumers |
 | `SideEffectRecorded` | `sequence`, `result`, `reused_from_run_id`, `reused_recorded_at` | `WorkflowStepHistory`, `WorkflowExecutor`, `QueryStateReplayer`, `WorkflowFiberRunner`, `RedriveReplayClock` |
 | `VersionMarkerRecorded` | `sequence`, `change_id`, `version`, `min_supported`, `max_supported`, `reused_from_run_id`, `reused_recorded_at` | `WorkflowStepHistory`, `WorkflowExecutor`, `QueryStateReplayer`, `WorkflowFiberRunner`, `RedriveReplayClock` |
-| `ChildWorkflowScheduled` | `sequence`, `workflow_link_id`, `child_call_id`, `child_workflow_instance_id`, `child_workflow_run_id`, `child_workflow_class`, `child_workflow_type`, `child_run_number`, `parent_close_policy`, `retry_policy`, `timeout_policy`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `WorkflowStepHistory`, `WorkflowExecutor`, `QueryStateReplayer`, `ChildRunHistory`, `ParallelChildGroup`, `RunLineageView` |
-| `ChildRunStarted` | `sequence`, `workflow_link_id`, `child_call_id`, `child_workflow_instance_id`, `child_workflow_run_id`, `child_workflow_class`, `child_workflow_type`, `child_run_number`, `child_status`, `parent_close_policy`, `retry_policy`, `timeout_policy`, `execution_timeout_seconds`, `run_timeout_seconds`, `execution_deadline_at`, `run_deadline_at`, `retry_attempt`, `retry_of_child_workflow_run_id`, `retry_backoff_seconds`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `ChildRunHistory`, `ParallelChildGroup`, `RunLineageView`, worker history payload consumers |
-| `ChildRunCompleted` | `sequence`, `workflow_link_id`, `child_call_id`, `child_workflow_instance_id`, `child_workflow_run_id`, `child_workflow_class`, `child_workflow_type`, `child_run_number`, `child_status`, `closed_reason`, `closed_at`, `output`, `result`, `payload_codec`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `WorkflowExecutor`, `QueryStateReplayer`, `ChildRunHistory`, `ParallelChildGroup`, `RunLineageView` |
+| `ChildWorkflowScheduled` | `sequence`, `workflow_link_id`, `child_call_id`, `child_workflow_instance_id`, `child_workflow_run_id`, `child_workflow_class`, `child_workflow_type`, `child_run_number`, `parent_close_policy`, `retry_policy`, `timeout_policy`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path`, `reused_from_run_id`, `reused_recorded_at` | `WorkflowStepHistory`, `WorkflowExecutor`, `QueryStateReplayer`, `ChildRunHistory`, `ParallelChildGroup`, `RunLineageView`, `FailedRunRedrivePlan` |
+| `ChildRunStarted` | `sequence`, `workflow_link_id`, `child_call_id`, `child_workflow_instance_id`, `child_workflow_run_id`, `child_workflow_class`, `child_workflow_type`, `child_run_number`, `child_status`, `parent_close_policy`, `retry_policy`, `timeout_policy`, `execution_timeout_seconds`, `run_timeout_seconds`, `execution_deadline_at`, `run_deadline_at`, `retry_attempt`, `retry_of_child_workflow_run_id`, `retry_backoff_seconds`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path`, `reused_from_run_id`, `reused_recorded_at` | `ChildRunHistory`, `ParallelChildGroup`, `RunLineageView`, worker history payload consumers, `FailedRunRedrivePlan` |
+| `ChildRunCompleted` | `sequence`, `workflow_link_id`, `child_call_id`, `child_workflow_instance_id`, `child_workflow_run_id`, `child_workflow_class`, `child_workflow_type`, `child_run_number`, `child_status`, `closed_reason`, `closed_at`, `output`, `result`, `payload_codec`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path`, `reused_from_run_id`, `reused_recorded_at` | `WorkflowExecutor`, `QueryStateReplayer`, `WorkflowFiberRunner`, `ChildRunHistory`, `ParallelChildGroup`, `RunLineageView`, `RedriveReplayClock` |
 | `ChildRunFailed` | `sequence`, `workflow_link_id`, `child_call_id`, `child_workflow_instance_id`, `child_workflow_run_id`, `child_workflow_class`, `child_workflow_type`, `child_run_number`, `child_status`, `closed_reason`, `closed_at`, `failure_id`, `failure_category`, `exception_type`, `exception_class`, `message`, `exception`, `code`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `ChildRunHistory`, `FailureSnapshots`, `ParallelChildGroup`, `ParallelFailureSelector`, `RunLineageView` |
 | `ChildRunCancelled` | `sequence`, `workflow_link_id`, `child_call_id`, `child_workflow_instance_id`, `child_workflow_run_id`, `child_workflow_class`, `child_workflow_type`, `child_run_number`, `child_status`, `closed_reason`, `closed_at`, `failure_id`, `failure_category`, `exception_class`, `message`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `ChildRunHistory`, `FailureSnapshots`, `ParallelChildGroup`, `RunLineageView`, parent-close projections |
 | `ChildRunTerminated` | `sequence`, `workflow_link_id`, `child_call_id`, `child_workflow_instance_id`, `child_workflow_run_id`, `child_workflow_class`, `child_workflow_type`, `child_run_number`, `child_status`, `closed_reason`, `closed_at`, `failure_id`, `failure_category`, `exception_class`, `message`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `ChildRunHistory`, `FailureSnapshots`, `ParallelChildGroup`, `RunLineageView`, parent-close projections |

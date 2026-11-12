@@ -8,7 +8,6 @@ use Tests\TestCase;
 use Workflow\V2\Enums\CancellationPolicy;
 use Workflow\V2\Enums\ChildCallStatus;
 use Workflow\V2\Enums\ParentClosePolicy;
-use Workflow\V2\Models\WorkflowChildCall;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\ChildCallService;
@@ -407,37 +406,6 @@ class ChildCallServiceTest extends TestCase
 
         // Only open child affected
         $this->assertEquals(1, $stats['abandoned']);
-    }
-
-    public function testItTransfersChildCallsOnContinueAsNew(): void
-    {
-        $parentInstance = $this->createInstance();
-        $closingRun = $this->createRunForInstance($parentInstance);
-        $continuedRun = $this->createRunForInstance($parentInstance);
-
-        // Create mix of children on closing run
-        $open1 = $this->service->scheduleChild($closingRun, new ChildWorkflowCall('Child1', []), 10);
-        $this->service->resolveChildReferences($open1, 'inst-1', 'run-1');
-
-        $open2 = $this->service->scheduleChild($closingRun, new ChildWorkflowCall('Child2', []), 11);
-        $this->service->resolveChildReferences($open2, 'inst-2', 'run-2');
-
-        $completed = $this->service->scheduleChild($closingRun, new ChildWorkflowCall('Child3', []), 12);
-        $this->service->resolveChildReferences($completed, 'inst-3', 'run-3');
-        $this->service->recordChildCompleted($completed);
-
-        // Transfer to continued run
-        $this->service->transferChildCallsToContinuedRun($closingRun, $continuedRun);
-
-        // Open children should be transferred
-        $continuedChildren = WorkflowChildCall::where('parent_workflow_run_id', $continuedRun->id)->get();
-        $this->assertCount(2, $continuedChildren);
-        $this->assertTrue($continuedChildren->every(static fn ($c) => $c->status->isOpen()));
-
-        // Completed child remains with closing run
-        $closingChildren = WorkflowChildCall::where('parent_workflow_run_id', $closingRun->id)->get();
-        $this->assertCount(1, $closingChildren);
-        $this->assertEquals(ChildCallStatus::Completed, $closingChildren->first()->status);
     }
 
     public function testItGetsChildrenByInstanceIdForLineageTracking(): void

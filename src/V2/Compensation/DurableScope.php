@@ -16,7 +16,11 @@ use Workflow\V2\Support\ActivityOptions;
 use Workflow\V2\Support\WorkflowFiberContext;
 use Workflow\V2\Workflow;
 
-/** Workflow authoring helper. Every live boundary is a native recorded activity. */
+/**
+ * Workflow authoring helper. Every live boundary is a native recorded activity.
+ *
+ * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
+ */
 final readonly class DurableScope
 {
     public function __construct(

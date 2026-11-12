@@ -11,7 +11,11 @@ use Workflow\V2\Compensation\Definition\ScopeIdentity;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\SqliteTransaction;
 
-/** @internal Bounded sequential scope participants, not state-bound machine definitions. */
+/**
+ * @internal Bounded sequential scope participants, not state-bound machine definitions.
+ *
+ * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
+ */
 final class ChildScopes
 {
     public const TYPE = 'dw.child-scope';

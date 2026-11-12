@@ -259,44 +259,44 @@ private function handleTerminate(WorkflowChildCall $childCall, array &$stats): v
 
 ## Continue-As-New Semantics
 
-When a parent workflow continues as a new run (continue-as-new pattern), open children must be transferred to the new run.
-
-### Transfer Logic
-
-```php
-public function transferChildCallsToContinuedRun(
-    WorkflowRun $closingRun,
-    WorkflowRun $continuedRun,
-): void {
-    DB::transaction(function () use ($closingRun, $continuedRun): void {
-        // Transfer open children to new run
-        WorkflowChildCall::where('parent_workflow_run_id', $closingRun->id)
-            ->whereIn('status', [
-                ChildCallStatus::Scheduled->value,
-                ChildCallStatus::Started->value,
-            ])
-            ->update([
-                'parent_workflow_run_id' => $continuedRun->id,
-                'updated_at' => now(),
-            ]);
-        
-        // Terminal children remain with closing run (historical record)
-    });
-}
-```
+When a parent continues as new while children it started are still open, the
+continued run takes over effective supervision of those children. The
+transfer is part of the continue-as-new transaction and is implemented by
+`Workflow\V2\Support\ChildSupervision::transferToContinuedRun()` in both the
+embedded executor and the service-mode workflow task bridge.
 
 ### Transfer Behavior
 
 | Child State | Behavior |
 |-------------|----------|
-| **Open** (Scheduled, Started) | Transferred to continued run |
-| **Terminal** (Completed, Failed, etc.) | Remain with closing run (historical) |
+| **Open** (child's current run not terminal) | A `workflow_child_supervisions` row hands it to the continued run |
+| **Terminal** (Completed, Failed, Cancelled, Terminated) | Nothing is transferred |
 
-**Rationale**:
-- Open children are still executing and need parent tracking
-- Terminal children are historical and don't need updated tracking
-- Continued run inherits responsibility for open children
-- Lineage preserved through `parent_workflow_instance_id` (unchanged)
+- The child link, child call row, child identity, sequence, deadlines and
+  `parent_close_policy` stay exactly as the original run recorded them. The
+  child call row keeps `parent_workflow_run_id` of the run that started it, so
+  sequences of different runs in the chain never collide.
+- Each supervision row names the original child link (`workflow_link_id`), the
+  run that started the child, and the run that now applies the policy. When the
+  continued run itself continues as new, it hands its supervised children on
+  again.
+- When the chain's final run closes (complete, fail, cancel, terminate or time
+  out), `ParentClosePolicyEnforcer` applies each retained policy and records
+  `ParentClosePolicyApplied`/`ParentClosePolicyFailed` on that final run.
+  `abandon` stays `abandon`. The closed predecessor gets no history and no
+  resume task.
+- The continued run has no handle on transferred children: their results are
+  not delivered to it.
+- A transferred child that fails is retried under the retry policy the run
+  that started it recorded, while a run of the chain still supervises it. The
+  retry keeps the original child call identity and attempt count: its
+  `WorkflowStarted` names the run that started the child as parent, with
+  `retry_attempt` and `retry_of_child_workflow_run_id`, and a new child link
+  records it under the original sequence. The closed predecessor gets no
+  `ChildRunStarted`, since its history is final. Every supervision row of the
+  child moves to the retry run, so the chain's final run applies the
+  parent-close policy to it. A failure is final once the attempts are spent, the
+  failure is non-retryable, or the chain has closed.
 
 ## Reference Resolution
 
@@ -478,7 +478,7 @@ The `WorkflowExecutor` is responsible for:
 3. **Recording Outcomes**: Call appropriate outcome methods when child completes
 4. **Enforcing Policies**: Call `enforceParentClosePolicy()` before parent closes
 5. **Dispatching Commands**: Issue actual cancel/terminate commands based on metadata flags
-6. **Continue-As-New**: Call `transferChildCallsToContinuedRun()` during continue-as-new
+6. **Continue-As-New**: Call `ChildSupervision::transferToContinuedRun()` during continue-as-new
 
 ### Child Workflow Start
 

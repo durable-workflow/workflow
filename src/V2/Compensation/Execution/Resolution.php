@@ -7,7 +7,11 @@ namespace Workflow\V2\Compensation\Execution;
 use InvalidArgumentException;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 
-/** Explicit authoritative evidence, not merely a successful callback return. */
+/**
+ * Explicit authoritative evidence, not merely a successful callback return.
+ *
+ * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
+ */
 final readonly class Resolution
 {
     private function __construct(

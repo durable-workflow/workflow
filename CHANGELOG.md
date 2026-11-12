@@ -2,6 +2,74 @@
 
 ## Unreleased
 
+- A child handed to a continued run now gets its retries (#1105). Before, a
+  child that failed after its parent continued as new was never retried,
+  because the retry needed the parent to be waiting. It is now retried under
+  the retry policy the parent recorded, with the same child call identity and
+  attempt count, while a run of the chain still supervises it. The retry run's
+  `WorkflowStarted` names the original parent run, and the supervision moves to
+  the retry run, so the chain's final run applies the parent-close policy to it.
+  Nothing is appended to the closed predecessor. Once the attempts are spent,
+  the failure is non-retryable, or the chain has closed, the failure is final.
+  Embedded and service-mode runs behave the same. No migration.
+- Failed-run redrive now reuses a completed child workflow call (#864).
+  Before, any child workflow in the failed run's history refused redrive with
+  `unsupported_history`. The successor records the child's
+  `ChildWorkflowScheduled`, `ChildRunStarted` and `ChildRunCompleted` events
+  with `reused_from_run_id` and `reused_recorded_at`, keeps the original child
+  instance, run, link id and call id, and does not start the child again or
+  write a child link of its own. Executor, query and fiber replay resume the
+  call with the recorded output at the time it first closed, so `now()` after
+  the call matches the failed run. Redrive chains carry the reuse forward.
+  Child steps that replay would not reproduce are refused before any write,
+  with new reasons: `unsupported_open_child`, `unsupported_child_outcome`
+  (failed, cancelled or terminated children), `unsupported_child_workflow`
+  (parallel, scoped, retried or continued children, or mismatched call
+  identity), `external_child_result_not_supported` and
+  `unavailable_child_result`. Runs a service worker started stay refused with
+  `service_redrive_history_not_qualified` when they would reuse a child step.
+  Runs that are themselves children are still refused. No migration.
+  Rollback: earlier releases ignore `reused_recorded_at` on child events, so
+  replaying such a successor there can give a different workflow time, and
+  deadlines derived from it, after the reused call; they also refuse to
+  redrive it again (`unsupported_history`). Once a successor with a reused
+  child call exists, keep workers on this release or later, or confirm that
+  no such history can replay before rolling back.
+- Workflow code can read the history budget replay-safely with
+  `historyBudgetAtStep()` and `shouldContinueAsNewAtStep()` (#859). They count
+  only the history recorded before the current workflow step, so the same line
+  returns the same value on every replay, and a loop that checks the budget
+  each iteration continues as new once, at the first iteration that crosses the
+  threshold. The existing `historyLength()`, `historySize()`, `historyFanOut()`,
+  `shouldContinueAsNew()` and `historyBudgetPressure()` still read the whole
+  current history and are unchanged, so runs that already decided with them
+  keep replaying. Inside a loop they can answer differently on replay; use the
+  new methods there.
+
+- Upgrade migrations that fill in existing rows no longer lock the table for
+  the whole backfill on PostgreSQL (#871). The output codec (`2026_07_13`),
+  local activity exception (`2026_09_24`), schedule occurrence (`2026_09_29`)
+  and service call deadline (`2026_10_11`) migrations now commit the new
+  column first, with a one-second lock wait, and then fill rows in small
+  batches that each commit on their own. The `2026_09_29` and `2026_10_11`
+  indexes are now built after the backfill without blocking writes
+  (`CREATE INDEX CONCURRENTLY` on PostgreSQL, `LOCK=NONE` on MySQL and
+  MariaDB). An interrupted run keeps the batches it finished and can be run
+  again. The finished schema and data are the same as before, and installs
+  that already ran these migrations are not affected.
+- A parent that continues as new while children it started are still open
+  now hands them to the continued run (#868). Embedded and service-mode
+  continue-as-new record one `workflow_child_supervisions` row per open child,
+  in the same transaction. The child link, child call, sequence, deadlines and
+  parent-close policy stay as recorded. When the chain's final run completes,
+  fails, is cancelled, is terminated or times out, it applies each child's
+  `request_cancel`, `request_cancellation` or `terminate` policy and records
+  the outcome in its own history. `abandon` stays `abandon`. Before, these
+  children kept running and their policy was never applied. Nothing is
+  appended to the closed predecessor, and the continued run gets no handle on
+  the children. The unused `ChildCallService::transferChildCallsToContinuedRun()`
+  is removed: it re-keyed child calls to the continued run, where their
+  sequences could collide with its own children. Run the new migration.
 - An activity outcome no longer locks the attempt row after it holds the task,
   execution and run (#1000). It closes the attempt with one guarded conditional
   update instead. Lease renewal locks the attempt first, so the old order could

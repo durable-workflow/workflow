@@ -12,7 +12,11 @@ use Workflow\V2\Compensation\Persistence\ChildScopes;
 use Workflow\V2\Compensation\Persistence\ScopeRepository;
 use Workflow\V2\Compensation\Security\ScopeAuthorization;
 
-/** Child request acknowledgement never substitutes for verified business compensation. */
+/**
+ * Child request acknowledgement never substitutes for verified business compensation.
+ *
+ * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
+ */
 final readonly class ChildResolution
 {
     public function __construct(
