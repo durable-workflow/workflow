@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Upgrade migrations that fill in existing rows no longer lock the table for
+  the whole backfill on PostgreSQL (#871). The output codec (`2026_07_13`),
+  local activity exception (`2026_09_24`), schedule occurrence (`2026_09_29`)
+  and service call deadline (`2026_10_11`) migrations now commit the new
+  column first, with a one-second lock wait, and then fill rows in small
+  batches that each commit on their own. The `2026_09_29` and `2026_10_11`
+  indexes are now built after the backfill without blocking writes
+  (`CREATE INDEX CONCURRENTLY` on PostgreSQL, `LOCK=NONE` on MySQL and
+  MariaDB). An interrupted run keeps the batches it finished and can be run
+  again. The finished schema and data are the same as before, and installs
+  that already ran these migrations are not affected.
 - An activity outcome no longer locks the attempt row after it holds the task,
   execution and run (#1000). It closes the attempt with one guarded conditional
   update instead. Lease renewal locks the attempt first, so the old order could
