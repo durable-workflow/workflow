@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
-use InvalidArgumentException;
 use Tests\TestCase;
+use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowMemo;
 use Workflow\V2\Models\WorkflowRun;
@@ -199,8 +199,8 @@ class MemoTest extends TestCase
         );
 
         // One more should fail
-        $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('exceeds maximum');
+        $this->expectException(StructuralLimitExceededException::class);
+        $this->expectExceptionMessage('memo_keys');
 
         $call2 = new UpsertMemosCall([
             'one_too_many' => 'fail',
@@ -215,8 +215,8 @@ class MemoTest extends TestCase
         // Create a value that exceeds 10KB when JSON-encoded
         $largeArray = array_fill(0, 2000, 'This is a string that will make the JSON large');
 
-        $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('exceeds maximum size');
+        $this->expectException(StructuralLimitExceededException::class);
+        $this->expectExceptionMessage('memo_value_bytes');
 
         $call = new UpsertMemosCall([
             'large_memo' => $largeArray,
@@ -235,8 +235,8 @@ class MemoTest extends TestCase
             $memos["memo_{$i}"] = str_repeat('x', 8000);
         }
 
-        $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('exceeds maximum');
+        $this->expectException(StructuralLimitExceededException::class);
+        $this->expectExceptionMessage('memo_total_bytes');
 
         $call = new UpsertMemosCall($memos);
         $this->service->upsert($run, $call, 1);

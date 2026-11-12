@@ -6007,6 +6007,15 @@ final class WorkflowStub
      */
     private function seedTypedVisibilityMetadata(WorkflowRun $run, ?array $memo, ?array $searchAttributes): void
     {
+        // Start gets the memo and search attribute limits upserts get (#853).
+        if (is_array($memo) && $memo !== []) {
+            StructuralLimits::guardMemoMap($memo);
+        }
+
+        if (is_array($searchAttributes) && $searchAttributes !== []) {
+            StructuralLimits::guardSearchAttributeMap($searchAttributes);
+        }
+
         if (is_array($memo) && $memo !== []) {
             app(MemoUpsertService::class)->upsert($run, new UpsertMemosCall($memo), 0);
             $run->unsetRelation('memos');

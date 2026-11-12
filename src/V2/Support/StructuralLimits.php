@@ -14,7 +14,9 @@ use Workflow\V2\Enums\UpdateStatus;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowLink;
+use Workflow\V2\Models\WorkflowMemo;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
@@ -57,7 +59,7 @@ final class StructuralLimits
 
     public const DEFAULT_PAYLOAD_SIZE_BYTES = 2097152;       // 2 MiB
 
-    public const DEFAULT_MEMO_SIZE_BYTES = 262144;           // 256 KiB
+    public const DEFAULT_MEMO_SIZE_BYTES = 65536;            // 64 KiB, the fixed memo total
 
     public const DEFAULT_SEARCH_ATTRIBUTE_SIZE_BYTES = 40960; // 40 KiB
 
@@ -108,14 +110,99 @@ final class StructuralLimits
         return self::intConfig('payload_size_bytes', self::DEFAULT_PAYLOAD_SIZE_BYTES);
     }
 
+    /**
+     * The configured memo limit can tighten the fixed memo total but not
+     * raise it. Zero turns the configured limit off; the fixed caps stay.
+     */
     public static function memoSizeLimit(): int
     {
-        return self::intConfig('memo_size_bytes', self::DEFAULT_MEMO_SIZE_BYTES);
+        return self::cappedLimit(
+            self::intConfig('memo_size_bytes', self::DEFAULT_MEMO_SIZE_BYTES),
+            WorkflowMemo::MAX_TOTAL_SIZE_BYTES,
+        );
     }
 
+    /**
+     * The configured search attribute limit can tighten the fixed total but
+     * not raise it. Zero turns the configured limit off; the fixed caps stay.
+     */
     public static function searchAttributeSizeLimit(): int
     {
-        return self::intConfig('search_attribute_size_bytes', self::DEFAULT_SEARCH_ATTRIBUTE_SIZE_BYTES);
+        return self::cappedLimit(
+            self::intConfig('search_attribute_size_bytes', self::DEFAULT_SEARCH_ATTRIBUTE_SIZE_BYTES),
+            WorkflowSearchAttribute::MAX_TOTAL_SIZE_BYTES,
+        );
+    }
+
+    /**
+     * Checks the memo a write would leave on the run, before anything is
+     * written. Start, embedded upserts and worker upserts all call this,
+     * so the same memo is refused the same way on every path.
+     *
+     * @param array<string, mixed> $merged
+     */
+    public static function guardMemoMap(array $merged): void
+    {
+        ksort($merged);
+        $total = 0;
+
+        foreach ($merged as $key => $value) {
+            $bytes = MemoPayload::encodedEnvelopeSize(MemoPayload::envelope($value));
+
+            if ($bytes > WorkflowMemo::MAX_VALUE_SIZE_BYTES) {
+                throw StructuralLimitExceededException::memoLimit(
+                    'memo_value_bytes',
+                    $bytes,
+                    WorkflowMemo::MAX_VALUE_SIZE_BYTES,
+                    sprintf('memo value bytes for key "%s"', $key),
+                );
+            }
+
+            $total += $bytes;
+        }
+
+        if (count($merged) > WorkflowMemo::MAX_MEMOS_PER_RUN) {
+            throw StructuralLimitExceededException::memoLimit(
+                'memo_keys',
+                count($merged),
+                WorkflowMemo::MAX_MEMOS_PER_RUN,
+                'memo keys',
+            );
+        }
+
+        if ($total > WorkflowMemo::MAX_TOTAL_SIZE_BYTES) {
+            throw StructuralLimitExceededException::memoLimit(
+                'memo_total_bytes',
+                $total,
+                WorkflowMemo::MAX_TOTAL_SIZE_BYTES,
+                'total memo bytes',
+            );
+        }
+
+        self::guardMemoSize(MemoPayload::encodedMapBytes($merged));
+    }
+
+    /**
+     * Checks the search attributes a write would leave on the run, before
+     * anything is written. Per-value caps are checked when each value is
+     * typed and stored.
+     *
+     * @param array<string, mixed> $merged
+     */
+    public static function guardSearchAttributeMap(array $merged): void
+    {
+        ksort($merged);
+
+        if (count($merged) > WorkflowSearchAttribute::MAX_ATTRIBUTES_PER_RUN) {
+            throw StructuralLimitExceededException::searchAttributeLimit(
+                'search_attribute_count',
+                count($merged),
+                WorkflowSearchAttribute::MAX_ATTRIBUTES_PER_RUN,
+                'search attributes',
+            );
+        }
+
+        self::guardSearchAttributeSize(json_encode($merged, JSON_THROW_ON_ERROR));
     }
 
     public static function historyTransactionSizeLimit(): int
@@ -565,6 +652,11 @@ final class StructuralLimits
     }
 
     // ── Internal ────��───────────────────────────────────────────────
+
+    private static function cappedLimit(int $configured, int $fixedCap): int
+    {
+        return $configured > 0 ? min($configured, $fixedCap) : 0;
+    }
 
     private static function intConfig(string $key, int $default): int
     {

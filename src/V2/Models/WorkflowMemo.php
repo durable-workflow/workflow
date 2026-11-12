@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use InvalidArgumentException;
 use Workflow\Traits\ResolvesStorageConnection;
+use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\MemoPayload;
 
@@ -66,12 +67,12 @@ class WorkflowMemo extends Model
         $sizeBytes = MemoPayload::encodedEnvelopeSize($envelope);
 
         if ($sizeBytes > self::MAX_VALUE_SIZE_BYTES) {
-            throw new InvalidArgumentException(sprintf(
-                'Memo value for key "%s" exceeds maximum size of %d bytes (actual: %d bytes)',
-                $this->key,
-                self::MAX_VALUE_SIZE_BYTES,
+            throw StructuralLimitExceededException::memoLimit(
+                'memo_value_bytes',
                 $sizeBytes,
-            ));
+                self::MAX_VALUE_SIZE_BYTES,
+                sprintf('memo value bytes for key "%s"', $this->key),
+            );
         }
 
         $this->value = $envelope;
@@ -97,12 +98,12 @@ class WorkflowMemo extends Model
         });
 
         if ($totalSize > self::MAX_TOTAL_SIZE_BYTES) {
-            throw new InvalidArgumentException(sprintf(
-                'Total memo size for run %s exceeds maximum of %d bytes (actual: %d bytes)',
-                $runId,
+            throw StructuralLimitExceededException::memoLimit(
+                'memo_total_bytes',
+                (int) $totalSize,
                 self::MAX_TOTAL_SIZE_BYTES,
-                $totalSize,
-            ));
+                'total memo bytes',
+            );
         }
     }
 
@@ -116,12 +117,12 @@ class WorkflowMemo extends Model
         $count = static::where('workflow_run_id', $runId)->count();
 
         if ($count > self::MAX_MEMOS_PER_RUN) {
-            throw new InvalidArgumentException(sprintf(
-                'Memo count for run %s exceeds maximum of %d (actual: %d)',
-                $runId,
-                self::MAX_MEMOS_PER_RUN,
+            throw StructuralLimitExceededException::memoLimit(
+                'memo_keys',
                 $count,
-            ));
+                self::MAX_MEMOS_PER_RUN,
+                'memo keys',
+            );
         }
     }
 }

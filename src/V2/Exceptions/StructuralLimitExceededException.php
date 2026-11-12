@@ -21,6 +21,7 @@ final class StructuralLimitExceededException extends RuntimeException
         public readonly int $currentValue,
         public readonly int $configuredLimit,
         string $message,
+        public readonly ?string $limitName = null,
     ) {
         parent::__construct($message);
     }
@@ -102,6 +103,21 @@ final class StructuralLimitExceededException extends RuntimeException
             $bytes,
             $limit,
             sprintf('Structural limit exceeded: memo size %d bytes (limit %d bytes).', $bytes, $limit),
+            'memo_size_bytes',
+        );
+    }
+
+    /**
+     * A fixed memo cap: memo_value_bytes, memo_keys or memo_total_bytes.
+     */
+    public static function memoLimit(string $limitName, int $current, int $limit, string $detail): self
+    {
+        return new self(
+            StructuralLimitKind::MemoSize,
+            $current,
+            $limit,
+            sprintf('Structural limit exceeded: %s %d (limit %d, %s).', $detail, $current, $limit, $limitName),
+            $limitName,
         );
     }
 
@@ -112,6 +128,23 @@ final class StructuralLimitExceededException extends RuntimeException
             $bytes,
             $limit,
             sprintf('Structural limit exceeded: search attribute size %d bytes (limit %d bytes).', $bytes, $limit),
+            'search_attribute_size_bytes',
+        );
+    }
+
+    /**
+     * A fixed search attribute cap: search_attribute_string_characters,
+     * search_attribute_keyword_characters, search_attribute_count or
+     * search_attribute_total_bytes.
+     */
+    public static function searchAttributeLimit(string $limitName, int $current, int $limit, string $detail): self
+    {
+        return new self(
+            StructuralLimitKind::SearchAttributeSize,
+            $current,
+            $limit,
+            sprintf('Structural limit exceeded: %s %d (limit %d, %s).', $detail, $current, $limit, $limitName),
+            $limitName,
         );
     }
 

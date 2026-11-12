@@ -10,6 +10,7 @@ use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Stringable;
+use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Support\SearchAttributeUpsertService;
 use Workflow\V2\Support\UpsertSearchAttributesCall;
@@ -217,6 +218,20 @@ final class WorkflowSearchAttributeValueTest extends TestCase
         (new WorkflowSearchAttribute())->setTypedValue($value, $type);
     }
 
+    public function testItRefusesAnOverlongKeywordListEntryAsAStructuralLimit(): void
+    {
+        try {
+            (new WorkflowSearchAttribute())->setTypedValue(
+                [str_repeat('x', WorkflowSearchAttribute::MAX_KEYWORD_LENGTH + 1)],
+                WorkflowSearchAttribute::TYPE_KEYWORD_LIST,
+            );
+            $this->fail('An overlong keyword_list entry was accepted.');
+        } catch (StructuralLimitExceededException $exception) {
+            $this->assertSame('search_attribute_keyword_characters', $exception->limitName);
+            $this->assertSame(WorkflowSearchAttribute::MAX_KEYWORD_LENGTH + 1, $exception->currentValue);
+        }
+    }
+
     /**
      * @return iterable<string, array{string, mixed, string}>
      */
@@ -226,11 +241,6 @@ final class WorkflowSearchAttributeValueTest extends TestCase
             WorkflowSearchAttribute::TYPE_KEYWORD_LIST,
             ['php', 42],
             'keyword_list entries must be strings',
-        ];
-        yield 'keyword list member length' => [
-            WorkflowSearchAttribute::TYPE_KEYWORD_LIST,
-            [str_repeat('x', WorkflowSearchAttribute::MAX_KEYWORD_LENGTH + 1)],
-            'keyword_list entry exceeds maximum length',
         ];
         yield 'integer array' => [WorkflowSearchAttribute::TYPE_INT, [], 'Cannot coerce value to int: array'];
         yield 'float array' => [WorkflowSearchAttribute::TYPE_FLOAT, [], 'Cannot coerce value to float: array'];

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Memo and search attribute limits now apply the same way on start, embedded
+  upserts and worker upserts (#853). Going over a fixed cap (memo value
+  10,240 bytes, 100 memo keys, 65,536 memo bytes, search attribute string
+  2,048 or keyword 255 characters, 100 attributes, 65,536 attribute bytes)
+  raises `StructuralLimitExceededException` instead of
+  `InvalidArgumentException`. Its new `limitName` says which limit was hit,
+  and a failed run records it as `structural_limit_name`. An embedded upsert
+  over a fixed cap now fails the run as a non-retryable structural-limit
+  failure, as the configured limits already did.
+- Start now applies the configured `memo_size_bytes` and
+  `search_attribute_size_bytes` limits. A configured limit can tighten a
+  fixed total but no longer appears to raise it. The `memo_size_bytes`
+  default is now 65,536 (was 262,144, which the fixed 64 KiB total made
+  unreachable). Zero still turns the configured limit off; the fixed caps
+  stay. Upgrade note: code that caught `InvalidArgumentException` for these
+  limits should catch `StructuralLimitExceededException`.
+
 ## 2.24.0 - 2026-11-11
 
 - Activity heartbeats no longer grow run history with every heartbeat

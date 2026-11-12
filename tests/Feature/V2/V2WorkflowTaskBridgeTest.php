@@ -5333,6 +5333,29 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertTrue($this->bridge->complete($task->id, [$command])['completed']);
     }
 
+    public function testUpsertMemoRefusesAnOversizedValueBeforeAnyWrite(): void
+    {
+        $run = $this->createWaitingRun();
+        $task = $this->createLeasedTask($run);
+        $before = self::pendingCountDurableState($run);
+
+        try {
+            $this->bridge->complete($task->id, [[
+                'type' => 'upsert_memo',
+                'entries' => MemoPayload::envelope([
+                    'big' => str_repeat('a', 20000),
+                ]),
+            ]]);
+            $this->fail('A memo value over the fixed cap was accepted.');
+        } catch (StructuralLimitExceededException $exception) {
+            $this->assertSame('memo_size', $exception->limitKind->value);
+            $this->assertSame('memo_value_bytes', $exception->limitName);
+        }
+
+        $this->assertSame($before, self::pendingCountDurableState($run));
+        $this->assertSame(0, WorkflowMemo::query()->where('workflow_run_id', $run->id)->count());
+    }
+
     public static function payloadCommands(): iterable
     {
         yield 'activity arguments' => ['arguments', [

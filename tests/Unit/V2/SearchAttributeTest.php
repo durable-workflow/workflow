@@ -7,6 +7,7 @@ namespace Tests\Unit\V2;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 use Tests\TestCase;
+use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSearchAttribute;
@@ -376,8 +377,8 @@ class SearchAttributeTest extends TestCase
         );
 
         // One more should fail
-        $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('exceeds maximum');
+        $this->expectException(StructuralLimitExceededException::class);
+        $this->expectExceptionMessage('search_attribute_count');
 
         $call2 = new UpsertSearchAttributesCall([
             'one_too_many' => 'fail',
@@ -406,8 +407,8 @@ class SearchAttributeTest extends TestCase
 
         WorkflowSearchAttribute::query()->insert($rows);
 
-        $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('Search attributes count exceeds maximum (101 > 100)');
+        $this->expectException(StructuralLimitExceededException::class);
+        $this->expectExceptionMessage('search attributes 101 (limit 100, search_attribute_count)');
 
         WorkflowSearchAttribute::validateCount($run->id);
     }
@@ -461,8 +462,8 @@ class SearchAttributeTest extends TestCase
 
         WorkflowSearchAttribute::query()->insert($rows);
 
-        $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('Total search attributes size exceeds maximum (67584 > 65536 bytes)');
+        $this->expectException(StructuralLimitExceededException::class);
+        $this->expectExceptionMessage('total search attribute bytes 67584 (limit 65536, search_attribute_total_bytes)');
 
         WorkflowSearchAttribute::validateTotalSize($run->id);
     }
@@ -479,11 +480,10 @@ class SearchAttributeTest extends TestCase
         try {
             $this->service->upsert($run, new UpsertSearchAttributesCall($attributes), 1);
             $this->fail('The oversized attribute set should be rejected.');
-        } catch (InvalidArgumentException $exception) {
-            $this->assertSame(
-                'Total search attributes size exceeds maximum (67584 > 65536 bytes)',
-                $exception->getMessage(),
-            );
+        } catch (StructuralLimitExceededException $exception) {
+            $this->assertSame('search_attribute_total_bytes', $exception->limitName);
+            $this->assertSame(67584, $exception->currentValue);
+            $this->assertSame(65536, $exception->configuredLimit);
         }
 
         $this->assertSame(0, WorkflowSearchAttribute::where('workflow_run_id', $run->id)->count());
@@ -517,8 +517,8 @@ class SearchAttributeTest extends TestCase
 
         $longString = str_repeat('a', WorkflowSearchAttribute::MAX_STRING_LENGTH + 1);
 
-        $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('exceeds maximum length');
+        $this->expectException(StructuralLimitExceededException::class);
+        $this->expectExceptionMessage('search_attribute_string_characters');
 
         $attr = new WorkflowSearchAttribute([
             'workflow_run_id' => $run->id,
@@ -535,8 +535,8 @@ class SearchAttributeTest extends TestCase
 
         $longKeyword = str_repeat('a', WorkflowSearchAttribute::MAX_KEYWORD_LENGTH + 1);
 
-        $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('exceeds maximum length');
+        $this->expectException(StructuralLimitExceededException::class);
+        $this->expectExceptionMessage('search_attribute_keyword_characters');
 
         $attr = new WorkflowSearchAttribute([
             'workflow_run_id' => $run->id,
