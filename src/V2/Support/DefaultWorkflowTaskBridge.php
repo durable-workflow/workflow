@@ -117,17 +117,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
      *
      * @var list<string>
      */
-    private const PROJECTION_RUN_RELATIONS_WITH_CHILDREN = [
-        'instance',
-        'tasks',
-        'activityExecutions',
-        'timers',
-        'failures',
-        'historyEvents',
-        'childLinks.childRun.instance.currentRun',
-        'childLinks.childRun.failures',
-        'childLinks.childRun.historyEvents',
-    ];
+    private const PROJECTION_RUN_RELATIONS_WITH_CHILDREN = ChildClosureParentState::PROJECTION_RELATIONS;
 
     private const TERMINAL_TYPES = ['complete_workflow', 'fail_workflow', 'continue_as_new'];
 
@@ -5605,12 +5595,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             $parallelMetadataPath = [];
 
             if ($sequence !== null) {
-                $parentRun->loadMissing([
-                    'historyEvents',
-                    'childLinks.childRun.instance.currentRun',
-                    'childLinks.childRun.failures',
-                    'childLinks.childRun.historyEvents',
-                ]);
+                ChildClosureParentState::hydrate($parentRun);
 
                 if ($this->startChildRetryIfAvailable($parentRun, $sequence, $childRun) !== null) {
                     continue;

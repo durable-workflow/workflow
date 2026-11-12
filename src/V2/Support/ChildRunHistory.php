@@ -452,8 +452,12 @@ final class ChildRunHistory
         }
 
         $childCallId = self::childCallIdForSequence($run, $sequence);
-        $resolvedStatus = self::resolvedStatus($resolutionEvent, $childRun);
         $hasParentHistory = $scheduledEvent !== null || $startedEvent !== null || $resolutionEvent !== null;
+        // An open call with parent history is reported from that history alone,
+        // so its child's terminal event is read only when it can decide the status.
+        $resolvedStatus = $resolutionEvent !== null || ! $hasParentHistory
+            ? self::resolvedStatus($resolutionEvent, $childRun)
+            : null;
         $isTerminalChildWithoutParentHistory = ! $hasParentHistory && in_array($resolvedStatus, [
             RunStatus::Completed,
             RunStatus::Failed,
@@ -747,17 +751,33 @@ final class ChildRunHistory
             return null;
         }
 
-        $childRun->loadMissing('historyEvents');
+        $terminalTypes = [
+            HistoryEventType::WorkflowCompleted,
+            HistoryEventType::WorkflowFailed,
+            HistoryEventType::WorkflowCancelled,
+            HistoryEventType::WorkflowTerminated,
+        ];
+
+        if (! $childRun->relationLoaded('historyEvents')) {
+            // A related run's outcome is one terminal event; reading its whole
+            // history here would make every parent pass cost each child's history.
+            /** @var WorkflowHistoryEvent|null $event */
+            $event = $childRun->historyEvents()
+                ->whereIn('event_type', array_map(
+                    static fn (HistoryEventType $type): string => $type->value,
+                    $terminalTypes,
+                ))
+                ->reorder()
+                ->orderByDesc('sequence')
+                ->first();
+
+            return $event;
+        }
 
         /** @var WorkflowHistoryEvent|null $event */
         $event = $childRun->historyEvents
             ->filter(
-                static fn (WorkflowHistoryEvent $event): bool => in_array($event->event_type, [
-                    HistoryEventType::WorkflowCompleted,
-                    HistoryEventType::WorkflowFailed,
-                    HistoryEventType::WorkflowCancelled,
-                    HistoryEventType::WorkflowTerminated,
-                ], true)
+                static fn (WorkflowHistoryEvent $event): bool => in_array($event->event_type, $terminalTypes, true)
             )
             ->sortByDesc('sequence')
             ->first();
@@ -1015,11 +1035,7 @@ final class ChildRunHistory
             return null;
         }
 
-        return ImportedLineageReferences::resolve(
-            $origin,
-            $runId,
-            ['summary', 'instance', 'failures', 'historyEvents']
-        );
+        return ImportedLineageReferences::resolve($origin, $runId, ['summary', 'instance', 'failures']);
     }
 
     private static function loadCurrentRunForInstance(string $instanceId, WorkflowRun $origin): ?WorkflowRun
@@ -1033,7 +1049,7 @@ final class ChildRunHistory
             return null;
         }
 
-        $run = CurrentRunResolver::forInstance($instance, ['summary', 'failures', 'historyEvents']);
+        $run = CurrentRunResolver::forInstance($instance, ['summary', 'failures']);
 
         return $run instanceof WorkflowRun && ImportedLineageReferences::allows($origin, $run) ? $run : null;
     }
@@ -1049,7 +1065,7 @@ final class ChildRunHistory
                 return $childRun;
             }
 
-            $currentRun = CurrentRunResolver::forRun($childRun, ['summary', 'failures', 'historyEvents']);
+            $currentRun = CurrentRunResolver::forRun($childRun, ['summary', 'failures']);
 
             if (! $currentRun instanceof WorkflowRun || $currentRun->id === $childRun->id || isset($visited[$childRun->id])) {
                 return $childRun;

@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Closing a child no longer reads every sibling's history under the parent
+  lock (#892). Before, each child close loaded the full history of every
+  other child of its parent to record the outcome, check a parallel group
+  and re-project the parent, so a wide fan-out did quadratic history reads
+  while blocking the parent's own workflow task. Now a close reads the
+  closing child's history and the parent's own history and links. A
+  sibling's outcome comes from the parent's resolution event, or from the
+  sibling's terminal event when none is recorded yet. Measured with 50
+  children, closing all of them read 96,052 sibling history rows on the
+  embedded path and 26,460 through the service-mode bridge for a parallel
+  group; both now read none, and history queries per close no longer grow
+  with the number of children. Outcomes, wake-ups and projections are
+  unchanged. The parent re-projection still reads each sibling's run row.
+
 - Embedded task repair and execution now stay inside the app's namespaces
   (#889). Before, apps sharing one database with the same connection and
   queue names could repair, redispatch, time out and run each other's tasks

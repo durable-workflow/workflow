@@ -31,7 +31,6 @@ final class RunWaitView
             'timers',
             'childLinks.childRun.summary',
             'childLinks.childRun.failures',
-            'childLinks.childRun.historyEvents',
         ]);
 
         $taskByActivityExecutionId = self::preferredTasksByPayloadKey(

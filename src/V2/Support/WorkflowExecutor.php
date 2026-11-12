@@ -4962,31 +4962,14 @@ final class WorkflowExecutor
             $parentTaskPayload = [];
 
             if (is_int($parentReference['parent_sequence'])) {
-                $parentRun->loadMissing([
-                    'historyEvents',
-                    'childLinks.childRun.instance.currentRun',
-                    'childLinks.childRun.failures',
-                    'childLinks.childRun.historyEvents',
-                ]);
+                ChildClosureParentState::hydrate($parentRun);
 
                 if ($this->startChildRetryIfAvailable(
                     $parentRun,
                     $parentReference['parent_sequence'],
                     $childRun,
                 ) !== null) {
-                    $this->projectRun(
-                        $parentRun->fresh([
-                            'instance',
-                            'tasks',
-                            'activityExecutions',
-                            'timers',
-                            'failures',
-                            'historyEvents',
-                            'childLinks.childRun.instance.currentRun',
-                            'childLinks.childRun.failures',
-                            'childLinks.childRun.historyEvents',
-                        ])
-                    );
+                    $this->projectParentAfterChildClosure($parentRun);
 
                     continue;
                 }
@@ -5003,19 +4986,7 @@ final class WorkflowExecutor
                         WorkflowStepHistory::CHILD_WORKFLOW,
                     );
                 } catch (HistoryEventShapeMismatchException) {
-                    $this->projectRun(
-                        $parentRun->fresh([
-                            'instance',
-                            'tasks',
-                            'activityExecutions',
-                            'timers',
-                            'failures',
-                            'historyEvents',
-                            'childLinks.childRun.instance.currentRun',
-                            'childLinks.childRun.failures',
-                            'childLinks.childRun.historyEvents',
-                        ])
-                    );
+                    $this->projectParentAfterChildClosure($parentRun);
 
                     continue;
                 }
@@ -5045,19 +5016,7 @@ final class WorkflowExecutor
                         lockHistoryForUpdate: true,
                     )
                 ) {
-                    $this->projectRun(
-                        $parentRun->fresh([
-                            'instance',
-                            'tasks',
-                            'activityExecutions',
-                            'timers',
-                            'failures',
-                            'historyEvents',
-                            'childLinks.childRun.instance.currentRun',
-                            'childLinks.childRun.failures',
-                            'childLinks.childRun.historyEvents',
-                        ])
-                    );
+                    $this->projectParentAfterChildClosure($parentRun);
 
                     continue;
                 }
@@ -5070,19 +5029,7 @@ final class WorkflowExecutor
                         $parentReference['parent_sequence'],
                     )
                 ) {
-                    $this->projectRun(
-                        $parentRun->fresh([
-                            'instance',
-                            'tasks',
-                            'activityExecutions',
-                            'timers',
-                            'failures',
-                            'historyEvents',
-                            'childLinks.childRun.instance.currentRun',
-                            'childLinks.childRun.failures',
-                            'childLinks.childRun.historyEvents',
-                        ])
-                    );
+                    $this->projectParentAfterChildClosure($parentRun);
 
                     continue;
                 }
@@ -5113,19 +5060,13 @@ final class WorkflowExecutor
 
             TaskDispatcher::dispatch($parentTask);
 
-            $this->projectRun(
-                $parentRun->fresh([
-                    'instance',
-                    'tasks',
-                    'activityExecutions',
-                    'timers',
-                    'failures',
-                    'historyEvents',
-                    'childLinks.childRun.instance.currentRun',
-                    'childLinks.childRun.failures',
-                ])
-            );
+            $this->projectParentAfterChildClosure($parentRun);
         }
+    }
+
+    private function projectParentAfterChildClosure(WorkflowRun $parentRun): void
+    {
+        $this->projectRun($parentRun->fresh(ChildClosureParentState::PROJECTION_RELATIONS));
     }
 
     /**

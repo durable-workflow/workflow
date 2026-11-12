@@ -2349,6 +2349,12 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 continue;
             }
 
+            if ($fixture['id'] === 'child-closure-sibling-history-bound') {
+                $this->assertChildClosureReadsNoSiblingHistory($fixture);
+
+                continue;
+            }
+
             if ($fixture['id'] === 'cooperative-delivery-before-wait-sequence') {
                 $run = $this->createRunFromFixture($fixture);
                 $this->assertSame(2, WorkflowStepHistory::nextDurableCommandSequence($run->fresh()));
@@ -2639,6 +2645,129 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             $childLink->child_workflow_run_id,
             $started->payload['retry_of_child_workflow_run_id'] ?? null
         );
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function assertChildClosureReadsNoSiblingHistory(array $fixture): void
+    {
+        $this->clearWorkflowState();
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+
+        /** @var WorkflowInstance $instance */
+        $instance = WorkflowInstance::query()->create([
+            'workflow_class' => 'child-closure-parent',
+            'workflow_type' => 'child-closure-parent',
+            'run_count' => 1,
+            'reserved_at' => now(),
+            'started_at' => now(),
+        ]);
+        /** @var WorkflowRun $parentRun */
+        $parentRun = WorkflowRun::query()->create([
+            'workflow_instance_id' => $instance->id,
+            'run_number' => 1,
+            'workflow_class' => 'child-closure-parent',
+            'workflow_type' => 'child-closure-parent',
+            'status' => RunStatus::Waiting->value,
+            'arguments' => Serializer::serializeWithCodec('avro', []),
+            'payload_codec' => 'avro',
+            'connection' => 'database',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'started_at' => now(),
+            'last_progress_at' => now(),
+        ]);
+        $instance->forceFill([
+            'current_run_id' => $parentRun->id,
+        ])->save();
+        /** @var WorkflowTask $parentTask */
+        $parentTask = WorkflowTask::query()->create([
+            'workflow_run_id' => $parentRun->id,
+            'namespace' => $parentRun->namespace,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Leased->value,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [],
+            'connection' => 'database',
+            'queue' => 'default',
+            'compatibility' => 'build-a',
+            'lease_owner' => 'external-parent-worker',
+            'lease_expires_at' => now()
+                ->addMinutes(5),
+        ]);
+
+        $commands = [];
+        foreach ([0, 1, 2] as $index) {
+            $entry = [
+                'parallel_group_id' => 'parallel-children:1:3',
+                'parallel_group_kind' => 'child',
+                'parallel_group_base_sequence' => 1,
+                'parallel_group_size' => 3,
+                'parallel_group_index' => $index,
+            ];
+            $commands[] = [
+                'type' => 'start_child_workflow',
+                'workflow_type' => $fixture['history'][0]['payload']['workflow_type'],
+                'arguments' => Serializer::serializeWithCodec('avro', $fixture['workflow']['arguments']),
+                'payload_codec' => 'avro',
+                ...$entry,
+                'parallel_group_path' => [$entry],
+            ];
+        }
+        $this->assertTrue($bridge->complete($parentTask->id, $commands)['completed']);
+        /** @var list<string> $childIds */
+        $childIds = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentRun->id)
+            ->where('link_type', 'child_workflow')
+            ->orderBy('sequence')
+            ->pluck('child_workflow_run_id')
+            ->all();
+        $this->assertCount(3, $childIds);
+
+        $closingChildId = null;
+        $siblingRows = [];
+        Event::listen(
+            'eloquent.retrieved: ' . WorkflowHistoryEvent::class,
+            static function (WorkflowHistoryEvent $event) use (&$closingChildId, &$siblingRows, $childIds): void {
+                if ($closingChildId !== null
+                    && $event->workflow_run_id !== $closingChildId
+                    && in_array($event->workflow_run_id, $childIds, true)) {
+                    $siblingRows[] = $event->workflow_run_id;
+                }
+            },
+        );
+
+        foreach ($childIds as $childId) {
+            /** @var WorkflowTask $childTask */
+            $childTask = WorkflowTask::query()
+                ->where('workflow_run_id', $childId)
+                ->where('task_type', TaskType::Workflow->value)
+                ->sole();
+            $this->assertTrue($bridge->claimStatus($childTask->id, 'external-child-worker')['claimed']);
+            $closingChildId = $childId;
+            try {
+                $this->assertTrue($bridge->complete($childTask->id, [[
+                    'type' => 'complete_workflow',
+                    'result' => Serializer::serializeWithCodec('avro', 'child-result'),
+                    'payload_codec' => 'avro',
+                ]])['completed']);
+            } finally {
+                $closingChildId = null;
+            }
+        }
+
+        $this->assertSame([], $siblingRows, 'Closing one child read its siblings\' history.');
+        $this->assertSame(3, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('event_type', HistoryEventType::ChildRunCompleted->value)
+            ->count());
+        $this->assertSame(1, WorkflowTask::query()
+            ->where('workflow_run_id', $parentRun->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->count());
     }
 
     private function assertServiceCommandPayloadLimitCorpus(string $file, string $section, string $instancePrefix): void

@@ -852,10 +852,12 @@ final class ParallelChildGroup
                 continue;
             }
 
-            $childRun = ChildRunHistory::childRunForSequence($parentRun, $sequence);
+            // A recorded resolution is the member's authoritative status; only an
+            // unresolved member needs its child run.
+            $resolutionEvent = ChildRunHistory::resolutionEventForSequence($parentRun, $sequence);
             $childStatus = ChildRunHistory::resolvedStatus(
-                ChildRunHistory::resolutionEventForSequence($parentRun, $sequence),
-                $childRun,
+                $resolutionEvent,
+                $resolutionEvent === null ? ChildRunHistory::childRunForSequence($parentRun, $sequence) : null,
             );
 
             if (! $childStatus instanceof RunStatus) {
