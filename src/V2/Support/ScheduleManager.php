@@ -328,6 +328,13 @@ final class ScheduleManager
             $schedule->save();
         }
 
+        // A buffered fire was buffered for the old action. Starting it with the
+        // new action would silently run something nobody scheduled, so each
+        // one is dropped with an explicit reason instead (#876).
+        $droppedBuffer = in_array('action', $changedFields, true) && $schedule->hasBufferedActions()
+            ? (array) $schedule->buffered_actions
+            : [];
+
         self::recordScheduleEvent($schedule, HistoryEventType::ScheduleUpdated, [
             'changed_fields' => $changedFields,
             'spec' => is_array($schedule->spec) ? $schedule->spec : [],
@@ -335,6 +342,19 @@ final class ScheduleManager
             'overlap_policy' => $schedule->overlap_policy,
             'next_fire_at' => $schedule->next_fire_at?->toIso8601String(),
         ], $context);
+
+        if ($droppedBuffer !== []) {
+            $schedule->forceFill([
+                'buffered_actions' => null,
+            ])->save();
+
+            foreach ($droppedBuffer as $buffered) {
+                $occurrenceTime = is_array($buffered) && is_string($buffered['occurrence_time'] ?? null)
+                    ? $buffered['occurrence_time']
+                    : null;
+                self::recordSkip($schedule, 'action_changed', $context, $occurrenceTime);
+            }
+        }
 
         return $schedule;
     }
@@ -1114,6 +1134,7 @@ final class ScheduleManager
         WorkflowSchedule $schedule,
         string $reason,
         ?CommandContext $context = null,
+        ?string $occurrenceTime = null,
     ): void {
         $schedule->forceFill([
             'last_skip_reason' => $reason,
@@ -1121,11 +1142,12 @@ final class ScheduleManager
             'skipped_trigger_count' => ($schedule->skipped_trigger_count ?? 0) + 1,
         ])->save();
 
-        self::recordScheduleEvent($schedule, HistoryEventType::ScheduleTriggerSkipped, [
+        self::recordScheduleEvent($schedule, HistoryEventType::ScheduleTriggerSkipped, array_filter([
             'reason' => $reason,
             'skipped_trigger_count' => (int) $schedule->skipped_trigger_count,
             'last_skipped_at' => $schedule->last_skipped_at?->toIso8601String(),
-        ], $context);
+            'occurrence_time' => $occurrenceTime,
+        ], static fn (mixed $value): bool => $value !== null), $context);
     }
 
     /**

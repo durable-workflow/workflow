@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Changing a schedule's action now drops fires buffered under the old
+  action (#876). Each dropped fire is recorded as a `ScheduleTriggerSkipped`
+  event with reason `action_changed` and its `occurrence_time`. Updates that
+  leave the action unchanged keep the buffer.
 - Memo and search attribute limits now apply the same way on start, embedded
   upserts and worker upserts (#853). Going over a fixed cap (memo value
   10,240 bytes, 100 memo keys, 65,536 memo bytes, search attribute string

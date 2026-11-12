@@ -1125,6 +1125,37 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         }
     }
 
+    public function testScheduleBufferedActionChangeCorpusDropsTheBufferedFire(): void
+    {
+        $path = self::FIXTURE_DIR . '/schedule-buffered-action-change.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The buffered action change evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['schedule_buffered_action_change'];
+        $this->clearWorkflowState();
+        $schedule = ScheduleManager::create(
+            scheduleId: 'regression-corpus-buffered-action-change',
+            workflowClass: $fixture['workflow']['type'],
+            cronExpression: $scenario['cron'],
+            overlapPolicy: \Workflow\V2\Enums\ScheduleOverlapPolicy::BufferOne,
+        );
+        $schedule->bufferAction(\Carbon\CarbonImmutable::parse($scenario['occurrence']));
+        $schedule->save();
+        $action = $schedule->fresh()
+->action;
+        $action['input'] = ['changed'];
+
+        ScheduleManager::update($schedule->fresh(), action: $action);
+
+        $this->assertFalse($schedule->fresh()->hasBufferedActions());
+        $skip = \Workflow\V2\Models\WorkflowScheduleHistoryEvent::query()
+            ->where('workflow_schedule_id', $schedule->id)
+            ->where('event_type', HistoryEventType::ScheduleTriggerSkipped->value)
+            ->sole();
+        $this->assertSame($scenario['reason'], $skip->payload['reason']);
+    }
+
     public function testMetadataLimitParityCorpusRefusesTheSameMemoOnStartAndUpsert(): void
     {
         $path = self::FIXTURE_DIR . '/metadata-limit-parity.json';

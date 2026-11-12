@@ -827,7 +827,7 @@ class, source file path, or stack trace to replay or handle a failure.
 | `ScheduleUpdated` | `changed_fields`, `spec`, `action`, `overlap_policy`, `next_fire_at`, `command_context` | `WorkflowScheduleHistoryEvent`, schedule audit views, history export |
 | `ScheduleTriggered` | `workflow_instance_id`, `workflow_run_id`, `schedule_id`, `schedule_ulid`, `cron_expression`, `timezone`, `overlap_policy`, `outcome`, `effective_overlap_policy`, `trigger_number`, `occurrence_time`, `command_context` | `WorkflowScheduleHistoryEvent`, workflow run history, schedule audit views |
 | `ScheduleDeleted` | `reason`, `deleted_at`, `command_context` | `WorkflowScheduleHistoryEvent`, schedule audit views, history export |
-| `ScheduleTriggerSkipped` | `reason`, `skipped_trigger_count`, `last_skipped_at`, `command_context` | `WorkflowScheduleHistoryEvent`, schedule audit views, history export |
+| `ScheduleTriggerSkipped` | `reason`, `skipped_trigger_count`, `last_skipped_at`, `occurrence_time`, `command_context` | `WorkflowScheduleHistoryEvent`, schedule audit views, history export |
 
 The key list is a wire-format list, not a promise that every event row
 contains every key. Some keys are optional because older rows predate a

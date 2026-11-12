@@ -1098,7 +1098,13 @@ final class HistoryEventPayloadContract
             'command_context',
         ],
         'ScheduleDeleted' => ['reason', 'deleted_at', 'command_context'],
-        'ScheduleTriggerSkipped' => ['reason', 'skipped_trigger_count', 'last_skipped_at', 'command_context'],
+        'ScheduleTriggerSkipped' => [
+            'reason',
+            'skipped_trigger_count',
+            'last_skipped_at',
+            'occurrence_time',
+            'command_context',
+        ],
     ];
 
     /**

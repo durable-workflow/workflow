@@ -183,6 +183,23 @@ final class StructuralLimits
     }
 
     /**
+     * Checks a start's memo and search attributes with the limits upserts use.
+     *
+     * @param array<string, mixed>|null $memo
+     * @param array<string, mixed>|null $searchAttributes
+     */
+    public static function guardStartMetadata(?array $memo, ?array $searchAttributes): void
+    {
+        if ($memo !== null && $memo !== []) {
+            self::guardMemoMap($memo);
+        }
+
+        if ($searchAttributes !== null && $searchAttributes !== []) {
+            self::guardSearchAttributeMap($searchAttributes);
+        }
+    }
+
+    /**
      * Checks the search attributes a write would leave on the run, before
      * anything is written. Per-value caps are checked when each value is
      * typed and stored.
