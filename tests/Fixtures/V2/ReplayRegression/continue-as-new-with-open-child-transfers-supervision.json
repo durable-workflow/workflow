@@ -1,0 +1,268 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "continue-as-new-with-open-child-transfers-supervision",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestParentContinuesWithOpenChildWorkflow",
+    "arguments": [
+      "terminate",
+      0,
+      1,
+      true
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "id": "01m77nxc6k22ags3qfvj0qqqh5",
+      "sequence": 1,
+      "event_type": "StartAccepted",
+      "payload": {
+        "workflow_command_id": "01m77nxc6chb08rw9prfj5h2nw",
+        "workflow_instance_id": "gen-868",
+        "workflow_run_id": "01m77nxc63gv4c6qt1s4x0shvv",
+        "workflow_class": "Tests\\Fixtures\\V2\\TestParentContinuesWithOpenChildWorkflow",
+        "workflow_type": "test-parent-continues-with-open-child",
+        "business_key": null,
+        "visibility_labels": null,
+        "memo": null,
+        "search_attributes": null,
+        "outcome": "started_new"
+      },
+      "recorded_at": "2026-11-12T10:47:31.791072Z"
+    },
+    {
+      "id": "01m77nxc6tj6bra1rrm6m0rtwp",
+      "sequence": 2,
+      "event_type": "WorkflowStarted",
+      "payload": {
+        "workflow_class": "Tests\\Fixtures\\V2\\TestParentContinuesWithOpenChildWorkflow",
+        "workflow_type": "test-parent-continues-with-open-child",
+        "workflow_instance_id": "gen-868",
+        "workflow_run_id": "01m77nxc63gv4c6qt1s4x0shvv",
+        "workflow_command_id": "01m77nxc6chb08rw9prfj5h2nw",
+        "business_key": null,
+        "visibility_labels": null,
+        "memo": null,
+        "search_attributes": null,
+        "execution_timeout_seconds": null,
+        "run_timeout_seconds": null,
+        "execution_deadline_at": null,
+        "run_deadline_at": null,
+        "workflow_definition_fingerprint": "sha256:20e8a412697b03bbc2cbc42dfb9a3ec3cc1538a68be6658d68b6ce2e8bdfdebc",
+        "declared_queries": [],
+        "declared_query_contracts": [],
+        "declared_signals": [
+          "close"
+        ],
+        "declared_signal_contracts": [],
+        "declared_updates": [],
+        "declared_update_contracts": [],
+        "declared_entry_method": "handle",
+        "declared_entry_mode": "canonical",
+        "declared_entry_declaring_class": "Tests\\Fixtures\\V2\\TestParentContinuesWithOpenChildWorkflow"
+      },
+      "recorded_at": "2026-11-12T10:47:31.801679Z"
+    },
+    {
+      "id": "01m77nxcd4ybtwb29dsg6c3prf",
+      "sequence": 3,
+      "event_type": "ChildWorkflowScheduled",
+      "payload": {
+        "sequence": 1,
+        "workflow_link_id": "01M77NXCCW28TB3168B208J18D",
+        "child_call_id": "01M77NXCCW28TB3168B208J18D",
+        "child_workflow_instance_id": "01m77nxccpqxsnj7y8jvf99wde",
+        "child_workflow_run_id": "01m77nxccrvfjv1rt46594hdhr",
+        "child_workflow_class": "Tests\\Fixtures\\V2\\TestLongRunningChildWorkflow",
+        "child_workflow_type": "test-long-running-child",
+        "parent_close_policy": "terminate",
+        "cancellation_policy": "abandon",
+        "parallel_group_id": "select-calls:1:2",
+        "parallel_group_kind": "mixed",
+        "parallel_group_mode": "select",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "selection_member_key": "child",
+        "selection_member_index": 0,
+        "selection_member_base_sequence": 1,
+        "selection_member_size": 1,
+        "selection_member_kind": "child",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "select-calls:1:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_mode": "select",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "selection_member_key": "child",
+            "selection_member_index": 0,
+            "selection_member_base_sequence": 1,
+            "selection_member_size": 1,
+            "selection_member_kind": "child"
+          }
+        ]
+      },
+      "recorded_at": "2026-11-12T10:47:32.003523Z"
+    },
+    {
+      "id": "01m77nxcd8j5v3anshq5w91erv",
+      "sequence": 4,
+      "event_type": "ChildRunStarted",
+      "payload": {
+        "sequence": 1,
+        "workflow_link_id": "01M77NXCCW28TB3168B208J18D",
+        "child_call_id": "01M77NXCCW28TB3168B208J18D",
+        "child_workflow_instance_id": "01m77nxccpqxsnj7y8jvf99wde",
+        "child_workflow_run_id": "01m77nxccrvfjv1rt46594hdhr",
+        "child_workflow_class": "Tests\\Fixtures\\V2\\TestLongRunningChildWorkflow",
+        "child_workflow_type": "test-long-running-child",
+        "child_run_number": 1,
+        "parent_close_policy": "terminate",
+        "cancellation_policy": "abandon",
+        "parallel_group_id": "select-calls:1:2",
+        "parallel_group_kind": "mixed",
+        "parallel_group_mode": "select",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "selection_member_key": "child",
+        "selection_member_index": 0,
+        "selection_member_base_sequence": 1,
+        "selection_member_size": 1,
+        "selection_member_kind": "child",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "select-calls:1:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_mode": "select",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "selection_member_key": "child",
+            "selection_member_index": 0,
+            "selection_member_base_sequence": 1,
+            "selection_member_size": 1,
+            "selection_member_kind": "child"
+          }
+        ]
+      },
+      "recorded_at": "2026-11-12T10:47:32.007603Z"
+    },
+    {
+      "id": "01m77nxce4csj7zpvc5mstctwp",
+      "sequence": 5,
+      "event_type": "TimerScheduled",
+      "payload": {
+        "timer_id": "01m77nxce1fy0rp5fr644bg7k5",
+        "sequence": 2,
+        "delay_seconds": 0,
+        "fire_at": "2026-11-12T10:47:32.033479Z",
+        "parallel_group_id": "select-calls:1:2",
+        "parallel_group_kind": "mixed",
+        "parallel_group_mode": "select",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "selection_member_key": "ready",
+        "selection_member_index": 1,
+        "selection_member_base_sequence": 2,
+        "selection_member_size": 1,
+        "selection_member_kind": "timer",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "select-calls:1:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_mode": "select",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "selection_member_key": "ready",
+            "selection_member_index": 1,
+            "selection_member_base_sequence": 2,
+            "selection_member_size": 1,
+            "selection_member_kind": "timer"
+          }
+        ]
+      },
+      "recorded_at": "2026-11-12T10:47:32.035463Z"
+    },
+    {
+      "id": "01m77nxce8q6k6a3sxe0ra31pz",
+      "sequence": 6,
+      "event_type": "TimerFired",
+      "payload": {
+        "timer_id": "01m77nxce1fy0rp5fr644bg7k5",
+        "sequence": 2,
+        "delay_seconds": 0,
+        "fired_at": "2026-11-12T10:47:32.033479Z",
+        "parallel_group_id": "select-calls:1:2",
+        "parallel_group_kind": "mixed",
+        "parallel_group_mode": "select",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "selection_member_key": "ready",
+        "selection_member_index": 1,
+        "selection_member_base_sequence": 2,
+        "selection_member_size": 1,
+        "selection_member_kind": "timer",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "select-calls:1:2",
+            "parallel_group_kind": "mixed",
+            "parallel_group_mode": "select",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "selection_member_key": "ready",
+            "selection_member_index": 1,
+            "selection_member_base_sequence": 2,
+            "selection_member_size": 1,
+            "selection_member_kind": "timer"
+          }
+        ]
+      },
+      "recorded_at": "2026-11-12T10:47:32.039848Z"
+    },
+    {
+      "id": "01m77nxcedzjbmxy4scadfjp47",
+      "sequence": 7,
+      "event_type": "SelectionResolved",
+      "payload": {
+        "selection_group_id": "select-calls:1:2",
+        "selection_group_base_sequence": 1,
+        "selection_group_size": 2,
+        "member_key": "ready",
+        "member_index": 1,
+        "member_base_sequence": 2,
+        "member_size": 1,
+        "operation_kind": "timer",
+        "operation_identity": "01m77nxce1fy0rp5fr644bg7k5",
+        "outcome": "completed",
+        "resolution_event_id": "01m77nxce8q6k6a3sxe0ra31pz",
+        "resolution_event_type": "TimerFired"
+      },
+      "recorded_at": "2026-11-12T10:47:32.045122Z"
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "continue_as_new",
+        "payload_codec": "avro"
+      }
+    ]
+  }
+}
