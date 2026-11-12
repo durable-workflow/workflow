@@ -260,7 +260,7 @@ private function handleTerminate(WorkflowChildCall $childCall, array &$stats): v
 ## Continue-As-New Semantics
 
 When a parent continues as new while children it started are still open, the
-continued run takes over effective supervision of those children (#868). The
+continued run takes over effective supervision of those children. The
 transfer is part of the continue-as-new transaction and is implemented by
 `Workflow\V2\Support\ChildSupervision::transferToContinuedRun()` in both the
 embedded executor and the service-mode workflow task bridge.
