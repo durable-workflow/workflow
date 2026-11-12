@@ -14,6 +14,12 @@ class AppServiceProvider extends ServiceProvider
             'workflows.v1.enabled' => false,
             'workflows.v2.instance_model' => \App\Models\QualifiedWorkflowInstance::class,
             'workflows.v2.task_dispatch_mode' => 'queue',
+            // One app serves each qualification tenant and the Nexus cases.
+            'workflows.v2.namespaces' => config('workflows.v2.namespaces') ?? implode(',', [
+                ...array_column(config('qualification.users'), 'namespace'),
+                'shared',
+                'tenant-a',
+            ]),
             'workflows.storage.connection' => config('qualification.storage_connection') ?: config('database.default'),
         ]);
     }

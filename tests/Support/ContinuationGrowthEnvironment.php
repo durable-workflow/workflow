@@ -34,6 +34,8 @@ final class ContinuationGrowthEnvironment
         $app['config']->set('workflows.storage.connection', 'growth');
         $app['config']->set('workflows.v1.enabled', false);
         $app['config']->set('workflows.v2.task_dispatch_mode', 'queue');
+        // The profile and its worker processes serve the fixture namespace (#889).
+        $app['config']->set('workflows.v2.namespaces', 'growth');
         $app['config']->set('workflows.v2.live_execution', [
             'workflows' => $enabled ? [TestContinuationGrowthWorkflow::class] : [],
             'build' => 'continuation-growth-v1',

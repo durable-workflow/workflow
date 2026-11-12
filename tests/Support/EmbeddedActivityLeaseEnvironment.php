@@ -38,6 +38,8 @@ final class EmbeddedActivityLeaseEnvironment
             'workflows.storage.connection' => self::CONNECTION,
             'workflows.v1.enabled' => false,
             'workflows.v2.task_dispatch_mode' => 'queue',
+            // The test app and its owner process serve both fixture namespaces (#889).
+            'workflows.v2.namespaces' => 'default,lease-tenant',
             'workflows.v2.activity_task_lease_seconds' => 3,
             'queue.default' => 'database',
             'queue.connections.database' => [

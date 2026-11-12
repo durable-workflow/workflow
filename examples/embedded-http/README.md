@@ -37,6 +37,9 @@ curl -f http://127.0.0.1:8087/api/workflows/alpha-example \
 These are example application endpoints. `qualification-beta` has a separate
 namespace and cannot inspect alpha's run. Replace the demo token map with your
 own authentication and authorization before adapting it for an application.
+The app's workers serve both tenant namespaces because `AppServiceProvider`
+lists them in `workflows.v2.namespaces` (`DW_V2_NAMESPACES`); a namespace that
+is not listed is never repaired or executed by this app.
 
 Use `timer`, `signal`, `cancel` or `continue` for the other workflow paths.
 Signal a waiting workflow with `POST /api/workflows/{instance}/signal`, query it
