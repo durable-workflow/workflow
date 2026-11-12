@@ -218,7 +218,8 @@ final class LinkedServiceCallCloser
         array $runIds = [],
         ?string $instanceId = null,
         ?string $connection = null,
-        ?string $queue = null
+        ?string $queue = null,
+        ?NamespaceScope $namespaces = null,
     ): array {
         $query = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
             ->where('resolved_binding_kind', ServiceCallBindingKind::WorkflowRun->value)
@@ -257,6 +258,8 @@ final class LinkedServiceCallCloser
                     ->orWhereHas('linkedRun', $runScope);
             });
         }
+        // Reconciliation resumes the caller, so only the caller's namespace owns it.
+        ($namespaces ?? NamespaceScope::configured())->apply($query, 'caller_namespace');
         $calls = $query->orderBy('updated_at')
             ->orderBy('id')
             ->limit(max(1, $limit))

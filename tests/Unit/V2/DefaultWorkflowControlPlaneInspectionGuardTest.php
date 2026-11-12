@@ -42,6 +42,10 @@ final class DefaultWorkflowControlPlaneInspectionGuardTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        // These fixtures run one app across several namespaces (#889).
+        config()
+            ->set('workflows.v2.all_namespaces', true);
         Carbon::setTestNow('2026-10-08T06:20:00Z');
         config()
             ->set('workflows.v2.task_dispatch_mode', 'poll');

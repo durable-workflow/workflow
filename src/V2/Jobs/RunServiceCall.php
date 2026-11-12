@@ -12,6 +12,7 @@ use Illuminate\Queue\SerializesModels;
 use RuntimeException;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Support\DefaultServiceControlPlane;
+use Workflow\V2\Support\NamespaceScope;
 use Workflow\V2\Support\ServiceCallScheduler;
 
 final class RunServiceCall implements ShouldQueue
@@ -31,6 +32,11 @@ final class RunServiceCall implements ShouldQueue
 
     public function handle(ServiceControlPlane $controlPlane): void
     {
+        // Attempts run with this app's credentials; refuse another app's call.
+        if (! NamespaceScope::admitsQueuedServiceCall($this->serviceCallId, self::class)) {
+            return;
+        }
+
         if (! $controlPlane instanceof DefaultServiceControlPlane) {
             throw new RuntimeException('scheduled_service_call_executor_unavailable');
         }

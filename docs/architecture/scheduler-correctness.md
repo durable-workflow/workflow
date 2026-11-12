@@ -317,6 +317,13 @@ and defaults to 100. A value that is not a positive integer makes the
 command fail without evaluating any schedule; it is never replaced by
 another size.
 
+A pass only considers schedules in the app's namespace allowlist,
+`workflows.v2.namespaces` (`DW_V2_NAMESPACES`), which defaults to
+exactly `workflows.v2.namespace`. Another app's schedules in the same
+database are left for that app. A process that ticks every namespace,
+such as the standalone server, opts in with `DW_V2_ALL_NAMESPACES=true`.
+See [Task matching](task-matching.md) for the allowlist contract.
+
 Within a pass, both batches are shared round-robin across namespaces:
 one schedule from each namespace in turn, starting with the namespace
 whose oldest candidate is oldest, and oldest first within a namespace

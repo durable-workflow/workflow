@@ -19,6 +19,7 @@ use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use Symfony\Component\Uid\Ulid;
 use Tests\Fixtures\V2\TestGreetingActivity;
+use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestLocalActivityWorkflow;
 use Tests\Fixtures\V2\TestQueryReplayGuardActivity;
 use Tests\Fixtures\V2\TestRepeatedPatchClockWorkflow;
@@ -2336,6 +2337,12 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 continue;
             }
 
+            if ($fixture['id'] === 'embedded-namespace-boundary-foreign-task') {
+                $this->assertForeignNamespaceTaskIsRefusedByAnotherEmbeddedApp($fixture);
+
+                continue;
+            }
+
             if ($fixture['id'] === 'handed-over-child-retry-run-replays') {
                 $this->assertHandedOverChildFailureStartsTheRecordedRetry($fixture);
 
@@ -2466,6 +2473,58 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
      *
      * @param array<string, mixed> $fixture
      */
+    /**
+     * Two embedded apps share one database, connection and queue, separated
+     * only by namespace (#889). App A's queue job and repair pass must leave
+     * app B's task untouched; app B still executes it.
+     *
+     * @param array<string, mixed> $fixture
+     */
+    private function assertForeignNamespaceTaskIsRefusedByAnotherEmbeddedApp(array $fixture): void
+    {
+        $previous = config()
+            ->get('workflows.v2');
+        $previousNow = Carbon::getTestNow();
+
+        try {
+            $asApp = static function (string $namespace): void {
+                config()->set([
+                    'workflows.v2.namespace' => $namespace,
+                    'workflows.v2.namespaces' => null,
+                    'workflows.v2.all_namespaces' => false,
+                    'workflows.v2.connection' => 'redis',
+                    'workflows.v2.queue' => 'shared-queue',
+                ]);
+            };
+            $asApp('app-b');
+            $stub = WorkflowStub::make(TestGreetingWorkflow::class);
+            $stub->start(...$fixture['workflow']['arguments']);
+            $task = WorkflowTask::query()
+                ->where('workflow_run_id', $stub->runId())
+                ->where('task_type', TaskType::Workflow->value)
+                ->sole();
+            $this->assertSame('app-b', $task->namespace);
+            Carbon::setTestNow(now()->addMinute());
+            $before = $task->fresh()
+                ->getAttributes();
+
+            $asApp('app-a');
+            $this->app->call([new RunWorkflowTask($task->id), 'handle']);
+            TaskWatchdog::runPass('redis', 'shared-queue', runIds: [$stub->runId()]);
+
+            $this->assertSame($before, $task->fresh()->getAttributes(), $fixture['id']);
+
+            $asApp('app-b');
+            $this->app->call([new RunWorkflowTask($task->id), 'handle']);
+
+            $this->assertSame(TaskStatus::Completed, $task->fresh()->status, $fixture['id']);
+        } finally {
+            Carbon::setTestNow($previousNow);
+            config()
+                ->set('workflows.v2', $previous);
+        }
+    }
+
     private function assertHandedOverChildFailureStartsTheRecordedRetry(array $fixture): void
     {
         $this->clearWorkflowState();

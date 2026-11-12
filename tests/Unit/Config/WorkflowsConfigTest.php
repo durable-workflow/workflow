@@ -18,6 +18,8 @@ final class WorkflowsConfigTest extends NonDatabaseTestCase
      */
     private const CONFIG_ENV_KEYS = [
         'DW_V2_NAMESPACE', 'WORKFLOW_V2_NAMESPACE',
+        'DW_V2_NAMESPACES', 'WORKFLOW_V2_NAMESPACES',
+        'DW_V2_ALL_NAMESPACES', 'WORKFLOW_V2_ALL_NAMESPACES',
         'DW_V2_CONNECTION', 'DW_V2_QUEUE',
         'DW_V2_CURRENT_COMPATIBILITY', 'WORKFLOW_V2_CURRENT_COMPATIBILITY',
         'DW_V2_SUPPORTED_COMPATIBILITIES', 'WORKFLOW_V2_SUPPORTED_COMPATIBILITIES',
@@ -161,6 +163,8 @@ final class WorkflowsConfigTest extends NonDatabaseTestCase
             $config = require dirname(__DIR__, 3) . '/src/config/workflows.php';
 
             $this->assertNull($config['v2']['namespace']);
+            $this->assertNull($config['v2']['namespaces']);
+            $this->assertFalse($config['v2']['all_namespaces']);
             $this->assertNull($config['v2']['connection']);
             $this->assertNull($config['v2']['queue']);
             $this->assertNull($config['v2']['compatibility']['current']);
@@ -335,6 +339,32 @@ final class WorkflowsConfigTest extends NonDatabaseTestCase
      * primary is not set, so existing deployments keep working during
      * the deprecation window.
      */
+    public function testNamespaceAllowlistKeepsAnExplicitlyEmptyValueAndReadsTheAdministrativeOptIn(): void
+    {
+        $keys = ['DW_V2_NAMESPACES', 'WORKFLOW_V2_NAMESPACES', 'DW_V2_ALL_NAMESPACES', 'WORKFLOW_V2_ALL_NAMESPACES'];
+        $previous = $this->snapshotEnv($keys);
+        $this->clearEnv($keys);
+
+        try {
+            foreach ([
+                'DW_V2_NAMESPACES' => '',
+                'WORKFLOW_V2_ALL_NAMESPACES' => 'true',
+            ] as $key => $value) {
+                putenv($key . '=' . $value);
+                $_ENV[$key] = $value;
+                $_SERVER[$key] = $value;
+            }
+
+            $config = require dirname(__DIR__, 3) . '/src/config/workflows.php';
+
+            // Empty means "serve no namespace", not "unset".
+            $this->assertSame('', $config['v2']['namespaces']);
+            $this->assertTrue($config['v2']['all_namespaces']);
+        } finally {
+            $this->restoreEnv($previous);
+        }
+    }
+
     public function testV2LegacyAliasStillResolvesWhenPrimaryIsUnset(): void
     {
         $keys = ['DW_V2_LIMIT_PAYLOAD_SIZE_BYTES', 'WORKFLOW_V2_LIMIT_PAYLOAD_SIZE_BYTES'];

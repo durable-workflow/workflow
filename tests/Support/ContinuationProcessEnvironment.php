@@ -28,6 +28,8 @@ final class ContinuationProcessEnvironment
         $app['config']->set('workflows.storage.connection', 'process');
         $app['config']->set('workflows.v1.enabled', false);
         $app['config']->set('workflows.v2.task_dispatch_mode', 'queue');
+        // The test app and its worker processes serve the fixture namespace (#889).
+        $app['config']->set('workflows.v2.namespaces', 'process-loss');
         $app['config']->set(WorkflowTaskLease::CONFIG_KEY, 3);
         $app['config']->set('workflows.v2.live_execution', [
             'workflows' => $enabled ? [TestContinuationProcessWorkflow::class] : [],

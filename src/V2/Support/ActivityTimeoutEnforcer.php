@@ -44,6 +44,7 @@ final class ActivityTimeoutEnforcer
         int $limit = 100,
         ?string $connection = null,
         ?string $queue = null,
+        ?NamespaceScope $namespaces = null,
     ): array {
         $now = now();
         $deadlineBoundary = self::deadlineBoundary($now);
@@ -70,7 +71,8 @@ final class ActivityTimeoutEnforcer
             })
             ->limit($limit);
 
-        RequestedTaskScope::apply($query, $connection, $queue);
+        // Executions carry no namespace column; their run owns it.
+        RequestedTaskScope::applyThroughRun($query, $connection, $queue, $namespaces);
 
         return $query->pluck('id')
             ->all();

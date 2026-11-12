@@ -34,6 +34,10 @@ final class EmbeddedSqliteTaskContentionTest extends TestCase
     {
         $this->path = tempnam(sys_get_temp_dir(), 'dw-task-contention-');
         parent::setUp();
+
+        // These fixtures run one app across several namespaces (#889).
+        config()
+            ->set('workflows.v2.all_namespaces', true);
         $this->artisan('migrate', [
             '--force' => true,
         ])->run();

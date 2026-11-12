@@ -422,14 +422,19 @@ final class ScheduleManager
     /**
      * @return list<array<string, mixed>>
      */
-    public static function tick(int $limit = 100): array
+    public static function tick(int $limit = 100, ?NamespaceScope $namespaces = null): array
     {
         $results = [];
+        // Only this app's namespaces: firing resolves the workflow type with
+        // this app's registry and starts the run with its configuration.
+        $namespaces ??= NamespaceScope::configured();
 
         // Phase 1: drain buffered actions for schedules whose last run finished.
-        $withBuffer = self::fairScheduleBatch(WorkflowSchedule::query()
+        $buffered = WorkflowSchedule::query()
             ->where('status', ScheduleStatus::Active->value)
-            ->whereNotNull('buffered_actions'), $limit, 'updated_at');
+            ->whereNotNull('buffered_actions');
+        $namespaces->apply($buffered);
+        $withBuffer = self::fairScheduleBatch($buffered, $limit, 'updated_at');
 
         foreach ($withBuffer as $schedule) {
             if (! $schedule->hasBufferedActions() || self::runningRunExists($schedule)) {
@@ -531,10 +536,12 @@ final class ScheduleManager
         // Phase 2: evaluate due schedules.
         // DateTime query bindings otherwise lose the model's fractional precision.
         $dueAt = UtcScheduleTimestamp::databaseValue(now());
-        $due = self::fairScheduleBatch(WorkflowSchedule::query()
+        $dueSchedules = WorkflowSchedule::query()
             ->where('status', ScheduleStatus::Active->value)
             ->whereNotNull('next_fire_at')
-            ->where('next_fire_at', '<=', $dueAt), $limit, 'next_fire_at');
+            ->where('next_fire_at', '<=', $dueAt);
+        $namespaces->apply($dueSchedules);
+        $due = self::fairScheduleBatch($dueSchedules, $limit, 'next_fire_at');
 
         foreach ($due as $schedule) {
             $occurrenceTime = $schedule->next_fire_at;

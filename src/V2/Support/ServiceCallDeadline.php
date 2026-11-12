@@ -40,6 +40,7 @@ final class ServiceCallDeadline
         ?string $instanceId = null,
         ?string $connection = null,
         ?string $queue = null,
+        ?NamespaceScope $namespaces = null,
     ): array {
         $query = ConfiguredV2Models::query('service_call_model', WorkflowServiceCall::class)
             ->whereIn('status', ['pending', 'accepted', 'started'])
@@ -78,6 +79,9 @@ final class ServiceCallDeadline
                     });
             });
         }
+
+        // Expiry wakes the caller, so only the caller's namespace owns it.
+        ($namespaces ?? NamespaceScope::configured())->apply($query, 'caller_namespace');
 
         return $query->orderBy('call_deadline_at')
             ->orderBy('id')

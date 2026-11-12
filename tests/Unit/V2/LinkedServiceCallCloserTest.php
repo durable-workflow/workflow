@@ -53,6 +53,15 @@ use Workflow\V2\WorkflowStub;
 
 final class LinkedServiceCallCloserTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // These fixtures run one app across several namespaces (#889).
+        config()
+            ->set('workflows.v2.all_namespaces', true);
+    }
+
     public function testRepairExpiresTheOriginalCallWithoutAnApiReadAndReplacementReplaysOneFailure(): void
     {
         config([

@@ -387,6 +387,39 @@ column on the task row and a filter on the poll surface:
   namespace filter. `null` means "not scoped"; pollers that do not
   pass a namespace see every namespace they have access to.
 
+Embedded background work is always namespace-scoped. The task
+watchdog (including the queue worker's `Looping` wake and
+`workflow:v2:repair-pass`), existing-task repair and redispatch,
+missing-task repair, run-deadline enforcement, activity-timeout
+enforcement, service-call deadline, dispatch and linked-call repair,
+`workflow:v2:schedule-tick`, and the `RunWorkflowTask`, `RunActivityTask`, `RunTimerTask` and
+`RunServiceCall` queue jobs act only on runs inside the application's
+namespace allowlist, `workflows.v2.namespaces` (`DW_V2_NAMESPACES`):
+
+- Absent (the default): exactly `workflows.v2.namespace`
+  (`DW_V2_NAMESPACE`). When that is unset too, the allowlist is the
+  unscoped default namespace, which covers stored `null`, empty and
+  `default` values.
+- A comma-separated list: exactly those namespaces. List `default`
+  to include the unscoped namespace.
+- Empty: no namespace. The app repairs, times out and executes
+  nothing.
+- `*` is refused. Serving every namespace needs the separate
+  administrative opt-in `workflows.v2.all_namespaces`
+  (`DW_V2_ALL_NAMESPACES=true`), meant for a process such as the
+  standalone server's matching role that owns every namespace in the
+  database.
+
+A task's namespace is its own recorded namespace, or its run's
+namespace when the task has none. A queued job, including one
+serialized before this check existed, whose task is outside the
+allowlist is skipped before any claim or effect and logged as a
+warning; the task stays as it was for its own app's worker or
+repair pass. Two apps that share a queue backend should still use
+distinct queue names: the namespace keeps them from acting on each
+other's runs, but a job the wrong app receives waits for its owner's
+redispatch.
+
 What the contract intentionally does not partition on:
 
 - The matching role does not encode compatibility into queue names.

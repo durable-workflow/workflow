@@ -20,6 +20,7 @@ use Workflow\V2\Support\ActivityTaskClaimer;
 use Workflow\V2\Support\EmbeddedActivityLease;
 use Workflow\V2\Support\EntryMethod;
 use Workflow\V2\Support\ExecutionTracing;
+use Workflow\V2\Support\NamespaceScope;
 use Workflow\V2\Support\RuntimeObjectFactory;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskTraceTimings;
@@ -49,6 +50,12 @@ final class RunActivityTask implements ShouldQueue
 
     public function handle(): void
     {
+        // Apps sharing a database and queue names can receive each other's
+        // jobs. Refuse a task outside this app's namespaces before any effect.
+        if (! NamespaceScope::admitsQueuedTask($this->taskId, self::class)) {
+            return;
+        }
+
         WorkerCompatibilityFleet::heartbeat(
             is_string($this->connection ?? null) ? $this->connection : null,
             is_string($this->queue ?? null) ? $this->queue : null,

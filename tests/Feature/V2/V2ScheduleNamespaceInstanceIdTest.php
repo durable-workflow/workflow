@@ -86,6 +86,9 @@ final class V2ScheduleNamespaceInstanceIdTest extends TestCase
                 ])->save();
         }
 
+        // One app that serves both namespaces ticks both schedules (#889).
+        config()
+            ->set('workflows.v2.namespaces', 'default,tenant-b');
         $ticked = ScheduleManager::tick();
 
         $this->assertSame(['triggered', 'triggered'], array_column($ticked, 'outcome'));

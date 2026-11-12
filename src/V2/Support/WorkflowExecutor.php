@@ -6600,6 +6600,7 @@ final class WorkflowExecutor
         /** @var WorkflowTask $nextTask */
         $nextTask = WorkflowTask::query()->create([
             'workflow_run_id' => $run->id,
+            'namespace' => $run->namespace,
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
             'available_at' => now(),

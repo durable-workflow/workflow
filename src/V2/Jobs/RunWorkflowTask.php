@@ -17,6 +17,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\ExecutionTracing;
+use Workflow\V2\Support\NamespaceScope;
 use Workflow\V2\Support\ServiceCallWorkflowDelivery;
 use Workflow\V2\Support\SqliteTransaction;
 use Workflow\V2\Support\StickyExecution;
@@ -52,6 +53,12 @@ final class RunWorkflowTask implements ShouldQueue
 
     public function handle(WorkflowExecutor $executor): void
     {
+        // Apps sharing a database and queue names can receive each other's
+        // jobs. Refuse a task outside this app's namespaces before any effect.
+        if (! NamespaceScope::admitsQueuedTask($this->taskId, self::class)) {
+            return;
+        }
+
         WorkerCompatibilityFleet::heartbeat(
             is_string($this->connection ?? null) ? $this->connection : null,
             is_string($this->queue ?? null) ? $this->queue : null,

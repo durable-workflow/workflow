@@ -440,6 +440,7 @@ final class ServiceCallScheduler
         ?string $instanceId = null,
         ?string $connection = null,
         ?string $queue = null,
+        ?NamespaceScope $namespaces = null,
     ): array {
         $now = now()
             ->utc()
@@ -480,6 +481,12 @@ final class ServiceCallScheduler
             });
         }
 
+        // Attempts run on behalf of the caller, inside its namespace.
+        $namespaces ??= NamespaceScope::configured();
+        if (! $namespaces->isAll()) {
+            $query->whereHas('call', static fn ($call) => $namespaces->apply($call, 'caller_namespace'));
+        }
+
         return $query
             ->orderBy('available_at')
             ->orderBy('service_call_id')
@@ -497,9 +504,10 @@ final class ServiceCallScheduler
         ?string $instanceId = null,
         ?string $connection = null,
         ?string $queue = null,
+        ?NamespaceScope $namespaces = null,
     ): array {
         self::cleanupOrphans($limit);
-        $ids = self::dueIds($limit, $runIds, $instanceId, $connection, $queue);
+        $ids = self::dueIds($limit, $runIds, $instanceId, $connection, $queue, $namespaces);
         $report = [
             'candidates' => count($ids),
             'enqueued' => 0,
