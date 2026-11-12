@@ -5373,6 +5373,10 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         // receives what this run had not consumed yet (#1018).
         (new MessageService())->transferMessagesToContinuedRun($run, $continuedRun);
 
+        // Open children stay with their links, calls and policies; the
+        // continued run applies those policies when the chain closes (#868).
+        ChildSupervision::transferToContinuedRun($run, $continuedRun);
+
         $childCallId = ChildRunHistory::childCallIdForRun($run);
 
         /** @var WorkflowLink $link */
