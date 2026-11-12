@@ -219,29 +219,6 @@ class ChildCallService
     }
 
     /**
-     * Transfer child call tracking to a continued run (continue-as-new).
-     *
-     * Updates parent_workflow_run_id for open children when parent continues as new run.
-     *
-     * @param WorkflowRun $closingRun The run being closed
-     * @param WorkflowRun $continuedRun The new run from continue-as-new
-     */
-    public function transferChildCallsToContinuedRun(WorkflowRun $closingRun, WorkflowRun $continuedRun): void
-    {
-        ConfiguredV2Models::connection()->transaction(static function () use ($closingRun, $continuedRun): void {
-            // Transfer open children to new run
-            WorkflowChildCall::where('parent_workflow_run_id', $closingRun->id)
-                ->whereIn('status', [ChildCallStatus::Scheduled->value, ChildCallStatus::Started->value])
-                ->update([
-                    'parent_workflow_run_id' => $continuedRun->id,
-                    'updated_at' => now(),
-                ]);
-
-            // Terminal children remain with closing run (historical record)
-        });
-    }
-
-    /**
      * Get children by child instance ID (for lineage tracking across continue-as-new).
      *
      * @param string $childInstanceId The child instance ID
