@@ -65,7 +65,7 @@ final class ScheduleAuditPayloadContractTest extends TestCase
             ],
             'ScheduleTriggerSkipped' => [
                 HistoryEventType::ScheduleTriggerSkipped,
-                ['reason', 'skipped_trigger_count', 'last_skipped_at', 'command_context'],
+                ['reason', 'skipped_trigger_count', 'last_skipped_at', 'occurrence_time', 'command_context'],
             ],
             'ScheduleDeleted' => [HistoryEventType::ScheduleDeleted, ['reason', 'deleted_at', 'command_context']],
         ];

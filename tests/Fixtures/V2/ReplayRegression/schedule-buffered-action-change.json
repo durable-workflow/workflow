@@ -1,0 +1,46 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "schedule-buffered-action-change",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestScheduledWorkflow",
+    "arguments": [
+      "buffered-change"
+    ],
+    "payload_codec": "avro"
+  },
+  "schedule_buffered_action_change": {
+    "issue": "durable-workflow/workflow#876",
+    "cron": "0 * * * *",
+    "occurrence": "2026-11-12T10:00:00+00:00",
+    "reason": "action_changed"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-12T00:00:00.000000Z"
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "batch_id": "buffered-change",
+      "workflow_id": "regression-corpus-schedule-buffered-action-change",
+      "run_id": "regression-corpus-run-schedule-buffered-action-change"
+    },
+    "commands": [
+      {
+        "type": "complete_workflow"
+      }
+    ]
+  }
+}

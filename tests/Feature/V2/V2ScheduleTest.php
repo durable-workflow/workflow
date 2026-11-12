@@ -315,6 +315,36 @@ final class V2ScheduleTest extends TestCase
         $this->assertSame(['note'], $updated->payload['changed_fields']);
     }
 
+    public function testChangingTheActionDropsBufferedFiresWithARecordedReason(): void
+    {
+        $schedule = ScheduleManager::create(
+            scheduleId: 'buffered-action-change',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+            overlapPolicy: ScheduleOverlapPolicy::BufferOne,
+        );
+        $occurrence = Carbon::parse('2026-11-12 10:00:00', 'UTC');
+        $schedule->bufferAction($occurrence);
+        $schedule->save();
+
+        // A notes-only update keeps the buffered fire.
+        ScheduleManager::update($schedule->fresh(), notes: 'Still the same action.');
+        $this->assertTrue($schedule->fresh()->hasBufferedActions());
+
+        $action = $schedule->fresh()
+->action;
+        $action['input'] = ['changed'];
+        ScheduleManager::update($schedule->fresh(), action: $action);
+
+        $this->assertFalse($schedule->fresh()->hasBufferedActions());
+        $skip = WorkflowScheduleHistoryEvent::query()
+            ->where('workflow_schedule_id', $schedule->id)
+            ->where('event_type', HistoryEventType::ScheduleTriggerSkipped->value)
+            ->sole();
+        $this->assertSame('action_changed', $skip->payload['reason']);
+        $this->assertSame($occurrence->format('Y-m-d\TH:i:s.uP'), $skip->payload['occurrence_time']);
+    }
+
     public function testUpdateScheduleCronAndTimezone(): void
     {
         $schedule = ScheduleManager::create(
