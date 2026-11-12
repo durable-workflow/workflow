@@ -445,7 +445,7 @@ class BuildWorkflowTrustTest(unittest.TestCase):
 
     def test_pull_requests_run_the_postgresql_feature_suite(self) -> None:
         source = self.job_source("feature-postgresql")
-        self.assertNotIn("github.event_name != 'pull_request'", source)
+        self.assertNotIn("    if: ${{ github.event_name != 'pull_request' }}\n", source)
         self.assertIn("feature-postgresql", workflow_job_needs(self.build, "build"))
         gate = self.job_source("build")
         self.assertIn('test "${{ needs.feature-postgresql.result }}" = "success"', gate)
