@@ -272,18 +272,13 @@ final class ExecutionTracing
             if ($state === null) {
                 return;
             }
-            if ($child === null || ! $child->relationLoaded('historyEvents')) {
+            if ($child === null) {
                 $state->markOutcomeUnavailable();
                 return;
             }
             $entry = $state->outcome('child:' . $child->id);
-            $terminal = $child->getRelation('historyEvents')
-                ->filter(
-                    static fn (WorkflowHistoryEvent $event): bool => in_array($event->event_type->value, [
-                        'WorkflowCompleted', 'WorkflowFailed', 'WorkflowCancelled', 'WorkflowTerminated',
-                    ], true),
-                )->sortByDesc('sequence')
-                ->first();
+            // Related runs are loaded without their history; the outcome is one terminal event.
+            $terminal = ChildRunHistory::terminalEventForRun($child);
             if ($entry === null || ! $terminal instanceof WorkflowHistoryEvent
                 || ! self::childOutcomeMatches($entry, $resolution, $child, $terminal)) {
                 $state->markOutcomeUnavailable();
