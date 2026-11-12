@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.26.0 - 2026-11-12
+
 - A child handed to a continued run now gets its retries (#1105). Before, a
   child that failed after its parent continued as new was never retried,
   because the retry needed the parent to be waiting. It is now retried under
