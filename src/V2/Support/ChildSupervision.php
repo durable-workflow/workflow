@@ -203,13 +203,35 @@ final class ChildSupervision
             return null;
         }
 
-        /** @var WorkflowRun|null $openRun */
-        $openRun = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+        return ConfiguredV2Models::query('run_model', WorkflowRun::class)
             ->whereIn('id', $supervisingRunIds)
             ->get()
             ->first(static fn (WorkflowRun $run): bool => ! self::isTerminal($run));
+    }
 
-        return $openRun;
+    /**
+     * Whether a failed child of a closed parent is a handed-over child that a
+     * run of the chain still supervises. If so, the parent's child relations
+     * are loaded for the retry.
+     */
+    public static function prepareHandedOverRetry(WorkflowRun $parentRun, int $sequence, WorkflowRun $childRun): bool
+    {
+        if (self::openSupervisorOfHandedOverChild(
+            $parentRun,
+            $sequence,
+            (string) $childRun->workflow_instance_id,
+        ) === null) {
+            return false;
+        }
+
+        $parentRun->loadMissing([
+            'historyEvents',
+            'childLinks.childRun.instance.currentRun',
+            'childLinks.childRun.failures',
+            'childLinks.childRun.historyEvents',
+        ]);
+
+        return true;
     }
 
     /**
