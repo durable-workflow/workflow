@@ -35,24 +35,7 @@
         "visibility_labels": null,
         "memo": null,
         "search_attributes": null,
-        "outcome": "started_new",
-        "command": {
-          "id": "01m77knkz6rs3a13vcrckvmmvc",
-          "sequence": 1,
-          "type": "start",
-          "target_scope": "instance",
-          "resolved_run_id": "01m77knkz2q406sat5j5zqm1cr",
-          "payload_codec": "avro",
-          "payload": "wwHioz3/VYAiNwwEAgEEKAA=",
-          "source": "php",
-          "caller_label": "PHP API",
-          "auth_status": "not_applicable",
-          "auth_method": "none",
-          "status": "accepted",
-          "outcome": "started_new",
-          "accepted_at": "2026-11-12T10:08:20.452636Z",
-          "applied_at": "2026-11-12T10:08:20.452640Z"
-        }
+        "outcome": "started_new"
       },
       "recorded_at": "2026-11-12T10:08:20.455687Z"
     },
@@ -82,24 +65,7 @@
         "declared_update_contracts": [],
         "declared_entry_method": "handle",
         "declared_entry_mode": "canonical",
-        "declared_entry_declaring_class": "Tests\\Fixtures\\V2\\TestHistoryBudgetLoopWorkflow",
-        "command": {
-          "id": "01m77knkz6rs3a13vcrckvmmvc",
-          "sequence": 1,
-          "type": "start",
-          "target_scope": "instance",
-          "resolved_run_id": "01m77knkz2q406sat5j5zqm1cr",
-          "payload_codec": "avro",
-          "payload": "wwHioz3/VYAiNwwEAgEEKAA=",
-          "source": "php",
-          "caller_label": "PHP API",
-          "auth_status": "not_applicable",
-          "auth_method": "none",
-          "status": "accepted",
-          "outcome": "started_new",
-          "accepted_at": "2026-11-12T10:08:20.452636Z",
-          "applied_at": "2026-11-12T10:08:20.452640Z"
-        }
+        "declared_entry_declaring_class": "Tests\\Fixtures\\V2\\TestHistoryBudgetLoopWorkflow"
       },
       "recorded_at": "2026-11-12T10:08:20.460068Z"
     },
@@ -144,21 +110,6 @@
           "queue": "default",
           "created_at": "2026-11-12T10:08:20.543270Z",
           "arguments": "wwHioz3/VYAiNwwCChZpdGVyYXRpb24tMAA="
-        },
-        "task": {
-          "id": "01m77knkzdr8g4vwg2qhx2g2h0",
-          "type": "workflow",
-          "status": "leased",
-          "available_at": "2026-11-12T10:08:20.461138Z",
-          "leased_at": "2026-11-12T10:08:20.522032Z",
-          "lease_owner": "01m77knkzdr8g4vwg2qhx2g2h0",
-          "lease_expires_at": "2026-11-12T10:13:20.522038Z",
-          "attempt_count": 1,
-          "repair_count": 0,
-          "connection": "sqlite",
-          "queue": "default",
-          "last_dispatch_attempt_at": "2026-11-12T10:08:20.484993Z",
-          "last_dispatched_at": "2026-11-12T10:08:20.484993Z"
         }
       },
       "recorded_at": "2026-11-12T10:08:20.545903Z"
@@ -208,21 +159,6 @@
           "created_at": "2026-11-12T10:08:20.543270Z",
           "started_at": "2026-11-12T10:08:20.616675Z",
           "arguments": "wwHioz3/VYAiNwwCChZpdGVyYXRpb24tMAA="
-        },
-        "task": {
-          "id": "01m77knm23zxtjyf39kv22zwpy",
-          "type": "activity",
-          "status": "leased",
-          "available_at": "2026-11-12T10:08:20.547011Z",
-          "leased_at": "2026-11-12T10:08:20.616675Z",
-          "lease_owner": "01m77knm23zxtjyf39kv22zwpy",
-          "lease_expires_at": "2026-11-12T10:13:20.617473Z",
-          "attempt_count": 1,
-          "repair_count": 0,
-          "connection": "sqlite",
-          "queue": "default",
-          "last_dispatch_attempt_at": "2026-11-12T10:08:20.581803Z",
-          "last_dispatched_at": "2026-11-12T10:08:20.581803Z"
         }
       },
       "recorded_at": "2026-11-12T10:08:20.619750Z"
@@ -276,21 +212,6 @@
           "closed_at": "2026-11-12T10:08:20.761132Z",
           "arguments": "wwHioz3/VYAiNwwCChZpdGVyYXRpb24tMAA=",
           "result": "wwHioz3/VYAiNwomSGVsbG8sIGl0ZXJhdGlvbi0wIQ=="
-        },
-        "task": {
-          "id": "01m77knm23zxtjyf39kv22zwpy",
-          "type": "activity",
-          "status": "leased",
-          "available_at": "2026-11-12T10:08:20.547011Z",
-          "leased_at": "2026-11-12T10:08:20.616675Z",
-          "lease_owner": "01m77knm23zxtjyf39kv22zwpy",
-          "lease_expires_at": "2026-11-12T10:13:20.699437Z",
-          "attempt_count": 1,
-          "repair_count": 0,
-          "connection": "sqlite",
-          "queue": "default",
-          "last_dispatch_attempt_at": "2026-11-12T10:08:20.581803Z",
-          "last_dispatched_at": "2026-11-12T10:08:20.581803Z"
         }
       },
       "recorded_at": "2026-11-12T10:08:20.761941Z"
@@ -336,21 +257,6 @@
           "queue": "default",
           "created_at": "2026-11-12T10:08:20.857705Z",
           "arguments": "wwHioz3/VYAiNwwCChZpdGVyYXRpb24tMQA="
-        },
-        "task": {
-          "id": "01m77knm8w5yr2rabwg4t3my5w",
-          "type": "workflow",
-          "status": "leased",
-          "available_at": "2026-11-12T10:08:20.764212Z",
-          "leased_at": "2026-11-12T10:08:20.825390Z",
-          "lease_owner": "01m77knm8w5yr2rabwg4t3my5w",
-          "lease_expires_at": "2026-11-12T10:13:20.825399Z",
-          "attempt_count": 1,
-          "repair_count": 0,
-          "connection": "sqlite",
-          "queue": "default",
-          "last_dispatch_attempt_at": "2026-11-12T10:08:20.786710Z",
-          "last_dispatched_at": "2026-11-12T10:08:20.786710Z"
         }
       },
       "recorded_at": "2026-11-12T10:08:20.858444Z"
@@ -400,21 +306,6 @@
           "created_at": "2026-11-12T10:08:20.857705Z",
           "started_at": "2026-11-12T10:08:20.922608Z",
           "arguments": "wwHioz3/VYAiNwwCChZpdGVyYXRpb24tMQA="
-        },
-        "task": {
-          "id": "01m77knmbvknsjh9h7x11zffgc",
-          "type": "activity",
-          "status": "leased",
-          "available_at": "2026-11-12T10:08:20.859355Z",
-          "leased_at": "2026-11-12T10:08:20.922608Z",
-          "lease_owner": "01m77knmbvknsjh9h7x11zffgc",
-          "lease_expires_at": "2026-11-12T10:13:20.922649Z",
-          "attempt_count": 1,
-          "repair_count": 0,
-          "connection": "sqlite",
-          "queue": "default",
-          "last_dispatch_attempt_at": "2026-11-12T10:08:20.882509Z",
-          "last_dispatched_at": "2026-11-12T10:08:20.882509Z"
         }
       },
       "recorded_at": "2026-11-12T10:08:20.924914Z"
@@ -468,21 +359,6 @@
           "closed_at": "2026-11-12T10:08:21.068585Z",
           "arguments": "wwHioz3/VYAiNwwCChZpdGVyYXRpb24tMQA=",
           "result": "wwHioz3/VYAiNwomSGVsbG8sIGl0ZXJhdGlvbi0xIQ=="
-        },
-        "task": {
-          "id": "01m77knmbvknsjh9h7x11zffgc",
-          "type": "activity",
-          "status": "leased",
-          "available_at": "2026-11-12T10:08:20.859355Z",
-          "leased_at": "2026-11-12T10:08:20.922608Z",
-          "lease_owner": "01m77knmbvknsjh9h7x11zffgc",
-          "lease_expires_at": "2026-11-12T10:13:21.014121Z",
-          "attempt_count": 1,
-          "repair_count": 0,
-          "connection": "sqlite",
-          "queue": "default",
-          "last_dispatch_attempt_at": "2026-11-12T10:08:20.882509Z",
-          "last_dispatched_at": "2026-11-12T10:08:20.882509Z"
         }
       },
       "recorded_at": "2026-11-12T10:08:21.070963Z"
@@ -528,21 +404,6 @@
           "queue": "default",
           "created_at": "2026-11-12T10:08:21.229413Z",
           "arguments": "wwHioz3/VYAiNwwCChZpdGVyYXRpb24tMgA="
-        },
-        "task": {
-          "id": "01m77knmjk9hg6bqdqpqff503k",
-          "type": "workflow",
-          "status": "leased",
-          "available_at": "2026-11-12T10:08:21.075576Z",
-          "leased_at": "2026-11-12T10:08:21.180271Z",
-          "lease_owner": "01m77knmjk9hg6bqdqpqff503k",
-          "lease_expires_at": "2026-11-12T10:13:21.180281Z",
-          "attempt_count": 1,
-          "repair_count": 0,
-          "connection": "sqlite",
-          "queue": "default",
-          "last_dispatch_attempt_at": "2026-11-12T10:08:21.114124Z",
-          "last_dispatched_at": "2026-11-12T10:08:21.114124Z"
         }
       },
       "recorded_at": "2026-11-12T10:08:21.230297Z"
@@ -592,21 +453,6 @@
           "created_at": "2026-11-12T10:08:21.229413Z",
           "started_at": "2026-11-12T10:08:21.340242Z",
           "arguments": "wwHioz3/VYAiNwwCChZpdGVyYXRpb24tMgA="
-        },
-        "task": {
-          "id": "01m77knmqf1v8fed7r1bgegkmv",
-          "type": "activity",
-          "status": "leased",
-          "available_at": "2026-11-12T10:08:21.231378Z",
-          "leased_at": "2026-11-12T10:08:21.340242Z",
-          "lease_owner": "01m77knmqf1v8fed7r1bgegkmv",
-          "lease_expires_at": "2026-11-12T10:13:21.340287Z",
-          "attempt_count": 1,
-          "repair_count": 0,
-          "connection": "sqlite",
-          "queue": "default",
-          "last_dispatch_attempt_at": "2026-11-12T10:08:21.266994Z",
-          "last_dispatched_at": "2026-11-12T10:08:21.266994Z"
         }
       },
       "recorded_at": "2026-11-12T10:08:21.342850Z"
@@ -660,21 +506,6 @@
           "closed_at": "2026-11-12T10:08:21.506976Z",
           "arguments": "wwHioz3/VYAiNwwCChZpdGVyYXRpb24tMgA=",
           "result": "wwHioz3/VYAiNwomSGVsbG8sIGl0ZXJhdGlvbi0yIQ=="
-        },
-        "task": {
-          "id": "01m77knmqf1v8fed7r1bgegkmv",
-          "type": "activity",
-          "status": "leased",
-          "available_at": "2026-11-12T10:08:21.231378Z",
-          "leased_at": "2026-11-12T10:08:21.340242Z",
-          "lease_owner": "01m77knmqf1v8fed7r1bgegkmv",
-          "lease_expires_at": "2026-11-12T10:13:21.442593Z",
-          "attempt_count": 1,
-          "repair_count": 0,
-          "connection": "sqlite",
-          "queue": "default",
-          "last_dispatch_attempt_at": "2026-11-12T10:08:21.266994Z",
-          "last_dispatched_at": "2026-11-12T10:08:21.266994Z"
         }
       },
       "recorded_at": "2026-11-12T10:08:21.507885Z"
@@ -720,21 +551,6 @@
           "queue": "default",
           "created_at": "2026-11-12T10:08:21.652985Z",
           "arguments": "wwHioz3/VYAiNwwCChZpdGVyYXRpb24tMwA="
-        },
-        "task": {
-          "id": "01m77knn06ebe77hqmeyxv7qh4",
-          "type": "workflow",
-          "status": "leased",
-          "available_at": "2026-11-12T10:08:21.510206Z",
-          "leased_at": "2026-11-12T10:08:21.600115Z",
-          "lease_owner": "01m77knn06ebe77hqmeyxv7qh4",
-          "lease_expires_at": "2026-11-12T10:13:21.600123Z",
-          "attempt_count": 1,
-          "repair_count": 0,
-          "connection": "sqlite",
-          "queue": "default",
-          "last_dispatch_attempt_at": "2026-11-12T10:08:21.548884Z",
-          "last_dispatched_at": "2026-11-12T10:08:21.548884Z"
         }
       },
       "recorded_at": "2026-11-12T10:08:21.653836Z"
@@ -784,21 +600,6 @@
           "created_at": "2026-11-12T10:08:21.652985Z",
           "started_at": "2026-11-12T10:08:21.757806Z",
           "arguments": "wwHioz3/VYAiNwwCChZpdGVyYXRpb24tMwA="
-        },
-        "task": {
-          "id": "01m77knn4qgav22x8nw8s93m91",
-          "type": "activity",
-          "status": "leased",
-          "available_at": "2026-11-12T10:08:21.654970Z",
-          "leased_at": "2026-11-12T10:08:21.757806Z",
-          "lease_owner": "01m77knn4qgav22x8nw8s93m91",
-          "lease_expires_at": "2026-11-12T10:13:21.757849Z",
-          "attempt_count": 1,
-          "repair_count": 0,
-          "connection": "sqlite",
-          "queue": "default",
-          "last_dispatch_attempt_at": "2026-11-12T10:08:21.699535Z",
-          "last_dispatched_at": "2026-11-12T10:08:21.699535Z"
         }
       },
       "recorded_at": "2026-11-12T10:08:21.760648Z"
@@ -852,21 +653,6 @@
           "closed_at": "2026-11-12T10:08:21.931584Z",
           "arguments": "wwHioz3/VYAiNwwCChZpdGVyYXRpb24tMwA=",
           "result": "wwHioz3/VYAiNwomSGVsbG8sIGl0ZXJhdGlvbi0zIQ=="
-        },
-        "task": {
-          "id": "01m77knn4qgav22x8nw8s93m91",
-          "type": "activity",
-          "status": "leased",
-          "available_at": "2026-11-12T10:08:21.654970Z",
-          "leased_at": "2026-11-12T10:08:21.757806Z",
-          "lease_owner": "01m77knn4qgav22x8nw8s93m91",
-          "lease_expires_at": "2026-11-12T10:13:21.864055Z",
-          "attempt_count": 1,
-          "repair_count": 0,
-          "connection": "sqlite",
-          "queue": "default",
-          "last_dispatch_attempt_at": "2026-11-12T10:08:21.699535Z",
-          "last_dispatched_at": "2026-11-12T10:08:21.699535Z"
         }
       },
       "recorded_at": "2026-11-12T10:08:21.933877Z"
