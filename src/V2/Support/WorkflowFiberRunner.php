@@ -2134,7 +2134,9 @@ final class WorkflowFiberRunner
                 continue;
             }
 
-            $recordedAt = self::eventRecordedAt($event, $payload, ['closed_at']);
+            // A child call that redrive reused keeps the time it first closed.
+            $recordedAt = self::eventTime($payload['reused_recorded_at'] ?? null)
+                ?? self::eventRecordedAt($event, $payload, ['closed_at']);
 
             if ($type === 'ChildRunCompleted') {
                 $outcomes[$sequence] = [

@@ -1660,16 +1660,17 @@ final class WorkflowExecutor
         $sequence = &$frame->sequence;
         try {
             $this->syncWorkflowCursor($workflow, $sequence + 1);
+            // A child call that redrive reused keeps the time it first closed.
             if ($resolutionEvent->event_type === HistoryEventType::ChildRunCompleted) {
                 $current = $workflowExecution->send(
                     ChildRunHistory::outputForResolution($resolutionEvent, $childRun),
-                    $resolutionEvent->recorded_at
+                    RedriveReplayClock::recordedAt($resolutionEvent)
                 );
             } else {
                 $failureId = $resolutionEvent->payload['failure_id'] ?? null;
                 $current = $workflowExecution->throw(
                     ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun),
-                    $resolutionEvent->recorded_at
+                    RedriveReplayClock::recordedAt($resolutionEvent)
                 );
                 $this->recordFailureHandled(
                     $run,

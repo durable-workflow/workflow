@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- Failed-run redrive now reuses a completed child workflow call (#864).
+  Before, any child workflow in the failed run's history refused redrive with
+  `unsupported_history`. The successor records the child's
+  `ChildWorkflowScheduled`, `ChildRunStarted` and `ChildRunCompleted` events
+  with `reused_from_run_id` and `reused_recorded_at`, keeps the original child
+  instance, run, link id and call id, and does not start the child again or
+  write a child link of its own. Executor, query and fiber replay resume the
+  call with the recorded output at the time it first closed, so `now()` after
+  the call matches the failed run. Redrive chains carry the reuse forward.
+  Child steps that replay would not reproduce are refused before any write,
+  with new reasons: `unsupported_open_child`, `unsupported_child_outcome`
+  (failed, cancelled or terminated children), `unsupported_child_workflow`
+  (parallel, scoped, retried or continued children, or mismatched call
+  identity), `external_child_result_not_supported` and
+  `unavailable_child_result`. Runs a service worker started stay refused with
+  `service_redrive_history_not_qualified` when they would reuse a child step.
+  Runs that are themselves children are still refused. No migration.
+  Rollback: earlier releases ignore `reused_recorded_at` on child events, so
+  replaying such a successor there can give a different workflow time, and
+  deadlines derived from it, after the reused call; they also refuse to
+  redrive it again (`unsupported_history`). Once a successor with a reused
+  child call exists, keep workers on this release or later, or confirm that
+  no such history can replay before rolling back.
 - Upgrade migrations that fill in existing rows no longer lock the table for
   the whole backfill on PostgreSQL (#871). The output codec (`2026_07_13`),
   local activity exception (`2026_09_24`), schedule occurrence (`2026_09_29`)
