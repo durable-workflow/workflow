@@ -95,7 +95,10 @@
   workflows in namespaces other than `DW_V2_NAMESPACE` must list them in
   `DW_V2_NAMESPACES`, or their tasks and schedules wait for an app that
   serves them. A process that repairs or ticks every namespace, such as the
-  standalone server, must set `DW_V2_ALL_NAMESPACES=true`.
+  standalone server, must set `DW_V2_ALL_NAMESPACES=true`. The allowlist is an
+  execution-safety boundary, so one app never runs another app's work with the
+  wrong code or credentials. It is not tenant isolation: apps that share one
+  database can still read each other's rows.
 
 ## 2.25.0 - 2026-11-12
 
