@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Support\Facades\DB;
 use Throwable;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
@@ -855,22 +856,28 @@ final class ActivityOutcomeRecorder
         }
     }
 
+    /**
+     * Close a still-running attempt with one guarded conditional update (#1000).
+     *
+     * Lease renewal locks the attempt before the execution, run and task. An outcome already holds
+     * the task, execution and run here, so taking the attempt's row lock now would reverse that
+     * order and let a concurrent renewal deadlock with it. The status guard keeps the close
+     * idempotent, and an attempt that is no longer running is left untouched.
+     */
     private static function closeAttempt(string $attemptId, ActivityAttemptStatus $status): void
     {
-        /** @var ActivityAttempt|null $attempt */
-        $attempt = ActivityAttempt::query()
-            ->lockForUpdate()
-            ->find($attemptId);
+        $query = ActivityAttempt::query();
+        $closedAt = $query->getQuery()
+            ->getGrammar()
+            ->quoteString(now() ->format((new ActivityAttempt())->getDateFormat()));
 
-        if (! $attempt instanceof ActivityAttempt || $attempt->status !== ActivityAttemptStatus::Running) {
-            return;
-        }
-
-        $attempt->forceFill([
-            'status' => $status,
-            'lease_expires_at' => null,
-            'closed_at' => $attempt->closed_at ?? now(),
-        ])->save();
+        $query->whereKey($attemptId)
+            ->where('status', ActivityAttemptStatus::Running->value)
+            ->update([
+                'status' => $status->value,
+                'lease_expires_at' => null,
+                'closed_at' => DB::raw('COALESCE(closed_at, ' . $closedAt . ')'),
+            ]);
     }
 
     private static function closeAttemptIfStale(WorkflowRun $run, string $attemptId): void
