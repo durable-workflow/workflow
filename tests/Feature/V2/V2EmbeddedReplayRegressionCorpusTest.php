@@ -4321,29 +4321,7 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     /**
      * @param array<string, mixed> $fixture
      */
-    /**
-     * A fixture may pin package config, such as lowered history-budget thresholds (#859). The values
-     * apply only while that fixture replays.
-     */
     private function executeColdReplayFixture(array $fixture): void
-    {
-        $previous = [];
-        foreach ($fixture['config'] ?? [] as $key => $value) {
-            $previous[$key] = config($key);
-            config()
-                ->set($key, $value);
-        }
-
-        try {
-            $this->executeColdReplayFixtureWithConfig($fixture);
-        } finally {
-            foreach ($previous as $key => $value) {
-                config()->set($key, $value);
-            }
-        }
-    }
-
-    private function executeColdReplayFixtureWithConfig(array $fixture): void
     {
         $workflow = $fixture['workflow'];
         $workflowClass = $workflow['type'];

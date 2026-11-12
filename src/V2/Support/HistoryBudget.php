@@ -96,10 +96,15 @@ final class HistoryBudget
      */
     public static function forRunAtStep(WorkflowRun $run, int $step): array
     {
-        $run->loadMissing('historyEvents');
+        $history = match (true) {
+            $run->relationLoaded('historyEvents') => $run->historyEvents,
+            $run->exists => $run->historyEvents()
+                ->get(),
+            default => new \Illuminate\Database\Eloquent\Collection(),
+        };
 
         $boundary = null;
-        foreach ($run->historyEvents as $event) {
+        foreach ($history as $event) {
             $payload = is_array($event->payload) ? $event->payload : [];
             $eventStep = $payload['sequence'] ?? null;
             $type = $event->event_type instanceof \BackedEnum ? $event->event_type->value : (string) $event->event_type;
@@ -111,10 +116,8 @@ final class HistoryBudget
         // At the frontier a stored run reads its history fresh, so events this task already wrote
         // count, as they will on replay. A run replayed from memory (no stored row) uses what it holds.
         $events = $boundary === null
-            ? ($run->exists ? $run->historyEvents()->get() : $run->historyEvents)
-            : $run->historyEvents->filter(
-                static fn (WorkflowHistoryEvent $event): bool => (int) $event->sequence < $boundary
-            );
+            ? ($run->exists ? $run->historyEvents()->get() : $history)
+            : $history->filter(static fn (WorkflowHistoryEvent $event): bool => (int) $event->sequence < $boundary);
 
         $fanOut = 0;
         $seenGroups = [];
@@ -727,7 +730,7 @@ final class HistoryBudget
 
     private static function positiveIntegerConfig(string $key, int $default): int
     {
-        $value = config($key, $default);
+        $value = self::configValue($key, $default);
 
         if (is_numeric($value)) {
             return max(0, (int) $value);
@@ -748,7 +751,7 @@ final class HistoryBudget
             return 0;
         }
 
-        $configured = config($key);
+        $configured = self::configValue($key);
 
         if (is_numeric($configured)) {
             $value = max(0, (int) $configured);
@@ -761,5 +764,18 @@ final class HistoryBudget
         }
 
         return $value;
+    }
+
+    /**
+     * Read package config, or the default when no application container is booted (the cold
+     * replay runner can evaluate workflow code outside Laravel).
+     */
+    private static function configValue(string $key, mixed $default = null): mixed
+    {
+        if (! function_exists('app') || ! app()->bound('config')) {
+            return $default;
+        }
+
+        return config($key, $default);
     }
 }

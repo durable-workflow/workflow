@@ -15,8 +15,12 @@ use Workflow\V2\Workflow;
 #[Type('test-history-budget-loop-workflow')]
 final class TestHistoryBudgetLoopWorkflow extends Workflow
 {
-    public function handle(bool $stepStable, int $iterations = 20, ?int $rolledOverAt = null): mixed
-    {
+    public function handle(
+        bool $stepStable,
+        int $iterations = 20,
+        ?int $rolledOverAt = null,
+        ?int $eventThreshold = null,
+    ): mixed {
         if ($rolledOverAt !== null) {
             return [
                 'rolled_over_at' => $rolledOverAt,
@@ -27,9 +31,15 @@ final class TestHistoryBudgetLoopWorkflow extends Workflow
         for ($i = 0; $i < $iterations; $i++) {
             activity(TestGreetingActivity::class, "iteration-{$i}");
 
-            $recommended = $stepStable ? $this->shouldContinueAsNewAtStep() : $this->shouldContinueAsNew();
+            // An explicit threshold lets cold replay prove the rule without package config.
+            $recommended = match (true) {
+                $eventThreshold !== null && $stepStable => $this->historyBudgetAtStep()['history_event_count'] >= $eventThreshold,
+                $eventThreshold !== null => $this->historyLength() >= $eventThreshold,
+                $stepStable => $this->shouldContinueAsNewAtStep(),
+                default => $this->shouldContinueAsNew(),
+            };
             if ($recommended) {
-                return continueAsNew($stepStable, $iterations, $i);
+                return continueAsNew($stepStable, $iterations, $i, $eventThreshold);
             }
         }
 

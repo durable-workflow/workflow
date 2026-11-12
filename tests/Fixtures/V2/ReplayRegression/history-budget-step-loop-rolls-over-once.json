@@ -9,15 +9,13 @@
   "consumers": [
     "workflow-fiber-runner"
   ],
-  "config": {
-    "workflows.v2.history_budget.continue_as_new_event_threshold": 14,
-    "workflows.v2.history_budget.event_warning_threshold": 12
-  },
   "workflow": {
     "type": "Tests\\Fixtures\\V2\\TestHistoryBudgetLoopWorkflow",
     "arguments": [
       true,
-      20
+      20,
+      null,
+      14
     ],
     "payload_codec": "avro"
   },
