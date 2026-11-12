@@ -195,6 +195,32 @@ own identifier and its own durable row.
   `child_call_id` as the originally scheduled child; each retried run
   gets a new `child_workflow_run_id`.
 
+### Failed-run redrive
+
+- Redrive continues a failed run in a new linked run. Steps the failed
+  run completed before the failure are reused from its history and are
+  not executed again; the failed step runs again.
+- A completed child workflow call is one of those steps. The successor
+  records the call's `ChildWorkflowScheduled`, `ChildRunStarted` and
+  `ChildRunCompleted` events with `reused_from_run_id` and
+  `reused_recorded_at`, keeping the original child instance, child run,
+  `workflow_link_id` and `child_call_id`. The child is not started again,
+  and the successor gets no child link or child call of its own. Replay
+  resumes the call with the recorded output at its original close time.
+- Redrive refuses a child step it cannot reproduce, before anything is
+  written: a child that never closed (`unsupported_open_child`); a child
+  that failed, was cancelled or was terminated
+  (`unsupported_child_outcome`); a child in a parallel group or
+  cancellation scope, a retried or continued child, or events that do
+  not name one child call (`unsupported_child_workflow`); and a child
+  output that is stored externally (`external_child_result_not_supported`)
+  or cannot be decoded (`unavailable_child_result`).
+- A run started by a service worker is refused with
+  `service_redrive_history_not_qualified` when it would reuse a child
+  step, until the SDKs are qualified to replay the reused events.
+- A run that is itself a child is not redriven: its parent has already
+  recorded the child's outcome, so a successor would have no caller.
+
 ## Lease expiry and redelivery
 
 - Every claimed task (workflow task, activity task) carries a

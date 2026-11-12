@@ -1,0 +1,113 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "redrive-reused-child-workflow",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestRedriveChildWorkflow",
+    "arguments": [
+      "Taylor"
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {
+        "recovery_kind": "redrive",
+        "resume_step_sequence": 2
+      },
+      "recorded_at": "2026-11-12T00:05:00+00:00"
+    },
+    {
+      "sequence": 2,
+      "event_type": "ChildWorkflowScheduled",
+      "payload": {
+        "sequence": 1,
+        "workflow_link_id": "01JCREDRIVECHILDLINK000000",
+        "child_call_id": "01JCREDRIVECHILDLINK000000",
+        "child_workflow_instance_id": "01jcredrivechildinstance00",
+        "child_workflow_run_id": "01jcredrivechildrun0000000",
+        "child_workflow_class": "Tests\\Fixtures\\V2\\TestRedriveGreetingChildWorkflow",
+        "child_workflow_type": "test-redrive-greeting-child-workflow",
+        "parent_close_policy": "abandon",
+        "cancellation_policy": "abandon",
+        "reused_from_run_id": "01JCREDRIVESOURCERUN000000",
+        "reused_recorded_at": "2026-11-12T00:00:00+00:00"
+      },
+      "recorded_at": "2026-11-12T00:05:00+00:00"
+    },
+    {
+      "sequence": 3,
+      "event_type": "ChildRunStarted",
+      "payload": {
+        "sequence": 1,
+        "workflow_link_id": "01JCREDRIVECHILDLINK000000",
+        "child_call_id": "01JCREDRIVECHILDLINK000000",
+        "child_workflow_instance_id": "01jcredrivechildinstance00",
+        "child_workflow_run_id": "01jcredrivechildrun0000000",
+        "child_workflow_class": "Tests\\Fixtures\\V2\\TestRedriveGreetingChildWorkflow",
+        "child_workflow_type": "test-redrive-greeting-child-workflow",
+        "child_run_number": 1,
+        "parent_close_policy": "abandon",
+        "cancellation_policy": "abandon",
+        "reused_from_run_id": "01JCREDRIVESOURCERUN000000",
+        "reused_recorded_at": "2026-11-12T00:00:00+00:00"
+      },
+      "recorded_at": "2026-11-12T00:05:00+00:00"
+    },
+    {
+      "sequence": 4,
+      "event_type": "ChildRunCompleted",
+      "payload": {
+        "sequence": 1,
+        "workflow_link_id": "01JCREDRIVECHILDLINK000000",
+        "child_call_id": "01JCREDRIVECHILDLINK000000",
+        "child_workflow_instance_id": "01jcredrivechildinstance00",
+        "child_workflow_run_id": "01jcredrivechildrun0000000",
+        "child_workflow_class": "Tests\\Fixtures\\V2\\TestRedriveGreetingChildWorkflow",
+        "child_workflow_type": "test-redrive-greeting-child-workflow",
+        "child_run_number": 1,
+        "child_status": "completed",
+        "closed_reason": "completed",
+        "closed_at": "2026-11-12T00:00:01.000000Z",
+        "output": "wwHioz3/VYAiNwocSGVsbG8sIFRheWxvciE=",
+        "result": "wwHioz3/VYAiNwocSGVsbG8sIFRheWxvciE=",
+        "payload_codec": "avro",
+        "reused_from_run_id": "01JCREDRIVESOURCERUN000000",
+        "reused_recorded_at": "2026-11-12T00:00:01+00:00"
+      },
+      "recorded_at": "2026-11-12T00:05:00+00:00"
+    }
+  ],
+  "redrive_reused_child_workflow": {
+    "redrive_after_minutes": 5,
+    "redrive": "accepted",
+    "resume_step_sequence": 2,
+    "successor_status": "completed",
+    "result": "Hello, Taylor! Redrive completed.",
+    "child_runs": 1,
+    "child_activity_calls": 1,
+    "child_links": 1,
+    "reused_events": [
+      "ChildWorkflowScheduled",
+      "ChildRunStarted",
+      "ChildRunCompleted"
+    ]
+  },
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "schedule_activity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestRedriveSecondActivity",
+        "payload_codec": "avro"
+      }
+    ]
+  }
+}
