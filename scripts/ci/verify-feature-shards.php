@@ -94,13 +94,15 @@ function verify_workflow_job(string $workflow, string $job, string $profile): vo
     $expectedMatrix = implode(', ', range(0, FEATURE_SHARDS - 1));
     $requirements = [
         'repository preflight dependency' => 'needs: preflight',
-        'target-branch routing' => "github.event_name != 'pull_request'",
         'complete shard matrix' => "shard: [{$expectedMatrix}]",
         'splitter shard count' => '--shards=' . FEATURE_SHARDS,
         'weight profile' => "--weight-profile={$profile}",
     ];
-
+    // MySQL collects coverage on main only. PostgreSQL also runs on pull
+    // requests, so a feature test cannot pass a PR and fail only after
+    // merge (#1095).
     if ($profile === 'mysql') {
+        $requirements['target-branch routing'] = "github.event_name != 'pull_request'";
         $requirements['PCOV coverage driver'] = 'coverage: pcov';
         $requirements['per-shard Clover report'] = '--coverage-clover "build/test-results/mysql-shard-${{ matrix.shard }}-coverage.xml"';
     }
@@ -121,7 +123,7 @@ function verify_gate_wiring(string $workflow, string $publicBoundaryWorkflow): v
         'pr-tracing' => [PULL_REQUEST_CONDITION],
         'pr-feature-mysql' => [PULL_REQUEST_CONDITION],
         'feature-mysql' => ["github.event_name != 'pull_request'"],
-        'feature-postgresql' => ["github.event_name != 'pull_request'"],
+        'feature-postgresql' => [],
         'feature-mariadb' => ["github.event_name != 'pull_request'"],
         'coverage' => ["github.event_name != 'pull_request'"],
     ];
