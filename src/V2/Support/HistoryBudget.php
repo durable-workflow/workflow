@@ -24,6 +24,11 @@ final class HistoryBudget
 
     public const DIMENSION_FAN_OUT = 'fan_out';
 
+    /**
+     * Identity of the step-prefix observation returned by {@see forRunAtStep()} (#859).
+     */
+    public const STEP_PREFIX_OBSERVATION = 'step_prefix.v1';
+
     private const DEFAULT_EVENT_HARD_THRESHOLD = 10000;
 
     private const DEFAULT_EVENT_WARNING_THRESHOLD = 8000;
@@ -35,6 +40,15 @@ final class HistoryBudget
     private const DEFAULT_FAN_OUT_HARD_THRESHOLD = 200;
 
     private const DEFAULT_FAN_OUT_WARNING_THRESHOLD = 160;
+
+    private const TERMINAL_EVENT_TYPES = [
+        'WorkflowCompleted',
+        'WorkflowFailed',
+        'WorkflowContinuedAsNew',
+        'WorkflowCancelled',
+        'WorkflowTerminated',
+        'WorkflowTimedOut',
+    ];
 
     /**
      * @return array{
@@ -56,6 +70,79 @@ final class HistoryBudget
         $historyFanOut = self::maxParallelFanOut($run);
 
         return self::summarize($historyEventCount, $historySizeBytes, $historyFanOut);
+    }
+
+    /**
+     * The history budget as workflow code observed it at a workflow step, identical on every replay (#859).
+     *
+     * A workflow task runs holding the run lock, and every history write takes that lock, so no
+     * event is appended while workflow code executes. Workflow code at step S therefore saw exactly
+     * the events recorded before the first event a workflow task recorded for step S or later (or
+     * for the run's terminal outcome). That boundary exists on replay. At the live frontier it does
+     * not exist yet, and the run's whole stored history is the same prefix. Events recorded outside
+     * workflow tasks (for example by the control plane) never move the boundary.
+     *
+     * @return array{
+     *     history_event_count: int,
+     *     history_size_bytes: int,
+     *     history_fan_out: int,
+     *     continue_as_new_recommended: bool,
+     *     pressure: string,
+     *     pressure_dimensions: list<string>,
+     *     observation: string
+     * }
+     */
+    public static function forRunAtStep(WorkflowRun $run, int $step): array
+    {
+        $run->loadMissing(['historyEvents', 'tasks']);
+        $workflowTaskIds = [];
+        foreach ($run->tasks as $task) {
+            $type = $task->task_type instanceof \BackedEnum ? $task->task_type->value : $task->task_type;
+            if ($type === 'workflow') {
+                $workflowTaskIds[(string) $task->id] = true;
+            }
+        }
+
+        $boundary = null;
+        foreach ($run->historyEvents as $event) {
+            if (! is_string($event->workflow_task_id) || ! isset($workflowTaskIds[$event->workflow_task_id])) {
+                continue;
+            }
+            $payload = is_array($event->payload) ? $event->payload : [];
+            $eventStep = $payload['sequence'] ?? null;
+            $type = $event->event_type instanceof \BackedEnum ? $event->event_type->value : (string) $event->event_type;
+            if ((is_int($eventStep) && $eventStep >= $step) || in_array($type, self::TERMINAL_EVENT_TYPES, true)) {
+                $boundary = $boundary === null ? (int) $event->sequence : min($boundary, (int) $event->sequence);
+            }
+        }
+
+        $events = $boundary === null
+            ? $run->historyEvents()
+                ->get()
+            : $run->historyEvents->filter(
+                static fn (WorkflowHistoryEvent $event): bool => (int) $event->sequence < $boundary
+            );
+
+        $fanOut = 0;
+        $seenGroups = [];
+        foreach ($events as $event) {
+            $payload = is_array($event->payload) ? $event->payload : [];
+            $groupId = $payload['parallel_group_id'] ?? null;
+            $groupSize = $payload['parallel_group_size'] ?? null;
+            if (! is_string($groupId) || $groupId === '' || ! is_numeric($groupSize) || isset($seenGroups[$groupId])) {
+                continue;
+            }
+            $seenGroups[$groupId] = true;
+            $fanOut = max($fanOut, (int) $groupSize);
+        }
+
+        return self::summarize(
+            $events->count(),
+            (int) $events->sum(static fn (WorkflowHistoryEvent $event): int => self::eventSizeBytes($event)),
+            $fanOut,
+        ) + [
+            'observation' => self::STEP_PREFIX_OBSERVATION,
+        ];
     }
 
     /**

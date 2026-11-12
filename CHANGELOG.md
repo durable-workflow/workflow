@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Workflow code can read the history budget replay-safely with
+  `historyBudgetAtStep()` and `shouldContinueAsNewAtStep()` (#859). They count
+  only the history recorded before the current workflow step, so the same line
+  returns the same value on every replay, and a loop that checks the budget
+  each iteration continues as new once, at the first iteration that crosses the
+  threshold. The existing `historyLength()`, `historySize()`, `historyFanOut()`,
+  `shouldContinueAsNew()` and `historyBudgetPressure()` still read the whole
+  current history and are unchanged, so runs that already decided with them
+  keep replaying. Inside a loop they can answer differently on replay; use the
+  new methods there.
+
 - An activity outcome no longer locks the attempt row after it holds the task,
   execution and run (#1000). It closes the attempt with one guarded conditional
   update instead. Lease renewal locks the attempt first, so the old order could
