@@ -2512,9 +2512,11 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             ->where('workflow_run_id', $retryLink->child_workflow_run_id)
             ->where('event_type', HistoryEventType::WorkflowStarted->value)
             ->sole();
-        foreach (['workflow_type', 'parent_sequence', 'retry_attempt', 'retry_policy'] as $key) {
+        foreach (['workflow_type', 'parent_sequence', 'retry_attempt'] as $key) {
             $this->assertSame($expected[$key], $started->payload[$key] ?? null, $key);
         }
+        // MySQL's JSON column reorders object keys, so compare the policy by content.
+        $this->assertEquals($expected['retry_policy'], $started->payload['retry_policy'] ?? null);
         $this->assertSame($parentRun->id, $started->payload['parent_workflow_run_id'] ?? null);
         $this->assertSame(
             $childLink->child_workflow_run_id,
