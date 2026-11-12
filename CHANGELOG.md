@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.25.0 - 2026-11-12
+
 - Changing a schedule's action now drops fires buffered under the old
   action (#876). Each dropped fire is recorded as a `ScheduleTriggerSkipped`
   event with reason `action_changed` and its `occurrence_time`. Updates that
