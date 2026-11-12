@@ -109,7 +109,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           repository: durable-workflow/.github
-          ref: ed15002a156725523b23eefb935a243cb1f84952
+          ref: 411a14ac07d32073eed6ab4977f2825eba4739a7
           path: .qualification-control
           persist-credentials: false
       - name: Select the trusted system Python
@@ -156,7 +156,7 @@ jobs:
           clients: pip,python,composer,curl,git
       - name: Set up the exact accepted initial PHP profile
         id: php_setup
-        uses: durable-workflow/.github/.github/actions/setup-php-linux@ed15002a156725523b23eefb935a243cb1f84952  # bound-linux-php
+        uses: durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7  # bound-linux-php
         with:
           php-version: '8.3'
           ini-file: production
@@ -202,7 +202,7 @@ jobs:
           composer_root=pathlib.Path(composer_text) if composer_text else None
           composer_identity=os.environ.get('COMPOSER_DIRECTORY_IDENTITY','')
           try:
-              control_source='ed15002a156725523b23eefb935a243cb1f84952'
+              control_source='411a14ac07d32073eed6ab4977f2825eba4739a7'
               control_directory=pathlib.Path.cwd()/'.qualification-control'
               def control_git(*arguments):
                   return subprocess.check_output(['/usr/bin/git','-C',str(control_directory),*arguments],text=True).strip()
