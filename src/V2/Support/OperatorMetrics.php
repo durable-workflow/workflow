@@ -63,6 +63,30 @@ final class OperatorMetrics
             'repair_policy' => TaskRepairPolicy::snapshot(),
             'matching_role' => MatchingRoleSnapshot::current(),
             'sticky_execution' => self::stickyExecutionMetrics($now, $namespace),
+            'namespace_scope_refusals' => self::namespaceScopeRefusalMetrics($now, $namespace),
+        ];
+    }
+
+    /**
+     * Work refused because its namespace is outside this app's allowlist,
+     * plus the allowlist that refused it.
+     *
+     * @return array<string, mixed>
+     */
+    private static function namespaceScopeRefusalMetrics(CarbonInterface $now, ?string $namespace): array
+    {
+        try {
+            $scope = NamespaceScope::configured()->toArray();
+            $scopeError = null;
+        } catch (\InvalidArgumentException $exception) {
+            $scope = null;
+            $scopeError = $exception->getMessage();
+        }
+
+        return [
+            'scope' => $scope,
+            'scope_error' => $scopeError,
+            ...NamespaceScopeRefusals::snapshot($now, $namespace),
         ];
     }
 

@@ -6,6 +6,7 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -27,7 +28,10 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\HealthCheck;
 use Workflow\V2\Support\NamespaceScope;
+use Workflow\V2\Support\NamespaceScopeRefusals;
+use Workflow\V2\Support\OperatorMetrics;
 use Workflow\V2\Support\ScheduleManager;
 use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub;
@@ -399,6 +403,112 @@ final class V2EmbeddedNamespaceIsolationTest extends TestCase
         );
     }
 
+    public function testRefusedJobsAreCountedAndLoggedOncePerMinute(): void
+    {
+        $a = $this->startIn('app-a');
+        $taskId = $this->workflowTask($a)
+->id;
+        Log::spy();
+
+        $this->asApp('app-b');
+        foreach (range(1, 3) as $ignored) {
+            app()
+                ->call([new RunWorkflowTask($taskId), 'handle']);
+        }
+
+        Log::shouldHaveReceived('warning')
+            ->withArgs(static fn (string $message, array $context): bool => str_contains(
+                $message,
+                'skipped a queued job'
+            ) && $context['namespace'] === 'app-a' && $context['task_id'] === $taskId)
+            ->once();
+
+        $metrics = OperatorMetrics::snapshot()['namespace_scope_refusals'];
+        $this->assertSame([
+            'all' => false,
+            'namespaces' => ['app-b'],
+        ], $metrics['scope']);
+        $this->assertSame(3, $metrics['total']);
+        $this->assertSame(3, $metrics['by_path'][NamespaceScopeRefusals::PATH_JOB]);
+        $this->assertSame([[
+            'namespace' => 'app-a',
+            'path' => NamespaceScopeRefusals::PATH_JOB,
+            'count' => 3,
+            'last_seen_at' => '2026-11-12T09:00:00.000000Z',
+        ]], $metrics['namespaces']);
+        $this->assertSame(0, OperatorMetrics::snapshot(namespace: 'app-b')['namespace_scope_refusals']['total']);
+
+        $check = $this->refusalCheck();
+        $this->assertSame('warning', $check['status']);
+        $this->assertSame(3, $check['data']['total']);
+
+        // Positive control: the owning app runs the job and adds nothing.
+        $this->runWorkflowTaskAs('app-a', $a);
+        $this->assertSame(TaskStatus::Completed, $this->workflowTask($a)->status);
+
+        // The warning clears once a full window passes without a refusal.
+        Carbon::setTestNow(now()->addSeconds(NamespaceScopeRefusals::WINDOW_BUCKETS * 60));
+        $this->assertSame('ok', $this->refusalCheck()['status']);
+        $this->assertSame(0, $this->refusalCheck()['data']['total']);
+    }
+
+    public function testPassesCountStaleWorkTheyLeaveInOtherNamespaces(): void
+    {
+        $this->asApp('app-b');
+        $schedule = ScheduleManager::create(
+            scheduleId: 'stale-schedule',
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '0 * * * *',
+            overlapPolicy: ScheduleOverlapPolicy::AllowAll,
+        );
+        $schedule->forceFill([
+            'next_fire_at' => now()
+                ->subMinutes(5),
+        ])->save();
+        $timedOut = $this->startIn('app-b');
+        $this->runWorkflowTaskAs('app-b', $timedOut);
+        $this->activityExecution($timedOut)
+            ->forceFill([
+                'schedule_deadline_at' => now()
+                    ->subMinutes(5),
+            ])->save();
+        $stale = $this->startIn('app-b');
+        $own = $this->startIn('app-a');
+        Carbon::setTestNow(now()->addMinutes(5));
+        // Fresh work is not counted: a healthy owner has not had time yet.
+        $this->startIn('app-b');
+        $foreignBefore = $this->workflowTask($stale)
+            ->getAttributes();
+
+        Queue::fake();
+        $this->asApp('app-a');
+        TaskWatchdog::runPass(self::CONNECTION, self::QUEUE);
+        ScheduleManager::tick();
+        // A second pass in the same minute does not count the same rows again.
+        TaskWatchdog::runPass(self::CONNECTION, self::QUEUE);
+        ScheduleManager::tick();
+
+        $this->assertSame([$this->workflowTask($own)->id], $this->pushedWorkflowTaskIds());
+        $this->assertSame($foreignBefore, $this->workflowTask($stale)->getAttributes());
+        // Repair: the stale workflow task and the timed-out run's activity task.
+        $this->assertSame([
+            NamespaceScopeRefusals::PATH_JOB => 0,
+            NamespaceScopeRefusals::PATH_REPAIR => 2,
+            NamespaceScopeRefusals::PATH_TIMEOUT => 1,
+            NamespaceScopeRefusals::PATH_SCHEDULE_TICK => 1,
+        ], $this->refusalCheck()['data']['by_path']);
+        $this->assertSame(['app-b'], array_values(array_unique(
+            array_column($this->refusalCheck()['data']['namespaces'], 'namespace')
+        )));
+
+        // An app that serves every namespace refuses nothing.
+        Carbon::setTestNow(now()->addMinute());
+        config()
+            ->set('workflows.v2.all_namespaces', true);
+        TaskWatchdog::runPass(self::CONNECTION, self::QUEUE);
+        $this->assertSame(2, $this->refusalCheck()['data']['by_path'][NamespaceScopeRefusals::PATH_REPAIR]);
+    }
+
     private function asApp(?string $namespace, mixed $namespaces = null): void
     {
         config()->set([
@@ -421,6 +531,14 @@ final class V2EmbeddedNamespaceIsolationTest extends TestCase
         $this->asApp($namespace);
         app()
             ->call([new RunWorkflowTask($this->workflowTask($stub)->id), 'handle']);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function refusalCheck(): array
+    {
+        return collect(HealthCheck::snapshot()['checks'])->firstWhere('name', 'namespace_scope_refusals');
     }
 
     private function workflowTask(WorkflowStub $stub): WorkflowTask

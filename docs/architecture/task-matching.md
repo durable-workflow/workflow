@@ -420,6 +420,34 @@ distinct queue names: the namespace keeps them from acting on each
 other's runs, but a job the wrong app receives waits for its owner's
 redispatch.
 
+Refusals are counted so a namespace that no app serves shows up where
+operators already look. `OperatorMetrics::snapshot()` reports a
+`namespace_scope_refusals` block with the app's allowlist (`scope`) and
+the refusals of the last 15 minutes per namespace and path:
+
+- `job`: one count per queued job skipped because its task or service
+  call is outside the allowlist.
+- `repair`, `timeout`, `schedule_tick`: these passes only query their own
+  namespaces, so at most once a minute per path a pass samples what it
+  left elsewhere. It counts existing-task repair candidates, expired
+  activity and run deadlines, and due schedules in namespaces outside the
+  allowlist that have waited more than two minutes. The grace keeps a
+  healthy app that serves the namespace from showing up.
+
+The `namespace_scope_refusals` health check is advisory. It warns while
+any refusal falls inside the window and clears once 15 minutes pass
+without one. The usual fix is to list the namespace in
+`DW_V2_NAMESPACES`, or to start the app that serves it. The skipped-job
+warning is logged once per namespace each minute; the counts carry the
+rest.
+
+The counts live in the default cache store in one-minute buckets that
+expire with the window, so a refusal never writes to a table. With a
+shared store (Redis, database or Memcached) the counts cover every
+process that uses it, including the web process that serves the health
+snapshot. A process-local store such as `array` only sees its own
+refusals.
+
 What the contract intentionally does not partition on:
 
 - The matching role does not encode compatibility into queue names.

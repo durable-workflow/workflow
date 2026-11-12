@@ -40,6 +40,21 @@
   execution-safety boundary, so one app never runs another app's work with the
   wrong code or credentials. It is not tenant isolation: apps that share one
   database can still read each other's rows.
+- Work refused by the namespace allowlist is now counted, so a misconfigured
+  upgrade no longer stalls tasks with a log line as the only sign (#1112).
+  The operator metrics snapshot has a new `namespace_scope_refusals` block
+  with the app's allowlist and refusals per namespace and path over the last
+  15 minutes: `job` counts each skipped queued job, and `repair`, `timeout`
+  and `schedule_tick` count repair candidates, expired activity and run
+  deadlines, and due schedules that a pass left in a namespace outside the
+  allowlist after they had waited more than two minutes (sampled at most once
+  a minute per path). The new advisory `namespace_scope_refusals` health check
+  warns while refusals keep arriving and clears 15 minutes after the last one.
+  The skipped-job warning is now logged once per namespace a minute; the rest
+  are counted. Counts live in the default cache store in one-minute buckets,
+  with no table and no migration. Use a shared store (Redis, database or
+  Memcached) so the web process that serves the health snapshot sees the
+  workers' counts.
 
 ## 2.26.0 - 2026-11-12
 

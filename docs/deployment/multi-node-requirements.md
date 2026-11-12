@@ -90,6 +90,8 @@ DW_V2_NAMESPACE=production
 # exactly DW_V2_NAMESPACE. Apps sharing a database must not overlap.
 # This keeps each app from executing another app's work; it is not tenant
 # isolation, since apps sharing a database can still read each other's rows.
+# Work left in an unlisted namespace shows up in the namespace_scope_refusals
+# health check, which needs a shared cache store to see every node's counts.
 # DW_V2_NAMESPACES=production,reporting
 
 # Compatibility (deploy same build to all nodes)
