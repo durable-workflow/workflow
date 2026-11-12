@@ -66,7 +66,11 @@ final class HostServiceQuerySqliteWriteRetryTest extends TestCase
                     'id' => $callId,
                 ]);
                 fwrite($pair[1], "locked\n");
-                usleep(20_000);
+                // Hold the lock briefly. The owned root path retries for about
+                // 60 ms (3 attempts, 20 ms then 40 ms apart), so a short fixed
+                // hold keeps real contention without depending on how quickly
+                // a busy runner reschedules this process (#1096).
+                usleep(5_000);
                 DB::commit();
                 fclose($pair[1]);
                 exit(0);
