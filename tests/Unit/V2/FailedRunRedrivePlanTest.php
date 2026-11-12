@@ -182,6 +182,168 @@ final class FailedRunRedrivePlanTest extends TestCase
     /**
      * @return list<array{event_type: HistoryEventType, payload: array<string, mixed>}>
      */
+    public function testNativeRetriesCanPrecedeTheRecordedFailedActivity(): void
+    {
+        $plan = FailedRunRedrivePlan::forRun($this->runWithHistory($this->retryHistory()));
+        self::assertTrue($plan['eligible'], (string) $plan['reason']);
+        self::assertSame(2, $plan['resume_step_sequence']);
+    }
+
+    public function testRetryIdentitySubstitutionIsRefused(): void
+    {
+        foreach (['activity_execution_id', 'activity_attempt_id', 'retry_after_attempt', 'retry_task_id'] as $field) {
+            $history = $this->retryHistory();
+            $history[6]['payload'][$field] = $field === 'retry_after_attempt' ? 9 : 'substituted';
+            $plan = FailedRunRedrivePlan::forRun($this->runWithHistory($history));
+            self::assertFalse($plan['eligible']);
+            self::assertSame('invalid_activity_retry_history', $plan['reason']);
+        }
+    }
+
+    public function testNativeActiveAdoptionIsHarmlessOnlyWhenBoundToTheSameRunAndCommand(): void
+    {
+        $plan = FailedRunRedrivePlan::forRun($this->adoptionRun());
+        self::assertTrue($plan['eligible'], (string) $plan['reason']);
+        self::assertSame(2, $plan['resume_step_sequence']);
+    }
+
+    public function testSubstitutedActiveStartAdoptionCannotAuthorizeRedrive(): void
+    {
+        foreach ([
+            ['outcome', 'started_new'],
+            ['workflow_instance_id', 'other-instance'],
+            ['workflow_run_id', 'other-run'],
+            ['workflow_class', 'OtherWorkflow'],
+            ['workflow_type', 'other.type'],
+            ['workflow_command_id', 'other-command'],
+            ['rejection_reason', 'refused'],
+            ['command', null],
+            ['command.id', 'other-command'],
+            ['command.type', 'signal'],
+            ['command.status', 'rejected'],
+            ['command.outcome', 'started_new'],
+            ['command.target_scope', 'run'],
+            ['command.resolved_run_id', 'other-run'],
+        ] as [$field, $replacement]) {
+            $run = $this->adoptionRun();
+            $event = $run->historyEvents[2];
+            $payload = $event->payload;
+            $keys = explode('.', $field);
+            if (count($keys) === 2) {
+                $payload[$keys[0]][$keys[1]] = $replacement;
+            } else {
+                $payload[$field] = $replacement;
+            }
+            $event->payload = $payload;
+            $plan = FailedRunRedrivePlan::forRun($run);
+            self::assertFalse($plan['eligible'], $field);
+            self::assertSame('unexpected_start', $plan['reason'], $field);
+        }
+        foreach (['workflow_run_id', 'workflow_command_id'] as $field) {
+            $run = $this->adoptionRun();
+            $run->historyEvents[2]->setAttribute($field, 'substituted');
+            self::assertSame('unexpected_start', FailedRunRedrivePlan::forRun($run)['reason']);
+        }
+    }
+
+    private function adoptionRun(): WorkflowRun
+    {
+        $history = $this->linearFailureHistory();
+        array_splice($history, 2, 0, [[
+            'event_type' => HistoryEventType::StartAccepted,
+            'payload' => [
+                'workflow_instance_id' => 'instance-a',
+                'workflow_run_id' => 'run-a',
+                'workflow_class' => 'TestWorkflow',
+                'workflow_type' => 'test.workflow',
+                'workflow_command_id' => 'adoption-command',
+                'outcome' => 'returned_existing_active',
+                'command' => [
+                    'id' => 'adoption-command',
+                    'type' => 'start',
+                    'target_scope' => 'instance',
+                    'resolved_run_id' => 'run-a',
+                    'status' => 'accepted',
+                    'outcome' => 'returned_existing_active',
+                ],
+            ],
+        ]]);
+        $run = $this->runWithHistory($history);
+        $run->forceFill([
+            'id' => 'run-a',
+            'workflow_instance_id' => 'instance-a',
+            'workflow_class' => 'TestWorkflow',
+            'workflow_type' => 'test.workflow',
+        ]);
+        $run->historyEvents[2]->forceFill([
+            'workflow_run_id' => 'run-a',
+            'workflow_command_id' => 'adoption-command',
+        ]);
+        return $run;
+    }
+
+    private function retryHistory(): array
+    {
+        $history = $this->linearFailureHistory();
+        array_splice($history, 4, 1, [
+            [
+                'event_type' => HistoryEventType::ActivityScheduled,
+                'payload' => [
+                    'sequence' => 2,
+                    'activity_type' => 'second',
+                    'activity_execution_id' => 'execution-2',
+                ],
+            ],
+            [
+                'event_type' => HistoryEventType::ActivityStarted,
+                'payload' => [
+                    'sequence' => 2,
+                    'activity_type' => 'second',
+                    'activity_execution_id' => 'execution-2',
+                    'activity_attempt_id' => 'attempt-1',
+                    'attempt_number' => 1,
+                    'workflow_task_id' => 'task-1',
+                ],
+            ],
+            [
+                'event_type' => HistoryEventType::ActivityRetryScheduled,
+                'payload' => [
+                    'sequence' => 2,
+                    'activity_type' => 'second',
+                    'activity_execution_id' => 'execution-2',
+                    'activity_attempt_id' => 'attempt-1',
+                    'retry_after_attempt_id' => 'attempt-1',
+                    'retry_after_attempt' => 1,
+                    'retry_of_task_id' => 'task-1',
+                    'retry_task_id' => 'task-2',
+                    'max_attempts' => 2,
+                ],
+            ],
+            [
+                'event_type' => HistoryEventType::ActivityStarted,
+                'payload' => [
+                    'sequence' => 2,
+                    'activity_type' => 'second',
+                    'activity_execution_id' => 'execution-2',
+                    'activity_attempt_id' => 'attempt-2',
+                    'attempt_number' => 2,
+                    'workflow_task_id' => 'task-2',
+                ],
+            ],
+            [
+                'event_type' => HistoryEventType::ActivityFailed,
+                'payload' => [
+                    'sequence' => 2,
+                    'activity_type' => 'second',
+                    'activity_execution_id' => 'execution-2',
+                    'activity_attempt_id' => 'attempt-2',
+                    'attempt_number' => 2,
+                ],
+            ],
+        ]);
+        return $history;
+    }
+
     private function linearFailureHistory(): array
     {
         return [

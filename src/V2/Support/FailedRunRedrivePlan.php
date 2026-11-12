@@ -7,6 +7,9 @@ namespace Workflow\V2\Support;
 use Illuminate\Support\Str;
 use Throwable;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Enums\CommandOutcome;
+use Workflow\V2\Enums\CommandStatus;
+use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -82,7 +85,7 @@ final class FailedRunRedrivePlan
             }
 
             if ($event->event_type === HistoryEventType::StartAccepted) {
-                if ($started !== null) {
+                if ($started !== null && ! self::isActiveStartAdoption($run, $event)) {
                     return self::reject('unexpected_start');
                 }
 
@@ -173,6 +176,7 @@ final class FailedRunRedrivePlan
             if (! in_array($event->event_type, [
                 HistoryEventType::ActivityScheduled,
                 HistoryEventType::ActivityStarted,
+                HistoryEventType::ActivityRetryScheduled,
                 HistoryEventType::ActivityHeartbeatRecorded,
                 HistoryEventType::ActivityCompleted,
                 HistoryEventType::ActivityFailed,
@@ -321,6 +325,10 @@ final class FailedRunRedrivePlan
 
             if (! is_array($stepEvents)) {
                 return self::reject('activity_sequence_gap');
+            }
+
+            if (! ActivityRetryHistory::valid($stepEvents)) {
+                return self::reject('invalid_activity_retry_history');
             }
 
             $activityType = null;
@@ -534,6 +542,36 @@ final class FailedRunRedrivePlan
         $emitUpdatesThrough(null);
 
         return $events;
+    }
+
+    /**
+     * Native start/adopt records a command receipt, not another workflow start or reusable step.
+     */
+    private static function isActiveStartAdoption(WorkflowRun $run, WorkflowHistoryEvent $event): bool
+    {
+        $payload = $event->payload;
+        $command = $payload['command'] ?? null;
+        if (! is_array($command) || ($payload['outcome'] ?? null) !== CommandOutcome::ReturnedExistingActive->value
+            || ($payload['rejection_reason'] ?? null) !== null
+            || $event->workflow_run_id !== $run->id) {
+            return false;
+        }
+        foreach (['workflow_instance_id', 'workflow_run_id', 'workflow_class', 'workflow_type'] as $key) {
+            $expected = $key === 'workflow_run_id' ? $run->id : $run->getAttribute($key);
+            if (! is_string($expected) || $expected === '' || ($payload[$key] ?? null) !== $expected) {
+                return false;
+            }
+        }
+        $commandId = $payload['workflow_command_id'] ?? null;
+        return is_string($commandId) && $commandId !== ''
+            && $event->workflow_command_id === $commandId
+            && ($command['id'] ?? null) === $commandId
+            && ($command['type'] ?? null) === CommandType::Start->value
+            && ($command['target_scope'] ?? null) === 'instance'
+            && ($command['resolved_run_id'] ?? null) === $run->id
+            && ($command['status'] ?? null) === CommandStatus::Accepted->value
+            && ($command['outcome'] ?? null) === CommandOutcome::ReturnedExistingActive->value
+            && ($command['rejection_reason'] ?? null) === null;
     }
 
     /**
