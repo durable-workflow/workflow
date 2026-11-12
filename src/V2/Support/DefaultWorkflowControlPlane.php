@@ -1474,6 +1474,9 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
         ?array $searchAttributes,
         array $searchAttributeTypes = [],
     ): void {
+        // Start gets the memo and search attribute limits upserts get (#853).
+        StructuralLimits::guardStartMetadata($memo, $searchAttributes);
+
         if (is_array($memo) && $memo !== []) {
             app(MemoUpsertService::class)->upsert($run, new UpsertMemosCall($memo), 0);
             $run->unsetRelation('memos');

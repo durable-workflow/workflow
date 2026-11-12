@@ -1156,6 +1156,42 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertSame($scenario['reason'], $skip->payload['reason']);
     }
 
+    public function testMetadataLimitParityCorpusRefusesTheSameMemoOnStartAndUpsert(): void
+    {
+        $path = self::FIXTURE_DIR . '/metadata-limit-parity.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The metadata limit parity evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['metadata_limit_parity'];
+        $this->clearWorkflowState();
+        WorkflowStub::fake();
+        $memo = [
+            $scenario['memo_key'] => str_repeat('a', $scenario['memo_value_characters']),
+        ];
+
+        try {
+            WorkflowStub::make(\Tests\Fixtures\V2\TestLargeMemoWorkflow::class, 'regression-corpus-memo-cap-start')
+                ->start([
+                    'ok' => 'x',
+                ], \Workflow\V2\StartOptions::rejectDuplicate()->withMemo($memo));
+            $this->fail('Start accepted a memo value over the fixed cap.');
+        } catch (\Workflow\V2\Exceptions\StructuralLimitExceededException $exception) {
+            $this->assertSame($scenario['limit_name'], $exception->limitName);
+        }
+
+        $workflow = WorkflowStub::make(\Tests\Fixtures\V2\TestLargeMemoWorkflow::class, 'regression-corpus-memo-cap');
+        $workflow->start($memo);
+        $failed = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::WorkflowFailed->value)
+            ->sole();
+        $this->assertSame($scenario['failure_category'], $failed->payload['failure_category']);
+        $this->assertSame($scenario['limit_kind'], $failed->payload['structural_limit_kind']);
+        $this->assertSame($scenario['limit_name'], $failed->payload['structural_limit_name']);
+        $this->assertSame($scenario['limit'], $failed->payload['structural_limit_configured']);
+    }
+
     public function testRedrivePendingMessageCorpusReachesTheSuccessor(): void
     {
         $path = self::FIXTURE_DIR . '/redrive-pending-message-transfer.json';

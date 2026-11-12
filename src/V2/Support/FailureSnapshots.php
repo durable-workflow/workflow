@@ -261,6 +261,7 @@ final class FailureSnapshots
             'structural_limit_kind' => self::stringValue($event->payload['structural_limit_kind'] ?? null),
             'structural_limit_value' => self::intValue($event->payload['structural_limit_value'] ?? null),
             'structural_limit_configured' => self::intValue($event->payload['structural_limit_configured'] ?? null),
+            'structural_limit_name' => self::stringValue($event->payload['structural_limit_name'] ?? null),
         ];
     }
 

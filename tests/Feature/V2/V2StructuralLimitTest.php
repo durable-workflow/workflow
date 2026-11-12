@@ -34,6 +34,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowUpdate;
+use Workflow\V2\StartOptions;
 use Workflow\V2\Support\FailureFactory;
 use Workflow\V2\Support\FailureSnapshots;
 use Workflow\V2\Support\StructuralLimits;
@@ -496,6 +497,75 @@ final class V2StructuralLimitTest extends TestCase
             ->firstOrFail();
 
         $this->assertSame('memo_size', $failedEvent->payload['structural_limit_kind'] ?? null);
+    }
+
+    public function testAnOversizedMemoValueIsRefusedTheSameWayAtStartAndOnEmbeddedUpsert(): void
+    {
+        WorkflowStub::fake();
+        $memo = [
+            'big' => str_repeat('a', 20000),
+        ];
+
+        try {
+            WorkflowStub::make(TestLargeMemoWorkflow::class, 'limit-memo-start-value')
+                ->start([
+                    'ok' => 'x',
+                ], StartOptions::rejectDuplicate()->withMemo($memo));
+            $this->fail('Start accepted a memo value over the fixed cap.');
+        } catch (StructuralLimitExceededException $exception) {
+            $this->assertSame(StructuralLimitKind::MemoSize, $exception->limitKind);
+            $this->assertSame('memo_value_bytes', $exception->limitName);
+        }
+        $this->assertSame(0, WorkflowRun::query()->where('workflow_instance_id', 'limit-memo-start-value')->count());
+
+        $workflow = WorkflowStub::make(TestLargeMemoWorkflow::class, 'limit-memo-upsert-value');
+        $workflow->start($memo);
+        $this->assertTrue($workflow->refresh()->failed());
+        $run = WorkflowRun::query()->where('workflow_instance_id', 'limit-memo-upsert-value')->firstOrFail();
+        $failed = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::WorkflowFailed->value)
+            ->firstOrFail();
+        $this->assertSame(FailureCategory::StructuralLimit->value, $failed->payload['failure_category']);
+        $this->assertTrue($failed->payload['non_retryable']);
+        $this->assertSame('memo_size', $failed->payload['structural_limit_kind']);
+        $this->assertSame('memo_value_bytes', $failed->payload['structural_limit_name']);
+        $this->assertSame(10240, $failed->payload['structural_limit_configured']);
+    }
+
+    public function testStartAppliesTheConfiguredMemoAndSearchAttributeLimits(): void
+    {
+        WorkflowStub::fake();
+        config([
+            'workflows.v2.structural_limits.memo_size_bytes' => 32,
+            'workflows.v2.structural_limits.search_attribute_size_bytes' => 32,
+        ]);
+
+        try {
+            WorkflowStub::make(TestLargeMemoWorkflow::class, 'limit-memo-start-configured')
+                ->start([
+                    'ok' => 'x',
+                ], StartOptions::rejectDuplicate()->withMemo([
+                    'description' => str_repeat('a', 200),
+                ]));
+            $this->fail('Start accepted a memo over the configured limit.');
+        } catch (StructuralLimitExceededException $exception) {
+            $this->assertSame('memo_size_bytes', $exception->limitName);
+        }
+
+        try {
+            WorkflowStub::make(TestLargeMemoWorkflow::class, 'limit-sa-start-configured')
+                ->start([
+                    'ok' => 'x',
+                ], StartOptions::rejectDuplicate()->withSearchAttributes([
+                    'description' => str_repeat('a', 200),
+                ]));
+            $this->fail('Start accepted search attributes over the configured limit.');
+        } catch (StructuralLimitExceededException $exception) {
+            $this->assertSame('search_attribute_size_bytes', $exception->limitName);
+        }
+
+        $this->assertSame(0, WorkflowRun::query()->count());
     }
 
     public function testMemoSizeLimitPassesUnderLimit(): void

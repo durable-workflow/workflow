@@ -6,7 +6,6 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
-use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
@@ -15,6 +14,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
@@ -209,8 +209,8 @@ final class V2PortableLocalActivityCheckpointTest extends TestCase
                     'entries' => MemoPayload::envelope($memos),
                 ]]);
             $this->fail('The excessive memo count must abort the transaction.');
-        } catch (InvalidArgumentException $exception) {
-            $this->assertStringContainsString('Memo count exceeds maximum', $exception->getMessage());
+        } catch (StructuralLimitExceededException $exception) {
+            $this->assertSame('memo_keys', $exception->limitName);
         }
         $this->assertSame(0, WorkflowHistoryEvent::query()->count());
         $this->assertSame(0, WorkflowMemo::query()->count());

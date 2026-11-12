@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use InvalidArgumentException;
 use Workflow\Traits\ResolvesStorageConnection;
+use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\UtcScheduleTimestamp;
 
@@ -256,12 +257,11 @@ class WorkflowSearchAttribute extends Model
         });
 
         if ($totalBytes > self::MAX_TOTAL_SIZE_BYTES) {
-            throw new InvalidArgumentException(
-                sprintf(
-                    'Total search attributes size exceeds maximum (%d > %d bytes)',
-                    $totalBytes,
-                    self::MAX_TOTAL_SIZE_BYTES,
-                ),
+            throw StructuralLimitExceededException::searchAttributeLimit(
+                'search_attribute_total_bytes',
+                (int) $totalBytes,
+                self::MAX_TOTAL_SIZE_BYTES,
+                'total search attribute bytes',
             );
         }
     }
@@ -276,8 +276,11 @@ class WorkflowSearchAttribute extends Model
         $count = static::where('workflow_run_id', $runId)->count();
 
         if ($count > self::MAX_ATTRIBUTES_PER_RUN) {
-            throw new InvalidArgumentException(
-                sprintf('Search attributes count exceeds maximum (%d > %d)', $count, self::MAX_ATTRIBUTES_PER_RUN),
+            throw StructuralLimitExceededException::searchAttributeLimit(
+                'search_attribute_count',
+                $count,
+                self::MAX_ATTRIBUTES_PER_RUN,
+                'search attributes',
             );
         }
     }
@@ -287,12 +290,11 @@ class WorkflowSearchAttribute extends Model
         $stringValue = $this->coerceToString($value);
 
         if (mb_strlen($stringValue) > self::MAX_STRING_LENGTH) {
-            throw new InvalidArgumentException(
-                sprintf(
-                    'Search attribute string value exceeds maximum length (%d > %d)',
-                    mb_strlen($stringValue),
-                    self::MAX_STRING_LENGTH,
-                ),
+            throw StructuralLimitExceededException::searchAttributeLimit(
+                'search_attribute_string_characters',
+                mb_strlen($stringValue),
+                self::MAX_STRING_LENGTH,
+                sprintf('search attribute "%s" string characters', $this->key),
             );
         }
 
@@ -304,12 +306,11 @@ class WorkflowSearchAttribute extends Model
         $stringValue = $this->coerceToString($value);
 
         if (mb_strlen($stringValue) > self::MAX_KEYWORD_LENGTH) {
-            throw new InvalidArgumentException(
-                sprintf(
-                    'Search attribute keyword value exceeds maximum length (%d > %d)',
-                    mb_strlen($stringValue),
-                    self::MAX_KEYWORD_LENGTH,
-                ),
+            throw StructuralLimitExceededException::searchAttributeLimit(
+                'search_attribute_keyword_characters',
+                mb_strlen($stringValue),
+                self::MAX_KEYWORD_LENGTH,
+                sprintf('search attribute "%s" keyword characters', $this->key),
             );
         }
 
@@ -330,12 +331,11 @@ class WorkflowSearchAttribute extends Model
             }
 
             if (mb_strlen($entry) > self::MAX_KEYWORD_LENGTH) {
-                throw new InvalidArgumentException(
-                    sprintf(
-                        'Search attribute keyword_list entry exceeds maximum length (%d > %d)',
-                        mb_strlen($entry),
-                        self::MAX_KEYWORD_LENGTH,
-                    ),
+                throw StructuralLimitExceededException::searchAttributeLimit(
+                    'search_attribute_keyword_characters',
+                    mb_strlen($entry),
+                    self::MAX_KEYWORD_LENGTH,
+                    sprintf('search attribute "%s" keyword_list entry characters', $this->key),
                 );
             }
 

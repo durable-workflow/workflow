@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSearchAttribute;
 
@@ -338,12 +339,11 @@ final class SearchAttributeUpsertService
         $count = count($attributes);
 
         if ($count > WorkflowSearchAttribute::MAX_ATTRIBUTES_PER_RUN) {
-            throw new \InvalidArgumentException(
-                sprintf(
-                    'Search attributes count exceeds maximum (%d > %d)',
-                    $count,
-                    WorkflowSearchAttribute::MAX_ATTRIBUTES_PER_RUN,
-                ),
+            throw StructuralLimitExceededException::searchAttributeLimit(
+                'search_attribute_count',
+                $count,
+                WorkflowSearchAttribute::MAX_ATTRIBUTES_PER_RUN,
+                'search attributes',
             );
         }
 
@@ -375,12 +375,11 @@ final class SearchAttributeUpsertService
         }
 
         if ($totalBytes > WorkflowSearchAttribute::MAX_TOTAL_SIZE_BYTES) {
-            throw new \InvalidArgumentException(
-                sprintf(
-                    'Total search attributes size exceeds maximum (%d > %d bytes)',
-                    $totalBytes,
-                    WorkflowSearchAttribute::MAX_TOTAL_SIZE_BYTES,
-                ),
+            throw StructuralLimitExceededException::searchAttributeLimit(
+                'search_attribute_total_bytes',
+                (int) $totalBytes,
+                WorkflowSearchAttribute::MAX_TOTAL_SIZE_BYTES,
+                'total search attribute bytes',
             );
         }
     }

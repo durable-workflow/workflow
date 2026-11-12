@@ -51,7 +51,6 @@ use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
-use Workflow\V2\Models\WorkflowMemo;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Models\WorkflowSignal;
@@ -5250,8 +5249,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         }
 
         ksort($merged);
-        // The merged attributes get the size limit embedded mode applies (#865).
-        StructuralLimits::guardSearchAttributeSize(json_encode($merged, JSON_THROW_ON_ERROR));
+        // The merged attributes get the limits start and embedded mode apply (#865, #853).
+        StructuralLimits::guardSearchAttributeMap($merged);
         app(SearchAttributeUpsertService::class)->upsert($run, $call, $sequence, attributeTypes: $attributeTypes);
         $run->unsetRelation('searchAttributes');
 
@@ -5284,27 +5283,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         }
 
         ksort($merged);
-
-        if (count($merged) > WorkflowMemo::MAX_MEMOS_PER_RUN) {
-            throw new InvalidArgumentException(sprintf(
-                'Memo count exceeds maximum of %d entries.',
-                WorkflowMemo::MAX_MEMOS_PER_RUN,
-            ));
-        }
-
-        foreach ($merged as $key => $value) {
-            $bytes = MemoPayload::encodedSize($value);
-            if ($bytes > WorkflowMemo::MAX_VALUE_SIZE_BYTES) {
-                throw new InvalidArgumentException(sprintf(
-                    'Memo value for key "%s" exceeds maximum size of %d bytes.',
-                    $key,
-                    WorkflowMemo::MAX_VALUE_SIZE_BYTES,
-                ));
-            }
-        }
-
-        $serializedMemo = MemoPayload::encodedMapBytes($merged);
-        StructuralLimits::guardMemoSize($serializedMemo);
+        // The same memo limits as start and embedded mode (#853).
+        StructuralLimits::guardMemoMap($merged);
 
         app(MemoUpsertService::class)->upsert($run, $call, $sequence);
         $run->unsetRelation('memos');

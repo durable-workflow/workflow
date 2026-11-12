@@ -281,7 +281,7 @@ return [
             'memo_size_bytes' => (int) Env::dw(
                 'DW_V2_LIMIT_MEMO_SIZE_BYTES',
                 'WORKFLOW_V2_LIMIT_MEMO_SIZE_BYTES',
-                262144
+                65536
             ),
             'search_attribute_size_bytes' => (int) Env::dw(
                 'DW_V2_LIMIT_SEARCH_ATTRIBUTE_SIZE_BYTES',

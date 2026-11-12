@@ -4507,6 +4507,9 @@ final class WorkflowExecutor
                 $failedEventPayload['structural_limit_kind'] = $throwable->limitKind->value;
                 $failedEventPayload['structural_limit_value'] = $throwable->currentValue;
                 $failedEventPayload['structural_limit_configured'] = $throwable->configuredLimit;
+                if ($throwable->limitName !== null) {
+                    $failedEventPayload['structural_limit_name'] = $throwable->limitName;
+                }
             } catch (\Error) {
                 // Restored structural-limit exceptions from older history can
                 // be catchable without their readonly metadata initialized.
@@ -5601,7 +5604,7 @@ final class WorkflowExecutor
                 'payload_site' => 'search_attributes',
             ],
         );
-        StructuralLimits::guardSearchAttributeSize($serializedSearchAttributes);
+        StructuralLimits::guardSearchAttributeMap($merged);
 
         $searchAttributeService = app(SearchAttributeUpsertService::class);
         $attributeTypes = SearchAttributeUpsertService::canonicalTypes($call);
@@ -5664,7 +5667,7 @@ final class WorkflowExecutor
                 'payload_site' => 'memo',
             ],
         );
-        StructuralLimits::guardMemoSize($serializedMemo);
+        StructuralLimits::guardMemoMap($merged);
 
         $memoService = app(MemoUpsertService::class);
         $memoService->upsert($run, new UpsertMemosCall($call->entries), $sequence);

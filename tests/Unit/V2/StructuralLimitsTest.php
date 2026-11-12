@@ -57,7 +57,38 @@ final class StructuralLimitsTest extends TestCase
 
     public function testDefaultMemoSizeLimit(): void
     {
-        $this->assertSame(262144, StructuralLimits::memoSizeLimit());
+        $this->assertSame(65536, StructuralLimits::memoSizeLimit());
+    }
+
+    public function testConfiguredMetadataLimitsTightenButNeverRaiseTheFixedCaps(): void
+    {
+        config([
+            'workflows.v2.structural_limits.memo_size_bytes' => 262144,
+            'workflows.v2.structural_limits.search_attribute_size_bytes' => 1048576,
+        ]);
+        $this->assertSame(65536, StructuralLimits::memoSizeLimit());
+        $this->assertSame(65536, StructuralLimits::searchAttributeSizeLimit());
+
+        config([
+            'workflows.v2.structural_limits.memo_size_bytes' => 1024,
+            'workflows.v2.structural_limits.search_attribute_size_bytes' => 512,
+        ]);
+        $this->assertSame(1024, StructuralLimits::memoSizeLimit());
+        $this->assertSame(512, StructuralLimits::searchAttributeSizeLimit());
+
+        config([
+            'workflows.v2.structural_limits.memo_size_bytes' => 0,
+        ]);
+        $this->assertSame(0, StructuralLimits::memoSizeLimit());
+
+        try {
+            StructuralLimits::guardMemoMap([
+                'big' => str_repeat('a', 20000),
+            ]);
+            $this->fail('A zero configured limit bypassed the fixed memo value cap.');
+        } catch (StructuralLimitExceededException $exception) {
+            $this->assertSame('memo_value_bytes', $exception->limitName);
+        }
     }
 
     public function testDefaultSearchAttributeSizeLimit(): void

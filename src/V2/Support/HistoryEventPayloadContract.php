@@ -1041,6 +1041,7 @@ final class HistoryEventPayloadContract
             'structural_limit_kind',
             'structural_limit_value',
             'structural_limit_configured',
+            'structural_limit_name',
         ],
         'FailureHandled' => [
             'failure_id',
