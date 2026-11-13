@@ -45,10 +45,10 @@ Validation at admission, before any write:
 - The allowance must be smaller than every hard timeout it applies to, so the
   work deadline is in the future.
 
-The allowance is stored on the run (`timeout_cleanup_allowance_seconds`) and in
-`WorkflowStarted` (`timeout_cleanup.allowance_seconds`, plus the derived
-`work_deadline_at` per timeout kind). Both are immutable. Describe and run
-detail show them.
+The allowance is recorded in `WorkflowStarted` (`timeout_cleanup.allowance_seconds`,
+plus the derived `work_deadline_at` per timeout kind), which is immutable. There
+is no new `workflow_runs` column: the engine and native read the admitted values
+from `WorkflowStarted` (server review on #1122). Describe and run detail show them.
 
 ### Inheritance
 
@@ -120,8 +120,9 @@ outcome:
 An unavailable worker can't guarantee cleanup. If no worker runs the cleanup
 turn before the cleanup deadline, the outcome is `expired`.
 
-Run detail, describe, Waterline and history export show the cleanup state:
-`timeout_cleanup_running` while open, then the recorded outcome.
+Run detail, describe, Waterline and history export show the cleanup state. While
+it is open, the liveness state is the existing `cancellation_cleanup_running`
+with `cause: timeout`. After that, they show the recorded outcome.
 
 ## Defaults and compatibility
 
@@ -135,9 +136,11 @@ Run detail, describe, Waterline and history export show the cleanup state:
 - Service mode: Server advertises `timeout_cleanup` (`{supported: true,
   version: 1}`) only when it implements this contract, and a service worker
   advertises it only when its SDK delivers the typed timeout interruption.
-  Server refuses a start that asks for timeout cleanup on a task queue with
-  no worker that advertises it, with a typed reason. It never silently falls
-  back to a hard timeout.
+  The check happens at admission only: Server refuses a start that asks for
+  timeout cleanup on a task queue with no worker that advertises it, with a
+  typed reason, and never silently falls back to a hard timeout. Delivery
+  reuses the cooperative-cancellation delivery with the added cause and
+  deadline fields; there is no new route.
 
 ## Vectors
 
@@ -159,13 +162,19 @@ tail and outcome. `T` is the start time.
 | 11 | none | Run reaches its hard deadline | Unchanged: `WorkflowTimedOut` before workflow code runs, with no `timeout_cleanup` key |
 | 12 | execution 10 s, cleanup 10 s | Start | Refused at admission: the allowance must be smaller than the timeout |
 
+## Review decisions
+
+- **Server (2026-11-13, on #1122):** keep `WorkflowTimeoutCleanupRequested` as a
+  subtype of the cancellation exception. Reuse the cooperative-cancellation
+  delivery with cause and deadline fields, with no new route. No new
+  `workflow_runs` column; native reads `WorkflowStarted.timeout_cleanup`. The
+  capability check is admission-only. Reuse `cancellation_cleanup_running`
+  with a `cause`.
+
 ## Open questions for review
 
-- **Server/SDK:** is `WorkflowTimeoutCleanupRequested` extending the
-  cancellation exception the right shape for Python and Rust? The alternative
-  is a sibling type, so `except CancelledError` doesn't catch timeouts by
-  accident.
+- **Python and Rust SDK owners:** the subtype shape means `except CancelledError`
+  (or its equivalent) also catches the timeout interruption. Confirm that's
+  acceptable, or name the language-specific concern.
 - **General:** should `failed` cleanup keep the run's `failure_category` as
   `timeout`? This draft says yes: the business outcome is the timeout.
-- **Waterline:** a new `timeout_cleanup_running` liveness state, or reuse
-  `cancellation_cleanup_running` with a `cause` field?
