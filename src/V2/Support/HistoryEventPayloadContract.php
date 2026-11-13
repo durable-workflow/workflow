@@ -123,6 +123,7 @@ final class HistoryEventPayloadContract
             'continued_from_run_id',
             'resume_step_sequence',
             'recovery_kind',
+            'compensation_recovery',
             'definition_changed_from',
             'replayed_started_at',
             'retry_attempt',
