@@ -32,12 +32,21 @@ require $project . '/vendor/autoload.php';
 $startedAt = gmdate('c');
 $version = requiredEnvironment('WORKFLOW_TIMEOUT_VERSION');
 $revision = requiredEnvironment('WORKFLOW_TIMEOUT_REVISION');
-$published = preg_match('/^2\.[0-9]+\.[0-9]+$/D', $version) === 1;
-check($published || getenv('WORKFLOW_TIMEOUT_PROTOTYPE') === '1', 'A stable published version is required.');
+$prototype = getenv('WORKFLOW_TIMEOUT_PROTOTYPE') === '1';
+$published = ! $prototype;
+check($prototype || preg_match('/^2\.[0-9]+\.[0-9]+$/D', $version) === 1, 'A stable published version is required.');
 check(InstalledVersions::getPrettyVersion('durable-workflow/workflow') === $version, 'Installed package version differs.');
 check(InstalledVersions::getReference('durable-workflow/workflow') === $revision, 'Installed package source differs.');
 $package = realpath(InstalledVersions::getInstallPath('durable-workflow/workflow'));
 check(is_string($package) && str_starts_with($package, realpath($project . '/vendor') . '/'), 'Use a normal vendor installation.');
+if ($published) {
+    $lock = json_decode(file_get_contents($project . '/composer.lock'), true, flags: JSON_THROW_ON_ERROR);
+    $locked = array_values(array_filter($lock['packages'], static fn (array $entry): bool => $entry['name'] === 'durable-workflow/workflow'));
+    check(count($locked) === 1 && ($locked[0]['dist']['type'] ?? null) === 'zip'
+        && ($locked[0]['dist']['reference'] ?? null) === $revision
+        && ($locked[0]['source']['reference'] ?? null) === $revision,
+        'Published qualification requires the exact registry distribution, not a path installation.');
+}
 $source = requiredEnvironment('WORKFLOW_TIMEOUT_EXPECTED_SOURCE');
 check(sourceInventory($package . '/src') === sourceInventory($source . '/src'), 'Installed runtime bytes differ from committed source.');
 $manifest = json_decode(file_get_contents($package . '/composer.json'), true, flags: JSON_THROW_ON_ERROR);
@@ -224,7 +233,8 @@ foreach ($cases as $scenario => $expected) {
         }
     }
 }
-echo json_encode(['outcome' => $published ? 'pass' : 'source-prototype-pass', 'version' => $version,
+echo json_encode(['outcome' => $published ? 'pass' : 'source-prototype-pass',
+    'artifact_kind' => $published ? 'published-registry-package' : 'composer-path-prototype', 'version' => $version,
     'source' => $revision, 'php' => PHP_VERSION, 'framework' => app()->version(),
     'runtime_tree_sha256' => hash('sha256', json_encode(sourceInventory($package . '/src'), JSON_THROW_ON_ERROR)),
     'composer_lock_sha256' => hash_file('sha256', $project . '/composer.lock'),
