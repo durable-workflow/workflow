@@ -267,24 +267,29 @@ final class ActivityTimeoutEnforcer
             ->findOrFail($execution->workflow_run_id);
 
         if ($run->status->isTerminal() && ! ActivityAbandonment::allows($run, $execution)) {
-            // A closed run takes no further history (#1117). Close the expired
-            // row so the sweep stops selecting it on every pass: an activity
-            // the close left running under the abandon policy fails at its
-            // own deadline, and any other open row of a closed run, such as
-            // one left by a close before upgrading, is cancelled.
-            self::closeTimedOutAttempt(
-                $attempt,
-                self::openActivityTask($execution, $expiredTaskId, $revocation === null),
-                $timeoutKind ?? 'lease',
-                $now,
-                null,
-            );
-            $execution->forceFill([
-                'status' => ClosingRunOpenWork::abandonedAtClose($run, $execution)
-                    ? ActivityStatus::Failed
-                    : ActivityStatus::Cancelled,
-                'closed_at' => $execution->closed_at ?? $now,
-            ])->save();
+            // A closed run takes no further history (#1117). The deadline sweep
+            // closes an expired row of such a run so it stops selecting it on
+            // every pass: an activity the close left running under the abandon
+            // policy fails at its own schedule-to-close deadline, and any other
+            // open row of a closed run, such as one left by a close before
+            // upgrading, is cancelled. Lease expiry and worker revocation never
+            // close a row here, because their ownership fences run below and
+            // this path would bypass them.
+            if (self::closesExpiredRowOfClosedRun($run, $execution, $timeoutKind, $expiredTaskId, $revocation)) {
+                self::closeTimedOutAttempt(
+                    $attempt,
+                    self::openActivityTask($execution, null, true),
+                    (string) $timeoutKind,
+                    $now,
+                    null,
+                );
+                $execution->forceFill([
+                    'status' => ClosingRunOpenWork::abandonedAtClose($run, $execution)
+                        ? ActivityStatus::Failed
+                        : ActivityStatus::Cancelled,
+                    'closed_at' => $execution->closed_at ?? $now,
+                ])->save();
+            }
 
             return self::skipped('run_already_terminal');
         }
@@ -311,6 +316,25 @@ final class ActivityTimeoutEnforcer
         );
 
         return self::settleTimeout($run, $execution, $existingTask, $attempt, $timeoutKind, $leaseMetadata);
+    }
+
+    /**
+     * @param array<string, mixed>|null $revocation
+     */
+    private static function closesExpiredRowOfClosedRun(
+        WorkflowRun $run,
+        ActivityExecution $execution,
+        ?string $timeoutKind,
+        ?string $expiredTaskId,
+        ?array $revocation,
+    ): bool {
+        // Only the declared-deadline sweep; lease paths keep their fences.
+        if ($timeoutKind === null || $timeoutKind === 'lease' || $expiredTaskId !== null || $revocation !== null) {
+            return false;
+        }
+
+        // A kept-running activity owns its lifetime until schedule-to-close.
+        return ! ClosingRunOpenWork::abandonedAtClose($run, $execution) || $timeoutKind === 'schedule_to_close';
     }
 
     private static function originalLeaseMatches(?WorkflowTask $task, ?ActivityAttempt $attempt): bool
