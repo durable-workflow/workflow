@@ -25,6 +25,33 @@ final class TimeoutCleanup
     public const STARTED_KEY = 'timeout_cleanup';
 
     /**
+     * The earliest work deadline: each hard deadline minus the allowance.
+     */
+    public static function workDeadline(
+        ?int $allowanceSeconds,
+        ?CarbonInterface $executionDeadlineAt,
+        ?CarbonInterface $runDeadlineAt,
+    ): ?CarbonInterface {
+        if ($allowanceSeconds === null) {
+            return null;
+        }
+
+        $earliest = null;
+        foreach ([$executionDeadlineAt, $runDeadlineAt] as $hardDeadline) {
+            if ($hardDeadline === null) {
+                continue;
+            }
+            $work = $hardDeadline->copy()
+                ->subSeconds($allowanceSeconds);
+            if ($earliest === null || $work->lt($earliest)) {
+                $earliest = $work;
+            }
+        }
+
+        return $earliest;
+    }
+
+    /**
      * @return array{allowance_seconds: int, work_deadlines: array<string, string>}|null
      */
     public static function startedPayload(

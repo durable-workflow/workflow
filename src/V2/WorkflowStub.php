@@ -1807,6 +1807,11 @@ final class WorkflowStub
                 'run_timeout_seconds' => $runTimeoutSeconds,
                 'execution_deadline_at' => $executionDeadlineAt,
                 'run_deadline_at' => $runDeadlineAt,
+                'timeout_cleanup_work_deadline_at' => TimeoutCleanup::workDeadline(
+                    $startOptions->timeoutCleanupSeconds,
+                    $executionDeadlineAt,
+                    $runDeadlineAt,
+                ),
                 'status' => RunStatus::Pending->value,
                 'compatibility' => WorkerCompatibility::current(),
                 'payload_codec' => $payloadCodec,
@@ -3645,6 +3650,11 @@ final class WorkflowStub
             'run_timeout_seconds' => $runTimeoutSeconds,
             'execution_deadline_at' => $executionDeadlineAt,
             'run_deadline_at' => $runDeadlineAt,
+            'timeout_cleanup_work_deadline_at' => TimeoutCleanup::workDeadline(
+                $startOptions->timeoutCleanupSeconds,
+                $executionDeadlineAt,
+                $runDeadlineAt,
+            ),
             'status' => RunStatus::Pending->value,
             'compatibility' => WorkerCompatibility::current(),
             'payload_codec' => $payloadCodec,
