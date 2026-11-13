@@ -1,0 +1,44 @@
+{
+    "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+    "fixture_schema": "durable-workflow.replay-regression/v1",
+    "id": "child-retry-definition-drift-cold-replay",
+    "protocol_version": "1.20",
+    "bindings": [
+        "php"
+    ],
+    "consumers": [
+        "workflow-fiber-runner",
+        "query-state-replayer",
+        "workflow-executor"
+    ],
+    "workflow": {
+        "type": "Tests\\Fixtures\\V2\\TestVersionMinSupportedWorkflow",
+        "arguments": [],
+        "payload_codec": "avro"
+    },
+    "history": [
+        {
+            "sequence": 1,
+            "event_type": "WorkflowStarted",
+            "payload": {
+                "workflow_class": "Tests\\Fixtures\\V2\\TestVersionMinSupportedWorkflow",
+                "workflow_type": "Tests\\Fixtures\\V2\\TestVersionMinSupportedWorkflow",
+                "workflow_instance_id": "child-instance",
+                "workflow_run_id": "retry-run",
+                "parent_workflow_instance_id": "parent-instance",
+                "parent_workflow_run_id": "parent-run",
+                "parent_sequence": 1,
+                "workflow_link_id": "retry-link",
+                "child_call_id": "child-call",
+                "retry_attempt": 2,
+                "retry_of_child_workflow_run_id": "failed-child-run",
+                "workflow_definition_fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            },
+            "recorded_at": "2026-11-13T00:00:00+00:00"
+        }
+    ],
+    "expected_failure": {
+        "type": "version_marker_incompatible_range",
+        "exception": "Workflow\\V2\\Exceptions\\VersionRangeMismatchException"
+    }
+}

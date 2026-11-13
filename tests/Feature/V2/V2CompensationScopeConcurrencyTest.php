@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Closure;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use RuntimeException;
@@ -38,6 +39,9 @@ final class V2CompensationScopeConcurrencyTest extends TestCase
         $this->app->instance(ScopeAuthorization::class, new class() implements ScopeAuthorization {
             public function assertAllowed(ScopeIdentity $scope, string $principal, string $operation): string
             {
+                if (ConfiguredV2Models::connection()->transactionLevel() !== 0) {
+                    throw new RuntimeException('Host authorization must precede the native request transaction.');
+                }
                 if ($scope->namespace !== 'client-a' || $principal !== 'operator-a') {
                     throw new RuntimeException('Scope access refused.');
                 }
@@ -52,7 +56,8 @@ final class V2CompensationScopeConcurrencyTest extends TestCase
         $results = $this->race(
             static fn (int $index): array => app(
                 ScopeRecovery::class
-            )->request($scope, 'request-' . $index, 'operator-a', 'cancel')
+            )->request($scope, 'request-' . $index, 'operator-a', 'cancel'),
+            holdRequestInsert: true,
         );
         $this->assertSame($results[0]['runId'], $results[1]['runId']);
         $this->assertSame(
@@ -127,7 +132,7 @@ final class V2CompensationScopeConcurrencyTest extends TestCase
         return $scope;
     }
 
-    private function race(Closure $operation, bool $expectLock = true): array
+    private function race(Closure $operation, bool $expectLock = true, bool $holdRequestInsert = false): array
     {
         $root = sys_get_temp_dir() . '/dw-conflict-' . bin2hex(random_bytes(6));
         mkdir($root);
@@ -146,11 +151,33 @@ final class V2CompensationScopeConcurrencyTest extends TestCase
                         DB::statement("SET application_name = 'dw-conflict-probe-{$index}'");
                         DB::statement("SET lock_timeout = '15s'");
                         if ($index === 0) {
-                            DB::beginTransaction();
-                            $result = $operation($index);
-                            touch($root . '/holding');
-                            self::waitFile($root . '/release');
-                            DB::commit();
+                            if ($holdRequestInsert) {
+                                $held = false;
+                                DB::listen(static function (QueryExecuted $query) use ($root, &$held): void {
+                                    if ($held || ! str_starts_with(strtolower($query->sql), 'insert')
+                                        || ! str_contains($query->sql, 'workflow_compensation_requests')) {
+                                        return;
+                                    }
+                                    if ($query->connection->transactionLevel() === 0) {
+                                        throw new RuntimeException(
+                                            'The request barrier requires a native transaction.'
+                                        );
+                                    }
+                                    $held = true;
+                                    touch($root . '/holding');
+                                    self::waitFile($root . '/release');
+                                });
+                                $result = $operation($index);
+                                if (! $held) {
+                                    throw new RuntimeException('The host request did not reach its native insert.');
+                                }
+                            } else {
+                                DB::beginTransaction();
+                                $result = $operation($index);
+                                touch($root . '/holding');
+                                self::waitFile($root . '/release');
+                                DB::commit();
+                            }
                         } else {
                             self::waitFile($root . '/holding');
                             $result = $operation($index);
@@ -228,6 +255,13 @@ final class V2CompensationScopeConcurrencyTest extends TestCase
     {
         $deadline = microtime(true) + 10;
         while (! is_file($file)) {
+            $failed = dirname($file) . '/0.json';
+            if (is_file($failed)) {
+                $payload = json_decode(file_get_contents($failed), true, flags: JSON_THROW_ON_ERROR);
+                if (isset($payload['error'])) {
+                    throw new RuntimeException('Conflict probe failed before its barrier: ' . $payload['error']);
+                }
+            }
             if (microtime(true) >= $deadline) {
                 throw new RuntimeException('Probe barrier timed out.');
             }
