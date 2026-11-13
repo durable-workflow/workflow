@@ -741,6 +741,10 @@ final class EmbeddedV2HistoryImport
                 'attempt_count' => self::intValue($activity['attempt_count'] ?? null) ?? 0,
                 'current_attempt_id' => self::stringValue($activity['current_attempt_id'] ?? null),
                 'retry_policy' => self::arrayValue($activity['retry_policy'] ?? null) ?? [],
+                'activity_options' => isset($activity[EntityReferenceArguments::POSITIONS])
+                    ? [
+                        EntityReferenceArguments::POSITIONS => $activity[EntityReferenceArguments::POSITIONS],
+                    ] : null,
                 'parallel_group_path' => self::arrayValue($activity['parallel_group_path'] ?? null) ?? [],
                 'started_at' => self::timestamp($activity['started_at'] ?? null),
                 'closed_at' => self::timestamp($activity['closed_at'] ?? null),
