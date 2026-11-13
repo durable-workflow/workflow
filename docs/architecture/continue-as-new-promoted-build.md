@@ -1,6 +1,6 @@
 # Continue-as-new onto the promoted build (draft contract)
 
-Draft contract for [workflow#880](https://github.com/durable-workflow/workflow/issues/880),
+Draft contract for [workflow issue 880](https://github.com/durable-workflow/workflow/issues/880),
 following General's 2026-11-04 decision there and server's answer of
 2026-11-13. Nothing here is shipped. By default, continue-as-new still copies
 the run's compatibility marker to the successor.
@@ -88,7 +88,7 @@ Waterline shows the transition on both runs: "continued onto build-b
 ## Budgets and lineage
 
 The execution deadline is inherited unchanged and the run deadline is derived
-per run, as for any continue-as-new. Child supervision hand-over (#868) is
+per run, as for any continue-as-new. Child supervision hand-over ([workflow issue 868](https://github.com/durable-workflow/workflow/issues/868)) is
 unchanged: handed-over children keep their own builds. Lineage links are
 unchanged; the transition is an attribute of the existing continue-as-new
 link.
@@ -111,7 +111,7 @@ rollback after the transition doesn't move an already started successor.
 | 4 | Embedded, promoted B configured, no live B heartbeat | `onPromotedBuild()` | Same refusal as #3 |
 | 5 | Run 1 continued from A to B (recorded) | Cold replay of run 1 and run 2 after promotion moves to C | Run 1 replays to `ContinueAsNewCall`; run 2 replays on its recorded B; nothing reads C |
 | 6 | Promotion A→B commits while the continue-as-new transaction runs | — | The successor is on exactly A or B, recorded; no successor on an unrecorded build |
-| 7 | Chain on A with an open request-cancel child | `onPromotedBuild()` | Child handed over (#868) on its own build; successor on B |
+| 7 | Chain on A with an open request-cancel child | `onPromotedBuild()` | Child handed over ([workflow issue 868](https://github.com/durable-workflow/workflow/issues/868)) on its own build; successor on B |
 | 8 | History from 2.27 or earlier | Replay | No `build_transition` field, treated as `inherited` |
 
 ## Open questions
