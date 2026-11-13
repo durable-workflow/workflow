@@ -664,6 +664,11 @@ final class TaskWatchdog
                     $cancellation->whereNotNull('cancellation_request_command_id')
                         ->whereNotNull('cancellation_deadline_at')
                         ->where('cancellation_deadline_at', '<=', $now);
+                })->orWhere(static function ($cleanup) use ($now): void {
+                    // An opted-in run reaches its work deadline (#863).
+                    $cleanup->whereNull('cancellation_request_command_id')
+                        ->whereNotNull('timeout_cleanup_work_deadline_at')
+                        ->where('timeout_cleanup_work_deadline_at', '<=', $now);
                 });
             })
             ->where(static function ($available) use ($now): void {
@@ -756,6 +761,11 @@ final class TaskWatchdog
                         is_string($run->cancellation_request_command_id)
                         && $run->cancellation_deadline_at !== null
                         && $now->gte($run->cancellation_deadline_at)
+                    )
+                    || (
+                        ! is_string($run->cancellation_request_command_id)
+                        && $run->timeout_cleanup_work_deadline_at !== null
+                        && $now->gte($run->timeout_cleanup_work_deadline_at)
                     );
 
                 if (! $deadlineExpired) {

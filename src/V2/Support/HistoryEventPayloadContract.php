@@ -1033,6 +1033,15 @@ final class HistoryEventPayloadContract
             'exception_class',
             'execution_deadline_at',
             'run_deadline_at',
+            'timeout_cleanup',
+        ],
+        'WorkflowTimeoutCleanupStarted' => [
+            'workflow_command_id',
+            'timeout_kind',
+            'work_deadline_at',
+            'cleanup_deadline_at',
+            'hard_deadline_at',
+            'detected_at',
         ],
         'WorkflowCompleted' => ['output', 'payload_codec', 'abandoned_activities'],
         'WorkflowFailed' => [
