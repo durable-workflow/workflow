@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 2.29.0 - 2026-11-13
+
+Experimental embedded timeout cleanup is opt-in. Run the database migrations
+before using it. The cleanup allowance stays within the original hard deadline;
+the business outcome remains timed out. Poll/service admission remains refused.
+
 - **Run migrations.** Opt-in deadline-triggered cleanup (#863, experimental,
   embedded). A start can reserve the last part of its hard execution or run
   timeout for cleanup with `StartOptions::withTimeoutCleanup($seconds)` (or

@@ -109,6 +109,17 @@ else
     workflow_install_path="$(cat "$workflow_install_path_file")"
     php "$repo_root/scripts/ci/verify-history-export-source-identity.php" \
         verify "$workflow_file" "$workflow_install_path" "$history_resolver_file"
+
+    # The first embedded timeout-cleanup release must prove actual installed
+    # queue behavior in addition to matching the published wire manifests.
+    if php -r 'exit(version_compare($argv[1], "2.29.0", ">=") ? 0 : 1);' "$version"; then
+        WORKFLOW_TIMEOUT_PROJECT="$tmp_dir" \
+        WORKFLOW_TIMEOUT_STATE="$tmp_dir/timeout-cleanup-state" \
+        WORKFLOW_TIMEOUT_VERSION="$version" \
+        php "$repo_root/scripts/ci/qualify-published-timeout-cleanup.php"
+        php -r '$r=json_decode(file_get_contents($argv[1]),true,flags:JSON_THROW_ON_ERROR); if (($r["outcome"]??null)!=="pass" || count($r["cases"]??[])!==9 || ($r["version"]??null)!==$argv[2] || ($r["source"]??null)!==getenv("WORKFLOW_TIMEOUT_REVISION")) { throw new RuntimeException("Published timeout qualification did not complete"); }' \
+            "$tmp_dir/timeout-cleanup-state/result.json" "$version"
+    fi
 fi
 
 php "$repo_root/scripts/ci/compare-platform-conformance-mirrors.php" "$workflow_file" "$authority_file"
