@@ -299,12 +299,50 @@ final class V2ServiceModeParallelChildBarrierTest extends TestCase
 
         $children = [];
         $results = [];
+        $completionGates = [];
+        $parentRunId = $parentRun->id;
 
         DB::purge();
 
         try {
             foreach ($childTasks as $childTask) {
-                $children[] = $this->forkDatabaseOperation(static function () use ($childTask): array {
+                $gate = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+                $this->assertIsArray($gate);
+                stream_set_timeout($gate[0], 15);
+                stream_set_timeout($gate[1], 15);
+                $completionGates[] = $gate[0];
+                $children[] = $this->forkDatabaseOperation(static function () use (
+                    $childTask,
+                    $parentRunId,
+                    $gate,
+                ): array {
+                    fclose($gate[0]);
+                    $appended = false;
+                    $parentLocked = false;
+                    DB::listen(static function (QueryExecuted $query) use (
+                        $childTask,
+                        $parentRunId,
+                        $gate,
+                        &$appended,
+                        &$parentLocked,
+                    ): void {
+                        if (! $appended && str_starts_with(strtolower($query->sql), 'insert')
+                            && str_contains($query->sql, 'workflow_history_events')
+                            && in_array($childTask->workflow_run_id, $query->bindings, true)
+                            && in_array(HistoryEventType::WorkflowCompleted->value, $query->bindings, true)) {
+                            $appended = true;
+                            fwrite($gate[1], "appended\n");
+                            if (fgets($gate[1]) !== "continue\n") {
+                                throw new RuntimeException('Child completion gate was not released.');
+                            }
+                        }
+                        if ($appended && ! $parentLocked && str_contains($query->sql, 'workflow_runs')
+                            && str_contains(strtolower($query->sql), 'for update')
+                            && in_array($parentRunId, $query->bindings, true)) {
+                            $parentLocked = true;
+                            fwrite($gate[1], "parent-locked\n");
+                        }
+                    });
                     /** @var WorkflowTaskBridge $bridge */
                     $bridge = app(WorkflowTaskBridge::class);
 
@@ -315,6 +353,7 @@ final class V2ServiceModeParallelChildBarrierTest extends TestCase
                         ]),
                     ]]);
                 });
+                fclose($gate[1]);
             }
 
             foreach ($children as $child) {
@@ -325,11 +364,23 @@ final class V2ServiceModeParallelChildBarrierTest extends TestCase
                 $this->releaseDatabaseOperation($child);
             }
 
+            // Keep both child history writes uncommitted. The first child
+            // then owns the parent while the sibling still holds its row.
+            foreach ($completionGates as $gate) {
+                $this->assertSame("appended\n", fgets($gate));
+            }
+            fwrite($completionGates[0], "continue\n");
+            $this->assertSame("parent-locked\n", fgets($completionGates[0]));
+            fwrite($completionGates[1], "continue\n");
+
             $results = array_map(fn (array $child): array => $this->awaitDatabaseOperation($child), $children);
             $children = [];
         } finally {
             foreach ($children as $child) {
                 $this->terminateDatabaseOperation($child);
+            }
+            foreach ($completionGates as $gate) {
+                fclose($gate);
             }
         }
 

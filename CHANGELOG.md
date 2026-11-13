@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Concurrent child completion keeps parent-history row locks on the existing
+  per-run index on MySQL and MariaDB, avoiding an unrelated sibling history
+  row in the parent barrier lock cycle. No new index or retry is introduced.
+
 - Experimental domain entity references for top-level arguments of embedded
   queued and local activities (#996). Register an entity class, deterministic
   adapter and authorized resolver. History records a portable reference and
