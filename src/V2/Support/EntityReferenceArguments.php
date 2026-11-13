@@ -17,6 +17,8 @@ use Workflow\V2\EntityReferences\EntityReferenceAdapter;
 use Workflow\V2\EntityReferences\EntityReferenceContext;
 use Workflow\V2\EntityReferences\EntityReferenceRefused;
 use Workflow\V2\EntityReferences\EntityReferenceResolver;
+use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowRun;
 
 /** @internal Adapts recorded input and resolves it only at real activity attempts. */
 final class EntityReferenceArguments
@@ -65,7 +67,12 @@ final class EntityReferenceArguments
 
     public static function resolve(Activity $activity, array $arguments, ReflectionMethod $entry): array
     {
-        $options = $activity->execution->activity_options ?? [];
+        return self::resolveForAttempt($activity->run, $activity->execution, $arguments, $entry);
+    }
+
+    public static function resolveForAttempt(WorkflowRun $run, ActivityExecution $execution, array $arguments, ReflectionMethod $entry): array
+    {
+        $options = $execution->activity_options ?? [];
         if (! is_array($options) || ! array_key_exists(self::POSITIONS, $options)) {
             return $arguments;
         }
@@ -108,11 +115,11 @@ final class EntityReferenceArguments
             $declaredType = $parameterType instanceof ReflectionNamedType && ! $parameterType->isBuiltin()
                 ? $parameterType->getName() : null;
             $context = new EntityReferenceContext(
-                namespace: $activity->run->namespace,
-                workflowInstanceId: $activity->run->workflow_instance_id,
-                workflowRunId: $activity->run->id,
-                activityExecutionId: $activity->execution->id,
-                attemptNumber: (int) $activity->execution->attempt_count,
+                namespace: $run->namespace,
+                workflowInstanceId: $run->workflow_instance_id,
+                workflowRunId: $run->id,
+                activityExecutionId: $execution->id,
+                attemptNumber: (int) $execution->attempt_count,
                 argumentPosition: $position,
                 parameterType: $declaredType,
             );

@@ -355,7 +355,7 @@ final class WorkflowExecutor
             $frame,
             $versionDecisions,
             $workflowClass,
-            (int) ($run->last_history_sequence ?? 0),
+            EmbeddedLocalActivityScope::historySequenceAtTaskStart($task, (int) ($run->last_history_sequence ?? 0)),
         );
     }
 
