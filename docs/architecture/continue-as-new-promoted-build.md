@@ -88,7 +88,12 @@ record together with the task id, status and existing `available_at` retry
 time. It reads the indexed task row rather than scanning history or parsing
 `last_error`. Only the matching current task attempt can expose a current
 refusal. The next claim clears it under the claim fence; a stale report cannot
-restore it. Retained failure history remains historical after recovery.
+restore it. A supported observation returns `continue_as_new_refusal: null`
+after that clear so an open detail view removes the old refusal. Unsupported
+observations remain unavailable. Show `available_at` as a retry time only when
+the current task status and remaining retry policy schedule another attempt;
+an exhausted or terminal task must not get a countdown from a retained value.
+Retained failure history remains historical after recovery.
 Native exposes the same observation from its fenced task-failure record.
 Before a failure report is admitted, the response itself supplies the refusal;
 run detail must not invent a persisted refusal.
@@ -158,6 +163,7 @@ rollback after the transition doesn't move an already started successor.
 | 10 | Promoted B has only a wrong-type, stale or otherwise ineligible embedded heartbeat | `onPromotedBuild()` | Refused before transition writes; marker presence alone is insufficient |
 | 11 | Current refusal recorded, then a new claim or successful retry | Run-detail refresh and delayed old failure report | Current refusal clears under the claim fence; old report cannot restore it; retained failure remains historical |
 | 12 | Unpinned predecessor, recorded transition has a null marker | Replay and run-detail rendering | Preserve nullable marker and exact lineage; no invented build or live promotion lookup |
+| 13 | Exhausted or terminal task retains `available_at` | Bounded run-detail refresh | Report the actual task status and no scheduled retry; the retained timestamp does not create a countdown |
 
 ## Ownership and activation
 
