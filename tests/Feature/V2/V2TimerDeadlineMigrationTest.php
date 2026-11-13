@@ -25,7 +25,9 @@ final class V2TimerDeadlineMigrationTest extends SchemaTestCase
             'fire_at' => '2026-11-08 04:00:20.234567',
         ]);
         foreach ([TimerStatus::Cancelled, TimerStatus::Fired] as $status) {
-            $timer->update(['status' => $status]);
+            $timer->update([
+                'status' => $status,
+            ]);
             $this->assertSame('2026-11-08 04:00:20.234567', $timer->fresh()->fire_at->format('Y-m-d H:i:s.u'));
         }
     }
@@ -35,13 +37,16 @@ final class V2TimerDeadlineMigrationTest extends SchemaTestCase
         $connection = DB::connection();
         if (! $connection instanceof MySqlConnection || ! $connection->isMaria()) {
             $before = Schema::getColumns('workflow_run_timers');
-            $this->migration()->up();
-            $this->migration()->down();
+            $this->migration()
+                ->up();
+            $this->migration()
+                ->down();
             $this->assertSame($before, Schema::getColumns('workflow_run_timers'));
             return;
         }
 
-        $table = $connection->getQueryGrammar()->wrapTable('workflow_run_timers');
+        $table = $connection->getQueryGrammar()
+            ->wrapTable('workflow_run_timers');
         $connection->statement(
             "ALTER TABLE {$table} MODIFY fire_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)",
         );
@@ -54,18 +59,23 @@ final class V2TimerDeadlineMigrationTest extends SchemaTestCase
             'delay_seconds' => 20,
             'fire_at' => '2026-11-08 04:00:20.234567',
         ]);
-        DB::table('workflow_run_timers')->where('id', $id)->update(['status' => 'cancelled']);
+        DB::table('workflow_run_timers')->where('id', $id)->update([
+            'status' => 'cancelled',
+        ]);
         $drifted = DB::table('workflow_run_timers')->where('id', $id)->value('fire_at');
         $this->assertNotSame('2026-11-08 04:00:20.234567', $drifted);
         $migration = $this->migration();
         $this->assertFalse($migration->withinTransaction);
-        $lockBudget = $connection->selectOne('SELECT @@SESSION.lock_wait_timeout AS value')->value;
+        $lockBudget = $connection->selectOne('SELECT @@SESSION.lock_wait_timeout AS value')
+->value;
         $migration->up();
         $migration->up();
         $migration->down();
         $this->assertSame($lockBudget, $connection->selectOne('SELECT @@SESSION.lock_wait_timeout AS value')->value);
         $this->assertSame($drifted, DB::table('workflow_run_timers')->where('id', $id)->value('fire_at'));
-        DB::table('workflow_run_timers')->where('id', $id)->update(['status' => 'fired']);
+        DB::table('workflow_run_timers')->where('id', $id)->update([
+            'status' => 'fired',
+        ]);
         $this->assertSame($drifted, DB::table('workflow_run_timers')->where('id', $id)->value('fire_at'));
     }
 
@@ -77,23 +87,36 @@ final class V2TimerDeadlineMigrationTest extends SchemaTestCase
         }
 
         $original = config('workflows.storage.connection');
-        config(['database.connections.timer_deadline_migration' => [
-            ...$connection->getConfig(),
-            'prefix' => 'timer_deadline_',
-        ]]);
+        config([
+            'database.connections.timer_deadline_migration' => [
+                ...$connection->getConfig(),
+                'prefix' => 'timer_deadline_',
+            ],
+        ]);
         $other = DB::connection('timer_deadline_migration');
-        $table = $other->getQueryGrammar()->wrapTable('workflow_run_timers');
+        $table = $other->getQueryGrammar()
+            ->wrapTable('workflow_run_timers');
         try {
-            $other->statement("CREATE TABLE {$table} (id INT PRIMARY KEY, status VARCHAR(20), fire_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6))");
+            $other->statement(
+                "CREATE TABLE {$table} (id INT PRIMARY KEY, status VARCHAR(20), fire_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6))"
+            );
             $other->insert("INSERT INTO {$table} VALUES (1, 'pending', '2026-11-08 04:00:20.234567')");
             $before = Schema::getColumns('workflow_run_timers');
-            config(['workflows.storage.connection' => 'timer_deadline_migration']);
-            $this->migration()->up();
+            config([
+                'workflows.storage.connection' => 'timer_deadline_migration',
+            ]);
+            $this->migration()
+                ->up();
             $other->update("UPDATE {$table} SET status = 'cancelled' WHERE id = 1");
-            $this->assertSame('2026-11-08 04:00:20.234567', $other->selectOne("SELECT fire_at FROM {$table} WHERE id = 1")->fire_at);
+            $this->assertSame(
+                '2026-11-08 04:00:20.234567',
+                $other->selectOne("SELECT fire_at FROM {$table} WHERE id = 1")->fire_at
+            );
             $this->assertSame($before, Schema::getColumns('workflow_run_timers'));
         } finally {
-            config(['workflows.storage.connection' => $original]);
+            config([
+                'workflows.storage.connection' => $original,
+            ]);
             $other->statement("DROP TABLE IF EXISTS {$table}");
             DB::purge('timer_deadline_migration');
         }
@@ -101,6 +124,9 @@ final class V2TimerDeadlineMigrationTest extends SchemaTestCase
 
     private function migration(): WorkflowMigration
     {
-        return require dirname(__DIR__, 3) . '/src/migrations/2026_11_13_000200_preserve_workflow_timer_fire_at_on_mariadb.php';
+        return require dirname(
+            __DIR__,
+            3
+        ) . '/src/migrations/2026_11_13_000200_preserve_workflow_timer_fire_at_on_mariadb.php';
     }
 }

@@ -25,7 +25,8 @@ return new class() extends WorkflowMigration {
             return;
         }
 
-        $table = $connection->getQueryGrammar()->wrapTable('workflow_run_timers');
+        $table = $connection->getQueryGrammar()
+            ->wrapTable('workflow_run_timers');
         $this->withSchemaLockBudget(static function () use ($connection, $table): void {
             // Older MariaDB adds ON UPDATE to the first non-null TIMESTAMP.
             // Keep its existing insert default, precision and stored values.

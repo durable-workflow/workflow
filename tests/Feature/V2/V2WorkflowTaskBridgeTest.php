@@ -8664,8 +8664,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         bool $anchored,
         int $deadlineSeconds,
         bool $driftedTimer = false,
-    ): void
-    {
+    ): void {
         $origin = Carbon::parse('2026-11-08T04:00:00.000000Z');
         Carbon::setTestNow($origin);
 
@@ -8692,7 +8691,9 @@ final class V2WorkflowTaskBridgeTest extends TestCase
                 // A historical MariaDB ON UPDATE column could already have
                 // changed this projection. History still owns the anchor.
                 DB::table('workflow_run_timers')->where('id', $first->id)->update([
-                    'fire_at' => $origin->copy()->addHours(1)->format('Y-m-d H:i:s.u'),
+                    'fire_at' => $origin->copy()
+                        ->addHours(1)
+                        ->format('Y-m-d H:i:s.u'),
                 ]);
             }
 
@@ -8886,13 +8887,16 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $command = self::occurrenceDeadlineCommand();
         $this->assertTrue($this->bridge->complete($this->createLeasedTask($run)->id, [$command])['completed']);
         if ($missingTimer) {
-            $run->timers()->delete();
+            $run->timers()
+                ->delete();
         } else {
             $scheduled = $run->historyEvents()
                 ->where('event_type', HistoryEventType::TimerScheduled->value)->sole();
             $payload = $scheduled->payload;
             unset($payload['fire_at']);
-            $scheduled->update(['payload' => $payload]);
+            $scheduled->update([
+                'payload' => $payload,
+            ]);
         }
         $signal = $this->recordReceivedSignal($run);
         $task = $this->createLeasedTask($run);
