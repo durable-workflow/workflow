@@ -23,6 +23,7 @@
   Children keep their parent-close policy and continue-as-new hand-over.
   Behavior change: if a workflow needs a loser's effect, await the loser
   before returning.
+
 ## 2.27.0 - 2026-11-13
 
 - Closing a child no longer reads every sibling's history under the parent
