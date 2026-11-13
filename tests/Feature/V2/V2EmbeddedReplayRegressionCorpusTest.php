@@ -261,6 +261,122 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         );
     }
 
+    public function testTimeoutCleanupOutcomeCorpusEndsTimedOutWithEachOutcome(): void
+    {
+        $path = self::FIXTURE_DIR . '/timeout-cleanup-outcome-recorded.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The timeout cleanup outcome evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['timeout_cleanup_outcome'];
+        config([
+            'queue.default' => 'database',
+        ]);
+        Queue::fake();
+
+        foreach ($scenario['outcomes'] as $mode => $outcome) {
+            $this->travelTo(now()->startOfSecond());
+            $stub = WorkflowStub::make($fixture['workflow']['type'], 'regression-corpus-timeout-cleanup-' . $mode);
+            $stub->start($mode, new StartOptions(
+                executionTimeoutSeconds: $scenario['execution_timeout_seconds'],
+                timeoutCleanupSeconds: $scenario['timeout_cleanup_seconds'],
+            ));
+            $runId = $stub->runId();
+            $this->runReadyTaskOfType($runId, TaskType::Workflow);
+            $workSeconds = $scenario['execution_timeout_seconds'] - $scenario['timeout_cleanup_seconds'];
+            $this->travel($workSeconds + 1)
+                ->seconds();
+            \Workflow\V2\TaskWatchdog::runPass(runIds: [$runId]);
+            $this->runReadyTaskOfType($runId, TaskType::Workflow);
+            if ($outcome === 'expired') {
+                $this->travel($scenario['timeout_cleanup_seconds'])->seconds();
+                \Workflow\V2\TaskWatchdog::runPass(runIds: [$runId]);
+            }
+
+            $terminal = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->orderByDesc(
+                'sequence'
+            )->firstOrFail();
+            $this->assertSame(HistoryEventType::WorkflowTimedOut, $terminal->event_type, $mode);
+            $this->assertSame($outcome, $terminal->payload['timeout_cleanup']['outcome'] ?? null, $mode);
+            $this->assertTrue(WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::WorkflowTimeoutCleanupStarted->value)
+                ->exists(), $mode);
+        }
+    }
+
+    public function testTimeoutCleanupContinueAsNewCorpusKeepsTheWorkDeadline(): void
+    {
+        $path = self::FIXTURE_DIR . '/timeout-cleanup-continue-as-new-inheritance.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The timeout cleanup continue-as-new evidence is absent.');
+        }
+        config([
+            'queue.default' => 'database',
+        ]);
+        Queue::fake();
+        $this->travelTo(now()->startOfSecond());
+
+        $stub = WorkflowStub::make(
+            \Tests\Fixtures\V2\TestContinueAsNewLargePayloadWorkflow::class,
+            'regression-corpus-timeout-cleanup-continue',
+        );
+        $stub->start('x', 0, new StartOptions(executionTimeoutSeconds: 70, timeoutCleanupSeconds: 10));
+        $first = WorkflowRun::query()->findOrFail($stub->runId());
+        $this->runReadyTaskOfType($first->id, TaskType::Workflow);
+        $second = WorkflowRun::query()
+            ->where('workflow_instance_id', $first->workflow_instance_id)
+            ->where('run_number', 2)
+            ->sole();
+
+        $this->assertNotNull($first->timeout_cleanup_work_deadline_at);
+        $this->assertTrue($second->timeout_cleanup_work_deadline_at->equalTo($first->timeout_cleanup_work_deadline_at));
+        $this->assertSame(10, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $second->id)
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->sole()
+            ->payload['timeout_cleanup']['allowance_seconds'] ?? null);
+    }
+
+    public function testTimeoutCleanupRedriveCorpusKeepsTheWorkDeadline(): void
+    {
+        $path = self::FIXTURE_DIR . '/timeout-cleanup-redrive-inheritance.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The timeout cleanup redrive evidence is absent.');
+        }
+        self::stopWorkers();
+        config([
+            'queue.default' => 'sync',
+            'queue.connections.sync.driver' => 'sync',
+        ]);
+        Cache::forget('test:redrive:first-calls');
+        Cache::forget('test:redrive:second-calls');
+        $this->clearWorkflowState();
+        WorkflowStub::fake();
+
+        $stub = WorkflowStub::make(
+            \Tests\Fixtures\V2\TestRedriveWorkflow::class,
+            'regression-corpus-timeout-cleanup-redrive'
+        );
+        $stub->start('Taylor', new StartOptions(executionTimeoutSeconds: 3600, timeoutCleanupSeconds: 60));
+        $this->assertTrue($stub->refresh()->failed());
+        $source = WorkflowRun::query()->findOrFail($stub->runId());
+
+        $result = app(WorkflowControlPlane::class)->redrive($source->workflow_instance_id, $source->id);
+
+        $this->assertTrue($result['accepted'], (string) $result['reason']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertNotNull($source->timeout_cleanup_work_deadline_at);
+        $this->assertTrue(
+            $successor->timeout_cleanup_work_deadline_at->equalTo($source->timeout_cleanup_work_deadline_at)
+        );
+        $this->assertSame(60, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $successor->id)
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->sole()
+            ->payload['timeout_cleanup']['allowance_seconds'] ?? null);
+    }
+
     public function testRedriveServiceFenceCorpusRefusesUnqualifiedReuse(): void
     {
         $path = self::FIXTURE_DIR . '/redrive-service-unqualified-history.json';
