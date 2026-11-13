@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Replaying a workflow that repeats the same message-stream send no longer
+  lists every earlier matching row again for each send (#1014). The exactly
+  matched candidates for a send identity are now loaded once per execution
+  and extended with the rows that execution writes, so N identical sends in
+  one replay cost one candidate query instead of N, and O(N) rows instead of
+  O(N²). Matching is unchanged: exact field comparison, send order and the
+  redrive chain.
+
 - A run no longer leaves work running after its own code closes it (#1117).
   Before, an activity or timer the workflow never awaited, such as a
   `select()` loser, stayed open when the run completed, failed or continued as
