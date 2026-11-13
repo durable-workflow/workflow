@@ -24,12 +24,14 @@ use Tests\Fixtures\V2\TestTracingReplayWorkflow;
 use Throwable;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowServiceCall;
 use Workflow\V2\Support\ActivitySnapshot;
 use Workflow\V2\Support\CooperativeCancellationDelivery;
 use Workflow\V2\Support\ExecutionTracing;
+use Workflow\V2\Support\FailedRunRedrivePlan;
 use Workflow\V2\Support\HistoryEventPayloadContract;
 use Workflow\V2\Support\PortableLocalActivityPreparation;
 use Workflow\V2\Support\PreparedLocalRetryPolicy;
@@ -81,6 +83,9 @@ final class ReplayRegressionCorpusTest extends TestCase
     public function testFixtureExecutesThroughColdReplayRunner(array $fixture): void
     {
         $this->assertHistoryPayloadContract($fixture);
+        if (isset($fixture['redrive_plan'])) {
+            $this->assertRetriedActivityRedrivePlan($fixture);
+        }
 
         if (in_array(
             $fixture['id'],
@@ -407,6 +412,40 @@ final class ReplayRegressionCorpusTest extends TestCase
         }
 
         return $fixtures;
+    }
+
+    private function assertRetriedActivityRedrivePlan(array $fixture): void
+    {
+        $scenario = $fixture['redrive_plan'];
+        $runWithHistory = static function (array $history) use ($scenario): WorkflowRun {
+            $run = new WorkflowRun([
+                ...($scenario['source_run'] ?? []),
+                'status' => RunStatus::Failed,
+                'payload_codec' => 'avro',
+            ]);
+            $run->setRelation('historyEvents', collect($history)->map(
+                static fn (array $event): WorkflowHistoryEvent => new WorkflowHistoryEvent($event)
+            ));
+            return $run;
+        };
+        $plan = FailedRunRedrivePlan::forRun($runWithHistory($scenario['source_history']));
+        $expected = $scenario['expected'];
+        $this->assertSame($expected['eligible'], $plan['eligible'], $fixture['id'] . ': ' . $plan['reason']);
+        $this->assertNull($plan['reason']);
+        $this->assertSame($expected['resume_step_sequence'], $plan['resume_step_sequence']);
+        $this->assertCount($expected['completed_count'], $plan['completed']);
+        $this->assertSame($expected['reused_event_types'], array_map(
+            static fn (array $step): string => $step['event_type']->value,
+            $plan['reused_steps']
+        ));
+        foreach ($scenario['refusals'] as $case) {
+            $history = $scenario['source_history'];
+            $history[$case['event_index']]['payload'][$case['field']] = $case['value'];
+            $rejected = FailedRunRedrivePlan::forRun($runWithHistory($history));
+            $this->assertFalse($rejected['eligible'], $fixture['id'] . ': ' . $case['field']);
+            $this->assertSame($case['reason'], $rejected['reason']);
+            $this->assertSame([], $rejected['reused_steps']);
+        }
     }
 
     private function assertPreparedV1RefusesTheVersionedPolicy(array $fixture): void

@@ -74,6 +74,12 @@
             "history_sequence",
             "history_payload"
           ]
+        },
+        {
+          "glob": "src/V2/Support/FailedRunRedrivePlan.php"
+        },
+        {
+          "glob": "src/V2/Support/ActivityRetryHistory.php"
         }
       ]
     }

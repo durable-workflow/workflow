@@ -12,6 +12,14 @@
   unregistered objects retain their existing serialization behavior. See
   [the registration and retry contract](docs/entity-references.md).
 
+- Failed-run redrive accepts a verified linear activity retry chain. A retried
+  completed prefix is reused and only the failed boundary step runs again.
+  Substituted attempt/task identities refuse with
+  `invalid_activity_retry_history`; existing service-worker definition checks
+  still apply. An exactly bound accepted start/adopt receipt is harmless, while
+  rejected or mismatched starts remain unsupported. This core correction is
+  separate from the experimental Saga compensation scope foundation (#1063).
+
 - **Run migrations.** Opt-in deadline-triggered cleanup (#863, experimental,
   embedded). A start can reserve the last part of its hard execution or run
   timeout for cleanup with `StartOptions::withTimeoutCleanup($seconds)` (or
