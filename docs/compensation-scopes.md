@@ -80,6 +80,11 @@ flowchart TD
     Y --> Z[Eligible native redrive reuses verified activity prefix]
 ```
 
+Recovery activities also require the paired native creation command/history
+receipt for their exact run, scope and original owner. A generic start at the
+canonical ID cannot borrow a retained request's principal. The boundary checks
+fresh receipt data before host authorization and again under the native locks.
+
 `ScopeBoundary` uses the existing native activity status/authority checks while
 retaining their SQL locks in the ledger transaction. Its lock order is native
 attempt, execution, run and task, followed by the scope and its journal. It checks

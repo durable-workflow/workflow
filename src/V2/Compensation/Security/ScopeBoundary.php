@@ -11,10 +11,14 @@ use Workflow\V2\Compensation\Definition\PortableDescriptor;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
 use Workflow\V2\Compensation\Persistence\ScopeRepository;
 use Workflow\V2\Compensation\Persistence\ScopeStorage;
+use Workflow\V2\Compensation\Recovery\RecoveryRunAdmission;
 use Workflow\V2\Compensation\Recovery\RecoveryWorkflow;
+use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\DefaultActivityTaskBridge;
 use Workflow\V2\Support\SqliteTransaction;
+use Workflow\V2\Support\TypeRegistry;
 
 /**
  * @internal Retains native attempt locks until the ledger transaction commits; owns no new lease.
@@ -109,6 +113,40 @@ final readonly class ScopeBoundary
             && $activity->run->workflow_class === RecoveryWorkflow::class;
         if ((! $origin && ! $recovery) || ($operation === 'forward' && ! $origin)) {
             throw new NonRetryableException('scope_execution_owner_mismatch');
+        }
+        if ($recovery) {
+            $this->assertRecoveryAdmission($activity, $scope, $snapshot);
+        }
+    }
+
+    private function assertRecoveryAdmission(Activity $activity, ScopeIdentity $scope, array $snapshot): void
+    {
+        // Read fresh native rows on both sides of host authorization. Inside
+        // the boundary the native attempt/run locks are already held; avoid
+        // cached history and adding an instance lock after that lock prefix.
+        $instance = ConfiguredV2Models::query('instance_model', WorkflowInstance::class)
+            ->where('namespace', $scope->namespace)
+            ->find($scope->recoveryInstanceId());
+        $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+            ->where('namespace', $scope->namespace)
+            ->find($activity->runId());
+        if (! $instance instanceof WorkflowInstance || ! $run instanceof WorkflowRun
+            || $instance->workflow_class !== RecoveryWorkflow::class
+            || $run->workflow_class !== RecoveryWorkflow::class
+            || $instance->workflow_type !== TypeRegistry::for(RecoveryWorkflow::class)
+            || $run->workflow_type !== $instance->workflow_type) {
+            throw new NonRetryableException('scope_recovery_admission_unavailable');
+        }
+        try {
+            $receipt = RecoveryRunAdmission::sourceReceipt($instance, $run);
+            if ($receipt === null
+                || ($receipt['intent']['binding']['original_run_id'] ?? null) !== $snapshot['original_run_id']
+                || PortableDescriptor::encode($receipt['intent']['binding']['scope'] ?? [])
+                    !== PortableDescriptor::encode($scope->toArray())) {
+                throw new \LogicException('Recovery activity is not bound to the retained scope and owner.');
+            }
+        } catch (\LogicException|\JsonException) {
+            throw new NonRetryableException('scope_recovery_admission_unavailable');
         }
     }
 

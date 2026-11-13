@@ -5,7 +5,9 @@
 - Experimental embedded compensation scopes (#1063): retained versioned
   obligations, native Saga recovery, sequential child participation and explicit
   release. Each scope keeps its originating run; continue-as-new, origin redrive
-  and child retry do not transfer forward ownership.
+  and child retry do not transfer forward ownership. Recovery activities require
+  the exact paired native admission receipt and retained scope/original-owner
+  binding before host authorization and again under native activity locks.
 
 - Failed-run redrive accepts a verified linear activity retry chain. A retried
   completed prefix is reused and only the failed boundary step runs again.
