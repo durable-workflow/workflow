@@ -2558,6 +2558,25 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 continue;
             }
 
+            if ($fixture['id'] === 'child-retry-definition-recorded-cold-replay') {
+                $run = $this->createRunFromFixture($fixture);
+                $before = $run->historyEvents()
+                    ->orderBy('sequence')
+                    ->get()
+                    ->toArray();
+                $state = (new QueryStateReplayer())->replayState($run->fresh(['historyEvents']));
+                $this->assertSame(2, $state->sequence);
+                $this->assertNull($state->current);
+                $this->assertSame($before, $run->historyEvents()->orderBy('sequence')->get()->toArray());
+                $this->runReadyWorkflowTask($run);
+                $this->assertSame(RunStatus::Completed, $run->fresh()->status);
+                $this->assertSame($fixture['expected']['result'], WorkflowStub::loadRun($run->id)->output());
+                $this->assertSame(1, $run->historyEvents()
+                    ->where('event_type', HistoryEventType::VersionMarkerRecorded)->count());
+
+                continue;
+            }
+
             if ($fixture['id'] === 'child-closure-sibling-history-bound') {
                 $this->assertChildClosureReadsNoSiblingHistory($fixture);
 
@@ -5297,6 +5316,21 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         foreach ($fixture['history'] as $event) {
             $eventType = HistoryEventType::from($event['event_type']);
             if ($eventType === HistoryEventType::WorkflowStarted) {
+                $started = $run->historyEvents()
+                    ->where('event_type', HistoryEventType::WorkflowStarted)->sole();
+                $payload = $started->payload;
+                // Keep the new run's routing/command IDs, but import definition
+                // authority exactly. A synthetic current fingerprint must not
+                // turn legacy absence into a fresh version decision.
+                foreach (['workflow_definition_fingerprint', 'workflow_definition_fingerprint_source'] as $key) {
+                    unset($payload[$key]);
+                    if (array_key_exists($key, $event['payload'])) {
+                        $payload[$key] = $event['payload'][$key];
+                    }
+                }
+                $started->forceFill([
+                    'payload' => $payload,
+                ])->save();
                 continue;
             }
 
