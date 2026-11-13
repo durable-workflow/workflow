@@ -111,6 +111,28 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 ->first();
 
             if ($existingLink instanceof WorkflowLink) {
+                if ($recoveryReceipt !== null) {
+                    /** @var WorkflowRun|null $target */
+                    $target = $this->runQuery()
+                        ->where('workflow_instance_id', $instance->id)
+                        ->where('namespace', $instance->namespace)
+                        ->lockForUpdate()
+                        ->find($existingLink->child_workflow_run_id);
+                    if (! $target instanceof WorkflowRun
+                        || $existingLink->parent_workflow_instance_id !== $instance->id
+                        || $existingLink->child_workflow_instance_id !== $instance->id) {
+                        throw new LogicException('Recovery redrive successor is outside its canonical instance.');
+                    }
+                    $targetReceipt = RecoveryRunAdmission::sourceReceipt($instance, $target);
+                    if ($targetReceipt === null
+                        || ($targetReceipt['operation'] ?? null) !== 'redrive'
+                        || ($targetReceipt['intent']['binding_fingerprint'] ?? null)
+                            !== $recoveryReceipt['intent']['binding_fingerprint']
+                        || ($targetReceipt['intent']['expected_predecessor_run_id'] ?? null) !== $source->id
+                        || ($targetReceipt['execution_deadline_at'] ?? null) !== $recoveryReceipt['execution_deadline_at']) {
+                        throw new LogicException('Recovery redrive successor does not match its retained admission.');
+                    }
+                }
                 $result = array_merge($result, [
                     'accepted' => true,
                     'workflow_run_id' => $existingLink->child_workflow_run_id,
