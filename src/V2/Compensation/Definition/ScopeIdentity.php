@@ -55,7 +55,13 @@ final readonly class ScopeIdentity
     {
         $keys = array_keys($value);
         sort($keys, SORT_STRING);
-        if ($keys !== ['application', 'generation', 'key', 'namespace', 'version'] || ($value['version'] ?? null) !== 1) {
+        if ($keys !== [
+            'application',
+            'generation',
+            'key',
+            'namespace',
+            'version',
+        ] || ($value['version'] ?? null) !== 1) {
             throw new InvalidArgumentException('Unsupported compensation scope identity format.');
         }
         return new self($value['application'], $value['namespace'], $value['key'], $value['generation']);

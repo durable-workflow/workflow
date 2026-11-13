@@ -53,7 +53,13 @@ final readonly class Resolution
     {
         $keys = array_keys($value);
         sort($keys, SORT_STRING);
-        if ($keys !== ['evidence', 'forwardSettled', 'reason', 'verified', 'version'] || ($value['version'] ?? null) !== 1) {
+        if ($keys !== [
+            'evidence',
+            'forwardSettled',
+            'reason',
+            'verified',
+            'version',
+        ] || ($value['version'] ?? null) !== 1) {
             throw new InvalidArgumentException('Unsupported compensation resolution format.');
         }
         return new self($value['verified'], $value['reason'], $value['evidence'], $value['forwardSettled']);

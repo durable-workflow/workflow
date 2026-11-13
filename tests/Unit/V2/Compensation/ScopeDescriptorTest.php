@@ -48,7 +48,10 @@ final class ScopeDescriptorTest extends TestCase
             'reference' => 'booking-1',
         ]);
         $this->assertSame('ceb73af611903fb425f8bcdb3b415d52be6f619cc5f1f8f6c3c3996aea4c5a8d', $scope->id());
-        $this->assertSame('43a5906816309c817fafc95d183ade5b5786123115a765b85b13b12440bcfa13', $obligation->fingerprint());
+        $this->assertSame(
+            '43a5906816309c817fafc95d183ade5b5786123115a765b85b13b12440bcfa13',
+            $obligation->fingerprint()
+        );
         $this->assertSame($scope->id(), ScopeIdentity::fromArray($scope->toArray())->id());
         $this->assertSame($obligation->fingerprint(), Obligation::fromArray($obligation->toArray())->fingerprint());
         $this->assertSame('df14bcf01709ef85b55c7fc5770dcd7f4f0690c6a1ed4dcae092ee91df669396', hash(

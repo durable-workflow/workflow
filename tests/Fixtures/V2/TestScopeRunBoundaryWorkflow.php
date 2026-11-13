@@ -38,6 +38,9 @@ final class TestScopeRunBoundaryWorkflow extends Workflow
                 }
                 return self::continueAsNew($identity, $mode, 1, $childIdentity);
             }
+            if ($mode === 'child-retry') {
+                throw new \RuntimeException('Retry the child after its first forward effect.');
+            }
             self::activity(TestRedriveSecondActivity::class, new ActivityOptions(maxAttempts: 1), 'boundary');
         } else {
             signal('resume');

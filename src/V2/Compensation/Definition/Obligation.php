@@ -56,7 +56,13 @@ final readonly class Obligation
     {
         $keys = array_keys($value);
         sort($keys, SORT_STRING);
-        if ($keys !== ['handlerType', 'handlerVersion', 'input', 'key', 'version'] || ($value['version'] ?? null) !== 1) {
+        if ($keys !== [
+            'handlerType',
+            'handlerVersion',
+            'input',
+            'key',
+            'version',
+        ] || ($value['version'] ?? null) !== 1) {
             throw new InvalidArgumentException('Unsupported compensation obligation format.');
         }
         return new self($value['key'], $value['handlerType'], $value['handlerVersion'], $value['input']);

@@ -423,6 +423,7 @@ final class V2CompensationScopeTest extends TestCase
 
     public function testDefaultEmbeddedNamespaceIsPreservedWithoutInventingAnAlias(): void
     {
+        config()->set('workflows.v2.namespaces', [null]);
         $this->app->instance(ScopeAuthorization::class, new class() implements ScopeAuthorization {
             public function assertAllowed(ScopeIdentity $scope, string $principal, string $operation): string
             {

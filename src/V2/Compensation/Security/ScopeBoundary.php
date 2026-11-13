@@ -98,8 +98,12 @@ final readonly class ScopeBoundary
         });
     }
 
-    private function assertScopeOwner(Activity $activity, ScopeIdentity $scope, string $operation, array $snapshot): void
-    {
+    private function assertScopeOwner(
+        Activity $activity,
+        ScopeIdentity $scope,
+        string $operation,
+        array $snapshot
+    ): void {
         $origin = $snapshot['original_run_id'] === $activity->runId();
         $recovery = $activity->workflowId() === $scope->recoveryInstanceId()
             && $activity->run->workflow_class === RecoveryWorkflow::class;

@@ -187,12 +187,13 @@ final class V2CompensationScopeRunBoundaryTest extends TestCase
         $task->forceFill([
             'status' => TaskStatus::Leased,
             'lease_owner' => 'scope-parent-worker',
-            'lease_expires_at' => now()->addMinute(),
+            'lease_expires_at' => now()
+                ->addMinute(),
         ])->save();
         $result = app(DefaultWorkflowTaskBridge::class)->complete($task->id, [[
             'type' => 'start_child_workflow',
             'workflow_type' => 'test.scope-run-boundary',
-            'arguments' => Serializer::serializeWithCodec('avro', [$scope->toArray(), 'redrive']),
+            'arguments' => Serializer::serializeWithCodec('avro', [$scope->toArray(), 'child-retry']),
             'payload_codec' => 'avro',
             'retry_policy' => [
                 'max_attempts' => 2,
@@ -202,7 +203,9 @@ final class V2CompensationScopeRunBoundaryTest extends TestCase
         $this->assertTrue($result['completed'], json_encode($result, JSON_THROW_ON_ERROR));
         $this->drainTasks($parentRunId);
         $links = WorkflowLink::query()->where('parent_workflow_run_id', $parentRunId)
-            ->where('link_type', 'child_workflow')->orderBy('created_at')->get();
+            ->where('link_type', 'child_workflow')
+            ->orderBy('created_at')
+            ->get();
         $this->assertCount(2, $links);
         $origin = WorkflowRun::query()->findOrFail($links[0]->child_workflow_run_id);
         $retry = WorkflowRun::query()->findOrFail($links[1]->child_workflow_run_id);

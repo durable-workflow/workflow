@@ -133,7 +133,11 @@ final class V2CompensationInnoDbConcurrencyTest extends TestCase
             touch($root . '/release');
             foreach ($children as $index => $pid) {
                 pcntl_waitpid($pid, $status);
-                $payload = json_decode(file_get_contents($root . '/' . $index . '.json'), true, flags: JSON_THROW_ON_ERROR);
+                $payload = json_decode(
+                    file_get_contents($root . '/' . $index . '.json'),
+                    true,
+                    flags: JSON_THROW_ON_ERROR
+                );
                 $this->assertSame(0, pcntl_wexitstatus($status), $payload['error'] ?? 'Scope caller failed.');
                 $results[] = $payload['result'];
             }
