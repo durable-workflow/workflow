@@ -11,6 +11,7 @@ use Workflow\Serializers\AvroValueJsonProjection;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
+use Workflow\V2\Compensation\Recovery\RecoveryRunAdmission;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\RuntimeSignalControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
@@ -224,6 +225,10 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 ],
             ));
 
+            $recoveryReceipt = isset($startedPayload['compensation_recovery'])
+                ? RecoveryRunAdmission::carryToRedrive($instance, $source, $continuedRun, $command)
+                : null;
+
             $link = WorkflowLink::query()->create([
                 'link_type' => 'redrive',
                 'sequence' => $plan['resume_step_sequence'],
@@ -270,6 +275,9 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                         ? $startedPayload['replayed_started_at']
                         : $source->started_at?->toIso8601String(),
                     'workflow_link_id' => $link->id,
+                    ...($recoveryReceipt === null ? [] : [
+                        'compensation_recovery' => $recoveryReceipt,
+                    ]),
                 ],
             ), null, $command);
 
