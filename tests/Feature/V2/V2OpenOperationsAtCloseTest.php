@@ -361,6 +361,108 @@ final class V2OpenOperationsAtCloseTest extends TestCase
         $this->assertSame($events->count(), $this->events($run->id)->count());
     }
 
+    public function testAnAbandonedActivityThatNeverReportsClosesAtItsDeadlineWithoutHistory(): void
+    {
+        /** @var WorkflowTaskBridge $bridge */
+        $bridge = $this->app->make(WorkflowTaskBridge::class);
+        $run = $this->newServiceRun();
+        $commands = WorkflowCommandNormalizer::normalize([[
+            'type' => 'schedule_activity',
+            'activity_type' => 'tests.abandoned-never-reports',
+            'arguments' => Serializer::serialize(['abandoned']),
+            'schedule_to_close_timeout' => 180,
+            'cancellation_policy' => 'abandon',
+        ]], '1.20');
+        $this->assertTrue($bridge->complete($this->newLease($run)->id, $commands)['completed']);
+        $this->assertTrue($bridge->complete($this->newLease($run)->id, [[
+            'type' => 'complete_workflow',
+            'result' => Serializer::serialize('done'),
+        ]])['completed']);
+        $execution = ActivityExecution::query()->where('workflow_run_id', $run->id)->sole();
+        $this->assertSame(ActivityStatus::Pending, $execution->status);
+        $eventCount = $this->events($run->id)
+            ->count();
+
+        // No worker ever claims it; its own schedule-to-close deadline passes.
+        $this->travel(181)
+            ->seconds();
+        $this->assertContains($execution->id, \Workflow\V2\Support\ActivityTimeoutEnforcer::expiredExecutionIds());
+
+        $result = \Workflow\V2\Support\ActivityTimeoutEnforcer::enforce($execution->id);
+
+        $this->assertFalse($result['enforced']);
+        $this->assertSame('run_already_terminal', $result['reason']);
+        $this->assertSame(ActivityStatus::Failed, $execution->refresh()->status);
+        $this->assertSame(0, WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->count());
+        $this->assertNotContains(
+            $execution->id,
+            \Workflow\V2\Support\ActivityTimeoutEnforcer::expiredExecutionIds(),
+        );
+        $this->assertSame($eventCount, $this->events($run->id)->count());
+    }
+
+    public function testOnlyTheScheduleToCloseSweepClosesARunningAbandonedActivityOfAClosedRun(): void
+    {
+        /** @var WorkflowTaskBridge $bridge */
+        $bridge = $this->app->make(WorkflowTaskBridge::class);
+        /** @var ActivityTaskBridge $activities */
+        $activities = $this->app->make(ActivityTaskBridge::class);
+        $run = $this->newServiceRun();
+        $commands = WorkflowCommandNormalizer::normalize([[
+            'type' => 'schedule_activity',
+            'activity_type' => 'tests.abandoned-running',
+            'arguments' => Serializer::serialize(['abandoned']),
+            'schedule_to_close_timeout' => 180,
+            'heartbeat_timeout' => 10,
+            'cancellation_policy' => 'abandon',
+        ]], '1.20');
+        $this->assertTrue($bridge->complete($this->newLease($run)->id, $commands)['completed']);
+        $this->assertTrue($bridge->complete($this->newLease($run)->id, [[
+            'type' => 'complete_workflow',
+            'result' => Serializer::serialize('done'),
+        ]])['completed']);
+        $execution = ActivityExecution::query()->where('workflow_run_id', $run->id)->sole();
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Activity->value)
+            ->sole();
+        $this->assertTrue($activities->claimStatus($task->id, 'independent-worker')['claimed']);
+        $this->assertSame(ActivityStatus::Running, $execution->refresh()->status);
+        $eventCount = $this->events($run->id)
+            ->count();
+
+        // 1. Revocation from another namespace never reaches the close.
+        \Workflow\V2\Support\ActivityTimeoutEnforcer::revokeWorkerLease(
+            $task->id,
+            'another-namespace',
+            'independent-worker',
+        );
+        $this->assertSame(ActivityStatus::Running, $execution->refresh()->status);
+        $this->assertSame(TaskStatus::Leased, $task->refresh()->status);
+
+        // 2. Lease expiry before the lease expired never closes it.
+        \Workflow\V2\Support\ActivityTimeoutEnforcer::enforceLeaseExpiry($task->id);
+        $this->assertSame(ActivityStatus::Running, $execution->refresh()->status);
+        $this->assertSame(TaskStatus::Leased, $task->refresh()->status);
+
+        // 3. A missed heartbeat is not its schedule-to-close deadline.
+        $this->travel(11)
+            ->seconds();
+        \Workflow\V2\Support\ActivityTimeoutEnforcer::enforce($execution->id);
+        $this->assertSame(ActivityStatus::Running, $execution->refresh()->status);
+
+        // Its own schedule-to-close deadline closes it, without history.
+        $this->travel(170)
+            ->seconds();
+        \Workflow\V2\Support\ActivityTimeoutEnforcer::enforce($execution->id);
+        $this->assertSame(ActivityStatus::Failed, $execution->refresh()->status);
+        $this->assertSame(TaskStatus::Cancelled, $task->refresh()->status);
+        $this->assertSame($eventCount, $this->events($run->id)->count());
+    }
+
     /**
      * @return \Illuminate\Support\Collection<int, WorkflowHistoryEvent>
      */
