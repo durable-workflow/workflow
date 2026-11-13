@@ -894,7 +894,8 @@ final class ParallelChildGroup
                 ->unique(['workflow_run_id', 'sequence'])->index;
             $events->forceIndex($index);
         }
-        return $events->lockForUpdate()->get();
+        return $events->lockForUpdate()
+            ->get();
     }
 
     /**
