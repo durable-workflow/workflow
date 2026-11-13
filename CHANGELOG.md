@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Experimental embedded child-start milestone: `Workflow::startChild()` returns
+  a versioned `StartedChildWorkflow` receipt after native child admission, and
+  `$child->await()` observes that same child later. Cold replay reuses the
+  original admission; a queued request alone cannot supply a receipt. The
+  existing `child()` still waits for completion. This adds a
+  `ChildWorkflowAwaited` history event and an optional
+  `child_completion_mode` on `ChildWorkflowScheduled`, with no database
+  migration. Worker-protocol execution refuses the new calls. State-bound
+  business bindings and retained compensation remain separate #1069 work.
+
 - Failed-run redrive accepts a verified linear activity retry chain. A retried
   completed prefix is reused and only the failed boundary step runs again.
   Substituted attempt/task identities refuse with

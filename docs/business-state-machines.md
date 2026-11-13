@@ -177,7 +177,24 @@ The next nested slice must preserve the same four methods and add:
 - Verified child compensation before earlier parent compensation. Technical child completion, accepted signals and timeouts are insufficient evidence.
 - Acyclic bounded binding graphs, resource limits and explicit adoption ownership.
 
-Existing `child()` can be called from a step and durably await a child result. That does not yet implement the separate state-bound start milestone. This slice deliberately adds no alternate child scheduler or compensation engine.
+Existing `child()` can be called from a step and durably await a child result. The separate native admission primitive below supplies a confirmed start milestone; it does not itself implement the state-bound binding protocol. Both paths use the existing child scheduler and history.
+
+## Confirmed native child admission
+
+Embedded V2 workflows can separate native child admission from waiting for its result:
+
+```php
+$child = self::startChild(ChildMachineWorkflow::class, $input);
+self::activity(RecordChildAdmission::class, $child->toArray());
+// Continue the parent, then observe this exact child when its result is needed.
+$result = $child->await();
+```
+
+The child class and activity above are application implementations. `startChild()` accepts the same optional `ChildWorkflowOptions` as `child()`. The child may still be pending execution when the receipt returns: its native instance, run, lineage and task have been admitted, rather than merely queued as a request to create them. A cold duplicate resumes with the same admission. The later await creates neither another child nor another compensation owner, and works whether the child completes before or after the await.
+
+`StartedChildWorkflow::toArray()` is the version-1 portable receipt. It binds namespace, original parent instance/run, owning start sequence, child instance, initial child run, child-call ID and workflow type. `fromArray()` validates its shape; the runtime separately checks it against that parent's paired schedule/start history before awaiting. Modified, foreign-parent and missing-admission receipts refuse. Awaiting is scoped to the original parent execution. Query replay uses committed parent resolution history, not a live terminal row as an unrecorded result.
+
+This primitive is experimental and embedded-only. Worker-protocol execution refuses these calls. It preserves ordinary `child()` terminal-wait behavior and parent-close/cancellation policies. `RecordChildAdmission` still owns application authorization, expected state/revision checks and a protected idempotent business commit; a receipt does not implement those boundaries. The scope/slot/generation binding, policy pinning, adoption ownership, business-outcome verification and retained recovery in the next section remain required before claiming nested business-machine support.
 
 ## Follow-up implementation sequence
 
