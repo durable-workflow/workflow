@@ -19,7 +19,7 @@ final class TestRedriveRetryProbeActivity extends Activity
     {
         $calls = Cache::increment($counter . ':' . $site);
         $this->heartbeat([
-            'site' => $site,
+            'message' => $site,
         ]);
         if ($calls <= (int) config('workflows.v2.testing.redrive_retry_failures.' . $site, 0)) {
             throw new RuntimeException('Retryable fixture failure at ' . $site . '.');

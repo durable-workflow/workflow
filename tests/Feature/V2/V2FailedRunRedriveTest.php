@@ -203,6 +203,8 @@ final class V2FailedRunRedriveTest extends TestCase
     #[DataProvider('retriedActivityCases')]
     public function testOrdinaryRetriedActivitiesRedriveWithoutRepeatingTheCompletedPrefix(int $firstFailures): void
     {
+        config()
+            ->set('queue.default', 'redis');
         Queue::fake();
         config([
             'workflows.v2.testing.redrive_retry_failures' => [
