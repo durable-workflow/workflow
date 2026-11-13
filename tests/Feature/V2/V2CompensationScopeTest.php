@@ -27,6 +27,7 @@ final class V2CompensationScopeTest extends TestCase
     {
         parent::setUp();
         config([
+            'workflows.v2.namespaces' => ['client-a'],
             'queue.default' => 'sync',
             'queue.connections.sync.driver' => 'sync',
         ]);

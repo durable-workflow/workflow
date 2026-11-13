@@ -40,6 +40,7 @@ final class V2CompensationScopeRunBoundaryTest extends TestCase
     {
         parent::setUp();
         config([
+            'workflows.v2.namespaces' => ['client-a'],
             'queue.default' => 'redis',
             'queue.connections.redis.driver' => 'redis',
         ]);
@@ -260,6 +261,14 @@ final class V2CompensationScopeRunBoundaryTest extends TestCase
             };
             $this->app->call([$job, 'handle']);
         }
-        $this->fail('Ready tasks did not settle within the bounded drain.');
+        $this->fail('Ready tasks did not settle within the bounded drain: ' . json_encode(
+            WorkflowTask::query()->where('status', TaskStatus::Ready)->limit(3)->get()
+                ->map(static fn (WorkflowTask $task): array => [
+                    'status' => $task->status->value,
+                    'error' => $task->last_error,
+                    'claim_error' => $task->last_claim_error,
+                ])->all(),
+            JSON_THROW_ON_ERROR,
+        ));
     }
 }

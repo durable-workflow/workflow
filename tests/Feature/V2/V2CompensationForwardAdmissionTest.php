@@ -36,6 +36,7 @@ final class V2CompensationForwardAdmissionTest extends TestCase
     {
         parent::setUp();
         config([
+            'workflows.v2.namespaces' => ['client-a'],
             'queue.default' => 'sync',
             'queue.connections.sync.driver' => 'sync',
         ]);
@@ -78,7 +79,15 @@ final class V2CompensationForwardAdmissionTest extends TestCase
     {
         config()->set('workflows.v2.testing.scope_host_probe', $kind);
         [$scope, $workflow] = $this->origin();
-        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertTrue($workflow->refresh()->completed(), json_encode(
+            WorkflowTask::query()->where('workflow_run_id', $workflow->runId())->limit(3)->get()
+                ->map(static fn (WorkflowTask $task): array => [
+                    'status' => $task->status->value,
+                    'error' => $task->last_error,
+                    'claim_error' => $task->last_claim_error,
+                ])->all(),
+            JSON_THROW_ON_ERROR,
+        ));
         $depths = Cache::get('test:scope:host-depths', []);
         $this->assertNotEmpty($depths);
         $this->assertSame([0], array_values(array_unique($depths)));
@@ -265,9 +274,9 @@ final class V2CompensationForwardAdmissionTest extends TestCase
                 \Illuminate\Support\Carbon::setTestNow($task->available_at->copy()->addMicrosecond());
             }
             if ($task->task_type->value === 'activity') {
-                (new \Workflow\V2\Jobs\RunActivityTask($task->id))->handle();
+                $this->app->call([new \Workflow\V2\Jobs\RunActivityTask($task->id), 'handle']);
             } else {
-                (new \Workflow\V2\Jobs\RunWorkflowTask($task->id))->handle();
+                $this->app->call([new \Workflow\V2\Jobs\RunWorkflowTask($task->id), 'handle']);
             }
         }
         $this->fail('Native forward retries did not terminate.');

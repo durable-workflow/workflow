@@ -32,6 +32,7 @@ final class V2CompensationScopeConcurrencyTest extends TestCase
         self::stopWorkers();
         Queue::fake();
         config([
+            'workflows.v2.namespaces' => ['client-a'],
             'workflows.v2.task_dispatch_mode' => 'poll',
         ]);
         $this->app->instance(ScopeAuthorization::class, new class() implements ScopeAuthorization {

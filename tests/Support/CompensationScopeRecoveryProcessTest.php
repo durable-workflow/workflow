@@ -60,6 +60,7 @@ final class CompensationScopeRecoveryProcessTest extends TestCase
     {
         $input = $this->input();
         $app['config']->set([
+            'workflows.v2.namespaces' => ['client-a'],
             'database.default' => 'scope_process',
             'database.connections.scope_process' => $input['database'],
             'database.redis' => $input['redis'],
