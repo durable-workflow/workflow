@@ -6,6 +6,8 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\V2\TestForwardAdmissionWorkflow;
 use Tests\Fixtures\V2\TestScopedOperation;
 use Tests\TestCase;
@@ -41,6 +43,14 @@ final class V2CompensationForwardAdmissionTest extends TestCase
         $this->app->instance(ScopeAuthorization::class, new class() implements ScopeAuthorization {
             public function assertAllowed(ScopeIdentity $scope, string $principal, string $operation): string
             {
+                if (config('workflows.v2.testing.scope_host_probe') === 'authorization') {
+                    $depths = Cache::get('test:scope:host-depths', []);
+                    $depths[] = DB::transactionLevel();
+                    Cache::forever('test:scope:host-depths', $depths);
+                    if (DB::transactionLevel() !== 0) {
+                        throw new \LogicException('Host authorization was called under native SQL locks.');
+                    }
+                }
                 if ($scope->namespace !== 'client-a' || $principal !== 'operator-a') {
                     throw new \LogicException('Scope access refused.');
                 }
@@ -53,6 +63,27 @@ final class V2CompensationForwardAdmissionTest extends TestCase
     {
         \Illuminate\Support\Carbon::setTestNow();
         parent::tearDown();
+    }
+
+    public static function hostPreparationKinds(): array
+    {
+        return [
+            'authorization' => ['authorization'],
+            'input validation' => ['input'],
+        ];
+    }
+
+    #[DataProvider('hostPreparationKinds')]
+    public function testHostPreparationRunsWithoutNativeOrScopeLocks(string $kind): void
+    {
+        config()->set('workflows.v2.testing.scope_host_probe', $kind);
+        [$scope, $workflow] = $this->origin();
+        $this->assertTrue($workflow->refresh()->completed());
+        $depths = Cache::get('test:scope:host-depths', []);
+        $this->assertNotEmpty($depths);
+        $this->assertSame([0], array_values(array_unique($depths)));
+        $this->assertSame('observed', (new ScopeRepository())->inspect($scope)['obligations'][0]['forward_status']);
+        $this->assertSame(1, (int) Cache::get('test:scope:effect-count'));
     }
 
     public function testMissingPinnedForwardHandlerIsNonRetryableBeforeDispatch(): void
@@ -180,6 +211,14 @@ final class V2CompensationForwardAdmissionTest extends TestCase
 
             public function assertInput(array $input): void
             {
+                if (config('workflows.v2.testing.scope_host_probe') === 'input') {
+                    $depths = Cache::get('test:scope:host-depths', []);
+                    $depths[] = DB::transactionLevel();
+                    Cache::forever('test:scope:host-depths', $depths);
+                    if (DB::transactionLevel() !== 0) {
+                        throw new \LogicException('Host input validation was called under native SQL locks.');
+                    }
+                }
                 if (! $this->compatible) {
                     throw new \InvalidArgumentException('The input schema changed after registration.');
                 }

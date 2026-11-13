@@ -114,7 +114,26 @@ The workflow package is consumed by three distinct audiences:
    into the workflow package as a library but do not author workflows.
 
 The semver guarantee below covers all three surfaces. Breaking changes to
-anything marked `@api` require a major version bump.
+anything marked `@api` require a major version bump, except surfaces explicitly
+marked `@experimental` as described below.
+
+## Experimental compensation scopes
+
+The `Workflow\V2\Compensation` authoring helpers and host handler/authorization
+contracts are experimental. Their API and persisted storage contract may change
+in a minor release while the first increment is evaluated. The scope, obligation,
+forward-result and resolution envelopes carry an explicit format version; unknown
+versions refuse interpretation. Activity types and activity-sequence markers are
+recorded identities and must be changed through explicit deterministic versioning.
+`@internal` activities, format utilities and engine classes remain implementation
+details rather than supported host entry points.
+
+This increment supports embedded Laravel, sequential compensation, one nesting
+level and explicit release. It does not transfer forward scope ownership across
+continue-as-new, originating-run redrive or child retry. Use a distinct generation
+for each originating run. Retained obligations stay attached to that run and remain
+recoverable through `ScopeRecovery`. See [durable compensation scopes](compensation-scopes.md).
+Existing run-local Saga and its stability contract remain unchanged.
 
 ## What is covered
 

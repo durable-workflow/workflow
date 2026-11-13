@@ -40,6 +40,22 @@ final readonly class Resolution
 
     public function toArray(): array
     {
-        return get_object_vars($this);
+        return [
+            'version' => 1,
+            'verified' => $this->verified,
+            'reason' => $this->reason,
+            'evidence' => $this->evidence,
+            'forwardSettled' => $this->forwardSettled,
+        ];
+    }
+
+    public static function fromArray(array $value): self
+    {
+        $keys = array_keys($value);
+        sort($keys, SORT_STRING);
+        if ($keys !== ['evidence', 'forwardSettled', 'reason', 'verified', 'version'] || ($value['version'] ?? null) !== 1) {
+            throw new InvalidArgumentException('Unsupported compensation resolution format.');
+        }
+        return new self($value['verified'], $value['reason'], $value['evidence'], $value['forwardSettled']);
     }
 }

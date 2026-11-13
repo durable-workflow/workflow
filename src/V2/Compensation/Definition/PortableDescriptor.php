@@ -8,6 +8,8 @@ use InvalidArgumentException;
 use JsonException;
 
 /**
+ * @internal Compensation format or engine implementation.
+ *
  * Canonical, bounded data only. This format never resolves classes or callables.
  *
  * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.

@@ -34,7 +34,13 @@ final readonly class Obligation
 
     public function toArray(): array
     {
-        return get_object_vars($this);
+        return [
+            'version' => 1,
+            'key' => $this->key,
+            'handlerType' => $this->handlerType,
+            'handlerVersion' => $this->handlerVersion,
+            'input' => $this->input,
+        ];
     }
 
     public static function fromStored(array $row): self
@@ -50,8 +56,8 @@ final readonly class Obligation
     {
         $keys = array_keys($value);
         sort($keys, SORT_STRING);
-        if ($keys !== ['handlerType', 'handlerVersion', 'input', 'key']) {
-            throw new InvalidArgumentException('Invalid compensation obligation shape.');
+        if ($keys !== ['handlerType', 'handlerVersion', 'input', 'key', 'version'] || ($value['version'] ?? null) !== 1) {
+            throw new InvalidArgumentException('Unsupported compensation obligation format.');
         }
         return new self($value['key'], $value['handlerType'], $value['handlerVersion'], $value['input']);
     }

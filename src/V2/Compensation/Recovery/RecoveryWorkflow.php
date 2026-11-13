@@ -11,6 +11,8 @@ use Workflow\V2\Compensation\Activities\VerifyScopeActivity;
 use Workflow\V2\Workflow;
 
 /**
+ * @internal Compensation format or engine implementation.
+ *
  * A normal native workflow with native Saga ordering and native activity retries.
  *
  * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
@@ -20,6 +22,7 @@ final class RecoveryWorkflow extends Workflow
 {
     public function handle(array $scope): array
     {
+        self::getVersion('dw.compensation.recovery-activities', 1, 1);
         $obligations = self::activity(PrepareRecoveryActivity::class, $scope);
         foreach ($obligations as $id) {
             $this->addCompensation(static fn () => self::activity(CompensateObligationActivity::class, $scope, $id));

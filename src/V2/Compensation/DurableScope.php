@@ -31,6 +31,7 @@ final readonly class DurableScope
         if (! WorkflowFiberContext::active()) {
             throw new \LogicException('DurableScope must be authored inside a native workflow.');
         }
+        Workflow::getVersion('dw.compensation.scope-activities', 1, 1);
     }
 
     public function execute(Obligation $obligation, ?ActivityOptions $options = null): array

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Experimental embedded compensation scopes (#1063): retained versioned
+  obligations, native Saga recovery, sequential child participation and explicit
+  release. Each scope keeps its originating run; continue-as-new, origin redrive
+  and child retry do not transfer forward ownership.
+
 - Failed-run redrive accepts a verified linear activity retry chain. A retried
   completed prefix is reused and only the failed boundary step runs again.
   Substituted attempt/task identities refuse with

@@ -38,6 +38,22 @@ final readonly class ForwardResult
 
     public function toArray(): array
     {
-        return get_object_vars($this);
+        return [
+            'version' => 1,
+            'observed' => $this->observed,
+            'value' => $this->value,
+            'evidence' => $this->evidence,
+            'reason' => $this->reason,
+        ];
+    }
+
+    public static function fromArray(array $value): self
+    {
+        $keys = array_keys($value);
+        sort($keys, SORT_STRING);
+        if ($keys !== ['evidence', 'observed', 'reason', 'value', 'version'] || ($value['version'] ?? null) !== 1) {
+            throw new InvalidArgumentException('Unsupported compensation forward-result format.');
+        }
+        return new self($value['observed'], $value['value'], $value['evidence'], $value['reason']);
     }
 }

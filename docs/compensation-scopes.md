@@ -6,38 +6,22 @@ nested-machine integration in [business state-machine proposal](https://github.c
 This is not a released API. Existing run-local Saga and the four-method
 `TransitionStep` contract remain unchanged.
 
-## Reviewable increments
-
-1. Retained identities, bounded portable descriptors and atomic registration
-   journal. Prove exact duplicate adoption, conflicting reuse refusal, namespace
-   and generation separation, and rollback of incomplete registration.
-2. Content-bound cancellation requests and canonical recovery identity. Reuse
-   native start/adopt, task ownership, activity attempts and redrive. Do not add
-   another executor, lease, claim table, heartbeat or retry policy engine.
-   Prove duplicate routing, closure races, namespace/generation substitution and
-   refused identity reuse.
-3. Recorded activity boundaries and native Saga recovery, including closed runs.
-   Prove cold replay, registration acknowledgement loss, handler unavailability,
-   authorization, cancellation and recovery after worker restart.
-4. Sequential child-scope participants and verified child-first compensation.
-   Prove generation binding, missing child evidence, cycle refusal and bounded
-   participation. State-bound SM bindings and the two-integration example remain
-   the next business state-machine slice, after this retained-scope foundation.
-5. Retention and compatibility review; run ECS, PHPStan, unit, coverage and feature
-   gates. Record the limits of local evidence separately from CI qualification.
-
-Each increment follows tests, implementation, review, fixes and repeated review.
-The issue remains the work record; this document defines the technical contract.
-
 ## Boundaries
 
-A scope is `(application, namespace, key, generation)`, not a workflow run.
+A scope is `(application, namespace, key, generation)`. Its forward work belongs
+to one originating run, so choose a generation unique to that run. Continuing,
+redriving or retrying a child with an existing generation does not transfer its
+ownership; new registration refuses with nonretryable `scope_execution_owner_mismatch`.
 The native default namespace remains `null`; it is never replaced by an invented
 alias. The original run and a later recovery run have separate identities. One scope
 contains at most 256 obligations. Stored descriptors contain a closed handler
 identifier and version, stable operation key and portable data (16 KiB, depth 8,
 512 values). They never contain executable closures or arbitrary class names.
 Applications store protected references instead of credentials or customer data.
+Scope identities, obligations, forward results and compensation resolutions use
+closed version-1 envelopes. Their canonical arrays are explicit rather than PHP
+object layouts. Unsupported versions refuse interpretation. Recorded activity
+types and activity-sequence version markers are durable identities.
 
 The registration journal and obligation commit together. Workflow history records
 activity boundary outcomes; a lost activity acknowledgement is adopted by exact
@@ -64,21 +48,6 @@ Rows use the workflow storage connection. Scope rows serialize ledger mutations;
 obligation and journal rows follow that lock. No external call runs under a database
 lock. The ledger has no cascading foreign key to run history: normal history
 pruning must not erase unresolved obligations or reuse their identities.
-
-## Evidence
-
-Checked before implementation: upstream main `46ca8f67` contains the native
-ownership guarantees. Four isolated PostgreSQL probes (32 assertions) proved
-concurrent canonical start, concurrent redrive, exclusive workflow-task claim and
-the fact that `business_key` alone does not deduplicate different instance IDs.
-Three upstream PostgreSQL cancellation concurrency tests (160 assertions) preserved
-canonical request/root/budget and explicitly refused a conflicting root.
-
-The first ledger increment passed 11 targeted tests (23 assertions), including an
-injected journal-insert failure. It does not yet prove workflow-boundary integration.
-The previous draft's recovery lease tests described an unimplemented competing
-mechanism; they are replaced by tests of native identity and authority integration.
-
 
 ## Runtime flow and responsibilities
 
@@ -112,7 +81,10 @@ flowchart TD
 `ScopeBoundary` uses the existing native activity status/authority checks while
 retaining their SQL locks in the ledger transaction. Its lock order is native
 attempt, execution, run and task, followed by the scope and its journal. It checks
-authority again after the mutation. Provider calls run between guarded transactions,
+authority again after the mutation. Host authorization and handler input
+validation run before the transaction, with no native or scope locks held. The
+transaction rechecks native authority, request identity and the validated forward
+descriptor before admitting work. Provider calls run between guarded transactions,
 never inside them. The journal records principal, authorization policy version,
 origin/current run, activity and attempt references. Child participation records
 the child authorization policy separately from the parent registration policy.
@@ -152,7 +124,9 @@ increment does not transfer forward ownership across continue-as-new or origin
 redrive. The first accepted request pins the cleanup principal. Later authorized
 requests can route recovery but cannot replace that principal. Recovery evaluates
 current authorization again at every activity boundary. Revoked authority leaves
-work unresolved rather than silently adopting another principal.
+work unresolved rather than silently adopting another principal. Requesting cleanup
+on an active origin requests cancellation of the entire native run: all its Saga
+callbacks can run, including other scopes and ordinary non-scope compensations.
 
 The default scoped forward/compensation activities use three native attempts and
 the native backoff. No scope retry loop is introduced. `DurableScope.execute()`
@@ -194,39 +168,18 @@ child-first recovery. It also checks originating-run redrive after an unrelated
 failed activity and after an uncertain scoped forward effect. Recovery preserves
 the original terminal history in all cases.
 
-## Core redrive regression evidence
-
-The replay corpus policy explicitly guards `FailedRunRedrivePlan` and
-`ActivityRetryHistory`, so changes to either require executable regression evidence.
-
-The planner changes are independent of compensation scopes. They accept native
-`ActivityRetryScheduled` lineage only when execution, attempt, task and attempt
-number references agree. A valid native active-start adoption receipt must also
-match the run and accepted command snapshot. The planner keeps current main's
-completed-child reuse behavior.
-
-The `redrive-retried-completed-activity`, `redrive-retried-failed-activity` and
-`redrive-retried-activity-after-completed-child` regression-corpus fixtures retain
-both a cold replay prefix and the failed source history. The official
-`ReplayRegressionCorpusTest` consumer executes `FailedRunRedrivePlan` against the
-source and its identity-substitution cases, then executes the cold workflow
-replay. This provides planner evidence separately from the scope integration
-tests. `FailedRunRedrivePlanTest` separately covers start-adoption receipt
-substitution. The separate `redrive-native-active-start-adoption` corpus fixture
-executes the same acceptance and substitution checks for recorded start receipts.
-Its planner source retains the native audit-enriched command snapshot. Its cold
-replay prefix contains the authored event payload, which is checked against the
-strict event payload contract before native audit enrichment.
-Existing completed-child corpus and feature regressions remain
-applicable. These evidence paths allow the core planner change to be reviewed
-or extracted separately from the experimental scope API.
-
 ## Authoring and host setup
 
 The embedded host binds `ScopeAuthorization` to its authorization policy and
 `HandlerRegistry` to a closed map of handler type/version pairs. Normal package
 migrations create the ledger tables on the configured workflow storage connection.
 No additional queue, worker or lease configuration is required.
+
+Derive `$principal` from trusted application policy code; never accept its identity
+from an HTTP/webhook payload or workflow-start argument. The authorization binding
+must verify that principal against the host's current trusted security context.
+Stored SHA-256 content hashes detect accidental corruption; database write access
+remains inside the host's trust boundary.
 
 Inside a native workflow, create `DurableScope($this, $identity, $principal)` and
 call `execute(new Obligation($key, $handlerType, $handlerVersion, $input))`. Register
@@ -246,34 +199,3 @@ authorization, not from untrusted request content. Repeating the same request
 requires the same principal and reason. Inspecting or requesting retained work
 must go through an authorized host boundary; the `@internal` persistence classes
 are not an HTTP-facing data access API.
-
-## Evidence and review
-
-| Guarantee | Responsible component | Acceptance test |
-| --- | --- | --- |
-| Exact request and generation identity | ScopeIdentity, ScopeRepository, ScopeRecovery | ScopeRecoveryTest, V2CompensationScopeConcurrencyTest |
-| Current native attempt owns ledger mutation | ScopeBoundary | ExpiredNativeAttemptCannotPublishVerifiedCompensation |
-| No false success for late/unknown effects | ScopeProgress, CompensateObligationActivity | PossibleLateForwardEffectCannotBecomeVerifiedAfterRetryExhaustion |
-| Closed-run recovery and original terminal history | RecoveryWorkflow, native Saga | ClosedOriginUsesCanonicalRecoveryAndKeepsOriginalTerminalHistory |
-| Verified progress survives failure and redrive | Native redrive plus ledger | RetryExhaustionStaysUnresolvedAndNativeRedriveReusesVerifiedWork, OneRetainedRequestCanRedriveTwoFailuresWithoutRepeatingVerifiedWork |
-| Native start adoption preserves eligible redrive | FailedRunRedrivePlan | NativeActiveAdoptionDoesNotPreventRecoveryRedriveAfterFailure, SubstitutedActiveStartAdoptionCannotAuthorizeRedrive |
-| Forward evidence survives explicit release | ScopeProgress, ScopeRetention | ForwardEvidenceSurvivesReleaseWithoutRetainingBusinessInputsOrResults |
-| Replay does no handler/provider resolution | DurableScope, recorded activities | ColdReplayDoesNotResolveMutableHandlersOrRepeatProviderEffects |
-| Child-first sequential progress | ChildScopes, ChildResolution | CompletedChildScopeIsVerifiedBeforeEarlierParentCompensation, CancellationWhileChildWaitsResolvesItsSagaBeforeEarlierParentWork |
-| Child authorization evidence | RegisterChildScopeActivity | ChildParticipationRecordsItsOwnAuthorizationPolicyVersion, InvalidChildParticipationPolicyCannotRegisterAChild |
-| Retained descriptor integrity before effects | ForwardOperationActivity, CompensateObligationActivity | TamperedRegistrationCannotReachTheForwardProvider, TamperedRetainedDescriptorIsRefusedBeforeProviderCall |
-| Live storage is forbidden during replay | ScopeRepository, ScopeStorage | OpeningLiveStorageFromWorkflowReplayIsRefusedBeforeWriting |
-| Bounded retained work | ScopeRepository, ChildScopes | ObligationLimitCannotLeaveAPartialRegistration, ChildFanOutLimitCannotLeaveAPartialParticipant |
-| No cycle under concurrent registration | ChildScopes integrity lock | CompetingEdgesCannotCreateACycle |
-| Ordinary pruning preserves recovery | Independent retained ledger | OrdinaryRunPruningPreservesRetainedScopeRecovery |
-| Explicit release cannot reuse identifiers | ScopeRetention | ReleaseRefusesUnresolvedWorkThenRetainsAnUnreusableTombstone |
-| Fresh-process recovery | Native workflow and persisted ledger | RetainedRecoveryRunsInAFreshPhpProcess |
-
-Integration exposed a native redrive limitation: `ActivityRetryScheduled` was
-refused as unsupported history. `ActivityRetryHistory` validates exact execution,
-attempt counters and task lineage before the existing redrive planner accepts that
-history. Substitution controls accompany the real retry-exhaustion regression.
-
-Local evidence does not establish a published package, CI matrix qualification,
-service-mode/cross-SDK support or production-provider behavior. The full quality
-cycle and final evidence counts are recorded after the last code review.

@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Compensation\Persistence;
 
-use Closure;
 use Illuminate\Database\Connection;
 use LogicException;
+use Workflow\Exceptions\NonRetryableException;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
 use Workflow\V2\Compensation\Execution\ForwardResult;
@@ -19,34 +19,35 @@ use Workflow\V2\Compensation\Execution\Resolution;
  */
 final class ScopeProgress
 {
-    /**
-     * @param (Closure(array): void)|null $beforeDispatch Pure validation before recording dispatch uncertainty.
-     */
     public function admitForward(
         ScopeIdentity $identity,
         string $id,
         string $attemptId,
         ?string $activityId = null,
-        ?Closure $beforeDispatch = null
+        ?string $validatedFingerprint = null
     ): array {
         return ScopeStorage::mutate($identity, function (array $scope, Connection $database) use (
             $id,
             $attemptId,
             $activityId,
-            $beforeDispatch
+            $validatedFingerprint
         ): array {
             $row = $this->obligation($scope, $database, $id);
             if ($scope['status'] !== 'open') {
                 throw new LogicException('The scope has closed forward admission.');
             }
+            if ($validatedFingerprint !== null && ! hash_equals($row['fingerprint'], $validatedFingerprint)) {
+                throw new NonRetryableException('scope_forward_descriptor_changed');
+            }
             if ($row['forward_status'] === 'observed') {
                 return [
-                    'cached' => json_decode($row['forward_result'], true, flags: JSON_THROW_ON_ERROR),
+                    'cached' => ForwardResult::fromArray(
+                        json_decode($row['forward_result'], true, flags: JSON_THROW_ON_ERROR),
+                    )->toArray(),
                     'uncertain' => false,
                     'row' => $row,
                 ];
             }
-            $beforeDispatch?->__invoke($row);
             $uncertain = $row['forward_status'] !== 'registered';
             $database->table(ScopeStorage::OBLIGATIONS)->where('id', $id)->update([
                 'forward_status' => 'in_flight',

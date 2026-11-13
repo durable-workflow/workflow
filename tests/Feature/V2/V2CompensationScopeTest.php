@@ -62,6 +62,16 @@ final class V2CompensationScopeTest extends TestCase
         $this->assertSame('completed', $origin->refresh()->status());
         $this->assertSame($before, WorkflowHistoryEvent::query()->where('workflow_run_id', $origin->runId())->count());
         $this->assertSame(['second', 'first'], Cache::get('test:scope:undo-log'));
+        foreach ([
+            $origin->runId() => 'dw.compensation.scope-activities',
+            $result['runId'] => 'dw.compensation.recovery-activities',
+        ] as $runId => $changeId) {
+            $markers = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+                ->where('event_type', \Workflow\V2\Enums\HistoryEventType::VersionMarkerRecorded)->get();
+            $this->assertContains([$changeId, 1], $markers->map(static fn (WorkflowHistoryEvent $event): array => [
+                $event->payload['change_id'], $event->payload['version'],
+            ])->all());
+        }
     }
 
     public function testNativeSagaCompensatesAnEffectWhoseForwardResultWasLost(): void

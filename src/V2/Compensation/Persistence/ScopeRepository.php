@@ -6,6 +6,7 @@ namespace Workflow\V2\Compensation\Persistence;
 
 use Illuminate\Database\Connection;
 use LogicException;
+use Workflow\Exceptions\NonRetryableException;
 use Workflow\V2\Compensation\Definition\Obligation;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
@@ -50,7 +51,7 @@ final class ScopeRepository
             ]) : 0;
             $scope = ScopeStorage::locked($identity);
             if ($scope['original_run_id'] !== $originalRunId) {
-                throw new LogicException('A compensation scope cannot change its original run.');
+                throw new NonRetryableException('scope_execution_owner_mismatch');
             }
             if ($created === 1) {
                 ScopeStorage::append($scope, 'opened', [
@@ -180,6 +181,17 @@ final class ScopeRepository
     public function metadata(ScopeIdentity $identity): array
     {
         return ScopeStorage::mutate($identity, static fn (array $scope): array => $scope);
+    }
+
+    public function obligation(ScopeIdentity $identity, string $id): array
+    {
+        return ScopeStorage::mutate($identity, static function (array $scope, Connection $database) use ($id): array {
+            $row = $database->table(self::OBLIGATIONS)->where('scope_id', $scope['id'])->where('id', $id)->first();
+            if ($row === null) {
+                throw new NonRetryableException('scope_obligation_unavailable');
+            }
+            return (array) $row;
+        });
     }
 
     public function inspect(ScopeIdentity $identity): array

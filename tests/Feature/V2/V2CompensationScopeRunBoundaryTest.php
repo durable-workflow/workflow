@@ -170,7 +170,7 @@ final class V2CompensationScopeRunBoundaryTest extends TestCase
     private function assertForwardRefused(string $runId, ScopeIdentity $scope, int $effectCount): void
     {
         $messages = WorkflowFailure::query()->where('workflow_run_id', $runId)->pluck('message')->all();
-        $this->assertStringContainsString('cannot change its original run', implode('\n', $messages));
+        $this->assertStringContainsString('scope_execution_owner_mismatch', implode('\n', $messages));
         $snapshot = (new ScopeRepository())->inspect($scope);
         $this->assertSame('open', $snapshot['status']);
         $this->assertNotContains('second', array_column(array_column($snapshot['obligations'], 'descriptor'), 'key'));

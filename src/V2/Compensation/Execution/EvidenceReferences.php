@@ -8,6 +8,8 @@ use InvalidArgumentException;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 
 /**
+ * @internal Compensation format or engine implementation.
+ *
  * Leaves room for native identity metadata inside the unchanged bounded journal envelope.
  *
  * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.

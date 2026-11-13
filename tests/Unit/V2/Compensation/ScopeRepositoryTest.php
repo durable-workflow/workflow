@@ -7,6 +7,7 @@ namespace Tests\Unit\V2\Compensation;
 use Fiber;
 use LogicException;
 use Tests\TestCase;
+use Workflow\Exceptions\NonRetryableException;
 use Workflow\V2\Compensation\Definition\Obligation;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
 use Workflow\V2\Compensation\Persistence\ScopeRepository;
@@ -77,7 +78,8 @@ final class ScopeRepositoryTest extends TestCase
     {
         $repository = new ScopeRepository();
         $repository->open($this->scope(), 'original-run');
-        $this->expectException(LogicException::class);
+        $this->expectException(NonRetryableException::class);
+        $this->expectExceptionMessage('scope_execution_owner_mismatch');
         $repository->open($this->scope(), 'replacement-run');
     }
 
