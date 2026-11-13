@@ -248,21 +248,31 @@ final class V2EntityReferenceTest extends TestCase
         $this->assertSame([0, 0], OrderRepository::$transactionLevels);
     }
 
-    public function testALocalActivityRefusesReferencesBeforeLookupOrScheduling(): void
+    public function testALocalActivityResolvesOutsideTheWorkflowTransactionAndNeverDuringReplay(): void
     {
         OrderRepository::save(new Order('o-local', 'paid'));
         $workflow = WorkflowStub::make(OrderStatusWorkflow::class, 'entity-reference-local');
         $workflow->start('o-local', 'local');
-        try {
-            $this->runReadyTask($workflow->runId(), TaskType::Workflow);
-            $this->fail('Local resolution was admitted inside the workflow transaction.');
-        } catch (EntityReferenceRefused $error) {
-            $this->assertSame(EntityReferenceRefused::UNSUPPORTED_EXECUTION_MODE, $error->reason);
-        }
-        $this->assertSame([], OrderRepository::$contexts);
-        $this->assertSame(0, ActivityExecution::query()->where('workflow_run_id', $workflow->runId())->count());
+        $this->runReadyTask($workflow->runId(), TaskType::Workflow);
+
+        $this->assertSame('o-local:paid:checked', $workflow->refresh()->output());
+        $this->assertSame(1, OrderRepository::$loads);
+        $this->assertSame([0], OrderRepository::$transactionLevels);
+        $execution = ActivityExecution::query()->where('workflow_run_id', $workflow->runId())->sole();
+        $this->assertSame([[
+            'type' => 'orders.order',
+            'id' => 'o-local',
+            'version' => 1,
+        ], 'checked'], Serializer::unserialize($execution->arguments));
+        $this->assertSame([0], $execution->activity_options['entity_reference_positions'] ?? null);
+        $this->assertSame($execution->id, OrderRepository::$contexts[0]->activityExecutionId);
+        $this->assertSame(1, OrderRepository::$contexts[0]->attemptNumber);
         $this->assertSame(0, WorkflowTask::query()->where('workflow_run_id', $workflow->runId())
             ->where('task_type', TaskType::Activity->value)->count());
+
+        (new WorkflowReplayer())->replay(WorkflowRun::query()->findOrFail($workflow->runId()));
+
+        $this->assertSame(1, OrderRepository::$loads);
     }
 
     public function testHistoryRecoveryAndExportRetainReferencePositions(): void
