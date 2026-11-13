@@ -60,6 +60,7 @@ use Workflow\V2\Support\ChildSupervision;
 use Workflow\V2\Support\CommandIntent;
 use Workflow\V2\Support\CommandRequestIdentity;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\CooperativeCancellationDelivery;
 use Workflow\V2\Support\CurrentRunResolver;
 use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\ExternalPayloads;
@@ -87,6 +88,7 @@ use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
 use Workflow\V2\Support\TaskSchedulingFields;
 use Workflow\V2\Support\TerminalCancellationHistory;
+use Workflow\V2\Support\TimeoutCleanup;
 use Workflow\V2\Support\TimerCancellation;
 use Workflow\V2\Support\TraceCarrier;
 use Workflow\V2\Support\TypeRegistry;
@@ -989,6 +991,7 @@ final class WorkflowStub
     public function attemptStart(...$arguments): StartResult
     {
         [$arguments, $startOptions] = $this->extractStartArguments($arguments);
+        TimeoutCleanup::assertEmbeddedAdmission($startOptions->timeoutCleanupSeconds);
         $metadata = WorkflowMetadata::fromStartArguments($arguments);
         // Capture outside the storage transaction and preserve it across its retries.
         $observabilityContext = null;
@@ -1055,6 +1058,7 @@ final class WorkflowStub
             $startArguments,
             DuplicateStartPolicy::ReturnExistingActive,
         );
+        TimeoutCleanup::assertEmbeddedAdmission($startOptions->timeoutCleanupSeconds);
 
         if ($startOptions->duplicateStartPolicy !== DuplicateStartPolicy::ReturnExistingActive) {
             throw new LogicException(
@@ -1806,6 +1810,15 @@ final class WorkflowStub
                 'run_timeout_seconds' => $runTimeoutSeconds,
                 'execution_deadline_at' => $executionDeadlineAt,
                 'run_deadline_at' => $runDeadlineAt,
+                // Only an opted-in run writes the column, so custom run tables without
+                // it keep working until they migrate (#863).
+                ...(($timeoutCleanupWorkDeadline = TimeoutCleanup::workDeadline(
+                    $startOptions->timeoutCleanupSeconds,
+                    $executionDeadlineAt,
+                    $runDeadlineAt,
+                )) === null ? [] : [
+                    'timeout_cleanup_work_deadline_at' => $timeoutCleanupWorkDeadline,
+                ]),
                 'status' => RunStatus::Pending->value,
                 'compatibility' => WorkerCompatibility::current(),
                 'payload_codec' => $payloadCodec,
@@ -1847,6 +1860,11 @@ final class WorkflowStub
                 'run_timeout_seconds' => $runTimeoutSeconds,
                 'execution_deadline_at' => $executionDeadlineAt,
                 'run_deadline_at' => $runDeadlineAt,
+                TimeoutCleanup::STARTED_KEY => TimeoutCleanup::startedPayload(
+                    $startOptions->timeoutCleanupSeconds,
+                    $executionDeadlineAt,
+                    $runDeadlineAt,
+                ),
             ]);
 
             $task = $this->createInitialWorkflowTask($run);
@@ -2083,6 +2101,9 @@ final class WorkflowStub
             'run_timeout_seconds' => $startMetadata['run_timeout_seconds'],
             'execution_deadline_at' => $startMetadata['execution_deadline_at']?->toIso8601String(),
             'run_deadline_at' => $startMetadata['run_deadline_at']?->toIso8601String(),
+            ...(isset($startMetadata[TimeoutCleanup::STARTED_KEY]) ? [
+                TimeoutCleanup::STARTED_KEY => $startMetadata[TimeoutCleanup::STARTED_KEY],
+            ] : []),
             'workflow_definition_fingerprint' => WorkflowDefinition::fingerprint($workflowClass),
             'declared_queries' => $commandContract['queries'],
             'declared_query_contracts' => $commandContract['query_contracts'],
@@ -2280,6 +2301,28 @@ final class WorkflowStub
             if (is_string($run->cancellation_request_command_id)) {
                 $existing = WorkflowCommand::query()->findOrFail($run->cancellation_request_command_id);
                 $existingContext = (new CommandResult($existing))->cancellationContext();
+                if ($existingContext?->isTimeout() === true && $parentContext === null && $this->runIsActive($run)) {
+                    // Audit the user's request without replacing the engine's
+                    // timeout interruption or renewing its admitted budget.
+                    $codec = $run->payload_codec ?? CodecRegistry::defaultCodec();
+                    $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
+                        'command_type' => CommandType::RequestCancellation->value,
+                        'target_scope' => $this->commandTargetScope(),
+                        'status' => CommandStatus::Accepted->value,
+                        'outcome' => CommandOutcome::CancellationRequested->value,
+                        'payload_codec' => $codec,
+                        'payload' => Serializer::serializeWithCodec($codec, [
+                            'reason' => $reason,
+                            'existing_request_id' => $existing->id,
+                            'cleanup_deadline_at' => $run->cancellation_deadline_at?->toISOString(),
+                            'cancellation' => $existingContext->toArray(),
+                        ]),
+                        'accepted_at' => now(),
+                        'applied_at' => now(),
+                    ]));
+
+                    return;
+                }
                 if ($parentContext !== null && $existingContext?->rootRequestId !== $parentContext->rootRequestId) {
                     $codec = $run->payload_codec ?? CodecRegistry::defaultCodec();
                     $command = $this->rejectCommand(
@@ -2366,6 +2409,12 @@ final class WorkflowStub
             $requestedAt = now();
             $deadline = $scopeDeadline ?? $scopeOrigin?->deadline() ?? $parentContext?->deadline() ?? $requestedAt->copy()
                 ->addSeconds($cleanupTimeoutSeconds);
+            if ($run->timeout_cleanup_work_deadline_at !== null) {
+                [, $hardDeadline] = TimeoutCleanup::earliestHardDeadline($run);
+                if ($hardDeadline !== null && $hardDeadline->lt($deadline)) {
+                    $deadline = $hardDeadline;
+                }
+            }
             $reason = $parentContext?->reason ?? $reason;
             $requestId = (string) Str::ulid();
             $caller = $this->resolvedCommandContext()
@@ -3636,6 +3685,15 @@ final class WorkflowStub
             'run_timeout_seconds' => $runTimeoutSeconds,
             'execution_deadline_at' => $executionDeadlineAt,
             'run_deadline_at' => $runDeadlineAt,
+            // Only an opted-in run writes the column, so custom run tables without
+            // it keep working until they migrate (#863).
+            ...(($timeoutCleanupWorkDeadline = TimeoutCleanup::workDeadline(
+                $startOptions->timeoutCleanupSeconds,
+                $executionDeadlineAt,
+                $runDeadlineAt,
+            )) === null ? [] : [
+                'timeout_cleanup_work_deadline_at' => $timeoutCleanupWorkDeadline,
+            ]),
             'status' => RunStatus::Pending->value,
             'compatibility' => WorkerCompatibility::current(),
             'payload_codec' => $payloadCodec,
@@ -3683,6 +3741,11 @@ final class WorkflowStub
             'run_timeout_seconds' => $runTimeoutSeconds,
             'execution_deadline_at' => $executionDeadlineAt,
             'run_deadline_at' => $runDeadlineAt,
+            TimeoutCleanup::STARTED_KEY => TimeoutCleanup::startedPayload(
+                $startOptions->timeoutCleanupSeconds,
+                $executionDeadlineAt,
+                $runDeadlineAt,
+            ),
         ]);
 
         $task = $this->createInitialWorkflowTask($run);
@@ -4184,6 +4247,12 @@ final class WorkflowStub
 
             if ($reason !== null && $reason !== '') {
                 $terminalHistoryPayload['reason'] = $reason;
+            }
+
+            // A hard cancel or terminate ends deadline-triggered cleanup early (#863).
+            if (is_string($run->cancellation_request_command_id)
+                && CooperativeCancellationDelivery::context($run)?->isTimeout() === true) {
+                $terminalHistoryPayload[TimeoutCleanup::STARTED_KEY] = TimeoutCleanup::outcome($run, 'preempted');
             }
 
             WorkflowHistoryEvent::record($run, $terminalEventType, $terminalHistoryPayload, null, $command);

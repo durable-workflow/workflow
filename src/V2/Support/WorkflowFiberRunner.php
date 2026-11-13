@@ -351,7 +351,7 @@ final class WorkflowFiberRunner
 
                 $this->sequence += $current instanceof AllCall ? $current->leafCount() : 1;
                 $this->throwIntoWorkflow(
-                    new WorkflowCancellationRequestedException(cancellation: $cancellation['context']),
+                    WorkflowCancellationRequestedException::forContext($cancellation['context']),
                     $cancellation['recorded_at'],
                 );
 

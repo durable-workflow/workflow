@@ -189,6 +189,15 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                     'run_timeout_seconds' => $runTimeoutSeconds,
                     'execution_deadline_at' => $executionDeadlineAt,
                     'run_deadline_at' => $runDeadlineAt,
+                    // Only an opted-in run writes the column, so custom run tables without
+                    // it keep working until they migrate (#863).
+                    ...(($timeoutCleanupWorkDeadline = TimeoutCleanup::workDeadline(
+                        $timeoutCleanupAllowance = TimeoutCleanup::allowanceForRun($source),
+                        $executionDeadlineAt,
+                        $runDeadlineAt,
+                    )) === null ? [] : [
+                        'timeout_cleanup_work_deadline_at' => $timeoutCleanupWorkDeadline,
+                    ]),
                     'connection' => $source->connection,
                     'queue' => $source->queue,
                     'priority' => $source->priority,
@@ -250,6 +259,13 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                     'recovery_kind' => 'redrive',
                     'execution_deadline_at' => $executionDeadlineAt?->toIso8601String(),
                     'run_deadline_at' => $runDeadlineAt?->toIso8601String(),
+                    ...(($timeoutCleanup = TimeoutCleanup::startedPayload(
+                        $timeoutCleanupAllowance,
+                        $executionDeadlineAt,
+                        $runDeadlineAt,
+                    )) === null ? [] : [
+                        TimeoutCleanup::STARTED_KEY => $timeoutCleanup,
+                    ]),
                     'replayed_started_at' => is_string($startedPayload['replayed_started_at'] ?? null)
                         ? $startedPayload['replayed_started_at']
                         : $source->started_at?->toIso8601String(),
@@ -308,6 +324,17 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
 
     public function start(string $workflowType, ?string $instanceId = null, array $options = []): array
     {
+        if (($options['timeout_cleanup_seconds'] ?? null) !== null) {
+            return [
+                'accepted' => false,
+                'workflow_instance_id' => $instanceId,
+                'workflow_run_id' => null,
+                'task_id' => null,
+                'reason' => 'timeout_cleanup_not_supported',
+                'status' => 422,
+            ];
+        }
+
         $resolvedClass = $this->tryResolveWorkflowClass($workflowType);
         $arguments = $options['arguments'] ?? null;
         $payloadCodec = isset($options['payload_codec']) && is_string(

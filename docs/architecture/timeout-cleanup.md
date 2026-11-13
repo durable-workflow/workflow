@@ -46,9 +46,13 @@ Validation at admission, before any write:
   work deadline is in the future.
 
 The allowance is recorded in `WorkflowStarted` (`timeout_cleanup.allowance_seconds`,
-plus the derived `work_deadline_at` per timeout kind), which is immutable. There
-is no new `workflow_runs` column: the engine and native read the admitted values
-from `WorkflowStarted` (server review on [workflow pull request 1122](https://github.com/durable-workflow/workflow/pull/1122)). Describe and run detail show them.
+plus the derived `work_deadline_at` per timeout kind), which is immutable. Native
+reads the admitted values from `WorkflowStarted` and adds no column (server review
+on [workflow pull request 1122](https://github.com/durable-workflow/workflow/pull/1122)).
+Embedded also stores the earliest derived work deadline in
+`workflow_runs.timeout_cleanup_work_deadline_at`, so the watchdog can wake an idle
+run at that time; the column is nullable and set only for opted-in runs (General,
+2026-11-13). Describe and run detail show them.
 
 ### Inheritance
 
@@ -80,15 +84,20 @@ notices first) does the following in one transaction under the run lock:
 3. Delivers the interruption through the existing cooperative-cancellation
    path. Workflow code receives a `WorkflowTimeoutCleanupRequested` exception,
    which extends `WorkflowCancellationRequestedException`, with a
-   `CancellationContext` whose `cause` is `timeout` and whose `timeoutKind`,
-   `workDeadlineAt` and `cleanupDeadlineAt` are set. Existing
+   `CancellationContext` whose optional top-level `cause` is `timeout` and
+   whose existing `cleanup_deadline_at` is the cleanup deadline. The timeout
+   kind and work deadline are recorded on `WorkflowTimeoutCleanupStarted`, not
+   in the context. `cause` is never inherited by descendants, scoped or not,
+   and an explicit `cause: cancellation` round-trips unchanged. Existing
    `catch (WorkflowCancellationRequestedException)` compensation code
    therefore runs without changes. `cancellationShield()` scopes and the
    operation cancellation policies behave as they do for a cooperative
    cancellation request.
 
 A user cancellation request that arrives during timeout cleanup is recorded
-but doesn't restart cleanup or move its deadline. A timeout that arrives
+as an additional accepted RequestCancellation command referencing the original
+engine request. It does not create another interruption, restart cleanup or move
+its deadline. A timeout that arrives
 during an earlier cooperative cancellation doesn't enter timeout cleanup:
 the earlier request already owns cleanup, its deadline is capped by the hard
 deadline, and the final outcome is the timeout if the hard deadline wins.
@@ -133,6 +142,10 @@ with `cause: timeout`. After that, they show the recorded outcome.
   new event type, so readers that don't know it refuse it as an unknown event.
   Service-mode SDKs therefore need the capability below before Server sends
   it.
+- This embedded increment admits the option only with queue dispatch. Poll-mode
+  starts and service starts refuse timeout cleanup, and bridge claims of an
+  opted-in embedded run return `timeout_cleanup_not_supported` without taking
+  the lease. Service support follows in [server issue 1201](https://github.com/durable-workflow/server/issues/1201).
 - Service mode: Server advertises `timeout_cleanup` (`{supported: true,
   version: 1}`) only when it implements this contract, and a service worker
   advertises it only when its SDK delivers the typed timeout interruption.

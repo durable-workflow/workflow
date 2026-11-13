@@ -46,6 +46,7 @@ class WorkflowRun extends Model
         'run_timeout_seconds' => 'integer',
         'execution_deadline_at' => 'datetime',
         'run_deadline_at' => 'datetime',
+        'timeout_cleanup_work_deadline_at' => 'datetime',
         'cancellation_requested_at' => 'datetime',
         'cancellation_deadline_at' => 'datetime',
         'cancellation_delivered_at' => 'datetime',
