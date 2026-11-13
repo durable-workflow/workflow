@@ -110,7 +110,8 @@ final class V2TimerDeadlineMigrationTest extends SchemaTestCase
             $other->update("UPDATE {$table} SET status = 'cancelled' WHERE id = 1");
             $this->assertSame(
                 '2026-11-08 04:00:20.234567',
-                $other->selectOne("SELECT fire_at FROM {$table} WHERE id = 1")->fire_at
+                $other->selectOne("SELECT fire_at FROM {$table} WHERE id = 1")
+->fire_at
             );
             $this->assertSame($before, Schema::getColumns('workflow_run_timers'));
         } finally {
