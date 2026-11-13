@@ -96,19 +96,9 @@ final class CooperativeCancellationDelivery
             return $membership;
         }
 
-        if ($callKind === 'started_child_await') {
-            $boundary = self::validateCallBoundary(
-                $run,
-                $request,
-                $sequence,
-                $callKind,
-                $sequenceSpan,
-                $operationSequence,
-                $operationSequenceSpan
-            );
-            if ($boundary !== null) {
-                return $boundary;
-            }
+        $boundary = self::validateStartedChildBoundary($run, $request, $sequence, $callKind, $operationSequence);
+        if ($boundary !== null) {
+            return $boundary;
         }
 
         $existing = self::recorded($run);
@@ -370,6 +360,25 @@ final class CooperativeCancellationDelivery
         }
 
         return null;
+    }
+
+    private static function validateStartedChildBoundary(
+        WorkflowRun $run,
+        WorkflowHistoryEvent $request,
+        int $sequence,
+        string $callKind,
+        ?int $operationSequence,
+    ): ?string {
+        // Syntax already restricts this call to one await and one child start.
+        return $callKind === 'started_child_await'
+            ? self::validateCallBoundary(
+                $run,
+                $request,
+                $sequence,
+                $callKind,
+                operationSequence: $operationSequence
+            )
+            : null;
     }
 
     /**

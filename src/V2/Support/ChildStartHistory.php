@@ -127,17 +127,7 @@ final class ChildStartHistory
         $previous = null;
         $seen = [];
         foreach ($starts as $event) {
-            $id = $event->payload['child_workflow_run_id'] ?? null;
-            if (! is_string($id) || isset($seen[$id])
-                || $event->workflow_run_id !== $parent->id
-                || ($event->payload['child_call_id'] ?? null) !== $child->childCallId
-                || ($event->payload['child_workflow_instance_id'] ?? null) !== $child->childInstanceId
-                || ($event->payload['child_workflow_type'] ?? null) !== $child->workflowType) {
-                throw self::mismatch($sequence, 'The child admission chain is not linear or has substituted identity.');
-            }
-            if ($previous === null && $id !== $child->childRunId) {
-                throw self::mismatch($sequence, 'The child chain does not begin at the admitted run.');
-            }
+            $id = self::recordedRunId($parent, $child, $event, $seen, $sequence);
             /** @var WorkflowRun|null $target */
             $target = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                 ->where('namespace', $child->namespace)
@@ -188,6 +178,27 @@ final class ChildStartHistory
             || ($resolution->payload['child_workflow_type'] ?? null) !== $child->workflowType)) {
             throw self::mismatch($sequence, 'The terminal outcome belongs to a different child admission.');
         }
+    }
+
+    private static function recordedRunId(
+        WorkflowRun $parent,
+        StartedChildWorkflow $child,
+        WorkflowHistoryEvent $event,
+        array $seen,
+        int $sequence,
+    ): string {
+        $id = $event->payload['child_workflow_run_id'] ?? null;
+        if (! is_string($id) || isset($seen[$id])
+            || $event->workflow_run_id !== $parent->id
+            || ($event->payload['child_call_id'] ?? null) !== $child->childCallId
+            || ($event->payload['child_workflow_instance_id'] ?? null) !== $child->childInstanceId
+            || ($event->payload['child_workflow_type'] ?? null) !== $child->workflowType) {
+            throw self::mismatch($sequence, 'The child admission chain is not linear or has substituted identity.');
+        }
+        if ($seen === [] && $id !== $child->childRunId) {
+            throw self::mismatch($sequence, 'The child chain does not begin at the admitted run.');
+        }
+        return $id;
     }
 
     private static function assertSuccessor(
