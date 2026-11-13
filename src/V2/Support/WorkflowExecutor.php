@@ -161,6 +161,11 @@ final class WorkflowExecutor
             'childLinks.childRun.failures',
             'childLinks.childRun.historyEvents',
         ]);
+        if ($this->deadlineExpired($run)) {
+            $this->timeoutRun($run, $task);
+
+            return true;
+        }
         $this->finishCooperativeCancellation($run, $task, 'Cooperative cancellation cleanup deadline expired.');
 
         return true;
@@ -276,6 +281,12 @@ final class WorkflowExecutor
     ): ?WorkflowTask {
         if ($this->timeoutIfDeadlineExpired($run, $task) || $this->cancelIfCleanupDeadlineExpired($run, $task)) {
             return null;
+        }
+
+        // At the work deadline an opted-in run enters timeout cleanup once and
+        // this task runs workflow code with the interruption (#863).
+        if (TimeoutCleanup::enter($run, now())) {
+            $run->load('historyEvents');
         }
 
         $sample = WorkflowExecutionProfile::begin('initialization');
@@ -2469,9 +2480,7 @@ final class WorkflowExecutor
         try {
             $this->syncWorkflowCursor($frame->workflow, $frame->sequence + $size);
             $frame->current = $frame->execution->throw(
-                new WorkflowCancellationRequestedException(
-                    cancellation: CooperativeCancellationDelivery::context($run),
-                ),
+                WorkflowCancellationRequestedException::forContext(CooperativeCancellationDelivery::context($run)),
                 $run->cancellation_delivered_at,
             );
         } catch (Throwable $throwable) {
@@ -3749,6 +3758,15 @@ final class WorkflowExecutor
             'run_timeout_seconds' => $runTimeoutSeconds,
             'execution_deadline_at' => $executionDeadlineAt,
             'run_deadline_at' => $runDeadlineAt,
+            // Only an opted-in run writes the column, so custom run tables without
+            // it keep working until they migrate (#863).
+            ...(($timeoutCleanupWorkDeadline = TimeoutCleanup::workDeadline(
+                $timeoutCleanupAllowance = TimeoutCleanup::allowanceForRun($run),
+                $executionDeadlineAt,
+                $runDeadlineAt,
+            )) === null ? [] : [
+                'timeout_cleanup_work_deadline_at' => $timeoutCleanupWorkDeadline,
+            ]),
             'status' => RunStatus::Pending->value,
             'compatibility' => $run->compatibility,
             'payload_codec' => $run->payload_codec,
@@ -3934,6 +3952,13 @@ final class WorkflowExecutor
             'memo' => $continuedMemo,
             'search_attributes' => $continuedSearchAttributes,
             'workflow_definition_fingerprint' => WorkflowDefinition::fingerprint($continuedRun->workflow_class),
+            ...(($timeoutCleanup = TimeoutCleanup::startedPayload(
+                $timeoutCleanupAllowance,
+                $executionDeadlineAt,
+                $runDeadlineAt,
+            )) === null ? [] : [
+                TimeoutCleanup::STARTED_KEY => $timeoutCleanup,
+            ]),
             'continued_from_run_id' => $run->id,
             'workflow_link_id' => $link->id,
             'child_call_id' => $childCallId,
@@ -4010,6 +4035,16 @@ final class WorkflowExecutor
         $commandId = $run->cancellation_request_command_id;
         if (! is_string($commandId)) {
             throw new LogicException('Cooperative cancellation has no request command.');
+        }
+
+        // Deadline-triggered cleanup (#863) always ends timed out; the cleanup
+        // outcome is reported beside it.
+        if (CooperativeCancellationDelivery::context($run)?->isTimeout() === true) {
+            $expired = $run->cancellation_deadline_at !== null && now()
+                ->gte($run->cancellation_deadline_at);
+            $this->timeoutRun($run, $task, TimeoutCleanup::outcome($run, $expired ? 'expired' : 'completed'));
+
+            return;
         }
 
         // The caller holds the run lock; acquiring the instance lock here would invert command lock order.
@@ -4275,23 +4310,52 @@ final class WorkflowExecutor
         return false;
     }
 
-    private function timeoutRun(WorkflowRun $run, WorkflowTask $task): void
+    /**
+     * @param array<string, mixed>|null $timeoutCleanup The cleanup outcome when
+     *        deadline-triggered cleanup (#863) ran first; its timeout kind wins.
+     */
+    private function timeoutRun(WorkflowRun $run, WorkflowTask $task, ?array $timeoutCleanup = null): void
     {
         $now = now();
 
-        $exception = ($run->execution_deadline_at !== null && $now->gte($run->execution_deadline_at))
+        // Every deadline boundary, including task completion, preserves the
+        // cleanup outcome. The watchdog is only one way to notice expiry.
+        if ($timeoutCleanup === null && (CooperativeCancellationDelivery::context($run)?->isTimeout() === true
+            || ($run->timeout_cleanup_work_deadline_at !== null && $run->cancellation_request_command_id === null))) {
+            $timeoutCleanup = TimeoutCleanup::outcome($run, 'expired');
+        }
+
+        $cleanupKind = $timeoutCleanup['timeout_kind'] ?? null;
+        $executionTimedOut = $cleanupKind !== null
+            ? $cleanupKind === 'execution'
+            : ($run->execution_deadline_at !== null && $now->gte($run->execution_deadline_at));
+        $exception = $executionTimedOut
             ? WorkflowTimeoutException::executionTimeout($run->execution_deadline_at->toIso8601String())
             : WorkflowTimeoutException::runTimeout($run->run_deadline_at->toIso8601String());
 
         $timeoutKind = $exception->timeoutKind;
         $message = $exception->getMessage();
+        $cleanupSummary = TimeoutCleanup::summary($timeoutCleanup);
+        if ($cleanupSummary !== null) {
+            // The failure row's message is what describe, the export and the
+            // failure list show (#863).
+            $message .= ' ' . $cleanupSummary;
+        }
         $exceptionClass = WorkflowTimeoutException::class;
+
+        $abandonedActivities = $timeoutCleanup !== null ? ClosingRunOpenWork::settle($run, $task) : [];
+        $preservedActivityIds = array_column($abandonedActivities, 'activity_execution_id');
+        if ($timeoutCleanup !== null) {
+            $run->load(['tasks', 'activityExecutions', 'timers']);
+        }
 
         // Cancel all open tasks except the current one.
         $openTasks = $run->tasks
             ->filter(
                 static fn (WorkflowTask $t): bool => in_array($t->status, [TaskStatus::Ready, TaskStatus::Leased], true)
                 && $t->id !== $task->id
+                && ! ($t->task_type === TaskType::Activity
+                    && in_array($t->payload['activity_execution_id'] ?? null, $preservedActivityIds, true))
             );
 
         foreach ($openTasks as $openTask) {
@@ -4312,7 +4376,7 @@ final class WorkflowExecutor
                 static fn (ActivityExecution $e): bool => in_array($e->status, [
                     ActivityStatus::Pending,
                     ActivityStatus::Running,
-                ], true)
+                ], true) && ! in_array($e->id, $preservedActivityIds, true)
             );
 
         foreach ($openActivityExecutions as $execution) {
@@ -4374,6 +4438,20 @@ final class WorkflowExecutor
             'exception_class' => $exceptionClass,
             'execution_deadline_at' => $run->execution_deadline_at?->toIso8601String(),
             'run_deadline_at' => $run->run_deadline_at?->toIso8601String(),
+            ...($timeoutCleanup === null ? [] : [
+                TimeoutCleanup::STARTED_KEY => $timeoutCleanup,
+            ]),
+            ...($abandonedActivities === [] ? [] : [
+                ClosingRunOpenWork::ABANDONED_ACTIVITIES => $abandonedActivities,
+            ]),
+            ...($timeoutCleanup === null && is_string($run->cancellation_request_command_id) ? [
+                'cancellation_cleanup' => [
+                    'request_id' => $run->cancellation_request_command_id,
+                    'outcome' => 'preempted',
+                    'cleanup_deadline_at' => $run->cancellation_deadline_at?->toISOString(),
+                    'finished_at' => $now->toISOString(),
+                ],
+            ] : []),
         ], $task);
 
         PendingUpdateCloser::closeForTerminalRun($run, $task);
@@ -4457,6 +4535,29 @@ final class WorkflowExecutor
 
         if ($throwable instanceof VersionRangeMismatchException) {
             $this->blockReplayUntilCompatibleVersionRange($run, $task, $throwable);
+
+            return;
+        }
+
+        if (is_string($run->cancellation_request_command_id)
+            && ! $throwable instanceof WorkflowCancellationRequestedException
+            && CooperativeCancellationDelivery::context($run)?->isTimeout() === true) {
+            // Timeout cleanup threw: the run is still timed out; the cleanup
+            // failure is recorded and linked (#863).
+            /** @var WorkflowFailure $cleanupFailure */
+            $cleanupFailure = WorkflowFailure::query()->create(array_merge(
+                FailureFactory::make($throwable),
+                [
+                    'workflow_run_id' => $run->id,
+                    'source_kind' => $sourceKind,
+                    'source_id' => $sourceId,
+                    'propagation_kind' => 'timeout_cleanup',
+                    'failure_category' => FailureFactory::classify('terminal', $sourceKind, $throwable)->value,
+                    'non_retryable' => true,
+                    'handled' => false,
+                ],
+            ));
+            $this->timeoutRun($run, $task, TimeoutCleanup::outcome($run, 'failed', (string) $cleanupFailure->id));
 
             return;
         }

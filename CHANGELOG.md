@@ -10,6 +10,26 @@
   unregistered objects retain their existing serialization behavior. See
   [the registration and retry contract](docs/entity-references.md).
 
+- **Run migrations.** Opt-in deadline-triggered cleanup (#863, experimental,
+  embedded). A start can reserve the last part of its hard execution or run
+  timeout for cleanup with `StartOptions::withTimeoutCleanup($seconds)` (or
+  `timeoutCleanupSeconds:`). When the work deadline passes (the hard deadline
+  minus the allowance), the run enters timeout cleanup once: workflow code
+  receives `WorkflowTimeoutCleanupRequested`, a cooperative cancellation
+  request whose context has `cause: timeout`, so existing compensation
+  handlers run. An idle run is woken at that time. The run always ends with
+  `WorkflowTimedOut`, which now carries a `timeout_cleanup` outcome:
+  `completed`, `failed` (the cleanup failure is linked), `expired` (still
+  running at the hard deadline) or `preempted` (terminated or hard-cancelled
+  first). The hard deadline never moves, and nothing changes without the
+  option. Continue-as-new and redrive carry the allowance like the hard
+  deadlines. New history event `WorkflowTimeoutCleanupStarted`; the cancellation
+  context gains the optional top-level `cause`. The migration adds the nullable
+  `workflow_runs.timeout_cleanup_work_deadline_at` with no backfill and builds
+  its index without blocking writes. Poll-mode and service starts refuse this
+  option until their capability admission is implemented (server#1201). Bridge
+  workers cannot claim an opted-in embedded run. Service mode follows separately.
+
 ## 2.28.0 - 2026-11-13
 
 **Behavior change:** an un-awaited `select()` loser is cancelled when the run

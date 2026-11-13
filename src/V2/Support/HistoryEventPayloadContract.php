@@ -127,6 +127,7 @@ final class HistoryEventPayloadContract
             'replayed_started_at',
             'retry_attempt',
             'retry_of_child_workflow_run_id',
+            'timeout_cleanup',
         ],
         'WorkflowContinuedAsNew' => [
             'sequence',
@@ -990,6 +991,7 @@ final class HistoryEventPayloadContract
             'message',
             'reason',
             'cancellation_cleanup',
+            'timeout_cleanup',
         ],
         'TerminateRequested' => [
             'workflow_command_id',
@@ -1008,6 +1010,7 @@ final class HistoryEventPayloadContract
             'exception_class',
             'message',
             'reason',
+            'timeout_cleanup',
         ],
         'ArchiveRequested' => [
             'workflow_command_id',
@@ -1032,6 +1035,17 @@ final class HistoryEventPayloadContract
             'exception_class',
             'execution_deadline_at',
             'run_deadline_at',
+            'timeout_cleanup',
+            'abandoned_activities',
+            'cancellation_cleanup',
+        ],
+        'WorkflowTimeoutCleanupStarted' => [
+            'workflow_command_id',
+            'timeout_kind',
+            'work_deadline_at',
+            'cleanup_deadline_at',
+            'hard_deadline_at',
+            'detected_at',
         ],
         'WorkflowCompleted' => ['output', 'payload_codec', 'abandoned_activities'],
         'WorkflowFailed' => [

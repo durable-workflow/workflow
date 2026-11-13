@@ -16,6 +16,12 @@ use Workflow\V2\Support\WorkflowFiberContext;
 final class CancellationContext
 {
     /**
+     * Cause of a run's own interruption: `timeout` when deadline-triggered
+     * cleanup (#863) requested it. Absent means an ordinary cancellation.
+     */
+    public const CAUSE_TIMEOUT = 'timeout';
+
+    /**
      * @var WeakMap<self, WeakReference<Fiber>>|null
      */
     private static ?WeakMap $replayFibers = null;
@@ -37,7 +43,13 @@ final class CancellationContext
         private readonly CarbonImmutable $cleanupDeadline,
         public readonly array $lineage,
         public readonly ?ScopedCancellationContext $scopeOrigin = null,
+        public readonly ?string $cause = null,
     ) {
+    }
+
+    public function isTimeout(): bool
+    {
+        return $this->cause === self::CAUSE_TIMEOUT;
     }
 
     /**
@@ -100,6 +112,14 @@ final class CancellationContext
         $rootRunId = self::text($snapshot, 'root_workflow_run_id');
         $parentRequestId = $snapshot['parent_request_id'] ?? null;
         $reason = $snapshot['reason'] ?? null;
+        // Top-level and optional; absent or `cancellation` is an ordinary
+        // cancellation (#863).
+        $cause = $snapshot['cause'] ?? null;
+        if ($cause !== null && ! in_array($cause, ['cancellation', self::CAUSE_TIMEOUT], true)) {
+            throw new InvalidArgumentException('Cancellation cause must be cancellation or timeout.');
+        }
+        // An explicit `cancellation` is preserved, so a context round-trips
+        // with exactly its own keys.
         if (count(array_unique(array_column($normalizedLineage, 'request_id'))) !== count($normalizedLineage)
             || count(array_unique(array_column($normalizedLineage, 'workflow_run_id'))) !== count($normalizedLineage)) {
             throw new InvalidArgumentException('Cancellation lineage cannot contain a cycle.');
@@ -168,6 +188,7 @@ final class CancellationContext
             $deadline,
             $normalizedLineage,
             $scopeOrigin,
+            $cause,
         );
     }
 
@@ -195,6 +216,9 @@ final class CancellationContext
             );
         }
         $snapshot = $this->toArray();
+        // A descendant is cancelled because its ancestor was; it was not
+        // itself timed out.
+        unset($snapshot['cause']);
         $snapshot['request_id'] = $requestId;
         $snapshot['parent_request_id'] = $this->requestId;
         $snapshot['lineage'][] = [
@@ -271,6 +295,9 @@ final class CancellationContext
             'requested_at' => $this->originalRequestedAt->toISOString(),
             'cleanup_deadline_at' => $this->cleanupDeadline->toISOString(),
             'lineage' => $this->lineage,
+            ...($this->cause === null ? [] : [
+                'cause' => $this->cause,
+            ]),
             ...($this->scopeOrigin === null ? [] : [
                 'scope_origin' => $this->scopeOrigin->toArray(),
                 'scope_authority_deadline_at' => $this->cleanupDeadline->toISOString(),
@@ -313,6 +340,10 @@ final class CancellationContext
                 $lineage[] = $address;
             }
         }
+        // A descendant is cancelled because its ancestor was; it was not
+        // itself timed out (#863).
+        unset($root['cause']);
+
         return [
             ...$root,
             'schema' => 'durable-workflow.cancellation-context/v2',

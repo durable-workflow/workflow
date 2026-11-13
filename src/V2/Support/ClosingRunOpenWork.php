@@ -135,7 +135,7 @@ final class ClosingRunOpenWork
      */
     public static function abandonedAtClose(WorkflowRun $run, ActivityExecution $execution): bool
     {
-        if (! $run->status->isTerminal() || $execution->workflow_run_id !== $run->id
+        if ($run->status?->isTerminal() !== true || $execution->workflow_run_id !== $run->id
             || ! self::abandonsAtClose($execution)) {
             return false;
         }
@@ -147,6 +147,7 @@ final class ClosingRunOpenWork
                 HistoryEventType::WorkflowCompleted->value,
                 HistoryEventType::WorkflowFailed->value,
                 HistoryEventType::WorkflowContinuedAsNew->value,
+                HistoryEventType::WorkflowTimedOut->value,
             ])
             ->orderByDesc('sequence')
             ->first();

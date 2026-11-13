@@ -294,6 +294,16 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 return self::claimRejected($taskId, 'run_closed', "The workflow run is {$run->status->value}.");
             }
 
+            // This increment admits timeout cleanup only for embedded queue
+            // workers. A bridge worker must not silently run ordinary work.
+            if ($run->timeout_cleanup_work_deadline_at !== null) {
+                return self::claimRejected(
+                    $taskId,
+                    'timeout_cleanup_not_supported',
+                    'Timeout cleanup requires embedded queue workers.'
+                );
+            }
+
             TaskCompatibility::sync($task, $run);
 
             if (TaskBackendCapabilities::recordClaimFailureIfUnsupported($task) !== null) {
@@ -5349,6 +5359,15 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'run_timeout_seconds' => $runTimeoutSeconds,
             'execution_deadline_at' => $executionDeadlineAt,
             'run_deadline_at' => $runDeadlineAt,
+            // Only an opted-in run writes the column, so custom run tables without
+            // it keep working until they migrate (#863).
+            ...(($timeoutCleanupWorkDeadline = TimeoutCleanup::workDeadline(
+                $timeoutCleanupAllowance = TimeoutCleanup::allowanceForRun($run),
+                $executionDeadlineAt,
+                $runDeadlineAt,
+            )) === null ? [] : [
+                'timeout_cleanup_work_deadline_at' => $timeoutCleanupWorkDeadline,
+            ]),
             'connection' => $run->connection,
             'queue' => $queue,
             ...TaskSchedulingFields::nonDefault(TaskSchedulingFields::forRun($run)),
@@ -5491,6 +5510,13 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'workflow_type' => $workflowType,
             'workflow_instance_id' => $continuedRun->workflow_instance_id,
             'workflow_run_id' => $continuedRun->id,
+            ...(($timeoutCleanup = TimeoutCleanup::startedPayload(
+                $timeoutCleanupAllowance,
+                $executionDeadlineAt,
+                $runDeadlineAt,
+            )) === null ? [] : [
+                TimeoutCleanup::STARTED_KEY => $timeoutCleanup,
+            ]),
             'continued_from_run_id' => $run->id,
             'workflow_link_id' => $link->id,
             'child_call_id' => $childCallId,

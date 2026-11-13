@@ -174,7 +174,9 @@ jobs:
   regression-corpus:
     needs: preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    # Each new fixture adds two full consumer runs after the baseline.
+    # Four fixtures already exceed six minutes on the hosted runner.
+    timeout-minutes: 12
     env:
       # The runner's system PHP loads Xdebug. Each official consumer run takes
       # several times longer with it, and the validator runs the consumer
