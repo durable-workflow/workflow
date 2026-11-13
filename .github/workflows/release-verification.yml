@@ -178,6 +178,8 @@ jobs:
       - name: Verify published platform contract
         env:
           WORKFLOW_PLATFORM_CONFORMANCE_VERSION: ${{ steps.release.outputs.tag }}
+          WORKFLOW_TIMEOUT_REVISION: ${{ steps.product.outputs.revision }}
+          WORKFLOW_TIMEOUT_EXPECTED_SOURCE: ${{ github.workspace }}/.release-product
           RUNNER_TEMP: ${{ env.TMPDIR }}
         run: scripts/ci/check-platform-conformance-mirror.sh
       - name: Revalidate PHP after product commands and clean owned state

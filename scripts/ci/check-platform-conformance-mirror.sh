@@ -109,6 +109,15 @@ else
     workflow_install_path="$(cat "$workflow_install_path_file")"
     php "$repo_root/scripts/ci/verify-history-export-source-identity.php" \
         verify "$workflow_file" "$workflow_install_path" "$history_resolver_file"
+
+    # The first embedded timeout-cleanup release must prove actual installed
+    # queue behavior in addition to matching the published wire manifests.
+    if php -r 'exit(version_compare($argv[1], "2.29.0", ">=") ? 0 : 1);' "$version"; then
+        WORKFLOW_TIMEOUT_PROJECT="$tmp_dir" \
+        WORKFLOW_TIMEOUT_STATE="$tmp_dir/timeout-cleanup-state" \
+        WORKFLOW_TIMEOUT_VERSION="$version" \
+        php "$repo_root/scripts/ci/qualify-published-timeout-cleanup.php"
+    fi
 fi
 
 php "$repo_root/scripts/ci/compare-platform-conformance-mirrors.php" "$workflow_file" "$authority_file"
