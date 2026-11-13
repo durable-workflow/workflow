@@ -991,6 +991,7 @@ final class HistoryEventPayloadContract
             'message',
             'reason',
             'cancellation_cleanup',
+            'timeout_cleanup',
         ],
         'TerminateRequested' => [
             'workflow_command_id',
@@ -1009,6 +1010,7 @@ final class HistoryEventPayloadContract
             'exception_class',
             'message',
             'reason',
+            'timeout_cleanup',
         ],
         'ArchiveRequested' => [
             'workflow_command_id',

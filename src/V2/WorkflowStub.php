@@ -60,6 +60,7 @@ use Workflow\V2\Support\ChildSupervision;
 use Workflow\V2\Support\CommandIntent;
 use Workflow\V2\Support\CommandRequestIdentity;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\CooperativeCancellationDelivery;
 use Workflow\V2\Support\CurrentRunResolver;
 use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\ExternalPayloads;
@@ -4208,6 +4209,12 @@ final class WorkflowStub
 
             if ($reason !== null && $reason !== '') {
                 $terminalHistoryPayload['reason'] = $reason;
+            }
+
+            // A hard cancel or terminate ends deadline-triggered cleanup early (#863).
+            if (is_string($run->cancellation_request_command_id)
+                && CooperativeCancellationDelivery::context($run)?->isTimeout() === true) {
+                $terminalHistoryPayload[TimeoutCleanup::STARTED_KEY] = TimeoutCleanup::outcome($run, 'preempted');
             }
 
             WorkflowHistoryEvent::record($run, $terminalEventType, $terminalHistoryPayload, null, $command);

@@ -88,6 +88,30 @@ final class V2TimeoutCleanupTest extends TestCase
         }
     }
 
+    public function testTerminatingDuringCleanupPreemptsIt(): void
+    {
+        $this->travelTo(now()->startOfSecond());
+        $workflow = WorkflowStub::make(TestTimeoutCleanupWorkflow::class, 'timeout-cleanup-preempted');
+        $workflow->start('expire', new StartOptions(executionTimeoutSeconds: 70, timeoutCleanupSeconds: 10));
+        $runId = $workflow->runId();
+        $this->runReadyWorkflowTask($runId);
+        $this->travel(61)
+            ->seconds();
+        TaskWatchdog::runPass(runIds: [$runId]);
+        $this->runReadyWorkflowTask($runId);
+        $this->assertFalse(WorkflowRun::query()->findOrFail($runId)->status->isTerminal());
+
+        $workflow->refresh()
+            ->terminate('operator stop');
+
+        $terminal = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->orderByDesc(
+            'sequence'
+        )->firstOrFail();
+        $this->assertSame(HistoryEventType::WorkflowTerminated, $terminal->event_type);
+        $this->assertSame('preempted', $terminal->payload['timeout_cleanup']['outcome'] ?? null);
+        $this->assertSame(RunStatus::Terminated, WorkflowRun::query()->findOrFail($runId)->status);
+    }
+
     public function testWithoutTheOptionTheHardTimeoutIsUnchanged(): void
     {
         $this->travelTo(now()->startOfSecond());
