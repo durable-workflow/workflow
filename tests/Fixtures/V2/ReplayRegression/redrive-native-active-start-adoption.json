@@ -1,0 +1,229 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "redrive-native-active-start-adoption",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestRedriveRetryWorkflow",
+    "arguments": [
+      "Taylor",
+      false
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-12T00:00:00+00:00"
+    },
+    {
+      "sequence": 2,
+      "event_type": "StartAccepted",
+      "recorded_at": "2026-11-12T00:00:01+00:00",
+      "workflow_run_id": "source-run",
+      "workflow_command_id": "adoption-command",
+      "payload": {
+        "workflow_instance_id": "source-instance",
+        "workflow_run_id": "source-run",
+        "workflow_class": "Tests\\Fixtures\\V2\\TestRedriveRetryWorkflow",
+        "workflow_type": "Tests\\Fixtures\\V2\\TestRedriveRetryWorkflow",
+        "workflow_command_id": "adoption-command",
+        "outcome": "returned_existing_active"
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+        "activity_class": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+        "activity_execution_id": "execution-1"
+      },
+      "recorded_at": "2026-11-12T00:00:02+00:00"
+    },
+    {
+      "sequence": 4,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+        "activity_class": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+        "activity_execution_id": "execution-1",
+        "result": "wwHioz3/VYAiNwocSGVsbG8sIFRheWxvciE=",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-12T00:00:03+00:00"
+    }
+  ],
+  "redrive_plan": {
+    "source_history": [
+      {
+        "sequence": 1,
+        "event_type": "WorkflowStarted",
+        "payload": {},
+        "recorded_at": "2026-11-12T00:00:00+00:00"
+      },
+      {
+        "sequence": 2,
+        "event_type": "StartAccepted",
+        "recorded_at": "2026-11-12T00:00:01+00:00",
+        "workflow_run_id": "source-run",
+        "workflow_command_id": "adoption-command",
+        "payload": {
+          "workflow_instance_id": "source-instance",
+          "workflow_run_id": "source-run",
+          "workflow_class": "Tests\\Fixtures\\V2\\TestRedriveRetryWorkflow",
+          "workflow_type": "Tests\\Fixtures\\V2\\TestRedriveRetryWorkflow",
+          "workflow_command_id": "adoption-command",
+          "outcome": "returned_existing_active",
+          "command": {
+            "id": "adoption-command",
+            "type": "start",
+            "target_scope": "instance",
+            "resolved_run_id": "source-run",
+            "status": "accepted",
+            "outcome": "returned_existing_active"
+          }
+        }
+      },
+      {
+        "sequence": 3,
+        "event_type": "ActivityScheduled",
+        "payload": {
+          "sequence": 1,
+          "activity_type": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+          "activity_class": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+          "activity_execution_id": "execution-1"
+        },
+        "recorded_at": "2026-11-12T00:00:02+00:00"
+      },
+      {
+        "sequence": 4,
+        "event_type": "ActivityCompleted",
+        "payload": {
+          "sequence": 1,
+          "activity_type": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+          "activity_class": "Tests\\Fixtures\\V2\\TestRedriveFirstActivity",
+          "activity_execution_id": "execution-1",
+          "result": "wwHioz3/VYAiNwocSGVsbG8sIFRheWxvciE=",
+          "payload_codec": "avro"
+        },
+        "recorded_at": "2026-11-12T00:00:03+00:00"
+      },
+      {
+        "sequence": 5,
+        "event_type": "ActivityScheduled",
+        "payload": {
+          "sequence": 2,
+          "activity_type": "Tests\\Fixtures\\V2\\TestRedriveSecondActivity",
+          "activity_class": "Tests\\Fixtures\\V2\\TestRedriveSecondActivity",
+          "activity_execution_id": "execution-2"
+        },
+        "recorded_at": "2026-11-12T00:00:04+00:00"
+      },
+      {
+        "sequence": 6,
+        "event_type": "ActivityFailed",
+        "payload": {
+          "sequence": 2,
+          "activity_type": "Tests\\Fixtures\\V2\\TestRedriveSecondActivity",
+          "activity_class": "Tests\\Fixtures\\V2\\TestRedriveSecondActivity",
+          "activity_execution_id": "execution-2",
+          "message": "provider unavailable",
+          "exception_class": "RuntimeException"
+        },
+        "recorded_at": "2026-11-12T00:00:05+00:00"
+      },
+      {
+        "sequence": 7,
+        "event_type": "WorkflowFailed",
+        "payload": {
+          "failed_step_kind": "activity",
+          "failed_step_sequence": 2
+        },
+        "recorded_at": "2026-11-12T00:00:06+00:00"
+      }
+    ],
+    "expected": {
+      "eligible": true,
+      "resume_step_sequence": 2,
+      "completed_count": 1,
+      "reused_event_types": [
+        "ActivityCompleted"
+      ]
+    },
+    "refusals": [
+      {
+        "event_index": 1,
+        "field": "outcome",
+        "value": "started_new",
+        "reason": "unexpected_start"
+      },
+      {
+        "event_index": 1,
+        "field": "workflow_instance_id",
+        "value": "other-instance",
+        "reason": "unexpected_start"
+      },
+      {
+        "event_index": 1,
+        "field": "workflow_run_id",
+        "value": "other-run",
+        "reason": "unexpected_start"
+      },
+      {
+        "event_index": 1,
+        "field": "workflow_class",
+        "value": "OtherWorkflow",
+        "reason": "unexpected_start"
+      },
+      {
+        "event_index": 1,
+        "field": "workflow_type",
+        "value": "other-type",
+        "reason": "unexpected_start"
+      },
+      {
+        "event_index": 1,
+        "field": "workflow_command_id",
+        "value": "other-command",
+        "reason": "unexpected_start"
+      },
+      {
+        "event_index": 1,
+        "field": "rejection_reason",
+        "value": "refused",
+        "reason": "unexpected_start"
+      },
+      {
+        "event_index": 1,
+        "field": "command",
+        "value": null,
+        "reason": "unexpected_start"
+      }
+    ],
+    "source_run": {
+      "id": "source-run",
+      "workflow_instance_id": "source-instance",
+      "workflow_class": "Tests\\Fixtures\\V2\\TestRedriveRetryWorkflow",
+      "workflow_type": "Tests\\Fixtures\\V2\\TestRedriveRetryWorkflow"
+    }
+  },
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "schedule_activity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestRedriveSecondActivity",
+        "payload_codec": "avro"
+      }
+    ]
+  }
+}
