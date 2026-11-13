@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowMessage;
 use Workflow\V2\Models\WorkflowRun;
 
 /**
@@ -36,6 +37,15 @@ final class MessageReplayLedger
      * @var array<string, int>
      */
     private array $receiveOffsets = [];
+
+    /**
+     * Exactly matched outbound rows per send identity, in send order, loaded
+     * once per execution and extended with the rows this execution writes
+     * (#1014).
+     *
+     * @var array<string, list<WorkflowMessage>>
+     */
+    private array $sendCandidates = [];
 
     /**
      * @var list<string>|null
@@ -125,6 +135,28 @@ final class MessageReplayLedger
         }
 
         return $this->highestRecordedStep = $highest;
+    }
+
+    /**
+     * The rows already sent under this identity, loaded once per execution.
+     *
+     * @param callable(): list<WorkflowMessage> $load
+     * @return list<WorkflowMessage>
+     */
+    public function sendCandidates(string $identity, callable $load): array
+    {
+        return $this->sendCandidates[$identity] ??= $load();
+    }
+
+    /**
+     * Record a row this execution just wrote, so the next identical send
+     * finds it without reloading.
+     */
+    public function rememberSend(string $identity, WorkflowMessage $message): void
+    {
+        if (array_key_exists($identity, $this->sendCandidates)) {
+            $this->sendCandidates[$identity][] = $message;
+        }
     }
 
     public function sendOffset(string $identity): int
