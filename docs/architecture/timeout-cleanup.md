@@ -46,9 +46,13 @@ Validation at admission, before any write:
   work deadline is in the future.
 
 The allowance is recorded in `WorkflowStarted` (`timeout_cleanup.allowance_seconds`,
-plus the derived `work_deadline_at` per timeout kind), which is immutable. There
-is no new `workflow_runs` column: the engine and native read the admitted values
-from `WorkflowStarted` (server review on [workflow pull request 1122](https://github.com/durable-workflow/workflow/pull/1122)). Describe and run detail show them.
+plus the derived `work_deadline_at` per timeout kind), which is immutable. Native
+reads the admitted values from `WorkflowStarted` and adds no column (server review
+on [workflow pull request 1122](https://github.com/durable-workflow/workflow/pull/1122)).
+Embedded also stores the earliest derived work deadline in
+`workflow_runs.timeout_cleanup_work_deadline_at`, so the watchdog can wake an idle
+run at that time; the column is nullable and set only for opted-in runs (General,
+2026-11-13). Describe and run detail show them.
 
 ### Inheritance
 
