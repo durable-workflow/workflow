@@ -22,14 +22,49 @@
       "event_type": "WorkflowStarted",
       "payload": {},
       "recorded_at": "2026-11-13T10:00:00.000000Z"
+    },
+    {
+      "sequence": 2,
+      "event_type": "ActivityScheduled",
+      "recorded_at": "2026-11-13T10:00:00.000001Z",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "01j00000000000000000000e01",
+        "activity_class": "Tests\\Fixtures\\V2\\EntityReferences\\OrderStatusActivity",
+        "activity_type": "tests.entity-references.order-status",
+        "activity": {
+          "id": "01j00000000000000000000e01",
+          "sequence": 1,
+          "class": "Tests\\Fixtures\\V2\\EntityReferences\\OrderStatusActivity",
+          "type": "tests.entity-references.order-status",
+          "arguments": "wwHioz3/VYAiNwwEDgYIdHlwZQoYb3JkZXJzLm9yZGVyBGlkChhjb3JwdXMtb3JkZXIOdmVyc2lvbgQCAAoOY2hlY2tlZAA=",
+          "payload_codec": "avro",
+          "entity_reference_positions": [
+            0
+          ]
+        }
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "ActivityCompleted",
+      "recorded_at": "2026-11-13T10:00:01.000000Z",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "01j00000000000000000000e01",
+        "activity_class": "Tests\\Fixtures\\V2\\EntityReferences\\OrderStatusActivity",
+        "activity_type": "tests.entity-references.order-status",
+        "result": "wwHioz3/VYAiNwo4Y29ycHVzLW9yZGVyOnNoaXBwZWQ6Y2hlY2tlZA==",
+        "payload_codec": "avro"
+      }
     }
   ],
   "expected": {
-    "completed": false,
-    "result": null,
+    "completed": true,
+    "result": "corpus-order:shipped:checked",
     "commands": [
       {
-        "type": "schedule_activity"
+        "type": "complete_workflow"
       }
     ]
   },
