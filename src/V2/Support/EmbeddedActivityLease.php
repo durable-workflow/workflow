@@ -81,8 +81,8 @@ final class EmbeddedActivityLease
     public static function start(ActivityTaskClaim $claim): ?self
     {
         $connection = $claim->task->getConnection();
-        // Legacy selection losers may execute after their run closes. Keep
-        // that existing outcome path without inventing renewal authority.
+        // An activity its run left running when it closed (#1117) keeps its
+        // outcome path without inventing renewal authority.
         if ($claim->run->status->isTerminal() && ! ActivityAbandonment::allows($claim->run, $claim->execution)) {
             return null;
         }

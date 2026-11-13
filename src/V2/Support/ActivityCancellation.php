@@ -29,6 +29,7 @@ final class ActivityCancellation
         ?array $scopeCancellation = null,
         ?ScopedCancellationPreparation $scopePreparation = null,
         ?TerminalCancellationHistory $terminalHistory = null,
+        ?string $cancellationReason = null,
     ): ?WorkflowHistoryEvent {
         $terminalHistory?->assertRun($run);
         if ($scopeCancellation !== null) {
@@ -119,6 +120,9 @@ final class ActivityCancellation
         ];
         if ($scopeCancellation !== null) {
             $payload['cancellation_scope'] = $scopeCancellation;
+        }
+        if ($cancellationReason !== null) {
+            $payload['cancellation_reason'] = $cancellationReason;
         }
 
         if (LocalActivityRuntime::isExecution($execution)) {

@@ -4119,7 +4119,7 @@ final class V2WorkflowTest extends TestCase
         $this->assertSame($link->child_workflow_run_id, $workflow->output()['results'][1]['run_id'] ?? null);
     }
 
-    public function testSelectionResumesOnDeadlineAndKeepsActivityRunning(): void
+    public function testSelectionResumesOnDeadlineAndSettlesTheLoserWhenTheRunCloses(): void
     {
         self::stopWorkers();
         Queue::fake();
@@ -4144,8 +4144,23 @@ final class V2WorkflowTest extends TestCase
             ->firstOrFail();
         $this->assertSame('deadline', $winner->payload['member_key']);
 
-        $this->runReadyTaskForRun($runId, TaskType::Activity);
-
+        // The run closed while the losing activity was still open, so the
+        // close cancelled it instead of leaving it to run (#1117).
+        $cancelled = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::ActivityCancelled->value)
+            ->sole();
+        $this->assertSame('run_closed', $cancelled->payload['cancellation_reason'] ?? null);
+        $this->assertSame(0, WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Activity->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->count());
+        $this->assertSame(HistoryEventType::WorkflowCompleted, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->orderByDesc('sequence')
+            ->firstOrFail()
+            ->event_type);
         $this->assertSame(1, WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $runId)
             ->where('event_type', HistoryEventType::SelectionResolved->value)

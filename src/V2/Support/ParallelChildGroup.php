@@ -1088,7 +1088,8 @@ final class ParallelChildGroup
                 $memberSequences,
                 $conditionResolutions
             ): bool {
-                if (! in_array($event->event_type, $types, true)) {
+                if (! in_array($event->event_type, $types, true)
+                    || ClosingRunOpenWork::settledAtClose($event)) {
                     return false;
                 }
 

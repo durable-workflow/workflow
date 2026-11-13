@@ -134,6 +134,7 @@ final class HistoryEventPayloadContract
             'continued_to_run_number',
             'workflow_link_id',
             'closed_reason',
+            'abandoned_activities',
         ],
         'ActivityScheduled' => [
             'activity_execution_id',
@@ -325,6 +326,7 @@ final class HistoryEventPayloadContract
             'parallel_group_size',
             'parallel_group_index',
             'parallel_group_path',
+            'cancellation_reason',
         ],
         'ActivityCancellationAcknowledged' => [
             'sequence',
@@ -1031,7 +1033,7 @@ final class HistoryEventPayloadContract
             'execution_deadline_at',
             'run_deadline_at',
         ],
-        'WorkflowCompleted' => ['output', 'payload_codec'],
+        'WorkflowCompleted' => ['output', 'payload_codec', 'abandoned_activities'],
         'WorkflowFailed' => [
             'failure_id',
             'failed_step_sequence',
@@ -1048,6 +1050,7 @@ final class HistoryEventPayloadContract
             'structural_limit_value',
             'structural_limit_configured',
             'structural_limit_name',
+            'abandoned_activities',
         ],
         'FailureHandled' => [
             'failure_id',

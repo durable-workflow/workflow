@@ -1669,6 +1669,12 @@ final class WorkflowFiberRunner
                 continue;
             }
 
+            // The run's own close recorded this; the workflow never saw it (#1117).
+            if ($type === 'ActivityCancelled'
+                && ($payload['cancellation_reason'] ?? null) === ClosingRunOpenWork::CANCELLATION_REASON) {
+                continue;
+            }
+
             $recordedAt = $type === 'ActivityCompleted'
                 ? (self::eventTime($payload['reused_recorded_at'] ?? null)
                     ?? self::eventRecordedAt($event, $payload))
