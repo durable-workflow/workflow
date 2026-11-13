@@ -117,6 +117,8 @@ else
         WORKFLOW_TIMEOUT_STATE="$tmp_dir/timeout-cleanup-state" \
         WORKFLOW_TIMEOUT_VERSION="$version" \
         php "$repo_root/scripts/ci/qualify-published-timeout-cleanup.php"
+        php -r '$r=json_decode(file_get_contents($argv[1]),true,flags:JSON_THROW_ON_ERROR); if (($r["outcome"]??null)!=="pass" || count($r["cases"]??[])!==9 || ($r["version"]??null)!==$argv[2] || ($r["source"]??null)!==getenv("WORKFLOW_TIMEOUT_REVISION")) { throw new RuntimeException("Published timeout qualification did not complete"); }' \
+            "$tmp_dir/timeout-cleanup-state/result.json" "$version"
     fi
 fi
 
