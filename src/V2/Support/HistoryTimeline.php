@@ -733,13 +733,13 @@ final class HistoryTimeline
                 self::intValue($payload['new_position'] ?? null) ?? 0,
             ),
             HistoryEventType::WorkflowCompleted => 'Workflow completed.',
-            HistoryEventType::WorkflowTimedOut => match ($payload['timeout_kind'] ?? null) {
+            HistoryEventType::WorkflowTimedOut => trim(match ($payload['timeout_kind'] ?? null) {
                 'execution_timeout' => 'Workflow execution deadline expired.',
                 'run_timeout' => 'Workflow run deadline expired.',
                 default => $message === null
                     ? 'Workflow timed out.'
                     : sprintf('Workflow timed out: %s.', $message),
-            },
+            } . ' ' . (TimeoutCleanup::summary($payload[TimeoutCleanup::STARTED_KEY] ?? null) ?? '')),
             HistoryEventType::WorkflowFailed => $message === null
                 ? 'Workflow failed.'
                 : sprintf('Workflow failed: %s.', $message),

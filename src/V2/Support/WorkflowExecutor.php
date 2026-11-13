@@ -4316,6 +4316,12 @@ final class WorkflowExecutor
 
         $timeoutKind = $exception->timeoutKind;
         $message = $exception->getMessage();
+        $cleanupSummary = TimeoutCleanup::summary($timeoutCleanup);
+        if ($cleanupSummary !== null) {
+            // The failure row's message is what describe, the export and the
+            // failure list show (#863).
+            $message .= ' ' . $cleanupSummary;
+        }
         $exceptionClass = WorkflowTimeoutException::class;
 
         // Cancel all open tasks except the current one.

@@ -172,6 +172,22 @@ final class TimeoutCleanup
     }
 
     /**
+     * A plain sentence for an outcome, so describe, the export, the failure
+     * list and the timeline never present a failed cleanup as a clean
+     * timeout (#863).
+     */
+    public static function summary(mixed $outcome): ?string
+    {
+        return match (is_array($outcome) ? ($outcome['outcome'] ?? null) : null) {
+            'completed' => 'Timeout cleanup completed.',
+            'failed' => 'Timeout cleanup failed.',
+            'expired' => 'Timeout cleanup did not finish before the hard deadline.',
+            'preempted' => 'Timeout cleanup was preempted.',
+            default => null,
+        };
+    }
+
+    /**
      * @return array{0: string|null, 1: CarbonInterface|null}
      */
     public static function earliestHardDeadline(WorkflowRun $run): array

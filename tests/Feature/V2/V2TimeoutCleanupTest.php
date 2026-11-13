@@ -86,6 +86,15 @@ final class V2TimeoutCleanupTest extends TestCase
         if ($outcome === 'failed') {
             $this->assertIsString($terminal->payload['timeout_cleanup']['failure_id'] ?? null);
         }
+        // Describe, the export and the failure list read this message.
+        $expected = [
+            'completed' => 'Timeout cleanup completed.',
+            'failed' => 'Timeout cleanup failed.',
+            'expired' => 'Timeout cleanup did not finish before the hard deadline.',
+        ][$outcome];
+        $this->assertStringEndsWith($expected, $terminal->payload['message']);
+        $this->assertStringEndsWith($expected, \Workflow\V2\Models\WorkflowFailure::query()
+            ->findOrFail($terminal->payload['failure_id'])->message);
     }
 
     public function testTerminatingDuringCleanupPreemptsIt(): void
