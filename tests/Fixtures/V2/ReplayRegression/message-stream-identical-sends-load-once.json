@@ -1,0 +1,57 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "message-stream-identical-sends-load-once",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestMessageStreamTurnsWorkflow",
+    "arguments": [
+      1,
+      6
+    ],
+    "payload_codec": "avro"
+  },
+  "message_stream_identical_sends": {
+    "issue": "durable-workflow/workflow#1014",
+    "stream": "conversation.replies",
+    "signal": "message",
+    "argument": "one",
+    "query": "status",
+    "copies": 6,
+    "candidate_loads_per_replay": 1,
+    "output": {
+      "turns": 1,
+      "sent": [
+        "ref:1",
+        "ref:1",
+        "ref:1",
+        "ref:1",
+        "ref:1",
+        "ref:1"
+      ]
+    },
+    "note": "Workflow code repeats one send six times in a turn. A replay (here, a query) matches each send to the row it wrote, loading that send identity's candidates once for the execution instead of once per send."
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-13T02:40:11.204513Z",
+      "payload": {},
+      "id": "01m7d0fg2vvbxzgty60d9f9qnf"
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "open_signal_wait",
+        "signal_name": "message"
+      }
+    ]
+  }
+}

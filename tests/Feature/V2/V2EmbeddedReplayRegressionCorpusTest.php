@@ -683,6 +683,48 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertSame($scenario['output'], $stub->output());
     }
 
+    public function testMessageStreamIdenticalSendsCorpusLoadsCandidatesOncePerReplay(): void
+    {
+        $path = self::FIXTURE_DIR . '/message-stream-identical-sends-load-once.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The message stream identical-sends evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['message_stream_identical_sends'];
+        self::stopWorkers();
+        config([
+            'queue.default' => 'sync',
+            'queue.connections.sync.driver' => 'sync',
+        ]);
+        $this->clearWorkflowState();
+        WorkflowStub::fake();
+
+        $instanceId = 'regression-corpus-message-identical-sends';
+        $stub = WorkflowStub::make($fixture['workflow']['type'], $instanceId);
+        $stub->start(...$fixture['workflow']['arguments']);
+        $stub->signal($scenario['signal'], $scenario['argument']);
+        $this->assertSame($scenario['copies'], \Workflow\V2\Models\WorkflowMessage::query()
+            ->where('workflow_instance_id', $instanceId)
+            ->where('stream_key', $scenario['stream'])
+            ->where('direction', 'outbound')
+            ->count());
+
+        $loads = 0;
+        DB::listen(static function ($query) use (&$loads): void {
+            if (str_contains($query->sql, 'workflow_messages') && str_contains($query->sql, 'source_workflow_run_id')) {
+                ++$loads;
+            }
+        });
+        $this->assertSame(1, $stub->refresh()->query($scenario['query']));
+        $this->assertSame(
+            $scenario['candidate_loads_per_replay'],
+            $loads,
+            'Replaying identical sends reloaded their candidates for each send.',
+        );
+        $this->assertTrue($stub->refresh()->completed());
+        $this->assertSame($scenario['output'], $stub->output());
+    }
+
     public function testMessageStreamUpdateReceiveCorpusAnswersQueriesWithWhatTheHandlerTook(): void
     {
         $path = self::FIXTURE_DIR . '/message-stream-update-receive-query.json';
