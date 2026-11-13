@@ -555,10 +555,7 @@ final class V2FailedRunRedriveTest extends TestCase
         $this->assertSame($sourceMarker->payload['version'], $reusedMarker->payload['version']);
         foreach ([[$sourceSideEffect, $reusedSideEffect], [$sourceMarker, $reusedMarker]] as [$original, $reused]) {
             $this->assertSame($sourceRunId, $reused->payload['reused_from_run_id'] ?? null);
-            $this->assertReplayClock(
-                $original->recorded_at,
-                $reused->payload['reused_recorded_at'] ?? null,
-            );
+            $this->assertReplayClock($original->recorded_at, $reused->payload['reused_recorded_at'] ?? null);
         }
 
         $expectedTimes = [
@@ -802,10 +799,7 @@ final class V2FailedRunRedriveTest extends TestCase
         foreach ($reused as $event) {
             $original = $sourceEvents->firstWhere('event_type', $event->event_type);
             $this->assertSame($sourceRunId, $event->payload['reused_from_run_id'] ?? null);
-            $this->assertReplayClock(
-                $original->recorded_at,
-                $event->payload['reused_recorded_at'] ?? null,
-            );
+            $this->assertReplayClock($original->recorded_at, $event->payload['reused_recorded_at'] ?? null);
         }
         $this->assertSame(0, WorkflowSignal::query()->where('workflow_run_id', $successor->id)->count());
         // The consumed message stays consumed for the successor.
@@ -1330,10 +1324,7 @@ final class V2FailedRunRedriveTest extends TestCase
             $original = $this->sourceEvent($source, $type);
             $reused = $this->sourceEvent($successor, $type);
             $this->assertSame($source->id, $reused->payload['reused_from_run_id'] ?? null);
-            $this->assertReplayClock(
-                $original->recorded_at,
-                $reused->payload['reused_recorded_at'] ?? null
-            );
+            $this->assertReplayClock($original->recorded_at, $reused->payload['reused_recorded_at'] ?? null);
         }
     }
 
@@ -2012,10 +2003,7 @@ final class V2FailedRunRedriveTest extends TestCase
         $this->assertSame($reusedScheduled->payload['timer_id'], $reusedFired->payload['timer_id']);
         $this->assertNotSame($sourceFired->payload['timer_id'], $reusedFired->payload['timer_id']);
         $this->assertSame($sourceRunId, $reusedFired->payload['reused_from_run_id'] ?? null);
-        $this->assertReplayClock(
-            $sourceFired->recorded_at,
-            $reusedFired->payload['reused_recorded_at'] ?? null,
-        );
+        $this->assertReplayClock($sourceFired->recorded_at, $reusedFired->payload['reused_recorded_at'] ?? null);
 
         $expectedTime = $sourceFired->recorded_at?->toIso8601String();
         $output = $successor->workflowOutput();
@@ -2126,10 +2114,7 @@ final class V2FailedRunRedriveTest extends TestCase
             foreach ($reused as $index => $event) {
                 $original = $sourceChildEvents[$index];
                 $this->assertSame($immediateSource, $event->payload['reused_from_run_id'] ?? null);
-                $this->assertReplayClock(
-                    $original->recorded_at,
-                    $event->payload['reused_recorded_at'] ?? null,
-                );
+                $this->assertReplayClock($original->recorded_at, $event->payload['reused_recorded_at'] ?? null);
                 $this->assertSame($childRunId, $event->payload['child_workflow_run_id']);
                 $this->assertSame($original->payload['workflow_link_id'], $event->payload['workflow_link_id']);
                 $this->assertArrayNotHasKey('task', $event->payload);
@@ -2681,11 +2666,11 @@ final class V2FailedRunRedriveTest extends TestCase
         $this->assertArrayHasKey('redrive_blocked_reason', $describe['actions']);
         $this->assertSame($reason, $describe['actions']['redrive_blocked_reason'], "describe reason for {$runId}");
     }
+
     private function assertReplayClock(?CarbonInterface $expected, mixed $actual, string $message = ''): void
     {
         $this->assertNotNull($expected, $message);
         $this->assertIsString($actual, $message);
         $this->assertSame($expected->format('U.u'), Carbon::parse($actual)->format('U.u'), $message);
     }
-
 }

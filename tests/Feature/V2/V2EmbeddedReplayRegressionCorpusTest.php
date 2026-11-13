@@ -1665,7 +1665,9 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 ->forceFill([
                     'recorded_at' => Carbon::parse($scenario['source_times']['activity_completed_at']),
                 ])->save();
-            $originalHistory = $source->historyEvents()->get()->toArray();
+            $originalHistory = $source->historyEvents()
+                ->get()
+                ->toArray();
             $predecessor = $source;
             $firstSerializedClocks = null;
             for ($attempt = 1; $attempt <= $scenario['redrives']; ++$attempt) {
@@ -1682,7 +1684,8 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                         $scenario['expected_times'],
                         (new QueryStateReplayer())->query($successor->fresh(), 'recordedTimes', []),
                     );
-                    $replayed = (new WorkflowReplayer())->replay($successor->fresh())->workflow;
+                    $replayed = (new WorkflowReplayer())->replay($successor->fresh())
+->workflow;
                     $this->assertInstanceOf(TestRedriveFractionalClockWorkflow::class, $replayed);
                     $this->assertSame($scenario['expected_times'], $replayed->recordedTimes());
                 }
@@ -1709,9 +1712,7 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                     $this->assertSame($firstSerializedClocks, $serializedClocks);
                 }
                 $firstSerializedClocks ??= $serializedClocks;
-                $this->assertSame(0, WorkflowTimer::query()
-                    ->where('workflow_run_id', $successor->id)
-                    ->count());
+                $this->assertSame(0, WorkflowTimer::query() ->where('workflow_run_id', $successor->id) ->count());
                 $this->assertSame(0, WorkflowTask::query()
                     ->where('workflow_run_id', $successor->id)
                     ->where('task_type', TaskType::Timer->value)
