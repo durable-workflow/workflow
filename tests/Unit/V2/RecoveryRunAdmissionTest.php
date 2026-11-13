@@ -16,11 +16,13 @@ use Tests\Fixtures\V2\TestSignalWorkflow;
 use Workflow\Exceptions\NonRetryableException;
 use Workflow\Providers\WorkflowServiceProvider;
 use Workflow\V2\Compensation\Activities\PrepareRecoveryActivity;
+use Workflow\V2\Compensation\Definition\PortableDescriptor;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
 use Workflow\V2\Compensation\Recovery\RecoveryRunAdmission;
 use Workflow\V2\Compensation\Recovery\RecoveryWorkflow;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\WorkflowControlPlane;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowCommand;
@@ -31,6 +33,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\StartOptions;
+use Workflow\V2\Support\FailedRunRedriveEligibility;
 use Workflow\V2\Support\WorkflowExecutor;
 use Workflow\V2\WorkflowStub;
 
@@ -332,6 +335,104 @@ final class RecoveryRunAdmissionTest extends TestCase
         ));
     }
 
+    #[DataProvider('brokenRedriveReceipts')]
+    public function testRecoveryRedriveRequiresBothMatchingAtomicReceiptCopies(string $mutation): void
+    {
+        [$scope, $stub, $first] = $this->failedRecovery();
+        $command = WorkflowCommand::query()->findOrFail($first->commandId());
+        $started = WorkflowHistoryEvent::query()->where('workflow_run_id', $first->runId())
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)->firstOrFail();
+        $context = $command->context;
+        $payload = $started->payload;
+        if ($mutation === 'command') {
+            unset($context['compensation_recovery']);
+        } elseif ($mutation === 'history') {
+            unset($payload['compensation_recovery']);
+        } else {
+            $payload['compensation_recovery']['request_key'] = 'different-request';
+        }
+        $command->forceFill([
+            'context' => $context,
+        ])->save();
+        $started->forceFill([
+            'payload' => $payload,
+        ])->save();
+        $this->assertRefusesWithoutWrites(static fn () => app(WorkflowControlPlane::class)->redrive(
+            $stub->id(),
+            $first->runId(),
+            [
+                'namespace' => $scope->namespace,
+                'request_id' => 'redrive',
+            ]
+        ));
+    }
+
+    public function testRecoveryRefusesAnOtherwiseReplayCompatibleDefinitionChange(): void
+    {
+        [$scope, $stub, $first] = $this->failedRecovery();
+        $command = WorkflowCommand::query()->findOrFail($first->commandId());
+        $started = WorkflowHistoryEvent::query()->where('workflow_run_id', $first->runId())
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)->firstOrFail();
+        // Represent an earlier, replay-compatible definition whose receipt and
+        // immutable history agree. The currently registered code has a new hash.
+        $context = $command->context;
+        $receipt = $context['compensation_recovery'];
+        $receipt['intent']['binding']['definition'] = str_repeat('a', 64);
+        $receipt['intent']['binding_fingerprint'] = hash(
+            'sha256',
+            PortableDescriptor::encode($receipt['intent']['binding'])
+        );
+        $context['compensation_recovery'] = $receipt;
+        $payload = $started->payload;
+        $payload['compensation_recovery'] = $receipt;
+        $payload['workflow_definition_fingerprint'] = str_repeat('a', 64);
+        $command->forceFill([
+            'context' => $context,
+        ])->save();
+        $started->forceFill([
+            'payload' => $payload,
+        ])->save();
+        $source = WorkflowRun::query()->findOrFail($first->runId());
+        $eligibility = FailedRunRedriveEligibility::evaluate($source, $source, allowDefinitionChange: true);
+        self::assertNull($eligibility['reason']);
+        self::assertNotNull($eligibility['definition_change']);
+        $this->assertRefusesWithoutWrites(static fn () => app(WorkflowControlPlane::class)->redrive(
+            $stub->id(),
+            $first->runId(),
+            [
+                'namespace' => $scope->namespace,
+                'request_id' => 'redrive',
+                'allow_definition_change' => true,
+            ]
+        ));
+    }
+
+    public function testRetainedRedriveAlsoRequiresItsSourceReceiptPair(): void
+    {
+        [$scope, $stub, $first] = $this->failedRecovery();
+        $options = [
+            'namespace' => $scope->namespace,
+            'request_id' => 'redrive',
+        ];
+        self::assertTrue(app(WorkflowControlPlane::class)->redrive($stub->id(), $first->runId(), $options)['accepted']);
+        $command = WorkflowCommand::query()->findOrFail($first->commandId());
+        $context = $command->context;
+        unset($context['compensation_recovery']);
+        $command->forceFill([
+            'context' => $context,
+        ])->save();
+        $this->assertRefusesWithoutWrites(static fn () => app(WorkflowControlPlane::class)->redrive(
+            $stub->id(),
+            $first->runId(),
+            $options
+        ));
+    }
+
+    public static function brokenRedriveReceipts(): array
+    {
+        return [['command'], ['history'], ['divergent']];
+    }
+
     public static function stops(): array
     {
         return [['cancel'], ['terminate']];
@@ -380,6 +481,23 @@ final class RecoveryRunAdmissionTest extends TestCase
             $origin->runId(),
             WorkflowStub::make(RecoveryWorkflow::class, $scope->recoveryInstanceId(), $scope->namespace),
         ];
+    }
+
+    private function failedRecovery(): array
+    {
+        [$scope, $origin, $stub] = $this->scope();
+        WorkflowStub::fake();
+        WorkflowStub::mock(PrepareRecoveryActivity::class, static function (): never {
+            throw new NonRetryableException('Synthetic preparation refusal.');
+        });
+        $first = $stub->attemptRecoveryStart(new RecoveryRunAdmission($scope, $origin, 'initial', null));
+        self::assertSame(RunStatus::Failed, WorkflowRun::query()->findOrFail($first->runId())->status);
+        app()
+            ->forgetInstance('workflow.v2.mocks');
+        app()
+            ->forgetInstance('workflow.v2.dispatched');
+        self::assertFalse(WorkflowStub::faked());
+        return [$scope, $stub, $first];
     }
 
     private function stop(WorkflowStub $stub, string $stop): void

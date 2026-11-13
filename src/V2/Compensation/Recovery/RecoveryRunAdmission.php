@@ -11,8 +11,10 @@ use Workflow\V2\Compensation\Definition\ScopeIdentity;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowCommand;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
@@ -127,7 +129,10 @@ final readonly class RecoveryRunAdmission
             throw new LogicException('Recovery request identity was reused with different admission content.');
         }
         $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)->find($command->workflow_run_id);
-        $this->assertRun($instance, $run, $receipt);
+        self::assertRun($instance, $run, $receipt);
+        if (self::sourceReceipt($instance, $run) === null) {
+            throw new LogicException('Recovery receipt has no matching native creation history.');
+        }
         return $command;
     }
 
@@ -143,12 +148,12 @@ final readonly class RecoveryRunAdmission
             }
             return null;
         }
-        $receipt = self::creationReceipt($run);
+        $receipt = self::sourceReceipt($instance, $run);
         if (! is_array($receipt)
             || ($receipt['intent']['binding_fingerprint'] ?? null) !== $intent['binding_fingerprint']) {
             throw new LogicException('Recovery run has no matching native admission lineage.');
         }
-        $this->assertRun($instance, $run, $receipt);
+        self::assertRun($instance, $run, $receipt);
         if (! $run->status->isTerminal()) {
             if (PortableDescriptor::encode($receipt['intent']) !== PortableDescriptor::encode($intent)) {
                 throw new LogicException('Active recovery is not the successor of the requested predecessor.');
@@ -222,8 +227,8 @@ final readonly class RecoveryRunAdmission
         WorkflowRun $source,
         WorkflowRun $successor,
         WorkflowCommand $command,
+        ?array $receipt,
     ): ?array {
-        $receipt = self::creationReceipt($source);
         if ($receipt === null) {
             return null;
         }
@@ -245,7 +250,11 @@ final readonly class RecoveryRunAdmission
         return $receipt;
     }
 
-    private static function creationReceipt(WorkflowRun $run): ?array
+    /**
+     * Either atomic copy identifies a recovery. Missing, malformed or divergent
+     * copies must never turn it into an ordinary unbound start/redrive.
+     */
+    public static function sourceReceipt(WorkflowInstance $instance, WorkflowRun $run): ?array
     {
         $creation = ConfiguredV2Models::query('command_model', WorkflowCommand::class)
             ->where('workflow_run_id', $run->id)
@@ -253,8 +262,30 @@ final readonly class RecoveryRunAdmission
             ->whereIn('command_type', [CommandType::Start->value, CommandType::Redrive->value])
             ->whereIn('outcome', [CommandOutcome::StartedNew->value, CommandOutcome::Redriven->value])
             ->first();
-        $receipt = $creation?->context['compensation_recovery'] ?? null;
-        return is_array($receipt) ? $receipt : null;
+        $started = $run->relationLoaded('historyEvents')
+            ? $run->historyEvents->firstWhere('event_type', HistoryEventType::WorkflowStarted)
+            : ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class)
+                ->where('workflow_run_id', $run->id)
+                ->where('event_type', HistoryEventType::WorkflowStarted->value)
+                ->orderBy('sequence')
+                ->first();
+        $payload = is_array($started?->payload) ? $started->payload : [];
+        $context = is_array($creation?->context) ? $creation->context : [];
+        $commandHasReceipt = array_key_exists('compensation_recovery', $context);
+        $historyHasReceipt = array_key_exists('compensation_recovery', $payload);
+        if (! $commandHasReceipt && ! $historyHasReceipt) {
+            return null;
+        }
+        $receipt = $context['compensation_recovery'] ?? null;
+        $marker = $payload['compensation_recovery'] ?? null;
+        if (! $commandHasReceipt || ! $historyHasReceipt || ! is_array($receipt) || ! is_array($marker)
+            || ($payload['workflow_command_id'] ?? null) !== $creation?->id
+            || PortableDescriptor::encode($receipt) !== PortableDescriptor::encode($marker)
+            || ($receipt['intent']['binding']['definition'] ?? null) !== ($payload['workflow_definition_fingerprint'] ?? null)) {
+            throw new LogicException('Recovery redrive requires matching native command and history receipts.');
+        }
+        self::assertRun($instance, $run, $receipt);
+        return $receipt;
     }
 
     private static function assertRun(WorkflowInstance $instance, mixed $run, array $receipt): void

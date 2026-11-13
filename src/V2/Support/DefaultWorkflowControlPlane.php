@@ -100,6 +100,10 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 return;
             }
 
+            // Check both immutable copies even for retained redrive lookup. A
+            // missing history marker must not hide a command-bound recovery.
+            $recoveryReceipt = RecoveryRunAdmission::sourceReceipt($instance, $source);
+
             /** @var WorkflowLink|null $existingLink */
             $existingLink = WorkflowLink::query()
                 ->where('parent_workflow_run_id', $source->id)
@@ -119,6 +123,11 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             }
 
             $currentRun = CurrentRunResolver::forInstance($instance, lockForUpdate: true);
+
+            if ($recoveryReceipt !== null && WorkflowDefinitionFingerprint::currentForRun($source)
+                !== $recoveryReceipt['intent']['binding']['definition']) {
+                throw new LogicException('Recovery redrive cannot change its authorized workflow definition.');
+            }
 
             $externalFingerprint = $options['external_workflow_definition_fingerprint'] ?? null;
             $eligibility = FailedRunRedriveEligibility::evaluate(
@@ -142,6 +151,9 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             $plan = $eligibility['plan'];
             $startedPayload = $eligibility['started_payload'];
             $definitionChange = $eligibility['definition_change'] ?? null;
+            if ($recoveryReceipt !== null && $definitionChange !== null) {
+                throw new LogicException('Recovery redrive cannot change its authorized workflow definition.');
+            }
             $successorClass = $definitionChange['workflow_class'] ?? $source->workflow_class;
             // Change provenance describes one transition. A successor that keeps
             // its source's definition records none, even if the source changed.
@@ -225,9 +237,13 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 ],
             ));
 
-            $recoveryReceipt = isset($startedPayload['compensation_recovery'])
-                ? RecoveryRunAdmission::carryToRedrive($instance, $source, $continuedRun, $command)
-                : null;
+            $recoveryReceipt = RecoveryRunAdmission::carryToRedrive(
+                $instance,
+                $source,
+                $continuedRun,
+                $command,
+                $recoveryReceipt,
+            );
 
             $link = WorkflowLink::query()->create([
                 'link_type' => 'redrive',
