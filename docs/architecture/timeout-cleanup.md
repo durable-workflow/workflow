@@ -177,7 +177,13 @@ tail and outcome. `T` is the start time.
   adds no new error variant; a `cause` enum on `CancellationRequest` means
   existing `CooperativeCancellationRequested` arms also catch timeouts.
 
-## Open questions for review
+- **General (2026-11-13):** `failed` cleanup keeps the run's
+  `failure_category` as `timeout`, with the cleanup failure linked through
+  `timeout_cleanup.failure_id`, the same as compensation failures (initiating
+  failure first, compensation failure attached). Describe, the history
+  export and the failure list say "cleanup failed" plainly, so an operator
+  doesn't read it as a clean timeout. Redrive eligibility follows the
+  timeout category.
 
-- **General:** should `failed` cleanup keep the run's `failure_category` as
-  `timeout`? This draft says yes: the business outcome is the timeout.
+All open questions are decided. The embedded implementation follows this
+contract; native and the SDKs follow through the `timeout_cleanup` capability.
