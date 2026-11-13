@@ -13,6 +13,7 @@ use Workflow\V2\Compensation\Security\ScopeAuthorization;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\SqliteTransaction;
+use Workflow\V2\Support\WorkflowFiberContext;
 
 /**
  * Explicit retirement. Normal run-history pruning never removes retained obligations.
@@ -29,8 +30,10 @@ final readonly class ScopeRetention
 
     public function release(ScopeIdentity $scope, string $principal): void
     {
+        $this->assertHostContext();
         $policy = $this->authorization->assertAllowed($scope, $principal, 'release');
         PortableDescriptor::identifier($policy, 'authorization policy version');
+        $this->assertHostContext();
         $snapshot = $this->repository->inspect($scope);
         SqliteTransaction::run(static function () use ($scope, $principal, $policy, $snapshot): void {
             $origin = ConfiguredV2Models::query('run_model', WorkflowRun::class)->whereKey(
@@ -90,5 +93,14 @@ final readonly class ScopeRetention
                 ]);
             });
         }, connection: ConfiguredV2Models::connection());
+    }
+
+    private function assertHostContext(): void
+    {
+        if (WorkflowFiberContext::active() || ConfiguredV2Models::connection()->transactionLevel() !== 0) {
+            throw new LogicException(
+                'Scope release authorization requires an unlocked host context outside workflow replay.'
+            );
+        }
     }
 }

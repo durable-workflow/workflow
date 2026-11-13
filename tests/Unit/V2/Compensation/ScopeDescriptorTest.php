@@ -49,6 +49,10 @@ final class ScopeDescriptorTest extends TestCase
         ]);
         $this->assertSame('ceb73af611903fb425f8bcdb3b415d52be6f619cc5f1f8f6c3c3996aea4c5a8d', $scope->id());
         $this->assertSame(
+            'dw-compensation-ceb73af611903fb425f8bcdb3b415d52be6f619cc5f1f8f6c3c3996aea4c5a8d',
+            $scope->recoveryInstanceId()
+        );
+        $this->assertSame(
             '43a5906816309c817fafc95d183ade5b5786123115a765b85b13b12440bcfa13',
             $obligation->fingerprint()
         );

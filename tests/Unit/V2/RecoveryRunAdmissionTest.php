@@ -438,7 +438,9 @@ final class RecoveryRunAdmissionTest extends TestCase
         ];
         $redrive = app(WorkflowControlPlane::class)->redrive($stub->id(), $first->runId(), $options);
         self::assertTrue($redrive['accepted']);
-        $owner = WorkflowCommand::query()->findOrFail($first->commandId())->context['compensation_recovery']['intent']['binding']['original_run_id'];
+        $owner = WorkflowCommand::query()->findOrFail(
+            $first->commandId()
+        )->context['compensation_recovery']['intent']['binding']['original_run_id'];
         $targetScope = $substitution === 'foreign'
             ? new ScopeIdentity($scope->application, $scope->namespace, 'different-order', $scope->generation)
             : $scope;

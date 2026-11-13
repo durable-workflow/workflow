@@ -24,8 +24,7 @@
             "sequence": 1,
             "event_type": "WorkflowStarted",
             "payload": {
-                "workflow_type": "dw.compensation.recovery.v1",
-                "namespace": "client-a"
+                "workflow_type": "dw.compensation.recovery.v1"
             },
             "recorded_at": "2026-11-13T00:00:00+00:00"
         },
@@ -49,8 +48,18 @@
                 "activity_type": "dw.compensation.prepare-recovery.v1",
                 "activity_class": "Workflow\\V2\\Compensation\\Activities\\PrepareRecoveryActivity",
                 "activity_execution_id": "corpus-execution-2",
-                "arguments": "wwHioz3/VYAiNwwCDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCghzaG9wEm5hbWVzcGFjZQoQY2xpZW50LWEGa2V5CipyZXRhaW5lZC1jb3JwdXMtb3JkZXIUZ2VuZXJhdGlvbgoCMQAA",
-                "payload_codec": "avro"
+                "activity": {
+                    "id": "corpus-execution-2",
+                    "idempotency_key": "corpus-execution-2",
+                    "sequence": 2,
+                    "type": "dw.compensation.prepare-recovery.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\PrepareRecoveryActivity",
+                    "local_activity": false,
+                    "status": "pending",
+                    "payload_codec": "avro",
+                    "attempt_count": 0,
+                    "arguments": "wwHioz3/VYAiNwwCDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCghzaG9wEm5hbWVzcGFjZQoQY2xpZW50LWEGa2V5CipyZXRhaW5lZC1jb3JwdXMtb3JkZXIUZ2VuZXJhdGlvbgoCMQAA"
+                }
             },
             "recorded_at": "2026-11-13T00:00:02+00:00"
         },
@@ -91,8 +100,18 @@
                 "activity_type": "dw.compensation.compensate-obligation.v1",
                 "activity_class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
                 "activity_execution_id": "corpus-execution-3",
-                "arguments": "wwHioz3/VYAiNwwEDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCghzaG9wEm5hbWVzcGFjZQoQY2xpZW50LWEGa2V5CipyZXRhaW5lZC1jb3JwdXMtb3JkZXIUZ2VuZXJhdGlvbgoCMQAKgAFiOTY2MGYxZWRmZjlmM2FlMDFkZGM2Mjc0MDQzY2I3YWEzNmZlODc0MjU1ZjUyMzcxYmNjNDU3ZTc5MThhNDFmAA==",
-                "payload_codec": "avro"
+                "activity": {
+                    "id": "corpus-execution-3",
+                    "idempotency_key": "corpus-execution-3",
+                    "sequence": 3,
+                    "type": "dw.compensation.compensate-obligation.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
+                    "local_activity": false,
+                    "status": "pending",
+                    "payload_codec": "avro",
+                    "attempt_count": 0,
+                    "arguments": "wwHioz3/VYAiNwwEDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCghzaG9wEm5hbWVzcGFjZQoQY2xpZW50LWEGa2V5CipyZXRhaW5lZC1jb3JwdXMtb3JkZXIUZ2VuZXJhdGlvbgoCMQAKgAFiOTY2MGYxZWRmZjlmM2FlMDFkZGM2Mjc0MDQzY2I3YWEzNmZlODc0MjU1ZjUyMzcxYmNjNDU3ZTc5MThhNDFmAA=="
+                }
             },
             "recorded_at": "2026-11-13T00:00:05+00:00"
         },
@@ -133,8 +152,18 @@
                 "activity_type": "dw.compensation.compensate-obligation.v1",
                 "activity_class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
                 "activity_execution_id": "corpus-execution-4",
-                "arguments": "wwHioz3/VYAiNwwEDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCghzaG9wEm5hbWVzcGFjZQoQY2xpZW50LWEGa2V5CipyZXRhaW5lZC1jb3JwdXMtb3JkZXIUZ2VuZXJhdGlvbgoCMQAKgAE5OGE3ZTA3YzQzNmFjMmVhZTA3MzhjODdlNjkxYjFiMDljZWExNTkyYTU2Yjg2MDAyZTAwZmVjYjUzNzJhNmI4AA==",
-                "payload_codec": "avro"
+                "activity": {
+                    "id": "corpus-execution-4",
+                    "idempotency_key": "corpus-execution-4",
+                    "sequence": 4,
+                    "type": "dw.compensation.compensate-obligation.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
+                    "local_activity": false,
+                    "status": "pending",
+                    "payload_codec": "avro",
+                    "attempt_count": 0,
+                    "arguments": "wwHioz3/VYAiNwwEDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCghzaG9wEm5hbWVzcGFjZQoQY2xpZW50LWEGa2V5CipyZXRhaW5lZC1jb3JwdXMtb3JkZXIUZ2VuZXJhdGlvbgoCMQAKgAE5OGE3ZTA3YzQzNmFjMmVhZTA3MzhjODdlNjkxYjFiMDljZWExNTkyYTU2Yjg2MDAyZTAwZmVjYjUzNzJhNmI4AA=="
+                }
             },
             "recorded_at": "2026-11-13T00:00:08+00:00"
         },
@@ -175,8 +204,18 @@
                 "activity_type": "dw.compensation.verify-scope.v1",
                 "activity_class": "Workflow\\V2\\Compensation\\Activities\\VerifyScopeActivity",
                 "activity_execution_id": "corpus-execution-5",
-                "arguments": "wwHioz3/VYAiNwwCDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCghzaG9wEm5hbWVzcGFjZQoQY2xpZW50LWEGa2V5CipyZXRhaW5lZC1jb3JwdXMtb3JkZXIUZ2VuZXJhdGlvbgoCMQAA",
-                "payload_codec": "avro"
+                "activity": {
+                    "id": "corpus-execution-5",
+                    "idempotency_key": "corpus-execution-5",
+                    "sequence": 5,
+                    "type": "dw.compensation.verify-scope.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\VerifyScopeActivity",
+                    "local_activity": false,
+                    "status": "pending",
+                    "payload_codec": "avro",
+                    "attempt_count": 0,
+                    "arguments": "wwHioz3/VYAiNwwCDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCghzaG9wEm5hbWVzcGFjZQoQY2xpZW50LWEGa2V5CipyZXRhaW5lZC1jb3JwdXMtb3JkZXIUZ2VuZXJhdGlvbgoCMQAA"
+                }
             },
             "recorded_at": "2026-11-13T00:00:11+00:00"
         },

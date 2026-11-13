@@ -208,7 +208,11 @@ final class V2CompensationScopeRunBoundaryTest extends TestCase
             'runs' => WorkflowRun::query()->whereIn('id', $links->pluck('child_workflow_run_id'))
                 ->get(['id', 'status'])->toArray(),
             'failures' => WorkflowFailure::query()->whereIn('workflow_run_id', $links->pluck('child_workflow_run_id'))
-                ->pluck('message')->all(),
+                ->pluck('message')
+                ->all(),
+            'tasks' => WorkflowTask::query()->whereIn('workflow_run_id', $links->pluck('child_workflow_run_id'))
+                ->get(['task_type', 'status', 'attempt_count', 'last_error', 'last_claim_error'])
+                ->toArray(),
         ], JSON_THROW_ON_ERROR));
         $origin = WorkflowRun::query()->findOrFail($links[0]->child_workflow_run_id);
         $retry = WorkflowRun::query()->findOrFail($links[1]->child_workflow_run_id);

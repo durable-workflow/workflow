@@ -156,6 +156,12 @@ identities, fingerprints, outcome references and journal tombstones. Forward
 observation references are recorded in the immutable journal before release.
 The journal does not retain the forward business value or obligation input.
 No automatic expiry is added. Ordinary run-detail pruning cannot cascade into this ledger.
+Canonical recovery details, including both native receipt copies and redrive
+links, remain pinned while the scope is retained. Verification alone does not
+remove this hold because old authorized request keys still return their original
+runs. Explicit release removes the hold; ordinary forward-origin details can be
+pruned independently. Release authorization runs outside replay and SQL
+transactions, before the atomic retirement mutation.
 
 ## Continue-as-new and originating-run redrive
 

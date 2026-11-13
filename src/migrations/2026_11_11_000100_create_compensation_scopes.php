@@ -13,6 +13,8 @@ return new class() extends WorkflowMigration {
             $table->string('id', 64)
                 ->primary();
             $table->text('identity');
+            $table->string('recovery_instance_id', 128)
+                ->unique();
             $table->string('original_run_id', 128)
                 ->index();
             $table->string('status', 32);
