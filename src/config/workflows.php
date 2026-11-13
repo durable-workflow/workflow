@@ -118,6 +118,17 @@ return [
                 // App\Exceptions\LegacyInvoiceDeclined::class => App\Exceptions\InvoiceDeclined::class,
             ],
         ],
+        // Experimental (workflow issue 996): pass a domain entity to an activity
+        // as a portable reference. Each logical type names an adapter that
+        // turns the entity into {type, id, version} when the activity is
+        // scheduled, and a resolver that loads the current entity before each
+        // attempt. Top-level activity arguments of in-process workers only.
+        'entity_references' => [
+            // 'orders.order' => [
+            //     'adapter' => App\Infrastructure\OrderReferenceAdapter::class,
+            //     'resolver' => App\Infrastructure\OrderReferenceResolver::class,
+            // ],
+        ],
         // Worker-compatibility markers let you pin workflow runs to a specific
         // worker build and block incompatible workers from claiming tasks. All
         // three keys default to null ("no marker required"), which is the right
