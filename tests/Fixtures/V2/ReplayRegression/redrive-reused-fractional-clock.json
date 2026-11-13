@@ -82,7 +82,11 @@
       "activity_completed_at": "1793664000.234567",
       "timer_fired_at": "1793664006.345678"
     },
-    "commands": []
+    "commands": [
+      {
+        "type": "complete_workflow"
+      }
+    ]
   },
   "consumers": [
     "workflow-fiber-runner"
