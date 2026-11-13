@@ -2469,9 +2469,7 @@ final class WorkflowExecutor
         try {
             $this->syncWorkflowCursor($frame->workflow, $frame->sequence + $size);
             $frame->current = $frame->execution->throw(
-                new WorkflowCancellationRequestedException(
-                    cancellation: CooperativeCancellationDelivery::context($run),
-                ),
+                WorkflowCancellationRequestedException::forContext(CooperativeCancellationDelivery::context($run)),
                 $run->cancellation_delivered_at,
             );
         } catch (Throwable $throwable) {

@@ -8,7 +8,7 @@ use Error;
 use Throwable;
 use Workflow\V2\CancellationContext;
 
-final class WorkflowCancellationRequestedException extends Error
+class WorkflowCancellationRequestedException extends Error
 {
     public function __construct(
         string $message = 'Cooperative cancellation requested.',
@@ -17,5 +17,16 @@ final class WorkflowCancellationRequestedException extends Error
         public readonly ?CancellationContext $cancellation = null,
     ) {
         parent::__construct($message, $code, $previous);
+    }
+
+    /**
+     * The exception for a delivered request: the timeout cleanup subtype when
+     * deadline-triggered cleanup (#863) requested it.
+     */
+    public static function forContext(?CancellationContext $cancellation): self
+    {
+        return $cancellation?->isTimeout() === true
+            ? new WorkflowTimeoutCleanupRequested(cancellation: $cancellation)
+            : new self(cancellation: $cancellation);
     }
 }
