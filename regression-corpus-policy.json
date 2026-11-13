@@ -80,6 +80,21 @@
         },
         {
           "glob": "src/V2/Support/ActivityRetryHistory.php"
+        },
+        {
+          "glob": "src/V2/Compensation/DurableScope.php"
+        },
+        {
+          "glob": "src/V2/Compensation/Recovery/RecoveryWorkflow.php"
+        },
+        {
+          "glob": "src/V2/Compensation/Definition/*.php"
+        },
+        {
+          "glob": "src/V2/Compensation/Execution/ForwardResult.php"
+        },
+        {
+          "glob": "src/V2/Compensation/Execution/Resolution.php"
         }
       ]
     }
