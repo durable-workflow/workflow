@@ -1680,14 +1680,25 @@ final class WorkflowExecutor
         try {
             ChildStartHistory::assertReceipt($run, $child, $sequence);
             $awaited = ChildStartHistory::awaitedEvent($run, $child, $sequence);
+            if (ChildStartHistory::cancellationDelivery($run, $child, $sequence) !== null) {
+                return $this->resumeCancellation($run, $task, $frame);
+            }
             $resolution = ChildRunHistory::resolutionEventForSequence($run, $child->startSequence);
-            $target = ChildRunHistory::childRunForSequence($run, $child->startSequence);
-            ChildStartHistory::assertResolution($child, $resolution, $target, $sequence);
+            $target = ChildStartHistory::target($run, $child, $resolution, $sequence);
+            if ($awaited === null) {
+                WorkflowHistoryEvent::record(
+                    $run,
+                    HistoryEventType::ChildWorkflowAwaited,
+                    ChildStartHistory::awaitPayload($child, $sequence),
+                    $task
+                );
+                $run->load('historyEvents');
+            }
             $delivery = $this->deliverCancellationAtCall(
                 $run,
                 $task,
                 $sequence,
-                'child',
+                'started_child_await',
                 $resolution,
                 $frame->execution,
                 operationSequence: $child->startSequence
@@ -1697,14 +1708,6 @@ final class WorkflowExecutor
             }
             if ($delivery === CancellationDeliveryState::Delivered) {
                 return $this->resumeCancellation($run, $task, $frame);
-            }
-            if ($awaited === null) {
-                WorkflowHistoryEvent::record(
-                    $run,
-                    HistoryEventType::ChildWorkflowAwaited,
-                    ChildStartHistory::awaitPayload($child, $sequence),
-                    $task
-                );
             }
             if ($resolution === null && $target !== null) {
                 $status = ChildRunHistory::resolvedStatus(null, $target);

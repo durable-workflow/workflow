@@ -554,15 +554,28 @@ final class QueryStateReplayer
                 $child = $current->child;
                 ChildStartHistory::assertReceipt($run, $child, $historySequence);
                 $awaited = ChildStartHistory::awaitedEvent($run, $child, $historySequence);
+                $cancelled = ChildStartHistory::cancellationDelivery($run, $child, $historySequence);
+                if ($cancelled !== null) {
+                    $context = CooperativeCancellationDelivery::context($run);
+                    if ($context === null) {
+                        throw new \LogicException('The child-await cancellation has no canonical context.');
+                    }
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
+                    $current = $workflowExecution->throw(
+                        \Workflow\V2\Exceptions\WorkflowCancellationRequestedException::forContext($context),
+                        $cancelled->recorded_at
+                    );
+                    ++$sequence;
+                    continue;
+                }
                 $resolution = ChildRunHistory::resolutionEventForSequence($run, $child->startSequence);
+                $target = ChildStartHistory::target($run, $child, $resolution, $historySequence);
                 // Live terminal rows do not authorize query replay before the
                 // parent's typed resolution commits.
                 if ($awaited === null || $resolution === null) {
                     $this->syncWorkflowCursor($workflow, $sequence);
                     return new ReplayState($workflow, $sequence, $current);
                 }
-                $target = ChildRunHistory::childRunForSequence($run, $child->startSequence);
-                ChildStartHistory::assertResolution($child, $resolution, $target, $historySequence);
                 $this->syncWorkflowCursor($workflow, $sequence + 1);
                 $current = $resolution->event_type === HistoryEventType::ChildRunCompleted
                     ? $workflowExecution->send(
@@ -2078,6 +2091,7 @@ final class QueryStateReplayer
             HistoryEventType::SignalWaitOpened->value,
             HistoryEventType::SignalApplied->value,
             HistoryEventType::ChildWorkflowScheduled->value,
+            HistoryEventType::ChildWorkflowAwaited->value,
             HistoryEventType::ChildRunStarted->value,
             HistoryEventType::ChildRunCompleted->value,
             HistoryEventType::ChildRunFailed->value,

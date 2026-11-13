@@ -10,6 +10,7 @@ use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\StartedChildWorkflow;
 
 /**
  * Canonical cancellation delivery shared by embedded and portable execution.
@@ -24,6 +25,7 @@ final class CooperativeCancellationDelivery
         'condition' => WorkflowStepHistory::CONDITION_WAIT,
         'signal' => WorkflowStepHistory::SIGNAL_WAIT,
         'child' => WorkflowStepHistory::CHILD_WORKFLOW,
+        'started_child_await' => WorkflowStepHistory::CHILD_WORKFLOW_AWAIT,
         'service_operation' => WorkflowStepHistory::SERVICE_OPERATION,
     ];
 
@@ -94,6 +96,21 @@ final class CooperativeCancellationDelivery
             return $membership;
         }
 
+        if ($callKind === 'started_child_await') {
+            $boundary = self::validateCallBoundary(
+                $run,
+                $request,
+                $sequence,
+                $callKind,
+                $sequenceSpan,
+                $operationSequence,
+                $operationSequenceSpan
+            );
+            if ($boundary !== null) {
+                return $boundary;
+            }
+        }
+
         $existing = self::recorded($run);
         if ($existing instanceof WorkflowHistoryEvent) {
             return ($existing->workflow_command_id === $requestId
@@ -150,7 +167,7 @@ final class CooperativeCancellationDelivery
             || ($limit > 0 && $operationSequenceSpan > $limit)
             || (! isset(self::CALL_SHAPES[$callKind]) && ! in_array($callKind, ['parallel', 'selection_handle'], true))
             || ($callKind !== 'parallel' && $sequenceSpan !== 1)
-            || ($callKind === 'selection_handle') !== ($operationSequence !== null)
+            || in_array($callKind, ['selection_handle', 'started_child_await'], true) !== ($operationSequence !== null)
             || ($callKind !== 'selection_handle' && $operationSequenceSpan !== 1))
             ? 'invalid_cancellation_delivery' : null;
     }
@@ -174,6 +191,36 @@ final class CooperativeCancellationDelivery
         $nextSequence = WorkflowStepHistory::nextDurableCommandSequence($run);
         if ($sequence > $nextSequence) {
             return 'cancellation_delivery_sequence_mismatch';
+        }
+
+        if ($callKind === 'started_child_await') {
+            if ($operationSequence === null || $operationSequence < 1 || $operationSequence >= $sequence) {
+                return 'cancellation_delivery_sequence_mismatch';
+            }
+            try {
+                WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::CHILD_WORKFLOW_AWAIT);
+                WorkflowStepHistory::assertTypedHistoryRecorded(
+                    $run,
+                    $sequence,
+                    WorkflowStepHistory::CHILD_WORKFLOW_AWAIT
+                );
+                $event = $run->historyEvents->first(static fn (WorkflowHistoryEvent $event): bool =>
+                    $event->event_type === HistoryEventType::ChildWorkflowAwaited
+                    && ($event->payload['sequence'] ?? null) === $sequence);
+                if (! is_array($event?->payload['receipt'] ?? null)) {
+                    return 'cancellation_delivery_shape_mismatch';
+                }
+                $receipt = StartedChildWorkflow::fromArray($event->payload['receipt']);
+                ChildStartHistory::assertReceipt($run, $receipt, $sequence);
+                ChildStartHistory::awaitedEvent($run, $receipt, $sequence);
+                if ($receipt->startSequence !== $operationSequence) {
+                    return 'cancellation_delivery_sequence_mismatch';
+                }
+            } catch (\InvalidArgumentException|HistoryEventShapeMismatchException $error) {
+                return 'cancellation_delivery_shape_mismatch';
+            }
+            return self::resolvedBeforeRequest($run, $operationSequence, $request)
+                ? 'cancellation_delivery_not_eligible' : null;
         }
 
         if ($callKind === 'selection_handle') {
@@ -307,6 +354,7 @@ final class CooperativeCancellationDelivery
                 HistoryEventType::ConditionWaitOpened => 'condition',
                 HistoryEventType::SignalWaitOpened => 'signal',
                 HistoryEventType::ChildWorkflowScheduled => 'child',
+                HistoryEventType::ChildWorkflowAwaited => 'started_child_await',
                 HistoryEventType::ServiceOperationScheduled,
                 HistoryEventType::ServiceCallStarted => 'service_operation',
                 HistoryEventType::TimerScheduled => match ($event->payload['timer_kind'] ?? null) {

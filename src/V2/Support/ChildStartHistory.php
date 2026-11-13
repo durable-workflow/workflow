@@ -57,6 +57,28 @@ final class ChildStartHistory
         }
     }
 
+    public static function cancellationDelivery(
+        WorkflowRun $run,
+        StartedChildWorkflow $child,
+        int $sequence,
+    ): ?WorkflowHistoryEvent {
+        $event = CooperativeCancellationDelivery::recorded($run);
+        if ($event === null || ($event->payload['sequence'] ?? null) !== $sequence) {
+            return null;
+        }
+        $invalid = CooperativeCancellationDelivery::validate(
+            $run,
+            (string) $run->cancellation_request_command_id,
+            $sequence,
+            'started_child_await',
+            operationSequence: $child->startSequence
+        );
+        if ($invalid !== null) {
+            throw self::mismatch($sequence, $invalid);
+        }
+        return $event;
+    }
+
     public static function awaitedEvent(
         WorkflowRun $run,
         StartedChildWorkflow $child,
@@ -90,6 +112,65 @@ final class ChildStartHistory
         ];
     }
 
+    /**
+     * Resolve only the recorded chain, never mutable current-run order.
+     */
+    public static function target(
+        WorkflowRun $parent,
+        StartedChildWorkflow $child,
+        ?WorkflowHistoryEvent $resolution,
+        int $sequence,
+    ): ?WorkflowRun {
+        $starts = $parent->historyEvents->filter(static fn (WorkflowHistoryEvent $event): bool =>
+            $event->event_type === HistoryEventType::ChildRunStarted
+            && ($event->payload['sequence'] ?? null) === $child->startSequence)->sortBy('sequence');
+        $previous = null;
+        $seen = [];
+        foreach ($starts as $event) {
+            $id = $event->payload['child_workflow_run_id'] ?? null;
+            if (! is_string($id) || isset($seen[$id])
+                || $event->workflow_run_id !== $parent->id
+                || ($event->payload['child_call_id'] ?? null) !== $child->childCallId
+                || ($event->payload['child_workflow_instance_id'] ?? null) !== $child->childInstanceId
+                || ($event->payload['child_workflow_type'] ?? null) !== $child->workflowType) {
+                throw self::mismatch($sequence, 'The child admission chain is not linear or has substituted identity.');
+            }
+            if ($previous === null && $id !== $child->childRunId) {
+                throw self::mismatch($sequence, 'The child chain does not begin at the admitted run.');
+            }
+            /** @var WorkflowRun|null $target */
+            $target = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->where('namespace', $child->namespace)
+                ->where('workflow_instance_id', $child->childInstanceId)
+                ->where('workflow_type', $child->workflowType)
+                ->find($id);
+            if ($target === null) {
+                // A complete parent outcome can outlive the initial child's
+                // detail row. It cannot invent a missing descendant chain.
+                if ($id === $child->childRunId && $starts->count() === 1 && $resolution !== null) {
+                    self::assertResolution($child, $resolution, null, $sequence);
+                    return null;
+                }
+                throw self::mismatch($sequence, 'The admitted child lineage is unavailable.');
+            }
+            $target->setRelation('historyEvents', $target->historyEvents()->whereIn('event_type', [
+                HistoryEventType::WorkflowStarted, HistoryEventType::WorkflowContinuedAsNew,
+                HistoryEventType::WorkflowCompleted, HistoryEventType::WorkflowFailed,
+                HistoryEventType::WorkflowCancelled, HistoryEventType::WorkflowTerminated,
+            ])->get());
+            if ($previous !== null) {
+                self::assertSuccessor($parent, $child, $previous, $target, $event, $sequence);
+            }
+            $seen[$id] = true;
+            $previous = $target;
+        }
+        if ($previous === null || $previous->closed_reason === 'continued') {
+            throw self::mismatch($sequence, 'The admitted child has no complete recorded continuation chain.');
+        }
+        self::assertResolution($child, $resolution, $previous, $sequence);
+        return $previous;
+    }
+
     public static function assertResolution(
         StartedChildWorkflow $child,
         ?WorkflowHistoryEvent $resolution,
@@ -102,8 +183,54 @@ final class ChildStartHistory
             throw self::mismatch($sequence, 'The child target escaped its admitted namespace or instance.');
         }
         if ($resolution !== null && (($resolution->payload['child_workflow_instance_id'] ?? null)
-            !== $child->childInstanceId || ($resolution->payload['child_call_id'] ?? null) !== $child->childCallId)) {
+            !== $child->childInstanceId || ($resolution->payload['child_call_id'] ?? null) !== $child->childCallId
+            || ($resolution->payload['child_workflow_run_id'] ?? null) !== ($target?->id ?? $child->childRunId)
+            || ($resolution->payload['child_workflow_type'] ?? null) !== $child->workflowType)) {
             throw self::mismatch($sequence, 'The terminal outcome belongs to a different child admission.');
+        }
+    }
+
+    private static function assertSuccessor(
+        WorkflowRun $parent,
+        StartedChildWorkflow $child,
+        WorkflowRun $predecessor,
+        WorkflowRun $successor,
+        WorkflowHistoryEvent $parentStart,
+        int $sequence,
+    ): void {
+        $starts = $successor->historyEvents->filter(static fn (WorkflowHistoryEvent $event): bool =>
+            $event->event_type === HistoryEventType::WorkflowStarted);
+        $started = $starts->first();
+        $payload = $started?->payload ?? [];
+        if ($starts->count() !== 1 || ! is_string($payload['workflow_link_id'] ?? null)
+            || $payload['workflow_link_id'] === ''
+            || ! is_string($parentStart->payload['workflow_link_id'] ?? null)
+            || $parentStart->payload['workflow_link_id'] === ''
+            || ($payload['workflow_instance_id'] ?? null) !== $child->childInstanceId
+            || ($payload['workflow_type'] ?? null) !== $child->workflowType
+            || ($payload['workflow_run_id'] ?? null) !== $successor->id
+            || ($payload['parent_workflow_instance_id'] ?? null) !== $parent->workflow_instance_id
+            || ($payload['parent_workflow_run_id'] ?? null) !== $parent->id
+            || ($payload['parent_sequence'] ?? null) !== $child->startSequence
+            || ($payload['child_call_id'] ?? null) !== $child->childCallId) {
+            throw self::mismatch($sequence, 'The successor start is not bound to the admitted child call.');
+        }
+        $retry = ($payload['retry_of_child_workflow_run_id'] ?? null) === $predecessor->id
+            && $parentStart->payload['workflow_link_id'] === $payload['workflow_link_id']
+            && ($payload['continued_from_run_id'] ?? null) === null
+            && ($payload['recovery_kind'] ?? null) !== 'redrive'
+            && ($parentStart->payload['retry_of_child_workflow_run_id'] ?? null) === $predecessor->id
+            && $predecessor->historyEvents->contains(static fn (WorkflowHistoryEvent $event): bool =>
+                $event->event_type === HistoryEventType::WorkflowFailed);
+        $continued = ($payload['continued_from_run_id'] ?? null) === $predecessor->id
+            && ($payload['retry_of_child_workflow_run_id'] ?? null) === null
+            && ($payload['recovery_kind'] ?? null) !== 'redrive'
+            && $predecessor->historyEvents->contains(static fn (WorkflowHistoryEvent $event): bool =>
+                $event->event_type === HistoryEventType::WorkflowContinuedAsNew
+                && ($event->payload['continued_to_run_id'] ?? null) === $successor->id
+                && ($event->payload['workflow_link_id'] ?? null) === ($payload['workflow_link_id'] ?? null));
+        if (! $retry && ! $continued) {
+            throw self::mismatch($sequence, 'The successor lacks the exact typed retry or continuation edge.');
         }
     }
 
