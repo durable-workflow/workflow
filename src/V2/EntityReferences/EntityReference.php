@@ -50,8 +50,9 @@ final class EntityReference
      */
     public static function fromArray(array $value): self
     {
-        if (array_keys($value) !== ['type', 'id', 'version']
-            || ! is_string($value['type']) || ! is_string($value['id']) || ! is_int($value['version'])) {
+        if (count($value) !== 3
+            || ! is_string($value['type'] ?? null) || ! is_string($value['id'] ?? null)
+            || ! is_int($value['version'] ?? null)) {
             throw new InvalidArgumentException('A recorded entity reference must be exactly {type, id, version}.');
         }
 
