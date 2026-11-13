@@ -6,6 +6,7 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\Cache;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\V2\TestRetainedScopeWorkflow;
 use Tests\Fixtures\V2\TestScopedOperation;
 use Tests\TestCase;
@@ -19,6 +20,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\WorkflowReplayer;
+use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\WorkflowStub;
 
 final class V2CompensationScopeTest extends TestCase
@@ -87,6 +89,115 @@ final class V2CompensationScopeTest extends TestCase
         $this->assertSame(1, (int) Cache::get('test:scope:effect-count'));
     }
 
+    public static function operatorStops(): array
+    {
+        return [
+            'cancel' => ['cancel'],
+            'terminate' => ['terminate'],
+        ];
+    }
+
+    #[DataProvider('operatorStops')]
+    public function testFreshRequestsResumeStoppedRecoveryWithoutRebindingOldRequests(string $stop): void
+    {
+        [$scope, $origin] = $this->completedOrigin();
+        Cache::put('test:scope:unknown-first', true);
+        $first = app(ScopeRecovery::class)->request($scope, 'recovery-1', 'operator-a', 'cancel');
+        $firstStub = WorkflowStub::loadRun($first['runId']);
+        $this->assertFalse($firstStub->completed());
+        $stopped = $stop === 'cancel' ? $firstStub->cancel('operator-stop') : $firstStub->terminate('operator-stop');
+        $this->assertTrue($stopped->accepted());
+        $firstHistory = WorkflowHistoryEvent::query()->where('workflow_run_id', $first['runId'])
+            ->orderBy('sequence')->get()->toArray();
+        $second = app(ScopeRecovery::class)->request($scope, 'recovery-2', 'operator-a', 'cancel');
+        $this->assertNotSame($first['runId'], $second['runId']);
+        $secondStub = WorkflowStub::loadRun($second['runId']);
+        $stopped = $stop === 'cancel' ? $secondStub->cancel('operator-stop') : $secondStub->terminate('operator-stop');
+        $this->assertTrue($stopped->accepted());
+        $secondHistory = WorkflowHistoryEvent::query()->where('workflow_run_id', $second['runId'])
+            ->orderBy('sequence')->get()->toArray();
+
+        foreach ([['recovery-1', $first], ['recovery-2', $second]] as [$key, $receipt]) {
+            $again = app(ScopeRecovery::class)->request($scope, $key, 'operator-a', 'cancel');
+            $this->assertSame($receipt['runId'], $again['runId']);
+            $this->assertSame($receipt['commandId'], $again['commandId']);
+            $this->assertSame($stop === 'cancel' ? 'cancelled' : 'terminated', $again['recoveryStatus']);
+            $this->assertSame('submit_fresh_authorized_request', $again['nextAction']);
+        }
+        $this->assertSame(2, WorkflowRun::query()->where('workflow_instance_id', $scope->recoveryInstanceId())->count());
+        Cache::forget('test:scope:unknown-first');
+        $third = app(ScopeRecovery::class)->request($scope, 'recovery-3', 'operator-a', 'cancel');
+        $this->assertNotContains($third['runId'], [$first['runId'], $second['runId']]);
+        $this->assertTrue(WorkflowStub::loadRun($third['runId'])->completed());
+        $this->assertSame('verified', (new ScopeRepository())->inspect($scope)['status']);
+        $this->assertSame(1, count(array_filter(
+            Cache::get('test:scope:undo-log'),
+            static fn (string $key): bool => $key === 'second',
+        )));
+        $this->assertSame($firstHistory, WorkflowHistoryEvent::query()->where('workflow_run_id', $first['runId'])
+            ->orderBy('sequence')->get()->toArray());
+        $this->assertSame($secondHistory, WorkflowHistoryEvent::query()->where('workflow_run_id', $second['runId'])
+            ->orderBy('sequence')->get()->toArray());
+        $retained = app(ScopeRecovery::class)->request($scope, 'recovery-1', 'operator-a', 'cancel');
+        $this->assertSame($first['runId'], $retained['runId']);
+        $this->assertSame($first['commandId'], $retained['commandId']);
+        $this->assertSame('verified', $retained['scopeStatus']);
+        $this->assertSame('none', $retained['nextAction']);
+        $this->assertSame($origin->runId(), (new ScopeRepository())->inspect($scope)['original_run_id']);
+    }
+
+    public function testRetainedRecoveryRequestCannotChangeItsInitialBudget(): void
+    {
+        [$scope] = $this->completedOrigin();
+        Cache::put('test:scope:unknown-first', true);
+        $profile = StartOptions::returnExistingActive()->withExecutionTimeout(600)->withRunTimeout(300);
+        $first = app(ScopeRecovery::class)->request($scope, 'bounded-recovery', 'operator-a', 'cancel', $profile);
+        $this->assertTrue(WorkflowStub::loadRun($first['runId'])->terminate('operator-stop')->accepted());
+        $history = WorkflowHistoryEvent::query()->where('workflow_run_id', $first['runId'])->count();
+        try {
+            app(ScopeRecovery::class)->request(
+                $scope,
+                'bounded-recovery',
+                'operator-a',
+                'cancel',
+                $profile->withExecutionTimeout(601),
+            );
+            $this->fail('The same recovery request admitted a different initial budget.');
+        } catch (\LogicException $error) {
+            $this->assertStringContainsString('profile changed', $error->getMessage());
+        }
+        $this->assertSame(1, WorkflowRun::query()->where('workflow_instance_id', $scope->recoveryInstanceId())->count());
+        $this->assertSame($history, WorkflowHistoryEvent::query()->where('workflow_run_id', $first['runId'])->count());
+    }
+
+    public function testRecoveryRefusesCallerTransactionsBeforeHostAuthorization(): void
+    {
+        [$scope] = $this->completedOrigin();
+        $calls = 0;
+        $this->app->instance(ScopeAuthorization::class, new class($calls) implements ScopeAuthorization {
+            public function __construct(private int &$calls)
+            {
+            }
+
+            public function assertAllowed(ScopeIdentity $scope, string $principal, string $operation): string
+            {
+                ++$this->calls;
+                return 'policy';
+            }
+        });
+        $database = ConfiguredV2Models::connection();
+        $database->beginTransaction();
+        try {
+            app(ScopeRecovery::class)->request($scope, 'inside-transaction', 'operator-a', 'cancel');
+            $this->fail('Recovery ran host authorization under a caller transaction.');
+        } catch (\LogicException $error) {
+            $this->assertStringContainsString('unlocked host context', $error->getMessage());
+            $this->assertSame(0, $calls);
+        } finally {
+            $database->rollBack();
+        }
+    }
+
     public function testRetryExhaustionStaysUnresolvedAndNativeRedriveReusesVerifiedWork(): void
     {
         [$scope] = $this->completedOrigin();
@@ -138,27 +249,31 @@ final class V2CompensationScopeTest extends TestCase
         )));
     }
 
-    public function testOneRetainedRequestCanRedriveTwoFailuresWithoutRepeatingVerifiedWork(): void
+    public function testFreshRequestsCanRedriveTwoFailuresWithoutRepeatingVerifiedWork(): void
     {
         [$scope] = $this->completedOrigin();
         Cache::put('test:scope:unknown-first', true);
-        $first = app(ScopeRecovery::class)->request($scope, 'cancel', 'operator-a', 'cancel');
+        $first = app(ScopeRecovery::class)->request($scope, 'cancel-1', 'operator-a', 'cancel');
         $this->driveNativeRetries($first['runId']);
-        $second = app(ScopeRecovery::class)->request($scope, 'cancel', 'operator-a', 'cancel');
+        $retained = app(ScopeRecovery::class)->request($scope, 'cancel-1', 'operator-a', 'cancel');
+        $this->assertSame($first['runId'], $retained['runId']);
+        $this->assertSame($first['commandId'], $retained['commandId']);
+        $this->assertSame('submit_fresh_authorized_request', $retained['nextAction']);
+        $second = app(ScopeRecovery::class)->request($scope, 'cancel-2', 'operator-a', 'cancel');
         $this->assertNotSame($first['runId'], $second['runId']);
-        $duplicate = app(ScopeRecovery::class)->request($scope, 'cancel', 'operator-a', 'cancel');
+        $duplicate = app(ScopeRecovery::class)->request($scope, 'cancel-2', 'operator-a', 'cancel');
         $this->assertSame($second['runId'], $duplicate['runId']);
         $this->driveNativeRetries($second['runId']);
         $this->assertSame('failed', WorkflowRun::query()->findOrFail($second['runId'])->status->value);
         Cache::forget('test:scope:unknown-first');
-        $third = app(ScopeRecovery::class)->request($scope, 'cancel', 'operator-a', 'cancel');
+        $third = app(ScopeRecovery::class)->request($scope, 'cancel-3', 'operator-a', 'cancel');
         $this->assertNotSame($second['runId'], $third['runId']);
         $this->assertSame('verified', (new ScopeRepository())->inspect($scope)['status']);
         $this->assertSame(
             3,
             WorkflowRun::query()->where('workflow_instance_id', $scope->recoveryInstanceId())->count()
         );
-        $this->assertSame(1, \Workflow\V2\Support\ConfiguredV2Models::connection()
+        $this->assertSame(3, \Workflow\V2\Support\ConfiguredV2Models::connection()
             ->table('workflow_compensation_requests')
             ->where('scope_id', $scope->id())
             ->count());
@@ -275,6 +390,45 @@ final class V2CompensationScopeTest extends TestCase
             ['order-42/second', 'shipment-42/second', 'shipment-42/first', 'order-42/first'],
             Cache::get('test:scope:undo-scoped-log')
         );
+    }
+
+    public function testFailedChildNeedsAnExplicitFreshRequestBeforeParentRecoveryCanAdvance(): void
+    {
+        WorkflowStub::fake();
+        $child = new ScopeIdentity('shop', 'client-a', 'failed-child', '1');
+        WorkflowStub::make(TestRetainedScopeWorkflow::class, 'failed-child-origin', 'client-a')
+            ->start($child->toArray(), 'complete');
+        $parent = new ScopeIdentity('shop', 'client-a', 'waiting-parent', '1');
+        WorkflowStub::make(TestRetainedScopeWorkflow::class, 'waiting-parent-origin', 'client-a')
+            ->start($parent->toArray(), 'with-child', $child->toArray());
+        Cache::put('test:scope:unknown-first', true);
+        $parentRecovery = app(ScopeRecovery::class)->request($parent, 'parent-1', 'operator-a', 'cancel');
+        $childRun = WorkflowRun::query()->where('workflow_instance_id', $child->recoveryInstanceId())->sole();
+        $this->driveNativeRetries($childRun->id);
+        $this->assertSame('failed', $childRun->refresh()->status->value);
+        $this->driveNativeRetries($parentRecovery['runId']);
+        $this->assertSame('failed', WorkflowRun::query()->findOrFail($parentRecovery['runId'])->status->value);
+        $this->assertSame(1, WorkflowRun::query()->where('workflow_instance_id', $child->recoveryInstanceId())->count());
+        $this->assertNotContains('waiting-parent/first', Cache::get('test:scope:undo-scoped-log'));
+        Cache::forget('test:scope:unknown-first');
+        $retained = app(ScopeRecovery::class)->request($parent, 'parent-1', 'operator-a', 'cancel');
+        $this->assertSame($parentRecovery['runId'], $retained['runId']);
+        $this->assertSame('submit_fresh_authorized_request', $retained['nextAction']);
+        $this->assertSame(1, WorkflowRun::query()->where('workflow_instance_id', $child->recoveryInstanceId())->count());
+
+        app(ScopeRecovery::class)->request($child, 'explicit-child-2', 'operator-a', 'child-recovery');
+        $this->assertSame('verified', (new ScopeRepository())->inspect($child)['status']);
+        $this->assertNotContains('waiting-parent/first', Cache::get('test:scope:undo-scoped-log'));
+        $resumed = app(ScopeRecovery::class)->request($parent, 'parent-2', 'operator-a', 'cancel');
+        $this->assertTrue(WorkflowStub::loadRun($resumed['runId'])->completed());
+        $this->assertSame('verified', (new ScopeRepository())->inspect($parent)['status']);
+        $log = Cache::get('test:scope:undo-scoped-log');
+        $parentFirst = array_search('waiting-parent/first', $log, true);
+        $childFirst = array_keys($log, 'failed-child/first', true);
+        $this->assertGreaterThan(max($childFirst), $parentFirst);
+        foreach (['waiting-parent/second', 'failed-child/second', 'waiting-parent/first'] as $operation) {
+            $this->assertSame(1, count(array_keys($log, $operation, true)));
+        }
     }
 
     public function testChildParticipationRecordsItsOwnAuthorizationPolicyVersion(): void

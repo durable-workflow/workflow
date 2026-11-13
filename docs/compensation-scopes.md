@@ -35,9 +35,11 @@ Every scope derives one canonical recovery workflow instance ID. Native DW
 start/adopt admits one run; native redrive admits one successor after an eligible
 failure. A native returned-existing-active start receipt remains eligible for
 redrive only when its run identity and accepted start-command snapshot match.
-A technical redrive key includes the exact failed source run. One unchanged
-retained request can therefore recover several failed successors while duplicate
-requests for one source adopt the same successor. Scope progress must be written
+A retained request pins its first native route, predecessor and initial profile.
+Repeating that key returns its original admission receipt, including after that
+run fails or an operator cancels or terminates it. Each additional recovery run
+requires a fresh authorized scope request key. Native activity attempts and
+backoff within the same run keep their existing identities. Scope progress must be written
 under the current native activity attempt's authority, in the same database transaction as the ledger mutation. A status check
 followed by an unguarded write is insufficient. No scope lease or separate owner
 claim is introduced. Native fencing cannot recall an issued external request.
@@ -117,7 +119,10 @@ Children cannot be shared between parents. One application/namespace graph-integ
 row serializes edge changes before scope locks. It contains no executor, lease,
 heartbeat or retry state. A missing or unverified child stops earlier parent work.
 Long child cleanup can exhaust the ordinary native activity retry budget; the
-parent remains unresolved and can resume through eligible native redrive.
+parent remains unresolved. A failed child requires a fresh authorized child
+request. The stable parent-operation key never creates that request implicitly.
+After the child ledger becomes verified, a fresh authorized parent request can
+redrive the parent and observe that result before earlier parent work resumes.
 
 A scope stays attached to its original native run for forward execution. This
 increment does not transfer forward ownership across continue-as-new or origin
@@ -135,6 +140,14 @@ or termination can prevent cleanup; retained obligations remain for explicit
 recovery. A request accepted on an active origin is durable routing evidence; if
 that origin closes without resolving its obligations, repeat the same authorized
 request to route it to canonical recovery.
+
+Cancelled or terminated canonical recovery can restart on that same instance
+only through a fresh authorized request naming its exact current predecessor.
+The origin and retained obligations stay fixed; old terminal histories stay
+immutable. The initial recovery profile is independent of the closed forward
+run. Restarts inherit the canonical recovery's absolute execution and run
+deadlines and routing, with no renewed technical allowance. Exhausted deadlines
+refuse another restart and leave the obligations unresolved.
 
 `ScopeRetention::release()` requires verified work and terminal native executions,
 and refuses a child still retained by an unresolved parent. It removes retained
@@ -194,8 +207,15 @@ its own provider obligations before effects. A missing child remains unresolved
 and cannot satisfy the parent barrier.
 
 After the origin closes, the host calls `ScopeRecovery::request($identity,
-$requestKey, $principal, $reason)`. Obtain the principal from trusted application
+$requestKey, $principal, $reason, $initialProfile)`. The optional `StartOptions`
+profile sets the initial recovery budget; retain that same profile on later
+requests. Obtain the principal from trusted application
 authorization, not from untrusted request content. Repeating the same request
-requires the same principal and reason. Inspecting or requesting retained work
+requires the same principal, reason and profile. A returned failed/stopped
+receipt means recovery remains unresolved; inspect it and submit a fresh
+authorized key to request another eligible run. Results report `recoveryStatus`,
+`scopeStatus` and `nextAction`; `submit_fresh_authorized_request` identifies that
+boundary. Only the verified scope ledger clears the unresolved obligation.
+Inspecting or requesting retained work
 must go through an authorized host boundary; the `@internal` persistence classes
 are not an HTTP-facing data access API.

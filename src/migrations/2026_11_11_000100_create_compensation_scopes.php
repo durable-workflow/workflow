@@ -67,6 +67,8 @@ return new class() extends WorkflowMigration {
             $table->text('descriptor');
             $table->string('authorization_policy_version', 128)
                 ->nullable();
+            $table->text('recovery_route')
+                ->nullable();
             $table->unique(['scope_id', 'position'], 'compensation_request_position');
         });
         Schema::create('workflow_compensation_journal', static function (Blueprint $table): void {

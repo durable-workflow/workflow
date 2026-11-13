@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Compensation\Persistence;
 
+use Closure;
 use Illuminate\Database\Connection;
 use LogicException;
 use Workflow\Exceptions\NonRetryableException;
@@ -175,6 +176,61 @@ final class ScopeRepository
                 throw new LogicException('The compensation scope has no authorized request.');
             }
             return json_decode($row->descriptor, true, flags: JSON_THROW_ON_ERROR);
+        });
+    }
+
+    /** Bind the first native recovery target before an admission can lose its response. */
+    public function recoveryRoute(
+        ScopeIdentity $identity,
+        string $requestKey,
+        string $profileFingerprint,
+        ?Closure $select = null,
+    ): ?array {
+        return ScopeStorage::mutate($identity, static function (array $scope, Connection $database) use (
+            $identity,
+            $requestKey,
+            $profileFingerprint,
+            $select,
+        ): ?array {
+            $id = hash('sha256', PortableDescriptor::encode([$identity->id(), $requestKey]));
+            $row = $database->table('workflow_compensation_requests')->where('scope_id', $scope['id'])
+                ->where('id', $id)->lockForUpdate()->first();
+            if ($row === null) {
+                throw new LogicException('Recovery admission requires an authorized retained request.');
+            }
+            if ($row->recovery_route === null) {
+                if ($select === null) {
+                    return null;
+                }
+                $route = [
+                    'version' => 1,
+                    'profileFingerprint' => $profileFingerprint,
+                    ...$select(),
+                ];
+            } else {
+                $route = json_decode($row->recovery_route, true, flags: JSON_THROW_ON_ERROR);
+            }
+            $keys = is_array($route) ? array_keys($route) : [];
+            sort($keys, SORT_STRING);
+            if ($keys !== ['kind', 'predecessorRunId', 'profileFingerprint', 'version']
+                || $route['version'] !== 1
+                || ! in_array($route['kind'], ['start', 'redrive'], true)
+                || $route['profileFingerprint'] !== $profileFingerprint
+                || ($route['predecessorRunId'] !== null && (! is_string($route['predecessorRunId'])
+                    || $route['predecessorRunId'] === ''))
+                || ($route['kind'] === 'redrive' && $route['predecessorRunId'] === null)) {
+                throw new LogicException('The retained recovery route is invalid or its request profile changed.');
+            }
+            if ($row->recovery_route === null) {
+                $database->table('workflow_compensation_requests')->where('id', $id)->update([
+                    'recovery_route' => PortableDescriptor::encode($route),
+                ]);
+                ScopeStorage::append($scope, 'recovery_route_bound', [
+                    'requestId' => $id,
+                    'route' => $route,
+                ]);
+            }
+            return $route;
         });
     }
 
