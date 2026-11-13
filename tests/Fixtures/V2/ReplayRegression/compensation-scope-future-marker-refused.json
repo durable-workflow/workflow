@@ -212,7 +212,7 @@
         }
     ],
     "expected_failure": {
-        "type": "compensation_marker_incompatible_range",
+        "type": "version_marker_incompatible_range",
         "exception": "Workflow\\V2\\Exceptions\\VersionRangeMismatchException"
     }
 }

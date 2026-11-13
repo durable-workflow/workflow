@@ -212,7 +212,7 @@
         }
     ],
     "expected_failure": {
-        "type": "compensation_identity_format_unsupported",
+        "type": "unsupported_compensation_format",
         "exception": "InvalidArgumentException"
     }
 }
