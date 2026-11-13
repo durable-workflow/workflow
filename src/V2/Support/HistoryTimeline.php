@@ -401,7 +401,10 @@ final class HistoryTimeline
                     ),
                 ],
             ] : []),
-            ...($event->event_type === HistoryEventType::WorkflowCancelled
+            ...(in_array($event->event_type, [
+                HistoryEventType::WorkflowCancelled,
+                HistoryEventType::WorkflowTimedOut,
+            ], true)
                 && is_array($payload['cancellation_cleanup'] ?? null) ? [
                     'cancellation_cleanup' => $payload['cancellation_cleanup'],
                 ] : []),

@@ -41,6 +41,7 @@ use Workflow\V2\Support\TaskRepairCandidates;
 use Workflow\V2\Support\TaskRepairPolicy;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Support\WorkflowExecutor;
+use Workflow\V2\Support\TimeoutCleanup;
 
 /**
  * Periodic repair loop that scans for stuck workflow tasks, expired activity
@@ -800,6 +801,11 @@ final class TaskWatchdog
                 if ($existingWorkflowTask !== null) {
                     return null;
                 }
+
+                // Enter timeout cleanup here, under the run lock, so a run whose
+                // tasks a bridge worker runs enters it too and a later pass
+                // stops matching the work deadline (#863).
+                TimeoutCleanup::enter($run, $now);
 
                 /** @var WorkflowTask $task */
                 $task = WorkflowTask::query()->create([

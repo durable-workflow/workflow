@@ -29,7 +29,8 @@ use Workflow\V2\Models\WorkflowTimer;
  * event and its later outcome is never appended to the closed run.
  *
  * Cancel, terminate, timeout and cooperative cancellation already settle open
- * work in their own close paths. Child workflows follow their parent-close
+ * work in their own close paths; a timeout after timeout cleanup lists its
+ * abandon-policy activities the same way (#863). Child workflows follow their parent-close
  * policy and continue-as-new hand-over instead (#868).
  */
 final class ClosingRunOpenWork
@@ -147,6 +148,8 @@ final class ClosingRunOpenWork
                 HistoryEventType::WorkflowCompleted->value,
                 HistoryEventType::WorkflowFailed->value,
                 HistoryEventType::WorkflowContinuedAsNew->value,
+                // Timeout cleanup lists abandon-policy activities it scheduled (#863).
+                HistoryEventType::WorkflowTimedOut->value,
             ])
             ->orderByDesc('sequence')
             ->first();

@@ -9,7 +9,6 @@ use Illuminate\Support\Str;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\CancellationContext;
-use Workflow\V2\CommandContext;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
@@ -98,7 +97,19 @@ final class TimeoutCleanup
         $command = WorkflowCommand::record($instance, $run, [
             'id' => $requestId,
             'command_type' => CommandType::RequestCancellation->value,
-            ...CommandContext::system('timeout_cleanup')->attributes(),
+            // The engine issues this itself; no public CommandContext can claim
+            // the system source (#863).
+            'source' => 'system',
+            'context' => [
+                'caller' => [
+                    'type' => 'system',
+                    'label' => 'timeout_cleanup',
+                ],
+                'auth' => [
+                    'status' => 'not_applicable',
+                    'method' => 'none',
+                ],
+            ],
             'target_scope' => 'run',
             'status' => CommandStatus::Accepted->value,
             'outcome' => CommandOutcome::CancellationRequested->value,

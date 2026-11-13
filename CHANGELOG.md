@@ -18,7 +18,13 @@
   deadlines. New history event `WorkflowTimeoutCleanupStarted`; the cancellation
   context gains the optional top-level `cause`. The migration adds the nullable
   `workflow_runs.timeout_cleanup_work_deadline_at` with no backfill and builds
-  its index without blocking writes. Service mode follows separately.
+  its index without blocking writes. Activities scheduled during cleanup with
+  the abandon policy keep running and are listed on `WorkflowTimedOut`, as
+  for a run that completes. A cancellation requested during cleanup is
+  rejected with reason `timeout_cleanup_running` and leaves cleanup as it is.
+  A hard timeout during an earlier cooperative cancellation now records that
+  cancellation's `cancellation_cleanup.outcome: preempted` on
+  `WorkflowTimedOut`. Service mode follows separately.
 
 ## 2.28.0 - 2026-11-13
 

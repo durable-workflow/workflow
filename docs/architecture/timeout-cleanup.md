@@ -95,7 +95,9 @@ notices first) does the following in one transaction under the run lock:
    cancellation request.
 
 A user cancellation request that arrives during timeout cleanup is recorded
-but doesn't restart cleanup or move its deadline. A timeout that arrives
+as its own command, rejected with reason `timeout_cleanup_running` and naming
+the cleanup request and its deadline. It doesn't restart cleanup or move its
+deadline, and the run still ends timed out. A timeout that arrives
 during an earlier cooperative cancellation doesn't enter timeout cleanup:
 the earlier request already owns cleanup, its deadline is capped by the hard
 deadline, and the final outcome is the timeout if the hard deadline wins.

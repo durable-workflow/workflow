@@ -2299,7 +2299,25 @@ final class WorkflowStub
             if (is_string($run->cancellation_request_command_id)) {
                 $existing = WorkflowCommand::query()->findOrFail($run->cancellation_request_command_id);
                 $existingContext = (new CommandResult($existing))->cancellationContext();
-                if ($parentContext !== null && $existingContext?->rootRequestId !== $parentContext->rootRequestId) {
+                if ($existingContext?->isTimeout() === true) {
+                    // A cancellation during timeout cleanup is recorded on its
+                    // own; it neither restarts cleanup nor moves its deadline,
+                    // and the run still ends timed out (#863).
+                    $codec = $run->payload_codec ?? CodecRegistry::defaultCodec();
+                    $command = $this->rejectCommand(
+                        $instance,
+                        $run,
+                        CommandType::RequestCancellation,
+                        'timeout_cleanup_running',
+                        $this->commandTargetScope(),
+                        [
+                            'payload' => Serializer::serializeWithCodec($codec, [
+                                'existing_request_id' => $existing->id,
+                                'existing_cleanup_deadline_at' => $run->cancellation_deadline_at?->toISOString(),
+                            ]),
+                        ]
+                    );
+                } elseif ($parentContext !== null && $existingContext?->rootRequestId !== $parentContext->rootRequestId) {
                     $codec = $run->payload_codec ?? CodecRegistry::defaultCodec();
                     $command = $this->rejectCommand(
                         $instance,
