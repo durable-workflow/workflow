@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- An expired open activity row of a closed run is now closed instead of being
+  selected and skipped on every timeout sweep (#1117 follow-up). An activity
+  that its run's close left running under the abandon policy is marked failed
+  when its own `schedule_to_close` deadline passes without an outcome. Any
+  other open row of a closed run, such as one left by a close before
+  upgrading, is cancelled. Its task is cancelled and nothing is appended to
+  the closed run's history. Before, such rows stayed open and could fill the
+  sweep's batch limit.
+
+- A run no longer leaves work running after its own code closes it (#1117).
+  Before, an activity or timer the workflow never awaited, such as a
+  `select()` loser, stayed open when the run completed, failed or continued as
+  new. The activity still executed, and its `ActivityStarted` and outcome were
+  appended to the closed run's history after the terminal event. Now the close
+  records `ActivityCancelled` for each open activity and `TimerCancelled` for
+  each pending timer in the same transaction, before `WorkflowCompleted`,
+  `WorkflowFailed` or `WorkflowContinuedAsNew`, and cancels their tasks. Such a
+  cancellation carries `cancellation_reason: run_closed`, and replay ignores
+  it, because the workflow never observed it: it never changes a selection
+  winner or a parallel group's failure. A
+  late claim, heartbeat or outcome for such an activity is refused with
+  `run_closed`, including one left behind by a run closed before upgrading.
+  Nothing is appended to the closed run. Exception: a service-mode activity
+  scheduled with `cancellation_policy: abandon` keeps running. The terminal
+  event lists it under the new `abandoned_activities` payload key, and its
+  heartbeats and outcome are accepted but not appended. Cancel, terminate,
+  timeout and cooperative cancellation already settled open work this way.
+  Children keep their parent-close policy and continue-as-new hand-over.
+  Behavior change: if a workflow needs a loser's effect, await the loser
+  before returning.
+
 ## 2.27.0 - 2026-11-13
 
 - Closing a child no longer reads every sibling's history under the parent

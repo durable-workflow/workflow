@@ -535,6 +535,12 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge, ActivityLea
         CarbonInterface $heartbeatAt,
         CarbonInterface $leaseExpiresAt,
     ): void {
+        if (ClosingRunOpenWork::abandonedAtClose($run, $execution)) {
+            // Its run closed and left it running; nothing is appended after
+            // the run's terminal event (#1117).
+            return;
+        }
+
         $payload = [
             'activity_execution_id' => $execution->id,
             'activity_attempt_id' => $attempt->id,
@@ -574,7 +580,10 @@ final class DefaultActivityTaskBridge implements ActivityTaskBridge, ActivityLea
         ?WorkflowTask $task,
     ): array {
         $abandoned = $run instanceof WorkflowRun && $execution instanceof ActivityExecution
-            && ActivityAbandonment::allows($run, $execution);
+            && (ActivityAbandonment::allows($run, $execution) || ClosingRunOpenWork::abandonedAtClose(
+                $run,
+                $execution
+            ));
         if ($attempt->status !== ActivityAttemptStatus::Running) {
             if ($run instanceof WorkflowRun && $run->status === RunStatus::Cancelled && ! $abandoned) {
                 return [false, true, 'run_cancelled'];

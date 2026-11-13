@@ -1679,6 +1679,8 @@ final class QueryStateReplayer
                 ],
                 true,
             ) && ($event->payload['sequence'] ?? null) === $sequence
+                // The run's own close recorded this; the workflow never saw it (#1117).
+                && ! ClosingRunOpenWork::settledAtClose($event)
         );
 
         return $event;

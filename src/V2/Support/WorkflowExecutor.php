@@ -4163,6 +4163,8 @@ final class WorkflowExecutor
         );
         StructuralLimits::guardPayloadSize($storedOutput);
 
+        $abandonedActivities = ClosingRunOpenWork::settle($run, $task);
+
         $run->forceFill([
             'status' => RunStatus::Completed,
             'closed_reason' => 'completed',
@@ -4179,6 +4181,9 @@ final class WorkflowExecutor
                 is_string($run->namespace) ? $run->namespace : null,
             ),
             'payload_codec' => $outputCodec,
+            ...($abandonedActivities === [] ? [] : [
+                ClosingRunOpenWork::ABANDONED_ACTIVITIES => $abandonedActivities,
+            ]),
         ], $task);
 
         PendingUpdateCloser::closeForTerminalRun($run, $task);
@@ -4469,6 +4474,8 @@ final class WorkflowExecutor
             ],
         ));
 
+        $abandonedActivities = ClosingRunOpenWork::settle($run, $task);
+
         $run->forceFill([
             'status' => RunStatus::Failed,
             'closed_reason' => 'failed',
@@ -4518,6 +4525,10 @@ final class WorkflowExecutor
                 // Restored structural-limit exceptions from older history can
                 // be catchable without their readonly metadata initialized.
             }
+        }
+
+        if ($abandonedActivities !== []) {
+            $failedEventPayload[ClosingRunOpenWork::ABANDONED_ACTIVITIES] = $abandonedActivities;
         }
 
         WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowFailed, $failedEventPayload, $task);
@@ -5207,6 +5218,8 @@ final class WorkflowExecutor
                 ],
                 true,
             ) && ($event->payload['sequence'] ?? null) === $sequence
+                // The run's own close recorded this; the workflow never saw it (#1117).
+                && ! ClosingRunOpenWork::settledAtClose($event)
         );
 
         ExecutionTracing::linkOutcome($run, $event);

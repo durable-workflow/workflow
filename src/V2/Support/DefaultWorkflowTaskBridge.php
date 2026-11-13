@@ -2005,6 +2005,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             : ($run->payload_codec ?? CodecRegistry::defaultCodec());
         $result = self::storedWorkerPayload($command['result'] ?? null, $outputCodec, $run);
         $resultCodec = $result === null ? null : $outputCodec;
+        $abandonedActivities = ClosingRunOpenWork::settle($run, $task);
 
         $run->forceFill([
             'status' => RunStatus::Completed,
@@ -2024,6 +2025,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                     is_string($run->namespace) ? $run->namespace : null,
                 ),
             'payload_codec' => $resultCodec,
+            ClosingRunOpenWork::ABANDONED_ACTIVITIES => $abandonedActivities === [] ? null : $abandonedActivities,
         ], static fn (mixed $value): bool => $value !== null), $task);
 
         PendingUpdateCloser::closeForTerminalRun($run, $task);
@@ -2112,6 +2114,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'trace_preview' => '',
         ]);
 
+        $abandonedActivities = ClosingRunOpenWork::settle($run, $task);
+
         $run->forceFill([
             'status' => RunStatus::Failed,
             'closed_reason' => 'failed',
@@ -2142,6 +2146,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         if ($failedActivityBoundary) {
             $failurePayload['failed_step_sequence'] = $claimedSequence;
             $failurePayload['failed_step_kind'] = 'activity';
+        }
+        if ($abandonedActivities !== []) {
+            $failurePayload[ClosingRunOpenWork::ABANDONED_ACTIVITIES] = $abandonedActivities;
         }
         WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowFailed, $failurePayload, $task);
 
