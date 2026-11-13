@@ -257,11 +257,14 @@ final class V2CompensationScopeRunBoundaryTest extends TestCase
             if ($excludedRunId !== null) {
                 $tasks->where('workflow_run_id', '!=', $excludedRunId);
             }
-            $task = $tasks->first();
+            $task = (clone $tasks)->where(static function ($query): void {
+                $query->whereNull('available_at')->orWhere('available_at', '<=', now()->format('Y-m-d H:i:s.u'));
+            })->first();
             if ($task === null) {
-                return;
-            }
-            if ($task->available_at !== null && $task->available_at->isFuture()) {
+                $task = $tasks->reorder('available_at')->orderBy('created_at')->orderBy('id')->first();
+                if ($task === null) {
+                    return;
+                }
                 Carbon::setTestNow($task->available_at->copy()->addSecond());
             }
             $job = match ($task->task_type) {

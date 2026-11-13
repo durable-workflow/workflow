@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Concurrent service child completions keep parent-history row locks on the
+  existing per-run index on MySQL and MariaDB. This prevents a parent-history
+  table scan from deadlocking against an unrelated sibling's completion.
+
 - Experimental embedded compensation scopes (#1063): retained versioned
   obligations, native Saga recovery, sequential child participation and explicit
   release. Each scope keeps its originating run; continue-as-new, origin redrive

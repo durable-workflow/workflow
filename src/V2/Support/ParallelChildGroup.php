@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Database\Schema\Blueprint;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
@@ -732,10 +734,10 @@ final class ParallelChildGroup
         $events = $parentRun->historyEvents();
 
         if ($lockHistoryForUpdate) {
-            $events->lockForUpdate();
+            $parentRun->setRelation('historyEvents', self::lockedParentHistory($parentRun));
+        } else {
+            $parentRun->setRelation('historyEvents', $events->get());
         }
-
-        $parentRun->setRelation('historyEvents', $events->get());
         $groupId = $metadata['parallel_group_id'];
         $memberBase = self::intValue($metadata['selection_member_base_sequence'] ?? null)
             ?? ($metadata['parallel_group_base_sequence'] + $metadata['parallel_group_index']);
@@ -800,7 +802,7 @@ final class ParallelChildGroup
         if ($lockHistoryForUpdate) {
             // Observe the resolution event committed by the previous holder of
             // the parent lock even when this transaction has an older snapshot.
-            $parentRun->setRelation('historyEvents', $parentRun->historyEvents() ->lockForUpdate() ->get());
+            $parentRun->setRelation('historyEvents', self::lockedParentHistory($parentRun));
         }
 
         $activitiesBySequence = collect(RunActivityView::activitiesForRun($parentRun, decodePayloads: false))
@@ -874,6 +876,25 @@ final class ParallelChildGroup
         }
 
         return true;
+    }
+
+    /**
+     * @return Collection<int, WorkflowHistoryEvent>
+     */
+    private static function lockedParentHistory(WorkflowRun $parentRun): Collection
+    {
+        $events = $parentRun->historyEvents();
+        $model = $events->getRelated();
+        $connection = $model->getConnection();
+        if (in_array($connection->getDriverName(), ['mysql', 'mariadb'], true)) {
+            // A table scan can lock an uncommitted sibling event while that
+            // sibling waits for our parent-run lock. Use the migration's
+            // per-run index, including Laravel's configured table/index prefix.
+            $index = (new Blueprint($connection, $model->getTable()))
+                ->unique(['workflow_run_id', 'sequence'])->index;
+            $events->forceIndex($index);
+        }
+        return $events->lockForUpdate()->get();
     }
 
     /**
