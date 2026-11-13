@@ -890,6 +890,7 @@ final class ParallelChildGroup
             // A table scan can lock an uncommitted sibling event while that
             // sibling waits for our parent-run lock. Use the migration's
             // per-run index, including Laravel's configured table/index prefix.
+            $connection->getSchemaBuilder();
             $index = (new Blueprint($connection, $model->getTable()))
                 ->unique(['workflow_run_id', 'sequence'])->index;
             $events->forceIndex($index);
