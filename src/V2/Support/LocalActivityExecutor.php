@@ -12,6 +12,7 @@ use RuntimeException;
 use Throwable;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\EntityReferences\EntityReferenceRefused;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\FailureCategory;
@@ -113,6 +114,11 @@ final class LocalActivityExecutor
         /** @var ActivityAttempt $attempt */
         $attempt = $started['attempt'];
 
+        if (array_key_exists(EntityReferenceArguments::POSITIONS, $execution->activity_options ?? [])
+            && EmbeddedLocalActivityScope::resolution($task, $execution->id) === null) {
+            throw new DeferredEntityReferenceResolution($run, $task, $execution, $attempt);
+        }
+
         $operation = fn (): array => $this->invokeCallback($run, $task, $execution);
         if (ExecutionTracing::enabled() && ! WorkflowStub::hasMock($execution->activity_class)) {
             $storedContext = TraceCarrier::fromRun($run, $diagnostic);
@@ -145,7 +151,49 @@ final class LocalActivityExecutor
             [$result, $throwable] = $operation();
         }
 
+        EmbeddedLocalActivityScope::forget($task, $execution->id);
         return $this->recordAttemptOutcome($task, $execution, $attempt, $result, $throwable);
+    }
+
+    /**
+     * @internal Only repository resolution leaves the transaction; the local callback keeps its existing lifetime.
+     */
+    public function resolveDeferredEntityReferences(DeferredEntityReferenceResolution $invocation): bool
+    {
+        if (ConfiguredV2Models::connection()->transactionLevel() !== 0) {
+            throw new EntityReferenceRefused(
+                EntityReferenceRefused::UNSUPPORTED_EXECUTION_MODE,
+                'Entity resolution cannot run inside a caller transaction.',
+            );
+        }
+        $models = ConfiguredV2Models::connection()->transaction(static function () use ($invocation): ?array {
+            $task = WorkflowTask::query()->lockForUpdate()->find($invocation->taskId);
+            $run = WorkflowRun::query()->lockForUpdate()->find($invocation->runId);
+            $execution = ActivityExecution::query()->lockForUpdate()->find($invocation->executionId);
+            $attempt = ActivityAttempt::query()->lockForUpdate()->find($invocation->attemptId);
+            return $task instanceof WorkflowTask && $run instanceof WorkflowRun
+                && $execution instanceof ActivityExecution && $attempt instanceof ActivityAttempt
+                && $invocation->matches($run, $task, $execution, $attempt) ? [$run, $execution] : null;
+        });
+        if ($models === null) {
+            return false;
+        }
+        [$run, $execution] = $models;
+        $arguments = [];
+        $error = null;
+        try {
+            $class = TypeRegistry::resolveActivityClass($execution->activity_class, $execution->activity_type);
+            $arguments = EntityReferenceArguments::resolveForAttempt(
+                $run,
+                $execution,
+                $execution->activityArguments(),
+                EntryMethod::forActivity($class),
+            );
+        } catch (Throwable $failure) {
+            $error = $failure;
+        }
+        EmbeddedLocalActivityScope::remember($invocation, $arguments, $error);
+        return true;
     }
 
     /**
@@ -626,7 +674,21 @@ final class LocalActivityExecutor
         $result = null;
         $throwable = null;
         try {
-            $arguments = ActivityEntryArguments::resolve($activity, $activityArguments, $entryMethod);
+            $invocationArguments = $activityArguments;
+            if (array_key_exists(EntityReferenceArguments::POSITIONS, $execution->activity_options ?? [])) {
+                $resolution = EmbeddedLocalActivityScope::resolution($task, $execution->id);
+                if ($resolution === null) {
+                    throw new EntityReferenceRefused(
+                        EntityReferenceRefused::UNSUPPORTED_EXECUTION_MODE,
+                        'Local entity references require resolution outside the hosting workflow transaction.',
+                    );
+                }
+                if ($resolution['error'] !== null) {
+                    throw $resolution['error'];
+                }
+                $invocationArguments = $resolution['arguments'];
+            }
+            $arguments = ActivityEntryArguments::resolve($activity, $invocationArguments, $entryMethod);
         } catch (Throwable $error) {
             $arguments = [];
             $throwable = $error;
@@ -885,6 +947,14 @@ final class LocalActivityExecutor
                 ];
             }
 
+            if (array_key_exists(EntityReferenceArguments::POSITIONS, $execution->activity_options ?? [])
+                && ! EmbeddedLocalActivityScope::owns($lockedTask)) {
+                throw new EntityReferenceRefused(
+                    EntityReferenceRefused::UNSUPPORTED_EXECUTION_MODE,
+                    'Local entity references require an in-process hosting claim.',
+                );
+            }
+
             $timeoutKind = self::timeoutKind($execution);
 
             if ($timeoutKind !== null) {
@@ -899,6 +969,20 @@ final class LocalActivityExecutor
             }
 
             if ($execution->status === ActivityStatus::Running) {
+                $resolution = EmbeddedLocalActivityScope::resolution($lockedTask, $execution->id);
+                $currentAttempt = $resolution === null ? null : ActivityAttempt::query()
+                    ->lockForUpdate()
+                    ->find($execution->current_attempt_id);
+                if ($currentAttempt instanceof ActivityAttempt
+                    && $resolution['invocation']->matches($lockedRun, $lockedTask, $execution, $currentAttempt)) {
+                    return [
+                        'execution' => $execution,
+                        'attempt' => $currentAttempt,
+                        'event' => null,
+                        'next_task' => null,
+                    ];
+                }
+                EmbeddedLocalActivityScope::forget($lockedTask, $execution->id);
                 $outcome = $this->recordInterruptedAttempt($lockedRun, $lockedTask, $execution);
 
                 if ($outcome['event'] instanceof WorkflowHistoryEvent || $outcome['next_task'] instanceof WorkflowTask) {
@@ -911,7 +995,15 @@ final class LocalActivityExecutor
                 }
             }
 
-            $attempt = $this->startAttempt($lockedRun, $lockedTask, $execution);
+            $attempt = $this->startAttempt(
+                $lockedRun,
+                $lockedTask,
+                $execution,
+                preserveHostingLease: array_key_exists(
+                    EntityReferenceArguments::POSITIONS,
+                    $execution->activity_options ?? []
+                ),
+            );
 
             return [
                 'execution' => $execution->fresh() ?? $execution,
@@ -938,8 +1030,15 @@ final class LocalActivityExecutor
             ? now()
                 ->addSeconds($options->scheduleToCloseTimeout)
             : null;
-        $argumentsCodec = Serializer::chooseCodecForData($run->payload_codec, $activityCall->arguments);
-        $serializedArguments = Serializer::serializeWithCodec($argumentsCodec, $activityCall->arguments);
+        [$arguments, $referencePositions] = EntityReferenceArguments::encode($activityCall->arguments);
+        if ($referencePositions !== [] && ! EmbeddedLocalActivityScope::owns($task)) {
+            throw new EntityReferenceRefused(
+                EntityReferenceRefused::UNSUPPORTED_EXECUTION_MODE,
+                'Local entity references require resolution outside the hosting workflow transaction.',
+            );
+        }
+        $argumentsCodec = Serializer::chooseCodecForData($run->payload_codec, $arguments);
+        $serializedArguments = Serializer::serializeWithCodec($argumentsCodec, $arguments);
         $storedArguments = ExternalPayloads::externalizeForNamespace(
             $serializedArguments,
             $argumentsCodec,
@@ -960,7 +1059,12 @@ final class LocalActivityExecutor
             'arguments' => $storedArguments,
             'connection' => $run->connection,
             'queue' => $run->queue,
-            'activity_options' => $options->toSnapshot(),
+            'activity_options' => [
+                ...$options->toSnapshot(),
+                ...($referencePositions === [] ? [] : [
+                    EntityReferenceArguments::POSITIONS => $referencePositions,
+                ]),
+            ],
             'schedule_to_close_deadline_at' => $scheduleToCloseDeadlineAt,
         ]);
 
@@ -990,6 +1094,7 @@ final class LocalActivityExecutor
         ?string $workerAttemptId = null,
         array $preparation = [],
         ?Carbon $preparedAt = null,
+        bool $preserveHostingLease = false,
     ): ActivityAttempt {
         $now = $preparedAt?->copy() ?? now();
         if (($execution->activity_options['local_activity_contract_version'] ?? null) === 2) {
@@ -1005,7 +1110,7 @@ final class LocalActivityExecutor
         $attemptId = (string) Str::ulid();
         $attemptNumber = ((int) $execution->attempt_count) + 1;
         $retryPolicy = is_array($execution->retry_policy) ? $execution->retry_policy : [];
-        $leaseExpiresAt = $workerAttemptId === null
+        $leaseExpiresAt = $workerAttemptId === null && ! $preserveHostingLease
             ? LocalActivityRuntime::renewWorkflowTask($task, run: $run)
                 ?? $task->lease_expires_at
                 ?? LocalActivityRuntime::workflowTaskLeaseExpiresAt()

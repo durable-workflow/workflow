@@ -36,6 +36,9 @@ final class ActivitySnapshot
             'attempt_count' => self::executionAttemptCount($execution),
             'retry_policy' => self::arrayValue($execution->retry_policy),
             'worker_session' => self::arrayValue($execution->activity_options['worker_session'] ?? null),
+            EntityReferenceArguments::POSITIONS => self::arrayValue(
+                $execution->activity_options[EntityReferenceArguments::POSITIONS] ?? null
+            ),
             'cancellation_policy' => self::stringValue($execution->activity_options['cancellation_policy'] ?? null),
             'cancellation_scope_id' => self::stringValue($execution->activity_options['cancellation_scope_id'] ?? null),
             'schedule_to_close_deadline_at' => ($execution->activity_options['cancellation_policy'] ?? null)
@@ -189,6 +192,9 @@ final class ActivitySnapshot
             'attempt_count' => self::intValue($snapshot['attempt_count'] ?? null),
             'retry_policy' => self::arrayValue($snapshot['retry_policy'] ?? null),
             'worker_session' => self::arrayValue($snapshot['worker_session'] ?? null),
+            EntityReferenceArguments::POSITIONS => self::arrayValue(
+                $snapshot[EntityReferenceArguments::POSITIONS] ?? null
+            ),
             'cancellation_policy' => self::stringValue($snapshot['cancellation_policy'] ?? null),
             'cancellation_scope_id' => self::stringValue($snapshot['cancellation_scope_id'] ?? null),
             'schedule_to_close_deadline_at' => self::stringValue($snapshot['schedule_to_close_deadline_at'] ?? null),
