@@ -131,14 +131,6 @@ final class V2TimerDeadlineMigrationTest extends SchemaTestCase
         }
     }
 
-    private function migration(): WorkflowMigration
-    {
-        return require dirname(
-            __DIR__,
-            3
-        ) . '/src/migrations/2026_11_13_000200_preserve_workflow_timer_fire_at_on_mariadb.php';
-    }
-
     #[DataProvider('unsupportedAutomaticTimestampShapes')]
     public function testUnexpectedLegacyMetadataRefusesBeforeAnyWrite(string $definition): void
     {
@@ -146,7 +138,8 @@ final class V2TimerDeadlineMigrationTest extends SchemaTestCase
         if (! $connection instanceof MySqlConnection || ! $connection->isMaria()) {
             $this->markTestSkipped('MariaDB-specific timestamp schema correction.');
         }
-        $table = $connection->getQueryGrammar()->wrapTable('workflow_run_timers');
+        $table = $connection->getQueryGrammar()
+            ->wrapTable('workflow_run_timers');
         $connection->statement("ALTER TABLE {$table} MODIFY fire_at {$definition}");
         $before = $this->columnMetadata();
         $queries = [];
@@ -154,7 +147,8 @@ final class V2TimerDeadlineMigrationTest extends SchemaTestCase
             $queries[] = $query->sql;
         });
         try {
-            $this->migration()->up();
+            $this->migration()
+                ->up();
             $this->fail('An unsupported automatic timestamp shape must refuse.');
         } catch (RuntimeException $exception) {
             $this->assertSame('workflow_timer_fire_at_legacy_shape_unavailable', $exception->getMessage());
@@ -168,13 +162,27 @@ final class V2TimerDeadlineMigrationTest extends SchemaTestCase
 
     public static function unsupportedAutomaticTimestampShapes(): iterable
     {
-        yield 'custom default' => ["TIMESTAMP(6) NOT NULL DEFAULT '2026-11-08 04:00:20.234567' ON UPDATE CURRENT_TIMESTAMP(6)"];
+        yield 'custom default' => [
+            "TIMESTAMP(6) NOT NULL DEFAULT '2026-11-08 04:00:20.234567' ON UPDATE CURRENT_TIMESTAMP(6)",
+        ];
         yield 'nullable column' => ['TIMESTAMP(6) NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'];
-        yield 'different precision' => ['TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)'];
+        yield 'different precision' => [
+            'TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)',
+        ];
         yield 'different type' => ['DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)'];
     }
 
-    /** @return array<string, mixed> */
+    private function migration(): WorkflowMigration
+    {
+        return require dirname(
+            __DIR__,
+            3
+        ) . '/src/migrations/2026_11_13_000200_preserve_workflow_timer_fire_at_on_mariadb.php';
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
     private function columnMetadata(): array
     {
         $connection = DB::connection();
