@@ -328,7 +328,8 @@ final class V2OpenOperationsAtCloseTest extends TestCase
         $events = $this->events($run->id);
         $terminal = $events->last();
         $this->assertSame(HistoryEventType::WorkflowCompleted, $terminal->event_type);
-        $this->assertSame([[
+        // JSON columns may reorder object keys, so compare by key.
+        $this->assertEquals([[
             'activity_execution_id' => $abandoned->id,
             'sequence' => $abandoned->sequence,
         ]], $terminal->payload[ClosingRunOpenWork::ABANDONED_ACTIVITIES]);

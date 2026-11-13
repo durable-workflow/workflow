@@ -2459,6 +2459,9 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
         /** @var array<string, mixed> $fixture */
         $fixture = json_decode((string) file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
+        config([
+            'queue.default' => 'database',
+        ]);
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestParallelGreetingChildrenWorkflow::class, 'child-closure-run-rows');
@@ -2562,6 +2565,9 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
         /** @var array<string, mixed> $fixture */
         $fixture = json_decode((string) file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
+        config([
+            'queue.default' => 'database',
+        ]);
         Queue::fake();
 
         foreach ($fixture['selection_loser_settled_at_close']['closes'] as $close) {

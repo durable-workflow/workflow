@@ -41,24 +41,7 @@
         "visibility_labels": null,
         "memo": null,
         "search_attributes": null,
-        "outcome": "started_new",
-        "command": {
-          "id": "01m795h48pxb9ks6zxaxxzcxkg",
-          "sequence": 1,
-          "type": "start",
-          "target_scope": "instance",
-          "resolved_run_id": "01m795h48k4a44yjrzbhx5hvaa",
-          "payload_codec": "avro",
-          "payload": "wwHioz3/VYAiNwwCChBjb21wbGV0ZQA=",
-          "source": "php",
-          "caller_label": "PHP API",
-          "auth_status": "not_applicable",
-          "auth_method": "none",
-          "status": "accepted",
-          "outcome": "started_new",
-          "accepted_at": "2026-11-13T00:39:42.101296Z",
-          "applied_at": "2026-11-13T00:39:42.101300Z"
-        }
+        "outcome": "started_new"
       },
       "recorded_at": "2026-11-13T00:39:42.103872Z"
     },
@@ -89,24 +72,7 @@
         "declared_update_contracts": [],
         "declared_entry_method": "handle",
         "declared_entry_mode": "canonical",
-        "declared_entry_declaring_class": "Tests\\Fixtures\\V2\\TestSelectionLoserAtCloseWorkflow",
-        "command": {
-          "id": "01m795h48pxb9ks6zxaxxzcxkg",
-          "sequence": 1,
-          "type": "start",
-          "target_scope": "instance",
-          "resolved_run_id": "01m795h48k4a44yjrzbhx5hvaa",
-          "payload_codec": "avro",
-          "payload": "wwHioz3/VYAiNwwCChBjb21wbGV0ZQA=",
-          "source": "php",
-          "caller_label": "PHP API",
-          "auth_status": "not_applicable",
-          "auth_method": "none",
-          "status": "accepted",
-          "outcome": "started_new",
-          "accepted_at": "2026-11-13T00:39:42.101296Z",
-          "applied_at": "2026-11-13T00:39:42.101300Z"
-        }
+        "declared_entry_declaring_class": "Tests\\Fixtures\\V2\\TestSelectionLoserAtCloseWorkflow"
       },
       "recorded_at": "2026-11-13T00:39:42.107521Z"
     },
