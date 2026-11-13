@@ -189,12 +189,15 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                     'run_timeout_seconds' => $runTimeoutSeconds,
                     'execution_deadline_at' => $executionDeadlineAt,
                     'run_deadline_at' => $runDeadlineAt,
-                    // Timeout cleanup carries over like the hard deadlines (#863).
-                    'timeout_cleanup_work_deadline_at' => TimeoutCleanup::workDeadline(
+                    // Only an opted-in run writes the column, so custom run tables without
+                    // it keep working until they migrate (#863).
+                    ...(($timeoutCleanupWorkDeadline = TimeoutCleanup::workDeadline(
                         $timeoutCleanupAllowance = TimeoutCleanup::allowanceForRun($source),
                         $executionDeadlineAt,
                         $runDeadlineAt,
-                    ),
+                    )) === null ? [] : [
+                        'timeout_cleanup_work_deadline_at' => $timeoutCleanupWorkDeadline,
+                    ]),
                     'connection' => $source->connection,
                     'queue' => $source->queue,
                     'priority' => $source->priority,

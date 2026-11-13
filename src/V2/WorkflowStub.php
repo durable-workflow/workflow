@@ -1808,11 +1808,15 @@ final class WorkflowStub
                 'run_timeout_seconds' => $runTimeoutSeconds,
                 'execution_deadline_at' => $executionDeadlineAt,
                 'run_deadline_at' => $runDeadlineAt,
-                'timeout_cleanup_work_deadline_at' => TimeoutCleanup::workDeadline(
+                // Only an opted-in run writes the column, so custom run tables without
+                // it keep working until they migrate (#863).
+                ...(($timeoutCleanupWorkDeadline = TimeoutCleanup::workDeadline(
                     $startOptions->timeoutCleanupSeconds,
                     $executionDeadlineAt,
                     $runDeadlineAt,
-                ),
+                )) === null ? [] : [
+                    'timeout_cleanup_work_deadline_at' => $timeoutCleanupWorkDeadline,
+                ]),
                 'status' => RunStatus::Pending->value,
                 'compatibility' => WorkerCompatibility::current(),
                 'payload_codec' => $payloadCodec,
@@ -3651,11 +3655,15 @@ final class WorkflowStub
             'run_timeout_seconds' => $runTimeoutSeconds,
             'execution_deadline_at' => $executionDeadlineAt,
             'run_deadline_at' => $runDeadlineAt,
-            'timeout_cleanup_work_deadline_at' => TimeoutCleanup::workDeadline(
+            // Only an opted-in run writes the column, so custom run tables without
+            // it keep working until they migrate (#863).
+            ...(($timeoutCleanupWorkDeadline = TimeoutCleanup::workDeadline(
                 $startOptions->timeoutCleanupSeconds,
                 $executionDeadlineAt,
                 $runDeadlineAt,
-            ),
+            )) === null ? [] : [
+                'timeout_cleanup_work_deadline_at' => $timeoutCleanupWorkDeadline,
+            ]),
             'status' => RunStatus::Pending->value,
             'compatibility' => WorkerCompatibility::current(),
             'payload_codec' => $payloadCodec,
