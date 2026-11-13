@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestScopedOperation;
 use Tests\Fixtures\V2\TestScopeRunBoundaryWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
 use Workflow\V2\Compensation\Execution\HandlerRegistry;
 use Workflow\V2\Compensation\Persistence\ScopeRepository;
@@ -29,6 +30,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\WorkflowStub;
 
@@ -167,6 +169,55 @@ final class V2CompensationScopeRunBoundaryTest extends TestCase
         $this->assertSame($originHistory, $this->history($origin->id));
     }
 
+    public function testNativeChildRetryCannotTakeOverTheOriginalScopeGeneration(): void
+    {
+        config()->set('workflows.v2.types.workflows', [
+            'test.scope-run-boundary' => TestScopeRunBoundaryWorkflow::class,
+        ]);
+        $scope = new ScopeIdentity('shop', 'client-a', 'retried-child-order', '1');
+        $parent = app(WorkflowControlPlane::class)->start('test.remote-parent', 'scope-retry-parent', [
+            'namespace' => 'client-a',
+            'arguments' => Serializer::serializeWithCodec('avro', []),
+            'payload_codec' => 'avro',
+        ]);
+        $this->assertTrue($parent['started']);
+        $parentRunId = $parent['workflow_run_id'];
+        $task = WorkflowTask::query()->where('workflow_run_id', $parentRunId)->sole();
+        $task->forceFill([
+            'status' => TaskStatus::Leased,
+            'lease_owner' => 'scope-parent-worker',
+            'lease_expires_at' => now()->addMinute(),
+        ])->save();
+        $result = app(DefaultWorkflowTaskBridge::class)->complete($task->id, [[
+            'type' => 'start_child_workflow',
+            'workflow_type' => 'test.scope-run-boundary',
+            'arguments' => Serializer::serializeWithCodec('avro', [$scope->toArray(), 'redrive']),
+            'payload_codec' => 'avro',
+            'retry_policy' => [
+                'max_attempts' => 2,
+                'backoff_seconds' => [0],
+            ],
+        ]]);
+        $this->assertTrue($result['completed'], json_encode($result, JSON_THROW_ON_ERROR));
+        $this->drainTasks($parentRunId);
+        $links = WorkflowLink::query()->where('parent_workflow_run_id', $parentRunId)
+            ->where('link_type', 'child_workflow')->orderBy('created_at')->get();
+        $this->assertCount(2, $links);
+        $origin = WorkflowRun::query()->findOrFail($links[0]->child_workflow_run_id);
+        $retry = WorkflowRun::query()->findOrFail($links[1]->child_workflow_run_id);
+        $this->assertSame($origin->workflow_instance_id, $retry->workflow_instance_id);
+        $this->assertSame(2, $retry->run_number);
+        $this->assertSame(RunStatus::Failed, $retry->status);
+        $this->assertForwardRefused($retry->id, $scope, 1);
+        $this->assertSame($origin->id, (new ScopeRepository())->inspect($scope)['original_run_id']);
+        $history = $this->history($origin->id);
+        app(ScopeRecovery::class)->request($scope, 'cancel', 'operator-a', 'cancel');
+        $this->drainTasks($parentRunId);
+        $this->assertSame('verified', (new ScopeRepository())->inspect($scope)['status']);
+        $this->assertSame(['retried-child-order/first'], Cache::get('test:scope:undo-scoped-log'));
+        $this->assertSame($history, $this->history($origin->id));
+    }
+
     private function assertForwardRefused(string $runId, ScopeIdentity $scope, int $effectCount): void
     {
         $messages = WorkflowFailure::query()->where('workflow_run_id', $runId)->pluck('message')->all();
@@ -188,10 +239,14 @@ final class V2CompensationScopeRunBoundaryTest extends TestCase
             ])->all();
     }
 
-    private function drainTasks(): void
+    private function drainTasks(?string $excludedRunId = null): void
     {
         for ($count = 0; $count < 300; ++$count) {
-            $task = WorkflowTask::query()->where('status', TaskStatus::Ready->value)->orderBy('created_at')->first();
+            $tasks = WorkflowTask::query()->where('status', TaskStatus::Ready->value)->orderBy('created_at');
+            if ($excludedRunId !== null) {
+                $tasks->where('workflow_run_id', '!=', $excludedRunId);
+            }
+            $task = $tasks->first();
             if ($task === null) {
                 return;
             }
