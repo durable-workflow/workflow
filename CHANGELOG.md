@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Failed-run redrive preserves fractional seconds in replay clocks for the
+  original run start and reused steps. Repeated redrive keeps previously
+  recorded clock strings unchanged.
+
 - Failed-run redrive accepts a verified linear activity retry chain. A retried
   completed prefix is reused and only the failed boundary step runs again.
   Substituted attempt/task identities refuse with
