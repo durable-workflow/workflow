@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Require patched Laravel 12.72 or 13.41 minimums for the current Composer
+  security advisories. Keep existing application audits enabled and update
+  application lockfiles before upgrading Workflow (#1133).
+
 - Failed-run redrive accepts a verified linear activity retry chain. A retried
   completed prefix is reused and only the failed boundary step runs again.
   Substituted attempt/task identities refuse with
