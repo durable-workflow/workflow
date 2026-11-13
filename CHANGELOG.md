@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.27.0 - 2026-11-13
+
 - Closing a child no longer reads every sibling's history under the parent
   lock (#892). Before, each child close loaded the full history of every
   other child of its parent to record the outcome, check a parallel group
