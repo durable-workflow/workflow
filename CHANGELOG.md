@@ -10,6 +10,15 @@
   O(N²). Matching is unchanged: exact field comparison, send order and the
   redrive chain.
 
+- An expired open activity row of a closed run is now closed instead of being
+  selected and skipped on every timeout sweep (#1117 follow-up). An activity
+  that its run's close left running under the abandon policy is marked failed
+  when its own `schedule_to_close` deadline passes without an outcome. Any
+  other open row of a closed run, such as one left by a close before
+  upgrading, is cancelled. Its task is cancelled and nothing is appended to
+  the closed run's history. Before, such rows stayed open and could fill the
+  sweep's batch limit.
+
 - A run no longer leaves work running after its own code closes it (#1117).
   Before, an activity or timer the workflow never awaited, such as a
   `select()` loser, stayed open when the run completed, failed or continued as
