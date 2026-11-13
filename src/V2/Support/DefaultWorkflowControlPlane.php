@@ -189,6 +189,12 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                     'run_timeout_seconds' => $runTimeoutSeconds,
                     'execution_deadline_at' => $executionDeadlineAt,
                     'run_deadline_at' => $runDeadlineAt,
+                    // Timeout cleanup carries over like the hard deadlines (#863).
+                    'timeout_cleanup_work_deadline_at' => TimeoutCleanup::workDeadline(
+                        $timeoutCleanupAllowance = TimeoutCleanup::allowanceForRun($source),
+                        $executionDeadlineAt,
+                        $runDeadlineAt,
+                    ),
                     'connection' => $source->connection,
                     'queue' => $source->queue,
                     'priority' => $source->priority,
@@ -250,6 +256,13 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                     'recovery_kind' => 'redrive',
                     'execution_deadline_at' => $executionDeadlineAt?->toIso8601String(),
                     'run_deadline_at' => $runDeadlineAt?->toIso8601String(),
+                    ...(($timeoutCleanup = TimeoutCleanup::startedPayload(
+                        $timeoutCleanupAllowance,
+                        $executionDeadlineAt,
+                        $runDeadlineAt,
+                    )) === null ? [] : [
+                        TimeoutCleanup::STARTED_KEY => $timeoutCleanup,
+                    ]),
                     'replayed_started_at' => is_string($startedPayload['replayed_started_at'] ?? null)
                         ? $startedPayload['replayed_started_at']
                         : $source->started_at?->toIso8601String(),
