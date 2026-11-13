@@ -10,3 +10,5 @@ coverage.xml
 .php-cs-fixer.cache
 .vs
 /.regression-corpus-consumer-*/
+/.claude/settings.local.json
+**/.claude/settings.local.json
