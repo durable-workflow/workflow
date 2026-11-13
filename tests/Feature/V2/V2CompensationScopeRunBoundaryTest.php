@@ -39,6 +39,7 @@ final class V2CompensationScopeRunBoundaryTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        self::stopWorkers();
         config([
             'workflows.v2.namespaces' => ['client-a'],
             'queue.default' => 'redis',
@@ -172,9 +173,6 @@ final class V2CompensationScopeRunBoundaryTest extends TestCase
 
     public function testNativeChildRetryCannotTakeOverTheOriginalScopeGeneration(): void
     {
-        config()->set('workflows.v2.types.workflows', [
-            'test.scope-run-boundary' => TestScopeRunBoundaryWorkflow::class,
-        ]);
         $scope = new ScopeIdentity('shop', 'client-a', 'retried-child-order', '1');
         $parent = app(WorkflowControlPlane::class)->start('test.remote-parent', 'scope-retry-parent', [
             'namespace' => 'client-a',
@@ -192,7 +190,7 @@ final class V2CompensationScopeRunBoundaryTest extends TestCase
         ])->save();
         $result = app(DefaultWorkflowTaskBridge::class)->complete($task->id, [[
             'type' => 'start_child_workflow',
-            'workflow_type' => 'test.scope-run-boundary',
+            'workflow_type' => TestScopeRunBoundaryWorkflow::class,
             'arguments' => Serializer::serializeWithCodec('avro', [$scope->toArray(), 'child-retry']),
             'payload_codec' => 'avro',
             'retry_policy' => [
@@ -206,7 +204,12 @@ final class V2CompensationScopeRunBoundaryTest extends TestCase
             ->where('link_type', 'child_workflow')
             ->orderBy('created_at')
             ->get();
-        $this->assertCount(2, $links);
+        $this->assertCount(2, $links, json_encode([
+            'runs' => WorkflowRun::query()->whereIn('id', $links->pluck('child_workflow_run_id'))
+                ->get(['id', 'status'])->toArray(),
+            'failures' => WorkflowFailure::query()->whereIn('workflow_run_id', $links->pluck('child_workflow_run_id'))
+                ->pluck('message')->all(),
+        ], JSON_THROW_ON_ERROR));
         $origin = WorkflowRun::query()->findOrFail($links[0]->child_workflow_run_id);
         $retry = WorkflowRun::query()->findOrFail($links[1]->child_workflow_run_id);
         $this->assertSame($origin->workflow_instance_id, $retry->workflow_instance_id);
