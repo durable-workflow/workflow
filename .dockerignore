@@ -1,0 +1,11 @@
+**
+!docker/
+!docker/php-ci/
+!docker/php-ci/Dockerfile
+!docker/php-ci/verify-php-trust.php
+!docker/brotli/
+!docker/brotli/*
+!.central-apt-source/
+!.central-apt-source/docker/
+!.central-apt-source/docker/apt/
+!.central-apt-source/docker/apt/require-fixed-bookworm-apt.sh

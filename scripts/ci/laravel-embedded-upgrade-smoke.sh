@@ -26,7 +26,10 @@ else
 fi
 
 fixture_root=$(mktemp -d "${temporary_root%/}/laravel-embedded-upgrade.XXXXXX")
-database_path=$(mktemp "${database_root%/}/laravel-embedded-upgrade.XXXXXX.sqlite")
+database_directory=$(mktemp -d "${database_root%/}/laravel-embedded-upgrade.XXXXXX")
+database_path="$database_directory/database.sqlite"
+touch "$database_path"
+export WORKFLOW_UPGRADE_DATABASE_DIRECTORY="$database_directory"
 app_path="$fixture_root/app"
 
 cleanup() {
@@ -35,12 +38,19 @@ cleanup() {
     return
   fi
 
-  rm -f -- "$database_path"
+  rm -rf -- "$database_directory"
   rm -rf -- "$fixture_root"
 }
 trap cleanup EXIT
 trap 'echo "Laravel embedded upgrade smoke failed at line ${LINENO}: ${BASH_COMMAND}" >&2' ERR
 
+verify_project_composer_trust() {
+  if [ -n "${WORKFLOW_COMPOSER_TRUST_VERIFIER:-}" ]; then
+    php "$WORKFLOW_COMPOSER_TRUST_VERIFIER" "$(command -v composer)" "$PWD"
+  fi
+}
+
+verify_project_composer_trust
 composer create-project "laravel/laravel:${laravel_version}" "$app_path" \
   --no-interaction --no-progress --prefer-dist --no-blocking --quiet
 cd "$app_path"
@@ -79,6 +89,7 @@ set_env CACHE_STORE file
 set_env DW_V2_QUEUE workflow-v2
 php artisan key:generate --force --no-interaction
 
+verify_project_composer_trust
 composer require durable-workflow/workflow:1.0.82 \
   --with-all-dependencies --no-interaction --no-progress --no-blocking --quiet
 
@@ -363,10 +374,12 @@ if [ -n "$workflow_v2_path" ]; then
         ],
     ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
   ' "$workflow_v2_path")"
+  verify_project_composer_trust
   composer require durable-workflow/workflow:2.0.x-dev \
     --with-all-dependencies --no-interaction --no-progress --no-blocking --quiet
   expected_v2='2.0.x-dev'
 else
+  verify_project_composer_trust
   composer require "durable-workflow/workflow:=${workflow_v2_version}" \
     --with-all-dependencies --no-interaction --no-progress --no-blocking --quiet
   expected_v2="$workflow_v2_version"
@@ -672,6 +685,7 @@ composer dump-autoload --no-interaction --no-scripts --quiet
 if [ -n "$workflow_v2_path" ]; then
   composer config --unset repositories.workflow
 fi
+verify_project_composer_trust
 composer require durable-workflow/workflow:^1.0 \
   --with-all-dependencies --no-interaction --no-progress --no-blocking --quiet
 

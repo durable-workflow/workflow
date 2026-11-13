@@ -12,3 +12,6 @@ coverage.xml
 /.regression-corpus-consumer-*/
 /.claude/settings.local.json
 **/.claude/settings.local.json
+
+.central-apt-source/
+.qualification-control/
