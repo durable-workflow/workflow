@@ -84,8 +84,11 @@ notices first) does the following in one transaction under the run lock:
 3. Delivers the interruption through the existing cooperative-cancellation
    path. Workflow code receives a `WorkflowTimeoutCleanupRequested` exception,
    which extends `WorkflowCancellationRequestedException`, with a
-   `CancellationContext` whose `cause` is `timeout` and whose `timeoutKind`,
-   `workDeadlineAt` and `cleanupDeadlineAt` are set. Existing
+   `CancellationContext` whose optional top-level `cause` is `timeout` and
+   whose existing `cleanup_deadline_at` is the cleanup deadline. The timeout
+   kind and work deadline are recorded on `WorkflowTimeoutCleanupStarted`, not
+   in the context. `cause` is never inherited by descendants, scoped or not,
+   and an explicit `cause: cancellation` round-trips unchanged. Existing
    `catch (WorkflowCancellationRequestedException)` compensation code
    therefore runs without changes. `cancellationShield()` scopes and the
    operation cancellation policies behave as they do for a cooperative

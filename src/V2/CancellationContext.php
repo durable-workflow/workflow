@@ -118,7 +118,8 @@ final class CancellationContext
         if ($cause !== null && ! in_array($cause, ['cancellation', self::CAUSE_TIMEOUT], true)) {
             throw new InvalidArgumentException('Cancellation cause must be cancellation or timeout.');
         }
-        $cause = $cause === self::CAUSE_TIMEOUT ? $cause : null;
+        // An explicit `cancellation` is preserved, so a context round-trips
+        // with exactly its own keys.
         if (count(array_unique(array_column($normalizedLineage, 'request_id'))) !== count($normalizedLineage)
             || count(array_unique(array_column($normalizedLineage, 'workflow_run_id'))) !== count($normalizedLineage)) {
             throw new InvalidArgumentException('Cancellation lineage cannot contain a cycle.');
@@ -339,6 +340,10 @@ final class CancellationContext
                 $lineage[] = $address;
             }
         }
+        // A descendant is cancelled because its ancestor was; it was not
+        // itself timed out (#863).
+        unset($root['cause']);
+
         return [
             ...$root,
             'schema' => 'durable-workflow.cancellation-context/v2',

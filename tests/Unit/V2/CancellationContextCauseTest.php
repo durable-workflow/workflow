@@ -26,10 +26,13 @@ final class CancellationContextCauseTest extends TestCase
             WorkflowCancellationRequestedException::class,
             WorkflowCancellationRequestedException::forContext($context)::class,
         );
-        $this->assertNull(CancellationContext::fromArray([
+        // An explicit cancellation cause round-trips with exactly its own keys.
+        $explicit = [
             ...$snapshot,
             'cause' => 'cancellation',
-        ])->cause);
+        ];
+        $this->assertFalse(CancellationContext::fromArray($explicit)->isTimeout());
+        $this->assertSame($explicit, CancellationContext::fromArray($explicit)->toArray());
     }
 
     public function testATimeoutCauseRoundTripsAndDeliversTheTimeoutSubtype(): void
@@ -55,6 +58,21 @@ final class CancellationContextCauseTest extends TestCase
         ]);
 
         $this->assertFalse($context->forDescendant('req-child', 'child-instance', 'child-run')->isTimeout());
+    }
+
+    public function testAScopedDescendantOfATimeoutIsCancelledNotTimedOut(): void
+    {
+        $root = CancellationContext::fromArray([
+            ...self::snapshot(),
+            'cause' => 'timeout',
+        ]);
+        $origin = \Workflow\V2\ScopedCancellationContext::fromRunContext($root);
+        $child = CancellationContext::fromScopeContext($origin, 'req-child', 'child-instance', 'child-run');
+
+        $this->assertFalse($child->isTimeout());
+        $this->assertArrayNotHasKey('cause', $child->toArray());
+        // The child's snapshot round-trips: it is not required to carry the root's cause.
+        $this->assertFalse(CancellationContext::fromArray($child->toArray())->isTimeout());
     }
 
     public function testAnUnknownCauseIsRefused(): void
