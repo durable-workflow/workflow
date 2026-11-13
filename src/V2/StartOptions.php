@@ -43,6 +43,15 @@ final class StartOptions
     public readonly ?int $runTimeoutSeconds;
 
     /**
+     * Seconds reserved at the end of the hard execution and run timeouts for
+     * workflow-authored cleanup (#863). When the work deadline (hard deadline
+     * minus this allowance) passes, workflow code receives a timeout cleanup
+     * interruption; the run still ends timed out at the hard deadline at the
+     * latest. Null keeps today's hard timeout. Experimental.
+     */
+    public readonly ?int $timeoutCleanupSeconds;
+
+    /**
      * Dispatch priority for the workflow's tasks. Lower numbers run first
      * when workers on a shared task queue are saturated.
      */
@@ -77,6 +86,7 @@ final class StartOptions
         ?int $priority = null,
         ?string $fairnessKey = null,
         ?int $fairnessWeight = null,
+        ?int $timeoutCleanupSeconds = null,
     ) {
         $this->duplicateStartPolicy = $duplicateStartPolicy;
         $this->businessKey = self::normalizeBusinessKey($businessKey);
@@ -88,6 +98,11 @@ final class StartOptions
         $this->priority = TaskPriority::normalize($priority);
         $this->fairnessKey = TaskFairnessKey::normalize($fairnessKey);
         $this->fairnessWeight = TaskFairnessKey::normalizeWeight($fairnessWeight);
+        $this->timeoutCleanupSeconds = self::normalizeTimeoutCleanup(
+            $timeoutCleanupSeconds,
+            $this->executionTimeoutSeconds,
+            $this->runTimeoutSeconds,
+        );
     }
 
     public static function rejectDuplicate(): self
@@ -162,6 +177,16 @@ final class StartOptions
         ]);
     }
 
+    /**
+     * Reserve the last `$seconds` of the hard timeouts for cleanup (#863).
+     */
+    public function withTimeoutCleanup(?int $seconds): self
+    {
+        return $this->cloneWith([
+            'timeoutCleanupSeconds' => $seconds,
+        ]);
+    }
+
     public function withPriority(?int $priority): self
     {
         return $this->cloneWith([
@@ -199,6 +224,10 @@ final class StartOptions
             array_key_exists('priority', $overrides) ? $overrides['priority'] : $this->priority,
             array_key_exists('fairnessKey', $overrides) ? $overrides['fairnessKey'] : $this->fairnessKey,
             array_key_exists('fairnessWeight', $overrides) ? $overrides['fairnessWeight'] : $this->fairnessWeight,
+            array_key_exists(
+                'timeoutCleanupSeconds',
+                $overrides
+            ) ? $overrides['timeoutCleanupSeconds'] : $this->timeoutCleanupSeconds,
         );
     }
 
@@ -402,6 +431,46 @@ final class StartOptions
         ksort($normalized);
 
         return $normalized;
+    }
+
+    /**
+     * The cleanup allowance must leave a work deadline in the future for every
+     * hard timeout it applies to; it never extends a hard timeout.
+     */
+    private static function normalizeTimeoutCleanup(
+        ?int $seconds,
+        ?int $executionTimeoutSeconds,
+        ?int $runTimeoutSeconds,
+    ): ?int {
+        if ($seconds === null) {
+            return null;
+        }
+
+        if ($seconds < 1 || $seconds > 86400) {
+            throw new LogicException('Workflow v2 timeout cleanup must be between 1 and 86400 seconds.');
+        }
+
+        if ($executionTimeoutSeconds === null && $runTimeoutSeconds === null) {
+            throw new LogicException(
+                'Workflow v2 timeout cleanup needs an execution or run timeout to reserve time from.'
+            );
+        }
+
+        foreach ([
+            'execution' => $executionTimeoutSeconds,
+            'run' => $runTimeoutSeconds,
+        ] as $kind => $timeout) {
+            if ($timeout !== null && $seconds >= $timeout) {
+                throw new LogicException(sprintf(
+                    'Workflow v2 timeout cleanup (%d s) must be shorter than the %s timeout (%d s).',
+                    $seconds,
+                    $kind,
+                    $timeout,
+                ));
+            }
+        }
+
+        return $seconds;
     }
 
     private static function normalizeTimeout(?int $seconds, string $kind): ?int

@@ -127,6 +127,7 @@ final class HistoryEventPayloadContract
             'replayed_started_at',
             'retry_attempt',
             'retry_of_child_workflow_run_id',
+            'timeout_cleanup',
         ],
         'WorkflowContinuedAsNew' => [
             'sequence',

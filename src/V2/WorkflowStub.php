@@ -87,6 +87,7 @@ use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
 use Workflow\V2\Support\TaskSchedulingFields;
 use Workflow\V2\Support\TerminalCancellationHistory;
+use Workflow\V2\Support\TimeoutCleanup;
 use Workflow\V2\Support\TimerCancellation;
 use Workflow\V2\Support\TraceCarrier;
 use Workflow\V2\Support\TypeRegistry;
@@ -1847,6 +1848,11 @@ final class WorkflowStub
                 'run_timeout_seconds' => $runTimeoutSeconds,
                 'execution_deadline_at' => $executionDeadlineAt,
                 'run_deadline_at' => $runDeadlineAt,
+                TimeoutCleanup::STARTED_KEY => TimeoutCleanup::startedPayload(
+                    $startOptions->timeoutCleanupSeconds,
+                    $executionDeadlineAt,
+                    $runDeadlineAt,
+                ),
             ]);
 
             $task = $this->createInitialWorkflowTask($run);
@@ -2083,6 +2089,9 @@ final class WorkflowStub
             'run_timeout_seconds' => $startMetadata['run_timeout_seconds'],
             'execution_deadline_at' => $startMetadata['execution_deadline_at']?->toIso8601String(),
             'run_deadline_at' => $startMetadata['run_deadline_at']?->toIso8601String(),
+            ...(isset($startMetadata[TimeoutCleanup::STARTED_KEY]) ? [
+                TimeoutCleanup::STARTED_KEY => $startMetadata[TimeoutCleanup::STARTED_KEY],
+            ] : []),
             'workflow_definition_fingerprint' => WorkflowDefinition::fingerprint($workflowClass),
             'declared_queries' => $commandContract['queries'],
             'declared_query_contracts' => $commandContract['query_contracts'],
@@ -3683,6 +3692,11 @@ final class WorkflowStub
             'run_timeout_seconds' => $runTimeoutSeconds,
             'execution_deadline_at' => $executionDeadlineAt,
             'run_deadline_at' => $runDeadlineAt,
+            TimeoutCleanup::STARTED_KEY => TimeoutCleanup::startedPayload(
+                $startOptions->timeoutCleanupSeconds,
+                $executionDeadlineAt,
+                $runDeadlineAt,
+            ),
         ]);
 
         $task = $this->createInitialWorkflowTask($run);
