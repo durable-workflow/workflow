@@ -14,7 +14,17 @@
   embedded path and 26,460 through the service-mode bridge for a parallel
   group; both now read none, and history queries per close no longer grow
   with the number of children. Outcomes, wake-ups and projections are
-  unchanged. The parent re-projection still reads each sibling's run row.
+  unchanged.
+
+- A child close now costs the parent the same number of queries however many
+  siblings it has (#892). The parent re-projection reuses the child runs it
+  batch-loads with its child links instead of fetching each sibling again for
+  every wait, lineage and summary lookup, and it reads the parent's lineage
+  rows in one query. Embedded, queries per close went from 218, 372 and 790
+  at 2, 10 and 30 children to 172, 158 and 156. Through the service-mode
+  bridge (parallel group) they went from 153, 333 and 755 to 130, 141 and 143.
+  The close that completes a parallel group still records every member's
+  resolution once. Projections are unchanged.
 
 - Embedded task repair and execution now stay inside the app's namespaces
   (#889). Before, apps sharing one database with the same connection and

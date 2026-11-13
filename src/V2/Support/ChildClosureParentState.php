@@ -30,6 +30,7 @@ final class ChildClosureParentState
         'timers',
         'failures',
         'historyEvents',
+        'childLinks.childRun.summary',
         'childLinks.childRun.instance.currentRun',
         'childLinks.childRun.failures',
     ];

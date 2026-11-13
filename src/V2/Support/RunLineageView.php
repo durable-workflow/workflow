@@ -196,7 +196,7 @@ final class RunLineageView
             if (! $link instanceof WorkflowLink) {
                 continue;
             }
-            $related = self::resolveRun($run, $link->child_workflow_run_id);
+            $related = self::resolveRun($run, $link->child_workflow_run_id, $link);
             if (($related === null && ImportedLineageReferences::imported($run))
                 || ($related !== null && $related->workflow_instance_id !== $link->child_workflow_instance_id)
                 || $link->parent_workflow_instance_id !== $run->workflow_instance_id) {
@@ -515,10 +515,22 @@ final class RunLineageView
         return $sequences;
     }
 
-    private static function resolveRun(WorkflowRun $selectedRun, string $runId): ?WorkflowRun
-    {
+    private static function resolveRun(
+        WorkflowRun $selectedRun,
+        string $runId,
+        ?WorkflowLink $link = null
+    ): ?WorkflowRun {
         if ($selectedRun->id === $runId) {
             return $selectedRun;
+        }
+
+        // A child run eager-loaded with its link and summary for this read is
+        // the same row resolve() would fetch; reuse it so a wide fan-out does
+        // not query each child again (#892).
+        $linkedRun = $link?->relationLoaded('childRun') ? $link->childRun : null;
+
+        if ($linkedRun instanceof WorkflowRun && $linkedRun->id === $runId && $linkedRun->relationLoaded('summary')) {
+            return ImportedLineageReferences::allows($selectedRun, $linkedRun) ? $linkedRun : null;
         }
 
         $sameInstanceRun = $selectedRun->instance?->runs?->firstWhere('id', $runId);
