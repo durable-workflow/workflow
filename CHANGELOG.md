@@ -3,10 +3,12 @@
 ## Unreleased
 
 - Experimental domain entity references for top-level arguments of embedded
-  queued activities (#996). Register an entity class, deterministic
+  queued and local activities (#996). Register an entity class, deterministic
   adapter and authorized resolver. History records a portable reference and
   argument positions. Each real attempt resolves current state outside the
-  engine transaction; replay never calls the resolver. Ordinary maps and
+  engine transaction; replay never calls the resolver. Local lookup retains
+  the original hosting claim and history budget, and the callback keeps its
+  existing transaction. Ordinary maps and
   unregistered objects retain their existing serialization behavior. See
   [the registration and retry contract](docs/entity-references.md).
 

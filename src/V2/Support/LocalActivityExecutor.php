@@ -155,7 +155,9 @@ final class LocalActivityExecutor
         return $this->recordAttemptOutcome($task, $execution, $attempt, $result, $throwable);
     }
 
-    /** @internal Only repository resolution leaves the transaction; the local callback keeps its existing lifetime. */
+    /**
+     * @internal Only repository resolution leaves the transaction; the local callback keeps its existing lifetime.
+     */
     public function resolveDeferredEntityReferences(DeferredEntityReferenceResolution $invocation): bool
     {
         if (ConfiguredV2Models::connection()->transactionLevel() !== 0) {
@@ -164,7 +166,7 @@ final class LocalActivityExecutor
                 'Entity resolution cannot run inside a caller transaction.',
             );
         }
-        $models = ConfiguredV2Models::connection()->transaction(function () use ($invocation): ?array {
+        $models = ConfiguredV2Models::connection()->transaction(static function () use ($invocation): ?array {
             $task = WorkflowTask::query()->lockForUpdate()->find($invocation->taskId);
             $run = WorkflowRun::query()->lockForUpdate()->find($invocation->runId);
             $execution = ActivityExecution::query()->lockForUpdate()->find($invocation->executionId);
@@ -969,7 +971,8 @@ final class LocalActivityExecutor
             if ($execution->status === ActivityStatus::Running) {
                 $resolution = EmbeddedLocalActivityScope::resolution($lockedTask, $execution->id);
                 $currentAttempt = $resolution === null ? null : ActivityAttempt::query()
-                    ->lockForUpdate()->find($execution->current_attempt_id);
+                    ->lockForUpdate()
+                    ->find($execution->current_attempt_id);
                 if ($currentAttempt instanceof ActivityAttempt
                     && $resolution['invocation']->matches($lockedRun, $lockedTask, $execution, $currentAttempt)) {
                     return [
@@ -996,7 +999,10 @@ final class LocalActivityExecutor
                 $lockedRun,
                 $lockedTask,
                 $execution,
-                preserveHostingLease: array_key_exists(EntityReferenceArguments::POSITIONS, $execution->activity_options ?? []),
+                preserveHostingLease: array_key_exists(
+                    EntityReferenceArguments::POSITIONS,
+                    $execution->activity_options ?? []
+                ),
             );
 
             return [
@@ -1055,7 +1061,9 @@ final class LocalActivityExecutor
             'queue' => $run->queue,
             'activity_options' => [
                 ...$options->toSnapshot(),
-                ...($referencePositions === [] ? [] : [EntityReferenceArguments::POSITIONS => $referencePositions]),
+                ...($referencePositions === [] ? [] : [
+                    EntityReferenceArguments::POSITIONS => $referencePositions,
+                ]),
             ],
             'schedule_to_close_deadline_at' => $scheduleToCloseDeadlineAt,
         ]);

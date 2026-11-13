@@ -70,8 +70,12 @@ final class EntityReferenceArguments
         return self::resolveForAttempt($activity->run, $activity->execution, $arguments, $entry);
     }
 
-    public static function resolveForAttempt(WorkflowRun $run, ActivityExecution $execution, array $arguments, ReflectionMethod $entry): array
-    {
+    public static function resolveForAttempt(
+        WorkflowRun $run,
+        ActivityExecution $execution,
+        array $arguments,
+        ReflectionMethod $entry
+    ): array {
         $options = $execution->activity_options ?? [];
         if (! is_array($options) || ! array_key_exists(self::POSITIONS, $options)) {
             return $arguments;

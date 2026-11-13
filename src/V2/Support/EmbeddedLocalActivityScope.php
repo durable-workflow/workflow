@@ -12,7 +12,9 @@ use Workflow\V2\Models\WorkflowTask;
 /** @internal The in-process queue job owns this hosting claim across local phases. */
 final class EmbeddedLocalActivityScope
 {
-    /** @var array<string, array{attempt: int, history_sequence: int|null, resolutions: array<string, array{invocation: DeferredEntityReferenceResolution, arguments: array, error: Throwable|null}>}> */
+    /**
+     * @var array<string, array{attempt: int, history_sequence: int|null, resolutions: array<string, array{invocation: DeferredEntityReferenceResolution, arguments: array, error: Throwable|null}>}>
+     */
     private static array $claims = [];
 
     /**
@@ -25,7 +27,11 @@ final class EmbeddedLocalActivityScope
         $previous = self::$claims[$taskId] ?? null;
         unset(self::$claims[$taskId]);
         if (ConfiguredV2Models::connection()->transactionLevel() === 0) {
-            self::$claims[$taskId] = ['attempt' => $attempt, 'history_sequence' => null, 'resolutions' => []];
+            self::$claims[$taskId] = [
+                'attempt' => $attempt,
+                'history_sequence' => null,
+                'resolutions' => [],
+            ];
         }
         try {
             return $operation();
@@ -43,7 +49,8 @@ final class EmbeddedLocalActivityScope
         $claim = self::$claims[$task->id] ?? null;
         return $claim !== null && $claim['attempt'] === (int) $task->attempt_count
             && $task->status === TaskStatus::Leased && $task->lease_owner === $task->id
-            && $task->lease_expires_at !== null && now()->lt($task->lease_expires_at);
+            && $task->lease_expires_at !== null && now()
+                ->lt($task->lease_expires_at);
     }
 
     public static function contains(string $taskId): bool
@@ -60,8 +67,11 @@ final class EmbeddedLocalActivityScope
         return self::$claims[$task->id]['history_sequence'];
     }
 
-    public static function remember(DeferredEntityReferenceResolution $invocation, array $arguments, ?Throwable $error): void
-    {
+    public static function remember(
+        DeferredEntityReferenceResolution $invocation,
+        array $arguments,
+        ?Throwable $error
+    ): void {
         $claim = self::$claims[$invocation->taskId] ?? null;
         if ($claim !== null && $claim['attempt'] === $invocation->taskAttempt) {
             self::$claims[$invocation->taskId]['resolutions'][$invocation->executionId] = [
@@ -72,7 +82,9 @@ final class EmbeddedLocalActivityScope
         }
     }
 
-    /** @return array{invocation: DeferredEntityReferenceResolution, arguments: array, error: Throwable|null}|null */
+    /**
+     * @return array{invocation: DeferredEntityReferenceResolution, arguments: array, error: Throwable|null}|null
+     */
     public static function resolution(WorkflowTask $task, string $executionId): ?array
     {
         return self::owns($task) ? self::$claims[$task->id]['resolutions'][$executionId] ?? null : null;

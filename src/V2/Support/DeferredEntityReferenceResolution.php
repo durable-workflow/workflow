@@ -30,8 +30,12 @@ final class DeferredEntityReferenceResolution extends RuntimeException
 
     private readonly string $argumentsFingerprint;
 
-    public function __construct(WorkflowRun $run, WorkflowTask $task, ActivityExecution $execution, ActivityAttempt $attempt)
-    {
+    public function __construct(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        ActivityExecution $execution,
+        ActivityAttempt $attempt
+    ) {
         parent::__construct('Local entity resolution requires the committed hosting claim.');
         $this->taskId = $task->id;
         $this->taskAttempt = (int) $task->attempt_count;
@@ -42,8 +46,12 @@ final class DeferredEntityReferenceResolution extends RuntimeException
         $this->argumentsFingerprint = self::fingerprint($execution);
     }
 
-    public function matches(WorkflowRun $run, WorkflowTask $task, ActivityExecution $execution, ActivityAttempt $attempt): bool
-    {
+    public function matches(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        ActivityExecution $execution,
+        ActivityAttempt $attempt
+    ): bool {
         return $task->id === $this->taskId && (int) $task->attempt_count === $this->taskAttempt
             && EmbeddedLocalActivityScope::owns($task) && $run->id === $this->runId
             && $run->namespace === $this->namespace && $task->namespace === $run->namespace
@@ -55,7 +63,8 @@ final class DeferredEntityReferenceResolution extends RuntimeException
             && $execution->current_attempt_id === $attempt->id
             && (int) $execution->attempt_count === (int) $attempt->attempt_number
             && $execution->status === ActivityStatus::Running && $attempt->status === ActivityAttemptStatus::Running
-            && $attempt->lease_expires_at !== null && now()->lt($attempt->lease_expires_at)
+            && $attempt->lease_expires_at !== null && now()
+                ->lt($attempt->lease_expires_at)
             && ActivityAttemptAuthority::expiredReason($task, $execution, now(), $run) === null
             && hash_equals($this->argumentsFingerprint, self::fingerprint($execution));
     }

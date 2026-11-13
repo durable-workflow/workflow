@@ -1,6 +1,6 @@
 # Domain entity references in activities
 
-This experimental embedded API lets queued PHP activities receive a
+This experimental embedded API lets queued and local PHP activities receive a
 domain entity loaded by the application. Workflow history records its logical
 type, identifier and reference version. The entity class implements no Workflow
 or Laravel interface.
@@ -102,8 +102,16 @@ follow the activity's ordinary retry policy. Deploy matching registrations to
 the in-process workers that can receive the activity, and keep them available
 for retained history and retries.
 
-Local entity arguments are refused before scheduling or lookup in this increment.
-Local callbacks still execute inside the hosting workflow transaction. Supporting
-a resolver there requires splitting preparation, callback and outcome recording
-so application I/O runs outside that transaction. That accepted follow-up remains
-open in [issue 996](https://github.com/durable-workflow/workflow/issues/996).
+For local activities, the in-process workflow worker commits preparation before
+calling the resolver outside SQL. It then rechecks the original hosting task,
+activity attempt, recorded arguments and deadlines before invoking the callback.
+The resolved object remains in memory for that invocation; history keeps only
+the reference and outcome. Lookup does not extend the hosting lease or reset the
+task's history budget. A changed claim or expired deadline prevents the callback.
+
+Local callbacks keep their existing hosting transaction and lifetime. This API
+does not move arbitrary activity methods outside SQL or prove that an earlier
+physical callback stopped. Local reference resolution requires the worker's
+in-process claim at transaction depth zero; direct execution inside a caller's
+transaction is refused before lookup. Portable/remote local execution remains
+outside this embedded API's scope.

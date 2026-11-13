@@ -111,7 +111,10 @@ final class RunWorkflowTask implements ShouldQueue
 
     private function executeClaim(WorkflowExecutor $executor, int $claimedAttempt): void
     {
-        EmbeddedLocalActivityScope::forClaim($this->taskId, $claimedAttempt, function () use ($executor, $claimedAttempt): void {
+        EmbeddedLocalActivityScope::forClaim($this->taskId, $claimedAttempt, function () use (
+            $executor,
+            $claimedAttempt
+        ): void {
             do {
                 $deferred = $this->executeClaimPhase($executor, $claimedAttempt);
             } while ($deferred instanceof DeferredEntityReferenceResolution
@@ -119,8 +122,10 @@ final class RunWorkflowTask implements ShouldQueue
         });
     }
 
-    private function executeClaimPhase(WorkflowExecutor $executor, int $claimedAttempt): ?DeferredEntityReferenceResolution
-    {
+    private function executeClaimPhase(
+        WorkflowExecutor $executor,
+        int $claimedAttempt
+    ): ?DeferredEntityReferenceResolution {
         $nextTask = null;
         $deferred = null;
         $continuation = config('workflows.v2.live_execution.workflows', []) === []
@@ -148,12 +153,12 @@ final class RunWorkflowTask implements ShouldQueue
                     return null;
                 }
 
-                if (EmbeddedLocalActivityScope::contains($task->id) && ! EmbeddedLocalActivityScope::owns($task)) {
+                if ($continuation !== null && ! $continuation->hasAuthority($run, $task)) {
+                    $continuation->disable('lost_task_authority');
                     return null;
                 }
 
-                if ($continuation !== null && ! $continuation->hasAuthority($run, $task)) {
-                    $continuation->disable('lost_task_authority');
+                if (EmbeddedLocalActivityScope::contains($task->id) && ! EmbeddedLocalActivityScope::owns($task)) {
                     return null;
                 }
 
