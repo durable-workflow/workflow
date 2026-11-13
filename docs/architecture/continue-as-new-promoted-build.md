@@ -40,16 +40,22 @@ accepts. The guides will say this plainly.
 Resolution happens inside the transaction that closes the predecessor and
 creates the successor, under the same run lock:
 
-- **Native Server:** resolves the promoted cohort for (namespace, queue,
-  workflow type), the same `promoted_cohort` lookup as a start. A native pin is
-  the build id, and it is stored in `compatibility`.
+- **Native Server:** uses the durable `promoted_cohort` lookup for namespace
+  and queue, then proves that the selected cohort serves the exact workflow
+  type within this admission transaction. The lookup alone does not prove
+  type eligibility. A native pin is the build id, stored in `compatibility`.
+  Native does not require a live heartbeat: a valid promoted cohort can have
+  zero workers during a restart or scale from zero.
 - **Embedded:** has no promotion registry. The first slice reads
   `workflows.v2.compatibility.promoted` (`DW_V2_PROMOTED_COMPATIBILITY`).
   Every build's workers must see it, because a pinned chain's continue-as-new
   runs on a worker of the *old* build. The target is admissible only if a live
-  worker heartbeat on that queue supports the marker (the existing
-  worker-compatibility fleet). A later slice can replace the config with a
-  promotion row the deploy step writes.
+  eligible worker heartbeat matches the exact namespace, queue, workflow type
+  and compatibility marker, using the existing freshness cutoff and worker
+  status authority. A marker-bearing heartbeat alone cannot prove type
+  eligibility. Missing or unsupported eligibility evidence refuses admission.
+  A later slice can replace the config with a promotion row the deploy step
+  writes.
 
 If the resolved build equals the predecessor's, the transition records it as
 `promoted`, and nothing else changes.
@@ -57,12 +63,41 @@ If the resolved build equals the predecessor's, the transition records it as
 ### Refusal
 
 With no promoted build, or none serving the workflow type, or (in embedded) no
-live worker supporting the promoted marker, continue-as-new is refused **before
-any write**. The predecessor stays open, its workflow task fails with the typed
-reason `promoted_build_unavailable`, and its lease and history are unchanged.
-The task is retried under the normal workflow-task retry. The refusal is
-visible in run detail as a task failure with that reason, never as a silently
-stranded successor. The author can retry later, or continue with `inherited`.
+live eligible worker supporting the promoted marker, the continue-as-new
+admission transaction refuses before any write. That transaction leaves the
+predecessor, task lease and history unchanged, creates no successor, and records
+no build transition.
+
+The worker may then report the typed reason `promoted_build_unavailable` in a
+separate ordinary task-failure operation. That report uses the existing task
+attempt, lease and retry fences. Its normal failure, lease-release and retry
+bookkeeping may write history; those writes are not part of the refused
+continue-as-new transaction. A later attempt can resolve promotion again,
+within the original execution deadline.
+
+For service mode the proposed admission response is HTTP 409 with
+`reason: promoted_build_unavailable`, `retryable: true` and
+`request_admitted: false`. Native must qualify worker handling of that response
+before advertising support. It is neither an accepted transition nor a failed
+workflow.
+
+The embedded failure report retains one bounded structured record at
+`workflow_tasks.payload.continue_as_new_refusal`, containing the reason, task
+attempt number and recording time. The run-detail task view exposes that
+record together with the task id, status and existing `available_at` retry
+time. It reads the indexed task row rather than scanning history or parsing
+`last_error`. Only the matching current task attempt can expose a current
+refusal. The next claim clears it under the claim fence; a stale report cannot
+restore it. Retained failure history remains historical after recovery.
+Native exposes the same observation from its fenced task-failure record.
+Before a failure report is admitted, the response itself supplies the refusal;
+run detail must not invent a persisted refusal.
+
+Waterline keeps the predecessor's actual open state and displays the task
+refusal separately, without a successor link. Operator guidance is to verify
+the promoted build's exact namespace, queue and type, then observe normal
+retry. Continuing with `inherited` remains an author choice; a UI retry action
+must not silently rewrite the pending command.
 
 ## Recorded choice; replay never rereads promotion
 
@@ -76,14 +111,20 @@ Both `WorkflowContinuedAsNew` (predecessor) and the successor's `WorkflowStarted
 }
 ```
 
-The successor's `workflow_runs.compatibility` is `to_compatibility`. Replay,
+Both marker values may be null for unpinned runs. Missing legacy metadata
+cannot invent a named build. The successor's `workflow_runs.compatibility` is
+`to_compatibility`. Replay,
 query replay, history export and redrive read only these recorded values, and
 no replay path looks at the current promotion. With `inherited`, the field is
 recorded with equal `from`/`to` when the opt-in protocol is in use. Histories
 from earlier releases have no field and mean `inherited`.
 
 Waterline shows the transition on both runs: "continued onto build-b
-(promoted) from build-a".
+(promoted) from build-a", with exact recorded predecessor/successor links in
+the existing lineage section. A bounded run-detail observation exposes the
+complete recorded transition without a history scan for each list refresh.
+Partial or unsupported metadata stays unavailable. Rendering never resolves
+current promotion, including when both recorded markers are equal.
 
 ## Budgets and lineage
 
@@ -105,17 +146,23 @@ rollback after the transition doesn't move an already started successor.
 
 | # | Setup | Action | Expected |
 | --- | --- | --- | --- |
-| 1 | Chain on A, promoted B, live B workers | `continueAsNew()->onPromotedBuild()` | Successor `compatibility: B`; both events record `{from: A, to: B, resolution: promoted}`; the successor's first task is claimed only by B workers |
+| 1 | Chain on A, promoted B serves the exact type; embedded has eligible live B workers | `continueAsNew()->onPromotedBuild()` | Successor `compatibility: B`; both events record `{from: A, to: B, resolution: promoted}`; the successor's first task is claimed only by B workers |
 | 2 | Same | Plain `continueAsNew()` | Successor on A, `resolution: inherited` (or no field without the opt-in protocol) |
-| 3 | Chain on A, no promoted build | `onPromotedBuild()` | Refused with `promoted_build_unavailable`; predecessor open with unchanged history and lease; no successor row |
+| 3 | Chain on A, no promoted build | `onPromotedBuild()` | Admission refuses with `promoted_build_unavailable`; predecessor, history and lease unchanged; no successor or transition writes. A separately fenced failure report may record the refusal and normal retry bookkeeping |
 | 4 | Embedded, promoted B configured, no live B heartbeat | `onPromotedBuild()` | Same refusal as #3 |
 | 5 | Run 1 continued from A to B (recorded) | Cold replay of run 1 and run 2 after promotion moves to C | Run 1 replays to `ContinueAsNewCall`; run 2 replays on its recorded B; nothing reads C |
 | 6 | Promotion A→B commits while the continue-as-new transaction runs | — | The successor is on exactly A or B, recorded; no successor on an unrecorded build |
 | 7 | Chain on A with an open request-cancel child | `onPromotedBuild()` | Child handed over ([workflow issue 868](https://github.com/durable-workflow/workflow/issues/868)) on its own build; successor on B |
 | 8 | History from 2.27 or earlier | Replay | No `build_transition` field, treated as `inherited` |
+| 9 | Native promoted B serves the type, no live B worker | `onPromotedBuild()` | Admission succeeds on durable promotion; worker restart does not require a new transition |
+| 10 | Promoted B has only a wrong-type, stale or otherwise ineligible embedded heartbeat | `onPromotedBuild()` | Refused before transition writes; marker presence alone is insufficient |
+| 11 | Current refusal recorded, then a new claim or successful retry | Run-detail refresh and delayed old failure report | Current refusal clears under the claim fence; old report cannot restore it; retained failure remains historical |
+| 12 | Unpinned predecessor, recorded transition has a null marker | Replay and run-detail rendering | Preserve nullable marker and exact lineage; no invented build or live promotion lookup |
 
-## Open questions
+## Ownership and activation
 
-- **Server:** should native also refuse when the promoted cohort has no live
-  worker, as embedded does, or is a promoted cohort assumed served?
-- **Waterline:** wording and placement for the transition on run detail.
+Workflow owns embedded admission, recorded transitions and bounded task/run
+observations. Server owns native type eligibility, admission refusal and worker
+retry qualification. Waterline consumes those recorded observations. These
+vectors and worker replacement/replay fences must pass before either runtime
+advertises the opt-in; this draft enables no capability.
