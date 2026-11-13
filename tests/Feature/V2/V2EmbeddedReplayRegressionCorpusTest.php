@@ -2552,6 +2552,61 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertDurableOnlyTimelineProjection($fixture);
     }
 
+    public function testSelectionLoserCorpusIsSettledWhenTheRunCloses(): void
+    {
+        $fixturePath = self::FIXTURE_DIR . '/selection-loser-settled-at-close.json';
+
+        if (! is_file($fixturePath)) {
+            $this->markTestSkipped('Selection loser close fixture is not present in the base corpus.');
+        }
+
+        /** @var array<string, mixed> $fixture */
+        $fixture = json_decode((string) file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
+        Queue::fake();
+
+        foreach ($fixture['selection_loser_settled_at_close']['closes'] as $close) {
+            $mode = match ($close) {
+                'continue_as_new' => 'continue',
+                'cancel' => 'timer-loser',
+                default => $close,
+            };
+            $workflow = WorkflowStub::make($fixture['workflow']['type'], 'selection-loser-close-' . $close);
+            $workflow->start($mode);
+            $runId = $workflow->runId();
+            $this->runReadyTaskOfType($runId, TaskType::Workflow);
+
+            if ($close === 'cancel') {
+                $this->assertTrue($workflow->refresh()->attemptCancel('operator')->accepted());
+            }
+
+            $run = WorkflowRun::query()->findOrFail($runId);
+            $this->assertTrue($run->status->isTerminal(), $close);
+            $events = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->orderBy('sequence')
+                ->get();
+            $terminal = $events->last();
+            $this->assertSame(match ($close) {
+                'complete' => HistoryEventType::WorkflowCompleted,
+                'fail' => HistoryEventType::WorkflowFailed,
+                'continue_as_new' => HistoryEventType::WorkflowContinuedAsNew,
+                'cancel' => HistoryEventType::WorkflowCancelled,
+            }, $terminal->event_type, $close);
+            $cancelled = $events->firstWhere('event_type', HistoryEventType::ActivityCancelled);
+            $this->assertInstanceOf(
+                WorkflowHistoryEvent::class,
+                $cancelled,
+                "{$close} left the select() loser without a recorded outcome.",
+            );
+            $this->assertLessThan($terminal->sequence, $cancelled->sequence, $close);
+            $this->assertSame(0, WorkflowTask::query()
+                ->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Activity->value)
+                ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+                ->count(), $close);
+        }
+    }
+
     private function runReadyTaskOfType(string $runId, TaskType $taskType): void
     {
         $task = WorkflowTask::query()

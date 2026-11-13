@@ -12689,7 +12689,26 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame(RunStatus::Completed, $run->fresh()->status);
         $this->assertSame(0, $this->readyWorkflowTaskCount($run));
 
-        $failActivity(1, 'nested late sibling failure');
+        // The close settled the still-open sibling (#1117): it is cancelled,
+        // so a late worker cannot claim it and append to the closed run.
+        /** @var ActivityExecution $lateSibling */
+        $lateSibling = ActivityExecution::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('sequence', 1)
+            ->sole();
+        $this->assertSame(ActivityStatus::Cancelled, $lateSibling->status);
+        $lateSiblingTask = WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Activity->value)
+            ->get()
+            ->sole(static fn (WorkflowTask $candidate): bool =>
+                ($candidate->payload['activity_execution_id'] ?? null) === $lateSibling->id);
+        $this->assertNull($activityBridge->claim($lateSiblingTask->id, 'nested-failure-worker-1'));
+        $this->assertSame(HistoryEventType::WorkflowCompleted, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->orderByDesc('sequence')
+            ->firstOrFail()
+            ->event_type);
 
         $persistedWinner = WorkflowHistoryEvent::query()
             ->where('workflow_run_id', $run->id)
