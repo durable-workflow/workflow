@@ -68,6 +68,9 @@ jobs:
     - name: Verify build and feature selection contracts
       run: python scripts/ci/test-build-routing.py
 
+    - name: Require APT retries off before networked APT (CVE-2026-109518)
+      run: python -I scripts/ci/test-apt-no-retries.py
+
     - name: Verify complete feature inventories
       run: php scripts/ci/verify-feature-shards.php
 
@@ -315,6 +318,8 @@ jobs:
       with:
         persist-credentials: false
 
+    - name: Disable APT download retries (CVE-2026-109518)
+      run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
     - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
       with:
         php-version: ${{ matrix.php }}
@@ -349,6 +354,8 @@ jobs:
       with:
         persist-credentials: false
 
+    - name: Disable APT download retries (CVE-2026-109518)
+      run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
     - name: Set up the optional application instrumentation
       uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
       with:
@@ -975,6 +982,8 @@ jobs:
           fetch-depth: 10
           persist-credentials: false
 
+    - name: Disable APT download retries (CVE-2026-109518)
+      run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
     - name: Set up PHP coverage driver
       uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
       with:
@@ -1425,6 +1434,8 @@ jobs:
           persist-credentials: false
           ref: ${{ env.COVERAGE_COMMIT }}
 
+    - name: Disable APT download retries (CVE-2026-109518)
+      run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
     - name: Set up PHP coverage driver
       uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
       with:
@@ -1538,6 +1549,8 @@ jobs:
         persist-credentials: false
         ref: ${{ env.COVERAGE_COMMIT }}
 
+    - name: Disable APT download retries (CVE-2026-109518)
+      run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
     - name: Set up PHP for coverage aggregation
       uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
       with:

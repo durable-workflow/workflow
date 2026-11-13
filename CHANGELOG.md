@@ -10,6 +10,13 @@
   unregistered objects retain their existing serialization behavior. See
   [the registration and retry contract](docs/entity-references.md).
 
+## 2.28.0 - 2026-11-13
+
+**Behavior change:** an un-awaited `select()` loser is cancelled when the run
+closes. To keep a service-mode activity running, schedule it with
+`cancellation_policy: abandon`; its outcome is then never recorded. See the
+first entry below. No migration.
+
 - A run no longer leaves work running after its own code closes it (#1117).
   Before, an activity or timer the workflow never awaited, such as a
   `select()` loser, stayed open when the run completed, failed or continued as
@@ -31,6 +38,23 @@
   Children keep their parent-close policy and continue-as-new hand-over.
   Behavior change: if a workflow needs a loser's effect, await the loser
   before returning.
+
+- Replaying a workflow that repeats the same message-stream send no longer
+  lists every earlier matching row again for each send (#1014). The exactly
+  matched candidates for a send identity are now loaded once per execution
+  and extended with the rows that execution writes, so N identical sends in
+  one replay cost one candidate query instead of N, and O(N) rows instead of
+  O(N²). Matching is unchanged: exact field comparison, send order and the
+  redrive chain.
+
+- An expired open activity row of a closed run is now closed instead of being
+  selected and skipped on every timeout sweep (#1117 follow-up). An activity
+  that its run's close left running under the abandon policy is marked failed
+  when its own `schedule_to_close` deadline passes without an outcome. Any
+  other open row of a closed run, such as one left by a close before
+  upgrading, is cancelled. Its task is cancelled and nothing is appended to
+  the closed run's history. Before, such rows stayed open and could fill the
+  sweep's batch limit.
 
 ## 2.27.0 - 2026-11-13
 
