@@ -21,6 +21,7 @@ use Symfony\Component\Uid\Ulid;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestLocalActivityWorkflow;
+use Tests\Fixtures\V2\TestParallelGreetingChildrenWorkflow;
 use Tests\Fixtures\V2\TestQueryReplayGuardActivity;
 use Tests\Fixtures\V2\TestRepeatedPatchClockWorkflow;
 use Tests\Fixtures\V2\TestSinglePatchReplayWorkflow;
@@ -2448,6 +2449,90 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         }
     }
 
+    public function testChildClosureCorpusReadsEachSiblingRunABoundedNumberOfTimes(): void
+    {
+        $fixturePath = self::FIXTURE_DIR . '/child-closure-sibling-run-rows-bound.json';
+
+        if (! is_file($fixturePath)) {
+            $this->markTestSkipped('Child closure sibling run-row fixture is not present in the base corpus.');
+        }
+
+        /** @var array<string, mixed> $fixture */
+        $fixture = json_decode((string) file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestParallelGreetingChildrenWorkflow::class, 'child-closure-run-rows');
+        $workflow->start(4);
+        $parentId = $workflow->runId();
+        $this->runReadyTaskOfType($parentId, TaskType::Workflow);
+        /** @var list<string> $childIds */
+        $childIds = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $parentId)
+            ->where('link_type', 'child_workflow')
+            ->orderBy('sequence')
+            ->pluck('child_workflow_run_id')
+            ->all();
+        $this->assertCount(4, $childIds);
+        $closingChild = WorkflowRun::query()->findOrFail($childIds[3]);
+        $this->assertSame($fixture['workflow']['type'], $closingChild->workflow_class);
+        $this->assertSame(
+            $fixture['history'][0]['payload']['parent_sequence'],
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $closingChild->id)
+                ->where('event_type', HistoryEventType::WorkflowStarted->value)
+                ->sole()
+                ->payload['parent_sequence'],
+        );
+
+        foreach ($childIds as $childId) {
+            $this->runReadyTaskOfType($childId, TaskType::Workflow);
+            $this->runReadyTaskOfType($childId, TaskType::Activity);
+        }
+
+        $closingChildId = null;
+        /** @var array<string, int> $siblingReads */
+        $siblingReads = [];
+        Event::listen(
+            'eloquent.retrieved: ' . WorkflowRun::class,
+            static function (WorkflowRun $run) use (&$closingChildId, &$siblingReads, $childIds): void {
+                if ($closingChildId !== null
+                    && $run->id !== $closingChildId
+                    && in_array($run->id, $childIds, true)) {
+                    $siblingReads[$run->id] = ($siblingReads[$run->id] ?? 0) + 1;
+                }
+            },
+        );
+
+        $mostReadsPerClose = [];
+        foreach ($childIds as $childId) {
+            $siblingReads = [];
+            $closingChildId = $childId;
+            try {
+                $this->runReadyTaskOfType($childId, TaskType::Workflow);
+            } finally {
+                $closingChildId = null;
+            }
+            $mostReadsPerClose[] = $siblingReads === [] ? 0 : max($siblingReads);
+        }
+
+        // Each parent projection batch-loads a child run twice: through its
+        // link and as its instance's current run. The final close also
+        // projects the woken parent once more. Before #892 every wait, lineage
+        // and summary lookup fetched each sibling again (9 reads per close for
+        // four children, 12 on the final close).
+        $this->assertLessThanOrEqual(
+            4,
+            max($mostReadsPerClose),
+            'Closing one child re-read a sibling run: ' . json_encode($mostReadsPerClose),
+        );
+        $this->runReadyTaskOfType($parentId, TaskType::Workflow);
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame(
+            ['Hello, 0!', 'Hello, 1!', 'Hello, 2!', 'Hello, 3!'],
+            array_column($workflow->output(), 'greeting'),
+        );
+    }
+
     public function testDurableOnlyTimelineProjectionRetainsEveryBufferedSignal(): void
     {
         $fixturePath = self::FIXTURE_DIR . '/unrelated-buffered-signals-cold-replay.json';
@@ -2465,6 +2550,21 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $fixture = json_decode((string) file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertDurableOnlyTimelineProjection($fixture);
+    }
+
+    private function runReadyTaskOfType(string $runId, TaskType $taskType): void
+    {
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', $taskType->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+
+        $job = $taskType === TaskType::Activity
+            ? new RunActivityTask($task->id)
+            : new RunWorkflowTask($task->id);
+
+        $this->app->call([$job, 'handle']);
     }
 
     /**

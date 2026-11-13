@@ -34,13 +34,20 @@ final class RunLineageProjector
         $lineageModel = self::lineageModel();
         $seen = [];
         $projected = [];
+        // One read of the run's projected rows instead of one lookup per
+        // entry, so re-projecting a wide fan-out stays a constant number of
+        // queries (#892). Each prefetched row is used at most once.
+        $existing = $lineageModel::query()
+            ->where('workflow_run_id', $run->id)
+            ->get()
+            ->keyBy('id');
 
         foreach (array_values($parents) as $position => $entry) {
-            $projected[] = self::projectEntry($lineageModel, $run, $entry, 'parent', $position, $seen);
+            $projected[] = self::projectEntry($lineageModel, $run, $entry, 'parent', $position, $seen, $existing);
         }
 
         foreach (array_values($continuedWorkflows) as $position => $entry) {
-            $projected[] = self::projectEntry($lineageModel, $run, $entry, 'child', $position, $seen);
+            $projected[] = self::projectEntry($lineageModel, $run, $entry, 'child', $position, $seen, $existing);
         }
 
         self::historyProjectionMaintenanceRole()
@@ -230,6 +237,7 @@ final class RunLineageProjector
      * @param class-string<WorkflowRunLineageEntry> $lineageModel
      * @param array<string, mixed> $entry
      * @param array<int, string> $seen
+     * @param EloquentCollection<string, WorkflowRunLineageEntry>|null $existing
      */
     private static function projectEntry(
         string $lineageModel,
@@ -238,6 +246,7 @@ final class RunLineageProjector
         string $direction,
         int $position,
         array &$seen,
+        ?EloquentCollection $existing = null,
     ): ?WorkflowRunLineageEntry {
         $lineageId = self::stringValue($entry['id'] ?? null);
 
@@ -278,6 +287,7 @@ final class RunLineageProjector
                 'linked_at' => self::timestamp($entry['created_at'] ?? null),
                 'payload' => self::normalizedPayload($entry),
             ],
+            $existing?->pull($projectionId),
         );
 
         return $row;

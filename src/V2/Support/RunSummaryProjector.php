@@ -166,7 +166,11 @@ final class RunSummaryProjector
             && (int) $previousSummary->history_event_count + 1 === (int) $activityResolution->sequence;
 
         $run->loadMissing(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']);
-        $run->loadMissing(['childLinks.childRun.instance.currentRun', 'childLinks.childRun.failures']);
+        $run->loadMissing([
+            'childLinks.childRun.summary',
+            'childLinks.childRun.instance.currentRun',
+            'childLinks.childRun.failures',
+        ]);
         RunInstanceMetadata::detachForeign($run);
         $currentRun = $run->instance === null
             ? null

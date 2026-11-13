@@ -1035,7 +1035,48 @@ final class ChildRunHistory
             return null;
         }
 
+        $loaded = self::eagerLoadedChildRun($origin, $runId);
+
+        if ($loaded instanceof WorkflowRun) {
+            return ImportedLineageReferences::allows($origin, $loaded) ? $loaded : null;
+        }
+
         return ImportedLineageReferences::resolve($origin, $runId, ['summary', 'instance', 'failures']);
+    }
+
+    /**
+     * A child run the caller eager-loaded with the origin's child links, so a
+     * projection over a wide fan-out reads each sibling once instead of once
+     * per lookup (#892). Only a run loaded together with its summary counts:
+     * that marks a batch load taken for this read, not a lazily cached model.
+     */
+    private static function eagerLoadedChildRun(WorkflowRun $origin, string $runId): ?WorkflowRun
+    {
+        if (! $origin->relationLoaded('childLinks')) {
+            return null;
+        }
+
+        foreach ($origin->childLinks as $link) {
+            if (! $link instanceof WorkflowLink
+                || $link->child_workflow_run_id !== $runId
+                || ! $link->relationLoaded('childRun')) {
+                continue;
+            }
+
+            $childRun = $link->childRun;
+
+            if (! $childRun instanceof WorkflowRun
+                || $childRun->id !== $runId
+                || ! $childRun->relationLoaded('summary')) {
+                continue;
+            }
+
+            $childRun->loadMissing(['instance', 'failures']);
+
+            return $childRun;
+        }
+
+        return null;
     }
 
     private static function loadCurrentRunForInstance(string $instanceId, WorkflowRun $origin): ?WorkflowRun

@@ -39,6 +39,8 @@ final class ChildClosureSiblingHistoryCostTest extends TestCase
 
     private int $historyQueries = 0;
 
+    private int $queries = 0;
+
     private bool $measuring = false;
 
     protected function setUp(): void
@@ -64,6 +66,9 @@ final class ChildClosureSiblingHistoryCostTest extends TestCase
         DB::listen(function (QueryExecuted $query): void {
             if ($this->measuring && str_contains($query->sql, 'workflow_history_events')) {
                 $this->historyQueries++;
+            }
+            if ($this->measuring) {
+                $this->queries++;
             }
         });
     }
@@ -98,8 +103,36 @@ final class ChildClosureSiblingHistoryCostTest extends TestCase
         }
     }
 
+    public function testChildClosureQueryCountDoesNotGrowWithFanOut(): void
+    {
+        // The parent re-projection reuses the child runs it batch-loads with
+        // its child links, so a close costs the same number of queries however
+        // many siblings the parent has (#892). Before, each sibling was fetched
+        // again for every wait, lineage and summary lookup.
+        $small = $this->embeddedClosureCost(2)['queries_per_close'];
+        $large = $this->embeddedClosureCost(6)['queries_per_close'];
+        $evidence = json_encode([$small, $large], JSON_THROW_ON_ERROR);
+
+        $this->assertLessThanOrEqual(max(array_slice($small, 0, -1)), max(array_slice($large, 0, -1)), $evidence);
+        $this->assertSame($small[count($small) - 1], $large[count($large) - 1], $evidence);
+
+        foreach ([false, true] as $parallel) {
+            $small = $this->bridgeClosureCost(2, $parallel)['queries_per_close'];
+            $large = $this->bridgeClosureCost(6, $parallel)['queries_per_close'];
+            $evidence = json_encode([$parallel, $small, $large], JSON_THROW_ON_ERROR);
+
+            // The close that completes a parallel group records every member's
+            // resolution once, so only the closes before it are compared.
+            $this->assertLessThanOrEqual(
+                max(array_slice($small, 0, -1)),
+                max(array_slice($large, 0, -1)),
+                $evidence,
+            );
+        }
+    }
+
     /**
-     * @return array{sibling_rows: int, history_queries_first_last_close: list<int>, sibling_rows_per_close: list<int>}
+     * @return array{sibling_rows: int, history_queries_first_last_close: list<int>, sibling_rows_per_close: list<int>, queries_per_close: list<int>}
      */
     private function embeddedClosureCost(int $children): array
     {
@@ -135,7 +168,7 @@ final class ChildClosureSiblingHistoryCostTest extends TestCase
     }
 
     /**
-     * @return array{sibling_rows: int, history_queries_first_last_close: list<int>, sibling_rows_per_close: list<int>}
+     * @return array{sibling_rows: int, history_queries_first_last_close: list<int>, sibling_rows_per_close: list<int>, queries_per_close: list<int>}
      */
     private function bridgeClosureCost(int $children, bool $parallel): array
     {
@@ -192,16 +225,18 @@ final class ChildClosureSiblingHistoryCostTest extends TestCase
     /**
      * @param list<string> $childIds
      * @param callable(string): void $close
-     * @return array{sibling_rows: int, history_queries_first_last_close: list<int>, sibling_rows_per_close: list<int>}
+     * @return array{sibling_rows: int, history_queries_first_last_close: list<int>, sibling_rows_per_close: list<int>, queries_per_close: list<int>}
      */
     private function measureClosures(array $childIds, callable $close): array
     {
         $siblingRowsPerClose = [];
         $historyQueriesPerClose = [];
+        $queriesPerClose = [];
 
         foreach ($childIds as $childId) {
             $this->historyRowsByRun = [];
             $this->historyQueries = 0;
+            $this->queries = 0;
             $this->measuring = true;
 
             try {
@@ -219,6 +254,7 @@ final class ChildClosureSiblingHistoryCostTest extends TestCase
 
             $siblingRowsPerClose[] = $siblingRows;
             $historyQueriesPerClose[] = $this->historyQueries;
+            $queriesPerClose[] = $this->queries;
         }
 
         return [
@@ -228,6 +264,7 @@ final class ChildClosureSiblingHistoryCostTest extends TestCase
                 $historyQueriesPerClose[0],
                 $historyQueriesPerClose[count($historyQueriesPerClose) - 1],
             ],
+            'queries_per_close' => $queriesPerClose,
         ];
     }
 

@@ -1,0 +1,57 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "child-closure-sibling-run-rows-bound",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestChildGreetingWorkflow",
+    "arguments": [
+      "3"
+    ],
+    "payload_codec": "avro"
+  },
+  "child_closure_sibling_run_rows_bound": {
+    "issue": "durable-workflow/workflow#892",
+    "note": "The last of four children in an embedded all() group closes after its siblings. Each close re-projects the parent from the child runs it batch-loads with its child links, so a sibling's run row is read a bounded number of times per close instead of once for every wait, lineage and summary lookup. The child's own replay is unchanged."
+  },
+  "history": [
+    {
+      "id": "01m7cc4zkyqy0k8z2z8xzandtb",
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-13T00:41:07.502913Z",
+      "payload": {
+        "workflow_class": "Tests\\Fixtures\\V2\\TestChildGreetingWorkflow",
+        "workflow_type": "test-child-greeting-workflow",
+        "workflow_instance_id": "01m7cgsr5sc288a59bt85bb4sh",
+        "workflow_run_id": "01m7c779peaxge12jgy4r1wze3",
+        "parent_workflow_instance_id": "01m7cxj2h8sypndwmv15pgwj8p",
+        "parent_workflow_run_id": "01m7crpjf24terdyc29yz7txav",
+        "parent_sequence": 4,
+        "workflow_link_id": "01m7cg1tm1ppx0jc78zm6sqcek",
+        "child_call_id": "01M7CN4WJ2T7VP5Q5TMVQYZ55Z",
+        "timeout_policy": null,
+        "execution_timeout_seconds": null,
+        "run_timeout_seconds": null,
+        "execution_deadline_at": null,
+        "run_deadline_at": null
+      }
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "schedule_activity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity"
+      }
+    ]
+  }
+}
