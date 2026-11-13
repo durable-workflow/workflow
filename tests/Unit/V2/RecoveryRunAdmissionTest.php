@@ -428,6 +428,52 @@ final class RecoveryRunAdmissionTest extends TestCase
         ));
     }
 
+    #[DataProvider('substitutedSuccessors')]
+    public function testRetainedRecoveryRedriveRefusesAnotherAdmission(string $substitution): void
+    {
+        [$scope, $stub, $first] = $this->failedRecovery();
+        $options = [
+            'namespace' => $scope->namespace,
+            'request_id' => 'redrive',
+        ];
+        $redrive = app(WorkflowControlPlane::class)->redrive($stub->id(), $first->runId(), $options);
+        self::assertTrue($redrive['accepted']);
+        $owner = WorkflowCommand::query()->findOrFail($first->commandId())->context['compensation_recovery']['intent']['binding']['original_run_id'];
+        $targetScope = $substitution === 'foreign'
+            ? new ScopeIdentity($scope->application, $scope->namespace, 'different-order', $scope->generation)
+            : $scope;
+        if ($substitution === 'later') {
+            WorkflowStub::loadRun($redrive['workflow_run_id'])->terminate();
+        }
+        $target = WorkflowStub::make(
+            RecoveryWorkflow::class,
+            $targetScope->recoveryInstanceId(),
+            $targetScope->namespace
+        )
+            ->attemptRecoveryStart(new RecoveryRunAdmission(
+                $targetScope,
+                $owner,
+                'different-admission',
+                $substitution === 'later' ? $redrive['workflow_run_id'] : null,
+            ));
+        WorkflowLink::query()->where('parent_workflow_run_id', $first->runId())->where('link_type', 'redrive')
+            ->firstOrFail()
+            ->forceFill([
+                'child_workflow_instance_id' => $targetScope->recoveryInstanceId(),
+                'child_workflow_run_id' => $target->runId(),
+            ])->save();
+        $this->assertRefusesWithoutWrites(static fn () => app(WorkflowControlPlane::class)->redrive(
+            $stub->id(),
+            $first->runId(),
+            $options
+        ));
+    }
+
+    public static function substitutedSuccessors(): array
+    {
+        return [['foreign'], ['later']];
+    }
+
     public static function brokenRedriveReceipts(): array
     {
         return [['command'], ['history'], ['divergent']];
