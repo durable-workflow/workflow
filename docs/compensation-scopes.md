@@ -6,29 +6,6 @@ nested-machine integration in [business state-machine proposal](https://github.c
 This is not a released API. Existing run-local Saga and the four-method
 `TransitionStep` contract remain unchanged.
 
-## Reviewable increments
-
-1. Retained identities, bounded portable descriptors and atomic registration
-   journal. Prove exact duplicate adoption, conflicting reuse refusal, namespace
-   and generation separation, and rollback of incomplete registration.
-2. Content-bound cancellation requests and canonical recovery identity. Reuse
-   native start/adopt, task ownership, activity attempts and redrive. Do not add
-   another executor, lease, claim table, heartbeat or retry policy engine.
-   Prove duplicate routing, closure races, namespace/generation substitution and
-   refused identity reuse.
-3. Recorded activity boundaries and native Saga recovery, including closed runs.
-   Prove cold replay, registration acknowledgement loss, handler unavailability,
-   authorization, cancellation and recovery after worker restart.
-4. Sequential child-scope participants and verified child-first compensation.
-   Prove generation binding, missing child evidence, cycle refusal and bounded
-   participation. State-bound SM bindings and the two-integration example remain
-   the next business state-machine slice, after this retained-scope foundation.
-5. Retention and compatibility review; run ECS, PHPStan, unit, coverage and feature
-   gates. Record the limits of local evidence separately from CI qualification.
-
-Each increment follows tests, implementation, review, fixes and repeated review.
-The issue remains the work record; this document defines the technical contract.
-
 ## Boundaries
 
 A scope is `(application, namespace, key, generation)`, not a workflow run.
@@ -38,6 +15,16 @@ contains at most 256 obligations. Stored descriptors contain a closed handler
 identifier and version, stable operation key and portable data (16 KiB, depth 8,
 512 values). They never contain executable closures or arbitrary class names.
 Applications store protected references instead of credentials or customer data.
+The principal comes only from trusted host code, never directly from webhook or
+HTTP start input. Content hashes detect accidental corruption, not an attacker
+with write access to both the descriptor and its hash.
+
+Persisted descriptors use explicit `schemaVersion: 1` arrays. Scope IDs and
+obligation fingerprints hash that canonical schema, not PHP property reflection.
+Unsupported versions fail closed. Recorded activities use stable
+`dw.compensation.*.v1` type identifiers. Scope and recovery activity layouts carry
+native version markers. This first experimental format does not qualify replay
+of pre-versioned development histories.
 
 The registration journal and obligation commit together. Workflow history records
 activity boundary outcomes; a lost activity acknowledgement is adopted by exact
@@ -48,7 +35,7 @@ Live database, authorization and handler resolution happen at activity boundarie
 never during deterministic replay. Native activity retries and native Saga remain
 responsible for execution. No independent timer, worker or retry engine is added.
 Every scope derives one canonical recovery workflow instance ID. Native DW
-start/adopt admits one run; native redrive admits one successor after an eligible
+signal-with-start admits or adopts one canonical recovery run; native redrive admits one successor after an eligible
 failure. A native returned-existing-active start receipt remains eligible for
 redrive only when its run identity and accepted start-command snapshot match.
 A technical redrive key includes the exact failed source run. One unchanged
@@ -61,24 +48,12 @@ Handlers must reconcile unknown provider outcomes using stable operation keys.
 A returned callback, timeout or expired lease is not verified compensation.
 
 Rows use the workflow storage connection. Scope rows serialize ledger mutations;
-obligation and journal rows follow that lock. No external call runs under a database
-lock. The ledger has no cascading foreign key to run history: normal history
+obligation and journal rows follow that lock. Host policy, input validation and provider calls run outside native SQL
+locks. Their immutable policy version and descriptor fingerprint are captured
+before admission. Under locks the boundary checks native authority, the pinned
+principal and the exact immutable descriptor again. A later policy change is
+checked at the next boundary, not by executing another host callback under locks. The ledger has no cascading foreign key to run history: normal history
 pruning must not erase unresolved obligations or reuse their identities.
-
-## Evidence
-
-Checked before implementation: upstream main `46ca8f67` contains the native
-ownership guarantees. Four isolated PostgreSQL probes (32 assertions) proved
-concurrent canonical start, concurrent redrive, exclusive workflow-task claim and
-the fact that `business_key` alone does not deduplicate different instance IDs.
-Three upstream PostgreSQL cancellation concurrency tests (160 assertions) preserved
-canonical request/root/budget and explicitly refused a conflicting root.
-
-The first ledger increment passed 11 targeted tests (23 assertions), including an
-injected journal-insert failure. It does not yet prove workflow-boundary integration.
-The previous draft's recovery lease tests described an unimplemented competing
-mechanism; they are replaced by tests of native identity and authority integration.
-
 
 ## Runtime flow and responsibilities
 
@@ -108,6 +83,11 @@ flowchart TD
     W -->|unknown or failed| Y[Native retries; retain unresolved ledger]
     Y --> Z[Eligible native redrive reuses verified activity prefix]
 ```
+
+Host `ScopeAuthorization::assertAllowed()` and `ScopedOperation::assertInput()`
+run before the guarded transaction. Host callbacks must not leave an open SQL
+transaction. Parent and child authorization decisions keep their own recorded
+policy versions. No HTTP or provider callback runs while native rows are locked.
 
 `ScopeBoundary` uses the existing native activity status/authority checks while
 retaining their SQL locks in the ledger transaction. Its lock order is native
@@ -149,12 +129,27 @@ parent remains unresolved and can resume through eligible native redrive.
 
 A scope stays attached to its original native run for forward execution. This
 increment does not transfer forward ownership across continue-as-new or origin
-redrive. The first accepted request pins the cleanup principal. Later authorized
+redrive, or a native child retry. `generation` must be unique for each originating
+native run. Reusing a generation from a new run fails with the non-retryable
+`scope_owned_by_another_run` reason. The original retained obligations remain
+recoverable through their exact original scope identity.
+
+The first accepted request pins the cleanup principal. Later authorized
 requests can route recovery but cannot replace that principal. Recovery evaluates
 current authorization again at every activity boundary. Revoked authority leaves
 work unresolved rather than silently adopting another principal.
 
-The default scoped forward/compensation activities use three native attempts and
+`ScopeRecovery::request()` on an active origin requests cancellation of the whole
+originating run. Native Saga then executes all its registered callbacks, including
+other scopes and callbacks not managed by scopes. A request is not a selective
+rollback of one scope while that origin continues forward.
+
+A canonical recovery that was cancelled or terminated can be restarted through
+native signal-with-start on the same recovery instance. This creates a fresh run,
+keeps closed histories unchanged, and skips already verified ledger obligations.
+Failed recovery still uses native redrive when its history is eligible.
+
+All scoped activities use three native attempts and
 the native backoff. No scope retry loop is introduced. `DurableScope.execute()`
 accepts native `ActivityOptions` for forward work. Immediate terminal cancellation
 or termination can prevent cleanup; retained obligations remain for explicit

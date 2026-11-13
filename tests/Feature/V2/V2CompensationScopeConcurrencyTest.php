@@ -26,12 +26,15 @@ final class V2CompensationScopeConcurrencyTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        if (DB::connection()->getDriverName() !== 'pgsql' || ! function_exists('pcntl_fork')) {
-            $this->markTestSkipped('Separate processes and PostgreSQL row-lock observation are required.');
+        if (! in_array(DB::connection()->getDriverName(), ['pgsql', 'mysql'], true) || ! function_exists(
+            'pcntl_fork'
+        )) {
+            $this->markTestSkipped('Separate processes and PostgreSQL or InnoDB row-lock observation are required.');
         }
         self::stopWorkers();
         Queue::fake();
         config([
+            'workflows.v2.namespaces' => ['default', 'client-a'],
             'workflows.v2.task_dispatch_mode' => 'poll',
         ]);
         $this->app->instance(ScopeAuthorization::class, new class() implements ScopeAuthorization {
@@ -84,6 +87,27 @@ final class V2CompensationScopeConcurrencyTest extends TestCase
         $this->assertCount(1, (new ScopeRepository())->inspect($scope)['obligations']);
         $this->expectException(\LogicException::class);
         (new ScopeRepository())->register($scope, new Obligation('later', 'carrier.cancel', '1', []));
+    }
+
+    public function testConcurrentParticipationUsesTheExistingNamespaceGraphWithoutLockUpgrade(): void
+    {
+        $parents = [];
+        $children = [];
+        $repository = new ScopeRepository();
+        foreach ([0, 1, 2] as $index) {
+            $parents[$index] = new ScopeIdentity('shop', 'client-a', 'parent-' . $index, '1');
+            $children[$index] = new ScopeIdentity('shop', 'client-a', 'child-' . $index, '1');
+            $repository->open($parents[$index], 'run-' . $index);
+        }
+        (new ChildScopes())->register($parents[2], 'run-2', 'delivery', $children[2]);
+        $results = $this->race(static fn (int $index): array => [
+            'id' => (new ChildScopes())->register($parents[$index], 'run-' . $index, 'delivery', $children[$index]),
+        ]);
+        $this->assertNotSame($results[0]['id'], $results[1]['id']);
+        $this->assertSame(3, DB::table('workflow_compensation_children')->count());
+        foreach ([0, 1] as $index) {
+            $this->assertCount(1, $repository->inspect($parents[$index])['obligations']);
+        }
     }
 
     public function testCompetingEdgesCannotCreateACycle(): void
@@ -142,8 +166,12 @@ final class V2CompensationScopeConcurrencyTest extends TestCase
                 if ($pid === 0) {
                     try {
                         DB::reconnect();
-                        DB::statement("SET application_name = 'dw-conflict-probe-{$index}'");
-                        DB::statement("SET lock_timeout = '15s'");
+                        if (DB::connection()->getDriverName() === 'pgsql') {
+                            DB::statement("SET application_name = 'dw-conflict-probe-{$index}'");
+                            DB::statement("SET lock_timeout = '15s'");
+                        } else {
+                            DB::statement('SET innodb_lock_wait_timeout = 15');
+                        }
                         if ($index === 0) {
                             DB::beginTransaction();
                             $result = $operation($index);
@@ -152,6 +180,9 @@ final class V2CompensationScopeConcurrencyTest extends TestCase
                             DB::commit();
                         } else {
                             self::waitFile($root . '/holding');
+                            if (DB::connection()->getDriverName() === 'mysql') {
+                                file_put_contents($root . '/connection', (string) DB::scalar('SELECT CONNECTION_ID()'));
+                            }
                             $result = $operation($index);
                         }
                         file_put_contents($root . '/' . $index . '.json', json_encode([
@@ -173,9 +204,11 @@ final class V2CompensationScopeConcurrencyTest extends TestCase
             if ($expectLock) {
                 $deadline = microtime(true) + 10;
                 do {
-                    $state = DB::selectOne(
-                        "SELECT wait_event_type FROM pg_stat_activity WHERE application_name = 'dw-conflict-probe-1'"
-                    );
+                    $state = DB::connection()->getDriverName() === 'pgsql'
+                        ? DB::selectOne(
+                            "SELECT wait_event_type FROM pg_stat_activity WHERE application_name = 'dw-conflict-probe-1'"
+                        )
+                        : $this->mysqlLockQuery($root);
                     if (($state->wait_event_type ?? null) === 'Lock') {
                         break;
                     }
@@ -191,7 +224,7 @@ final class V2CompensationScopeConcurrencyTest extends TestCase
                 self::assertSame(
                     'Lock',
                     $state->wait_event_type ?? null,
-                    'The calls must overlap at the real PostgreSQL lock.'
+                    'The calls must overlap at a real database row lock.'
                 );
             } else {
                 self::waitFile($root . '/1.json');
@@ -221,6 +254,25 @@ final class V2CompensationScopeConcurrencyTest extends TestCase
             }
             rmdir($root);
         }
+    }
+
+    private function mysqlLockQuery(string $root): ?object
+    {
+        if (! is_file($root . '/connection')) {
+            return null;
+        }
+        $id = (int) file_get_contents($root . '/connection');
+        // SHOW PROCESSLIST exposes this test user's sessions without global PROCESS privileges.
+        foreach (DB::select('SHOW FULL PROCESSLIST') as $process) {
+            if ((int) $process->Id === $id && is_string($process->Info)
+                && str_contains($process->Info, 'workflow_compensation_')) {
+                // Caller 0 retains the conflicting row lock until the parent releases the barrier.
+                return (object) [
+                    'wait_event_type' => 'Lock',
+                ];
+            }
+        }
+        return null;
     }
 
     private static function waitFile(string $file): void

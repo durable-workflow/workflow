@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2\Compensation;
 
+use Illuminate\Database\Events\QueryExecuted;
 use LogicException;
 use Tests\TestCase;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
 use Workflow\V2\Compensation\Persistence\ChildScopes;
 use Workflow\V2\Compensation\Persistence\ScopeRepository;
+use Workflow\V2\Support\ConfiguredV2Models;
 
 final class ChildScopeTest extends TestCase
 {
@@ -21,6 +23,23 @@ final class ChildScopeTest extends TestCase
         $this->assertSame($id, $children->register($parent, 'origin', 'delivery', $child));
         $this->expectException(LogicException::class);
         $children->register($parent, 'origin', 'delivery', new ScopeIdentity('shop', 'client-a', 'shipment', '2'));
+    }
+
+    public function testExistingGraphIsLockedBeforeAnyDuplicateInsert(): void
+    {
+        $parent = $this->scope('order');
+        $child = $this->scope('shipment');
+        $children = new ChildScopes();
+        $children->register($parent, 'origin', 'delivery', $child);
+        $queries = [];
+        ConfiguredV2Models::connection()->listen(static function (QueryExecuted $query) use (&$queries): void {
+            if (str_contains($query->sql, 'workflow_compensation_graphs')) {
+                $queries[] = strtolower($query->sql);
+            }
+        });
+        $children->register($parent, 'origin', 'delivery', $child);
+        $this->assertStringStartsWith('select', $queries[0]);
+        $this->assertSame([], array_filter($queries, static fn (string $sql): bool => str_starts_with($sql, 'insert')));
     }
 
     public function testCycleAndSecondNestingLevelAreRefused(): void

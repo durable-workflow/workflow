@@ -10,6 +10,8 @@ use JsonException;
 /**
  * Canonical, bounded data only. This format never resolves classes or callables.
  *
+ * @internal
+ *
  * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
  */
 final class PortableDescriptor

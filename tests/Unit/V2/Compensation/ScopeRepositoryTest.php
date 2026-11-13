@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit\V2\Compensation;
 
 use Fiber;
+use Illuminate\Database\Events\QueryExecuted;
 use LogicException;
 use Tests\TestCase;
 use Workflow\V2\Compensation\Definition\Obligation;
@@ -29,6 +30,21 @@ final class ScopeRepositoryTest extends TestCase
         $this->assertSame($first, $again);
         $this->assertCount(1, $repository->inspect($scope)['obligations']);
         $this->assertSame(['opened', 'registered'], array_column($repository->journal($scope), 'kind'));
+    }
+
+    public function testAnExistingScopeIsLockedBeforeAnyDuplicateInsert(): void
+    {
+        $repository = new ScopeRepository();
+        $repository->open($this->scope(), 'original-run');
+        $queries = [];
+        ConfiguredV2Models::connection()->listen(static function (QueryExecuted $query) use (&$queries): void {
+            if (str_contains($query->sql, 'workflow_compensation_scopes')) {
+                $queries[] = strtolower($query->sql);
+            }
+        });
+        $repository->open($this->scope(), 'original-run');
+        $this->assertStringStartsWith('select', $queries[0]);
+        $this->assertSame([], array_filter($queries, static fn (string $sql): bool => str_starts_with($sql, 'insert')));
     }
 
     public function testConflictingDuplicateDoesNotReplaceOriginalDescriptor(): void
@@ -77,7 +93,8 @@ final class ScopeRepositoryTest extends TestCase
     {
         $repository = new ScopeRepository();
         $repository->open($this->scope(), 'original-run');
-        $this->expectException(LogicException::class);
+        $this->expectException(\Workflow\Exceptions\NonRetryableException::class);
+        $this->expectExceptionMessage('scope_owned_by_another_run');
         $repository->open($this->scope(), 'replacement-run');
     }
 

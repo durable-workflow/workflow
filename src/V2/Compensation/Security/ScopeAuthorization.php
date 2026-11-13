@@ -14,7 +14,9 @@ use Workflow\V2\Compensation\Definition\ScopeIdentity;
 interface ScopeAuthorization
 {
     /**
-     * Return the immutable authorization policy version, or refuse by throwing.
+     * Return the immutable authorization decision's policy version, or refuse by throwing.
+     * Runs before the native ledger transaction. Do not retain an open transaction.
+     * The captured grant is recorded with the mutation; native ownership is rechecked under locks.
      */
     public function assertAllowed(ScopeIdentity $scope, string $principal, string $operation): string;
 }

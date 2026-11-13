@@ -40,6 +40,12 @@ final readonly class Resolution
 
     public function toArray(): array
     {
-        return get_object_vars($this);
+        return [
+            'schemaVersion' => 1,
+            'verified' => $this->verified,
+            'reason' => $this->reason,
+            'evidence' => $this->evidence,
+            'forwardSettled' => $this->forwardSettled,
+        ];
     }
 }

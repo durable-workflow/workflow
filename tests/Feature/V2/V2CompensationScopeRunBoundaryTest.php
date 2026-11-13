@@ -38,6 +38,7 @@ final class V2CompensationScopeRunBoundaryTest extends TestCase
     {
         parent::setUp();
         config([
+            'workflows.v2.namespaces' => ['default', 'client-a'],
             'queue.default' => 'redis',
             'queue.connections.redis.driver' => 'redis',
         ]);
@@ -170,7 +171,7 @@ final class V2CompensationScopeRunBoundaryTest extends TestCase
     private function assertForwardRefused(string $runId, ScopeIdentity $scope, int $effectCount): void
     {
         $messages = WorkflowFailure::query()->where('workflow_run_id', $runId)->pluck('message')->all();
-        $this->assertStringContainsString('cannot change its original run', implode('\n', $messages));
+        $this->assertStringContainsString('scope_owned_by_another_run', implode('\n', $messages));
         $snapshot = (new ScopeRepository())->inspect($scope);
         $this->assertSame('open', $snapshot['status']);
         $this->assertNotContains('second', array_column(array_column($snapshot['obligations'], 'descriptor'), 'key'));

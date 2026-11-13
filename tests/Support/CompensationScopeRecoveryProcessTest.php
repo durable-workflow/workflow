@@ -64,6 +64,7 @@ final class CompensationScopeRecoveryProcessTest extends TestCase
             'database.connections.scope_process' => $input['database'],
             'database.redis' => $input['redis'],
             'workflows.storage.connection' => 'scope_process',
+            'workflows.v2.namespaces' => ['default', 'client-a'],
             'queue.default' => 'database',
             'queue.connections.database' => [
                 'driver' => 'database',

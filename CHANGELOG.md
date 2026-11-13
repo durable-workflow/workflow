@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Experimental embedded compensation scopes retain bounded, versioned obligations
+  before effects and recover them through native Saga and recorded Activities.
+  Host checks run outside SQL locks. Recovery can restart after cancellation or
+  termination without repeating verified compensation. Scope forward ownership
+  stays with the originating run, including across continue-as-new and redrive.
+
 - A child handed to a continued run now gets its retries (#1105). Before, a
   child that failed after its parent continued as new was never retried,
   because the retry needed the parent to be waiting. It is now retried under

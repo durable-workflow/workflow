@@ -42,14 +42,20 @@ final class ChildScopes
             $graph
         ): string {
             // Serialize edge mutations before scope locks. This is a graph-integrity lock, not executor ownership.
-            $database->table('workflow_compensation_graphs')
-                ->insertOrIgnore([
-                    'id' => $graph,
-                ]);
-            $database->table('workflow_compensation_graphs')
+            $locked = $database->table('workflow_compensation_graphs')
                 ->where('id', $graph)
                 ->lockForUpdate()
                 ->first();
+            if ($locked === null) {
+                $database->table('workflow_compensation_graphs')
+                    ->insertOrIgnore([
+                        'id' => $graph,
+                    ]);
+                $database->table('workflow_compensation_graphs')
+                    ->where('id', $graph)
+                    ->lockForUpdate()
+                    ->first();
+            }
             $existing = $database->table('workflow_compensation_children')
                 ->where('child_id', $child->id())
                 ->lockForUpdate()
@@ -93,6 +99,6 @@ final class ChildScopes
                     ]);
             }
             return $id;
-        }, connection: $database);
+        }, attempts: 3, connection: $database);
     }
 }

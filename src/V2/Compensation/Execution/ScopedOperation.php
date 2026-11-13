@@ -11,6 +11,9 @@ namespace Workflow\V2\Compensation\Execution;
  */
 interface ScopedOperation
 {
+    /**
+     * Input compatibility is checked outside native SQL locks, before forward admission.
+     */
     public function assertInput(array $input): void;
 
     public function execute(OperationContext $context): ForwardResult;

@@ -70,9 +70,13 @@ final readonly class ScopeRecovery
             ->where('namespace', $scope->namespace)
             ->orderByDesc('run_number')
             ->first();
-        if (! $run instanceof WorkflowRun) {
+        if (! $run instanceof WorkflowRun || in_array(
+            $run->status,
+            [RunStatus::Cancelled, RunStatus::Terminated],
+            true
+        )) {
             $result = WorkflowStub::make(RecoveryWorkflow::class, $scope->recoveryInstanceId(), $scope->namespace)
-                ->attemptStart(StartOptions::returnExistingActive(), $scope->toArray());
+                ->attemptSignalWithStart('recover', [], StartOptions::returnExistingActive(), $scope->toArray());
             $runId = $result->runId();
             if ($result->accepted() && is_string($runId)) {
                 return [

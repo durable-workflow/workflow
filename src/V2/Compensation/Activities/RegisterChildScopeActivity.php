@@ -7,6 +7,7 @@ namespace Workflow\V2\Compensation\Activities;
 use Throwable;
 use Workflow\Exceptions\NonRetryableException;
 use Workflow\V2\Activity;
+use Workflow\V2\Attributes\Type;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
 use Workflow\V2\Compensation\Persistence\ChildScopes;
@@ -15,10 +16,15 @@ use Workflow\V2\Compensation\Security\ScopeAuthorization;
 use Workflow\V2\Compensation\Security\ScopeBoundary;
 
 /**
+ * @internal
+ *
  * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
  */
+#[Type('dw.compensation.register-child.v1')]
 final class RegisterChildScopeActivity extends Activity
 {
+    public int $tries = 3;
+
     public function handle(array $identity, string $key, array $childIdentity, string $principal): string
     {
         $scope = ScopeIdentity::fromArray($identity);
@@ -28,13 +34,12 @@ final class RegisterChildScopeActivity extends Activity
             $scope,
             'register',
             $principal,
-            function () use ($scope, $key, $child, $principal): string {
-                try {
-                    $policy = app(ScopeAuthorization::class)->assertAllowed($child, $principal, 'participate');
-                    PortableDescriptor::identifier($policy, 'authorization policy version');
-                } catch (Throwable) {
-                    throw new NonRetryableException('scope_child_authorization_refused');
-                }
+            function (?array $snapshot, string $parentPolicy, string $policy) use (
+                $scope,
+                $key,
+                $child,
+                $principal
+            ): string {
                 $id = app(ChildScopes::class)->register($scope, $this->runId(), $key, $child);
                 ScopeStorage::append(ScopeStorage::locked($scope), 'child_authorized', [
                     'childScopeId' => $child->id(),
@@ -46,6 +51,15 @@ final class RegisterChildScopeActivity extends Activity
                     'attemptId' => $this->attemptId(),
                 ]);
                 return $id;
+            },
+            static function () use ($child, $principal): string {
+                try {
+                    $policy = app(ScopeAuthorization::class)->assertAllowed($child, $principal, 'participate');
+                    PortableDescriptor::identifier($policy, 'authorization policy version');
+                    return $policy;
+                } catch (Throwable) {
+                    throw new NonRetryableException('scope_child_authorization_refused');
+                }
             }
         );
     }

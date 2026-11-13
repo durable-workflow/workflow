@@ -7,6 +7,7 @@ namespace Workflow\V2\Compensation\Activities;
 use Throwable;
 use Workflow\Exceptions\NonRetryableException;
 use Workflow\V2\Activity;
+use Workflow\V2\Attributes\Type;
 use Workflow\V2\Compensation\Definition\Obligation;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
 use Workflow\V2\Compensation\Execution\HandlerRegistry;
@@ -18,8 +19,11 @@ use Workflow\V2\Compensation\Recovery\ChildResolution;
 use Workflow\V2\Compensation\Security\ScopeBoundary;
 
 /**
+ * @internal
+ *
  * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
  */
+#[Type('dw.compensation.compensate-obligation.v1')]
 final class CompensateObligationActivity extends Activity
 {
     public int $tries = 3;

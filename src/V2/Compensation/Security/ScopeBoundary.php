@@ -33,20 +33,38 @@ final readonly class ScopeBoundary
         ScopeIdentity $scope,
         string $operation,
         ?string $principal,
-        Closure $body
+        Closure $body,
+        ?Closure $prepare = null
     ): mixed {
         if ($activity->taskId === null || $activity->attemptId() === null || $activity->run->namespace !== $scope->namespace) {
             throw new NonRetryableException('scope_native_identity_mismatch');
         }
-        return SqliteTransaction::forTask($activity->taskId, function () use (
+        $fromRequest = $principal === null;
+        if ($fromRequest) {
+            $principal = $this->repository->primaryRequest($scope)['principal'];
+        }
+        if ($principal === null) {
+            throw new NonRetryableException('scope_principal_missing');
+        }
+        // Host policy and input callbacks may perform I/O. Capture their decision before native SQL locks.
+        try {
+            $policyVersion = $this->authorization->assertAllowed($scope, $principal, $operation);
+            PortableDescriptor::identifier($policyVersion, 'authorization policy version');
+        } catch (\Throwable) {
+            throw new NonRetryableException('scope_authorization_refused');
+        }
+        $prepared = $prepare?->__invoke();
+        return SqliteTransaction::run(function () use (
             $activity,
             $scope,
             $operation,
             $principal,
+            $fromRequest,
+            $policyVersion,
+            $prepared,
             $body
         ): mixed {
             $this->assertNativeAuthority($activity);
-            $snapshot = null;
             if ($operation !== 'register') {
                 $snapshot = $this->repository->metadata($scope);
                 $origin = $snapshot['original_run_id'] === $activity->runId();
@@ -55,22 +73,12 @@ final readonly class ScopeBoundary
                 if ((! $origin && ! $recovery) || ($operation === 'forward' && ! $origin)) {
                     throw new NonRetryableException('scope_execution_owner_mismatch');
                 }
-                if ($principal === null) {
-                    $principal = $this->repository->primaryRequest($scope)['principal'];
+                if ($fromRequest && $this->repository->primaryRequest($scope)['principal'] !== $principal) {
+                    throw new NonRetryableException('scope_principal_mismatch');
                 }
             }
-            if ($principal === null) {
-                throw new NonRetryableException('scope_principal_missing');
-            }
-            try {
-                $policyVersion = $this->authorization->assertAllowed($scope, $principal, $operation);
-                PortableDescriptor::identifier($policyVersion, 'authorization policy version');
-            } catch (\Throwable) {
-                throw new NonRetryableException('scope_authorization_refused');
-            }
             $snapshot = $operation === 'register' ? null : $this->repository->inspect($scope);
-            $result = $body($snapshot, $policyVersion);
-            // The callback can outlive its grant even while its SQL rows remain locked.
+            $result = $body($snapshot, $policyVersion, $prepared);
             $this->assertNativeAuthority($activity);
             ScopeStorage::append(ScopeStorage::locked($scope), 'authorized', [
                 'principal' => $principal,
@@ -81,7 +89,7 @@ final readonly class ScopeBoundary
                 'attemptId' => $activity->attemptId(),
             ]);
             return $result;
-        });
+        }, attempts: 3);
     }
 
     private function assertNativeAuthority(Activity $activity): void

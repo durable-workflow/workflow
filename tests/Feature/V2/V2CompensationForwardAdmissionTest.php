@@ -34,6 +34,7 @@ final class V2CompensationForwardAdmissionTest extends TestCase
     {
         parent::setUp();
         config([
+            'workflows.v2.namespaces' => ['default', 'client-a'],
             'queue.default' => 'sync',
             'queue.connections.sync.driver' => 'sync',
         ]);
@@ -226,9 +227,9 @@ final class V2CompensationForwardAdmissionTest extends TestCase
                 \Illuminate\Support\Carbon::setTestNow($task->available_at->copy()->addMicrosecond());
             }
             if ($task->task_type->value === 'activity') {
-                (new \Workflow\V2\Jobs\RunActivityTask($task->id))->handle();
+                $this->app->call([new \Workflow\V2\Jobs\RunActivityTask($task->id), 'handle']);
             } else {
-                (new \Workflow\V2\Jobs\RunWorkflowTask($task->id))->handle();
+                $this->app->call([new \Workflow\V2\Jobs\RunWorkflowTask($task->id), 'handle']);
             }
         }
         $this->fail('Native forward retries did not terminate.');

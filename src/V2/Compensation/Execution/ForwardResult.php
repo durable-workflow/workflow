@@ -38,6 +38,12 @@ final readonly class ForwardResult
 
     public function toArray(): array
     {
-        return get_object_vars($this);
+        return [
+            'schemaVersion' => 1,
+            'observed' => $this->observed,
+            'value' => $this->value,
+            'evidence' => $this->evidence,
+            'reason' => $this->reason,
+        ];
     }
 }

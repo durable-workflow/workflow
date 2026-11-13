@@ -6,6 +6,7 @@ namespace Workflow\V2\Compensation\Persistence;
 
 use Illuminate\Database\Connection;
 use LogicException;
+use Workflow\Exceptions\NonRetryableException;
 use Workflow\V2\Compensation\Definition\Obligation;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
@@ -38,22 +39,24 @@ final class ScopeRepository
         PortableDescriptor::identifier($originalRunId, 'original run');
         $database = ConfiguredV2Models::connection();
         SqliteTransaction::run(static function () use ($database, $identity, $originalRunId): void {
-            $created = $database->table(self::SCOPES)->insertOrIgnore([
+            // Lock existing rows before INSERT IGNORE to avoid InnoDB shared-to-exclusive upgrades.
+            $existing = $database->table(self::SCOPES)->where('id', $identity->id())->lockForUpdate()->first();
+            $created = $existing === null ? $database->table(self::SCOPES)->insertOrIgnore([
                 'id' => $identity->id(),
                 'identity' => PortableDescriptor::encode($identity->toArray()),
                 'original_run_id' => $originalRunId,
                 'status' => 'open',
-            ]);
+            ]) : 0;
             $scope = ScopeStorage::locked($identity);
             if ($scope['original_run_id'] !== $originalRunId) {
-                throw new LogicException('A compensation scope cannot change its original run.');
+                throw new NonRetryableException('scope_owned_by_another_run');
             }
             if ($created === 1) {
                 ScopeStorage::append($scope, 'opened', [
                     'originalRunId' => $originalRunId,
                 ]);
             }
-        }, connection: $database);
+        }, attempts: 3, connection: $database);
     }
 
     public function register(ScopeIdentity $identity, Obligation $obligation): string

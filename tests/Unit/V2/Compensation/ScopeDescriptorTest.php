@@ -49,6 +49,51 @@ final class ScopeDescriptorTest extends TestCase
         $this->assertSame($a->fingerprint(), Obligation::fromArray($a->toArray())->fingerprint());
     }
 
+    public function testPersistedVersionOneSchemasHaveStableIdentityAndFingerprintVectors(): void
+    {
+        $scope = new ScopeIdentity('shop', 'client-a', 'order-42', '1');
+        $obligation = new Obligation('book', 'carrier.cancel', '1', []);
+        $this->assertSame('d0f6748c0bcd9166d88ca96e6e60c5d118108ee7ec1e9a13339ceb67977a92bb', $scope->id());
+        $this->assertSame(
+            '78c1a87680c6374f612fad9e4ae34f9db0e139868bc9f7df3e4605b78129d260',
+            $obligation->fingerprint()
+        );
+        $this->assertSame(
+            ['schemaVersion', 'application', 'namespace', 'key', 'generation'],
+            array_keys($scope->toArray())
+        );
+        $this->assertSame(
+            ['schemaVersion', 'key', 'handlerType', 'handlerVersion', 'input'],
+            array_keys($obligation->toArray())
+        );
+        $this->assertSame([
+            'schemaVersion' => 1,
+            'observed' => false,
+            'value' => [],
+            'evidence' => [],
+            'reason' => 'pending',
+        ], ForwardResult::unknown('pending')->toArray());
+        $this->assertSame([
+            'schemaVersion' => 1,
+            'verified' => false,
+            'reason' => 'pending',
+            'evidence' => [],
+            'forwardSettled' => false,
+        ], Resolution::unknown('pending')->toArray());
+        foreach ([0, 2, '1', null] as $version) {
+            foreach ([$scope, $obligation] as $value) {
+                $payload = $value->toArray();
+                $payload['schemaVersion'] = $version;
+                try {
+                    $value::fromArray($payload);
+                    $this->fail('Unsupported schema was accepted.');
+                } catch (InvalidArgumentException) {
+                    $this->addToAssertionCount(1);
+                }
+            }
+        }
+    }
+
     public function testExecutableClassNameCannotBeAHandlerIdentifier(): void
     {
         $this->expectException(InvalidArgumentException::class);

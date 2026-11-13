@@ -15,7 +15,12 @@ final readonly class ScopeIdentity
         public string $key,
         public string $generation,
     ) {
-        foreach (get_object_vars($this) as $name => $value) {
+        foreach ([
+            'application' => $application,
+            'namespace' => $namespace,
+            'key' => $key,
+            'generation' => $generation,
+        ] as $name => $value) {
             if ($name === 'namespace' && $value === null) {
                 continue;
             }
@@ -35,17 +40,27 @@ final readonly class ScopeIdentity
 
     public function toArray(): array
     {
-        return get_object_vars($this);
+        return [
+            'schemaVersion' => 1,
+            'application' => $this->application,
+            'namespace' => $this->namespace,
+            'key' => $this->key,
+            'generation' => $this->generation,
+        ];
     }
 
     public static function fromArray(array $value): self
     {
-        if (array_keys($value) !== ['application', 'namespace', 'key', 'generation']) {
-            $keys = array_keys($value);
-            sort($keys, SORT_STRING);
-            if ($keys !== ['application', 'generation', 'key', 'namespace']) {
-                throw new \InvalidArgumentException('Invalid compensation scope identity shape.');
-            }
+        $keys = array_keys($value);
+        sort($keys, SORT_STRING);
+        if (($value['schemaVersion'] ?? null) !== 1 || $keys !== [
+            'application',
+            'generation',
+            'key',
+            'namespace',
+            'schemaVersion',
+        ]) {
+            throw new \InvalidArgumentException('Invalid compensation scope identity schema.');
         }
         return new self($value['application'], $value['namespace'], $value['key'], $value['generation']);
     }

@@ -4,20 +4,28 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Closure;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\Cache;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\V2\TestRetainedScopeWorkflow;
 use Tests\Fixtures\V2\TestScopedOperation;
 use Tests\TestCase;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
+use Workflow\V2\Compensation\Execution\ForwardResult;
 use Workflow\V2\Compensation\Execution\HandlerRegistry;
+use Workflow\V2\Compensation\Execution\OperationContext;
+use Workflow\V2\Compensation\Execution\Resolution;
+use Workflow\V2\Compensation\Execution\ScopedOperation;
 use Workflow\V2\Compensation\Persistence\ScopeRepository;
 use Workflow\V2\Compensation\Recovery\RecoveryWorkflow;
 use Workflow\V2\Compensation\Recovery\ScopeRecovery;
 use Workflow\V2\Compensation\Security\ScopeAuthorization;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\StartOptions;
+use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\WorkflowStub;
 
@@ -27,6 +35,7 @@ final class V2CompensationScopeTest extends TestCase
     {
         parent::setUp();
         config([
+            'workflows.v2.namespaces' => ['default', 'client-a'],
             'queue.default' => 'sync',
             'queue.connections.sync.driver' => 'sync',
         ]);
@@ -50,6 +59,146 @@ final class V2CompensationScopeTest extends TestCase
     {
         \Illuminate\Support\Carbon::setTestNow();
         parent::tearDown();
+    }
+
+    public function testHostCallbacksRunOutsideNativeStorageTransactions(): void
+    {
+        $calls = [];
+        $check = function (string $operation) use (&$calls): void {
+            $this->assertSame(0, ConfiguredV2Models::connection()->transactionLevel(), $operation);
+            $calls[] = $operation;
+        };
+        $this->app->instance(ScopeAuthorization::class, new class($check) implements ScopeAuthorization {
+            public function __construct(
+                private Closure $check
+            ) {
+            }
+
+            public function assertAllowed(ScopeIdentity $scope, string $principal, string $operation): string
+            {
+                ($this->check)($operation);
+                return 'outside-lock-policy';
+            }
+        });
+        $handler = new class($check) implements ScopedOperation {
+            public function __construct(
+                private Closure $check
+            ) {
+            }
+
+            public function assertInput(array $input): void
+            {
+                ($this->check)('input');
+            }
+
+            public function execute(OperationContext $context): ForwardResult
+            {
+                ($this->check)('execute');
+                return (new TestScopedOperation())->execute($context);
+            }
+
+            public function compensate(OperationContext $context): Resolution
+            {
+                ($this->check)('handler-compensate');
+                return (new TestScopedOperation())->compensate($context);
+            }
+        };
+        $this->app->instance(HandlerRegistry::class, new HandlerRegistry([
+            'test.operation' => [
+                '1' => $handler,
+            ],
+        ]));
+        WorkflowStub::fake();
+        $parent = $this->identity();
+        $child = new ScopeIdentity('shop', 'client-a', 'shipment-42', '1');
+        $childOrigin = WorkflowStub::make(TestRetainedScopeWorkflow::class, 'callback-child', 'client-a');
+        $childOrigin->start($child->toArray(), 'complete');
+        $origin = WorkflowStub::make(TestRetainedScopeWorkflow::class, 'callback-parent', 'client-a');
+        $origin->start($parent->toArray(), 'complete', $child->toArray());
+        $this->assertTrue($origin->refresh()->completed());
+        app(ScopeRecovery::class)->request($parent, 'cancel', 'operator-a', 'cancel');
+        $this->assertSame('verified', (new ScopeRepository())->inspect($parent)['status']);
+        $this->assertSame('verified', (new ScopeRepository())->inspect($child)['status']);
+        foreach (['register', 'forward', 'participate', 'input', 'execute', 'handler-compensate'] as $operation) {
+            $this->assertContains($operation, $calls);
+        }
+    }
+
+    public function testCancellationDuringHostAuthorizationRefusesDispatchAtTheNativeGate(): void
+    {
+        WorkflowStub::fake();
+        $this->app->instance(ScopeAuthorization::class, new class() implements ScopeAuthorization {
+            private bool $cancelled = false;
+
+            public function assertAllowed(ScopeIdentity $scope, string $principal, string $operation): string
+            {
+                if ($operation === 'forward' && ! $this->cancelled) {
+                    $this->cancelled = true;
+                    WorkflowStub::load('preflight-cancel-origin')->attemptCancel('concurrent-cancel');
+                }
+                return 'preflight-policy';
+            }
+        });
+        $scope = $this->identity();
+        $origin = WorkflowStub::make(TestRetainedScopeWorkflow::class, 'preflight-cancel-origin', 'client-a');
+        $origin->start($scope->toArray(), 'complete');
+        $this->assertSame('cancelled', $origin->refresh()->status());
+        $this->assertNull(Cache::get('test:scope:effect-count'));
+        $this->assertSame('registered', (new ScopeRepository())->inspect($scope)['obligations'][0]['forward_status']);
+        app(ScopeRecovery::class)->request($scope, 'cancel', 'operator-a', 'cancel');
+        $this->assertSame('verified', (new ScopeRepository())->inspect($scope)['status']);
+        $this->assertNull(Cache::get('test:scope:effect-count'));
+    }
+
+    public static function interruptedRecoveryCommands(): iterable
+    {
+        yield 'cancelled' => ['cancelled'];
+        yield 'terminated' => ['terminated'];
+    }
+
+    #[DataProvider('interruptedRecoveryCommands')]
+    public function testInterruptedRecoveryStartsFreshCanonicalRunWithoutRepeatingVerifiedEffects(string $status): void
+    {
+        [$scope] = $this->completedOrigin();
+        Cache::put('test:scope:unknown-first', true);
+        $first = app(ScopeRecovery::class)->request($scope, 'cancel', 'operator-a', 'cancel');
+        $stub = WorkflowStub::loadRun($first['runId']);
+        $command = $status === 'cancelled' ? $stub->attemptCancel('operator-stop') : $stub->attemptTerminate(
+            'operator-stop'
+        );
+        $this->assertTrue($command->accepted());
+        $this->assertSame($status, WorkflowRun::query()->findOrFail($first['runId'])->status->value);
+        $before = WorkflowHistoryEvent::query()->where('workflow_run_id', $first['runId'])->count();
+        Cache::forget('test:scope:unknown-first');
+        $again = app(ScopeRecovery::class)->request($scope, 'cancel', 'operator-a', 'cancel');
+        $this->assertNotSame($first['runId'], $again['runId']);
+        $this->assertSame('verified', (new ScopeRepository())->inspect($scope)['status']);
+        $this->assertSame('completed', WorkflowRun::query()->findOrFail($again['runId'])->status->value);
+        $this->assertSame(
+            2,
+            WorkflowRun::query()->where('workflow_instance_id', $scope->recoveryInstanceId())->count()
+        );
+        $this->assertSame(
+            1,
+            count(array_filter(Cache::get('test:scope:undo-log'), static fn (string $key): bool => $key === 'second'))
+        );
+        $this->assertSame($before, WorkflowHistoryEvent::query()->where('workflow_run_id', $first['runId'])->count());
+    }
+
+    public function testScopeActivityNamesAndLayoutVersionsAreRecordedForReplay(): void
+    {
+        [$scope, $origin] = $this->completedOrigin();
+        $history = WorkflowHistoryEvent::query()->where('workflow_run_id', $origin->runId())->get();
+        $this->assertNotEmpty($history->where('event_type', HistoryEventType::VersionMarkerRecorded));
+        foreach ($history->where('event_type', HistoryEventType::ActivityScheduled) as $event) {
+            $this->assertStringStartsWith('dw.compensation.', $event->payload['activity_type']);
+            $this->assertStringEndsWith('.v1', $event->payload['activity_type']);
+        }
+        $recovery = app(ScopeRecovery::class)->request($scope, 'cancel', 'operator-a', 'cancel');
+        $this->assertTrue(WorkflowHistoryEvent::query()->where('workflow_run_id', $recovery['runId'])
+            ->where('event_type', HistoryEventType::VersionMarkerRecorded)->exists());
+        app(WorkflowReplayer::class)->replay(WorkflowRun::query()->findOrFail($origin->runId()));
+        $this->assertSame(2, (int) Cache::get('test:scope:effect-count'));
     }
 
     public function testClosedOriginUsesCanonicalRecoveryAndKeepsOriginalTerminalHistory(): void
@@ -503,9 +652,9 @@ final class V2CompensationScopeTest extends TestCase
                 \Illuminate\Support\Carbon::setTestNow($task->available_at->copy()->addMicrosecond());
             }
             if ($task->task_type->value === 'activity') {
-                (new \Workflow\V2\Jobs\RunActivityTask($task->id))->handle();
+                $this->app->call([new \Workflow\V2\Jobs\RunActivityTask($task->id), 'handle']);
             } else {
-                (new \Workflow\V2\Jobs\RunWorkflowTask($task->id))->handle();
+                $this->app->call([new \Workflow\V2\Jobs\RunWorkflowTask($task->id), 'handle']);
             }
         }
         $this->fail('Native retry budget did not terminate.');
