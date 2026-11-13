@@ -8660,7 +8660,11 @@ final class V2WorkflowTaskBridgeTest extends TestCase
     }
 
     #[DataProvider('conditionOccurrenceDeadlinePolicies')]
-    public function testFalseWakeUsesTheSelectedOccurrenceDeadlinePolicy(bool $anchored, int $deadlineSeconds): void
+    public function testFalseWakeUsesTheSelectedOccurrenceDeadlinePolicy(
+        bool $anchored,
+        int $deadlineSeconds,
+        bool $driftedTimer = false,
+    ): void
     {
         $origin = Carbon::parse('2026-11-08T04:00:00.000000Z');
         Carbon::setTestNow($origin);
@@ -8683,6 +8687,14 @@ final class V2WorkflowTaskBridgeTest extends TestCase
             $first = $run->timers()
                 ->sole();
             $this->assertTrue($first->fire_at->equalTo($origin->copy()->addSeconds(20)));
+
+            if ($driftedTimer) {
+                // A historical MariaDB ON UPDATE column could already have
+                // changed this projection. History still owns the anchor.
+                DB::table('workflow_run_timers')->where('id', $first->id)->update([
+                    'fire_at' => $origin->copy()->addHours(1)->format('Y-m-d H:i:s.u'),
+                ]);
+            }
 
             // S is the signal/replay clock. R is three seconds later; the
             // worker's remaining 15 seconds must not add those three to A.
@@ -8733,6 +8745,7 @@ final class V2WorkflowTaskBridgeTest extends TestCase
     {
         yield 'legacy keeps per-open scheduling' => [false, 23];
         yield 'anchored false wake keeps its first wall deadline' => [true, 20];
+        yield 'recorded anchor survives a drifted physical timer' => [true, 20, true];
     }
 
     public function testOccurrenceDeadlineConflictsRollBackTheWholeBatchAndKeepTheLease(): void
@@ -8866,13 +8879,21 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         }
     }
 
-    public function testOccurrenceDeadlineRefusesAnUnavailableCanonicalTimer(): void
+    #[DataProvider('unavailableOccurrenceDeadlineAnchors')]
+    public function testOccurrenceDeadlineRefusesAnUnavailableCanonicalTimer(bool $missingTimer): void
     {
         $run = $this->createWaitingRun();
         $command = self::occurrenceDeadlineCommand();
         $this->assertTrue($this->bridge->complete($this->createLeasedTask($run)->id, [$command])['completed']);
-        $run->timers()
-            ->delete();
+        if ($missingTimer) {
+            $run->timers()->delete();
+        } else {
+            $scheduled = $run->historyEvents()
+                ->where('event_type', HistoryEventType::TimerScheduled->value)->sole();
+            $payload = $scheduled->payload;
+            unset($payload['fire_at']);
+            $scheduled->update(['payload' => $payload]);
+        }
         $signal = $this->recordReceivedSignal($run);
         $task = $this->createLeasedTask($run);
         $task->forceFill([
@@ -8887,6 +8908,12 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame('condition_wait_anchor_unavailable', $result['reason']);
         $this->assertSame($before, $run->historyEvents()->count());
         $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+    }
+
+    public static function unavailableOccurrenceDeadlineAnchors(): iterable
+    {
+        yield 'canonical timer missing' => [true];
+        yield 'recorded schedule deadline missing' => [false];
     }
 
     public function testOccurrenceDeadlineRefusesALateOptInToALegacyChain(): void

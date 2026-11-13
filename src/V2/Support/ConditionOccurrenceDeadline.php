@@ -119,12 +119,14 @@ final class ConditionOccurrenceDeadline
             ->whereKey($first['timer_id'])
             ->first();
         if (! $timer instanceof WorkflowTimer || (int) $timer->sequence !== $first['sequence']
-            || ! $timer->fire_at instanceof CarbonInterface) {
+            || ! $first['deadline_at'] instanceof CarbonInterface) {
             throw new ConditionOccurrenceDeadlineConflict('condition_wait_anchor_unavailable');
         }
 
         return [
-            'deadline_at' => $timer->fire_at,
+            // The scheduled history retains the first deadline even if an
+            // older MariaDB schema rewrote the cancelled timer row's fire_at.
+            'deadline_at' => $first['deadline_at'],
             'keep_open' => $keepOpen,
         ];
     }

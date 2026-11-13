@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Run migrations on MariaDB.** Timer status updates preserve the scheduled
+  deadline on older MariaDB schemas. The forward migration removes the implicit
+  timestamp update without rewriting retained rows. Condition occurrence
+  reopens use the original scheduled history deadline, including when an older
+  cancelled timer row has already drifted (#1139).
+
 - Experimental domain entity references for top-level arguments of embedded
   queued and local activities (#996). Register an entity class, deterministic
   adapter and authorized resolver. History records a portable reference and
