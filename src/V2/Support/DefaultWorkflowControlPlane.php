@@ -324,6 +324,17 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
 
     public function start(string $workflowType, ?string $instanceId = null, array $options = []): array
     {
+        if (($options['timeout_cleanup_seconds'] ?? null) !== null) {
+            return [
+                'accepted' => false,
+                'workflow_instance_id' => $instanceId,
+                'workflow_run_id' => null,
+                'task_id' => null,
+                'reason' => 'timeout_cleanup_not_supported',
+                'status' => 422,
+            ];
+        }
+
         $resolvedClass = $this->tryResolveWorkflowClass($workflowType);
         $arguments = $options['arguments'] ?? null;
         $payloadCodec = isset($options['payload_codec']) && is_string(

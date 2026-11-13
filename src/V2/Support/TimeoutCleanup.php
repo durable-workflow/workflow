@@ -37,6 +37,15 @@ final class TimeoutCleanup
      */
     public const STARTED_KEY = 'timeout_cleanup';
 
+    public static function assertEmbeddedAdmission(?int $allowanceSeconds): void
+    {
+        if ($allowanceSeconds !== null && config('workflows.v2.task_dispatch_mode') === 'poll') {
+            throw new \LogicException(
+                'Workflow timeout cleanup is not supported by poll workers yet. Use embedded queue workers or omit timeout cleanup.'
+            );
+        }
+    }
+
     /**
      * Enter timeout cleanup once, at or after the run's work deadline and
      * before its hard deadline (#863). Records a system cooperative
@@ -159,12 +168,13 @@ final class TimeoutCleanup
             ->where('event_type', HistoryEventType::WorkflowTimeoutCleanupStarted->value)
             ->first();
         $payload = is_array($started?->payload) ? $started->payload : [];
+        [$kind, $hardDeadline] = self::earliestHardDeadline($run);
 
         return array_filter([
             'outcome' => $outcome,
-            'timeout_kind' => $payload['timeout_kind'] ?? null,
+            'timeout_kind' => $payload['timeout_kind'] ?? $kind,
             'started_at' => $payload['detected_at'] ?? null,
-            'cleanup_deadline_at' => $payload['cleanup_deadline_at'] ?? null,
+            'cleanup_deadline_at' => $payload['cleanup_deadline_at'] ?? $hardDeadline?->toIso8601String(),
             'finished_at' => now()
                 ->toIso8601String(),
             'failure_id' => $failureId,

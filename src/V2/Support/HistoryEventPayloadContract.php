@@ -1036,6 +1036,8 @@ final class HistoryEventPayloadContract
             'execution_deadline_at',
             'run_deadline_at',
             'timeout_cleanup',
+            'abandoned_activities',
+            'cancellation_cleanup',
         ],
         'WorkflowTimeoutCleanupStarted' => [
             'workflow_command_id',

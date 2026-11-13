@@ -147,6 +147,7 @@ final class ClosingRunOpenWork
                 HistoryEventType::WorkflowCompleted->value,
                 HistoryEventType::WorkflowFailed->value,
                 HistoryEventType::WorkflowContinuedAsNew->value,
+                HistoryEventType::WorkflowTimedOut->value,
             ])
             ->orderByDesc('sequence')
             ->first();

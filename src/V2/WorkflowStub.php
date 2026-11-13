@@ -991,6 +991,7 @@ final class WorkflowStub
     public function attemptStart(...$arguments): StartResult
     {
         [$arguments, $startOptions] = $this->extractStartArguments($arguments);
+        TimeoutCleanup::assertEmbeddedAdmission($startOptions->timeoutCleanupSeconds);
         $metadata = WorkflowMetadata::fromStartArguments($arguments);
         // Capture outside the storage transaction and preserve it across its retries.
         $observabilityContext = null;
@@ -1057,6 +1058,7 @@ final class WorkflowStub
             $startArguments,
             DuplicateStartPolicy::ReturnExistingActive,
         );
+        TimeoutCleanup::assertEmbeddedAdmission($startOptions->timeoutCleanupSeconds);
 
         if ($startOptions->duplicateStartPolicy !== DuplicateStartPolicy::ReturnExistingActive) {
             throw new LogicException(
@@ -2299,6 +2301,28 @@ final class WorkflowStub
             if (is_string($run->cancellation_request_command_id)) {
                 $existing = WorkflowCommand::query()->findOrFail($run->cancellation_request_command_id);
                 $existingContext = (new CommandResult($existing))->cancellationContext();
+                if ($existingContext?->isTimeout() === true && $parentContext === null && $this->runIsActive($run)) {
+                    // Audit the user's request without replacing the engine's
+                    // timeout interruption or renewing its admitted budget.
+                    $codec = $run->payload_codec ?? CodecRegistry::defaultCodec();
+                    $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
+                        'command_type' => CommandType::RequestCancellation->value,
+                        'target_scope' => $this->commandTargetScope(),
+                        'status' => CommandStatus::Accepted->value,
+                        'outcome' => CommandOutcome::CancellationRequested->value,
+                        'payload_codec' => $codec,
+                        'payload' => Serializer::serializeWithCodec($codec, [
+                            'reason' => $reason,
+                            'existing_request_id' => $existing->id,
+                            'cleanup_deadline_at' => $run->cancellation_deadline_at?->toISOString(),
+                            'cancellation' => $existingContext->toArray(),
+                        ]),
+                        'accepted_at' => now(),
+                        'applied_at' => now(),
+                    ]));
+
+                    return;
+                }
                 if ($parentContext !== null && $existingContext?->rootRequestId !== $parentContext->rootRequestId) {
                     $codec = $run->payload_codec ?? CodecRegistry::defaultCodec();
                     $command = $this->rejectCommand(
@@ -2385,6 +2409,12 @@ final class WorkflowStub
             $requestedAt = now();
             $deadline = $scopeDeadline ?? $scopeOrigin?->deadline() ?? $parentContext?->deadline() ?? $requestedAt->copy()
                 ->addSeconds($cleanupTimeoutSeconds);
+            if ($run->timeout_cleanup_work_deadline_at !== null) {
+                [, $hardDeadline] = TimeoutCleanup::earliestHardDeadline($run);
+                if ($hardDeadline !== null && $hardDeadline->lt($deadline)) {
+                    $deadline = $hardDeadline;
+                }
+            }
             $reason = $parentContext?->reason ?? $reason;
             $requestId = (string) Str::ulid();
             $caller = $this->resolvedCommandContext()

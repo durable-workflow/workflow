@@ -95,7 +95,9 @@ notices first) does the following in one transaction under the run lock:
    cancellation request.
 
 A user cancellation request that arrives during timeout cleanup is recorded
-but doesn't restart cleanup or move its deadline. A timeout that arrives
+as an additional accepted RequestCancellation command referencing the original
+engine request. It does not create another interruption, restart cleanup or move
+its deadline. A timeout that arrives
 during an earlier cooperative cancellation doesn't enter timeout cleanup:
 the earlier request already owns cleanup, its deadline is capped by the hard
 deadline, and the final outcome is the timeout if the hard deadline wins.
@@ -140,6 +142,10 @@ with `cause: timeout`. After that, they show the recorded outcome.
   new event type, so readers that don't know it refuse it as an unknown event.
   Service-mode SDKs therefore need the capability below before Server sends
   it.
+- This embedded increment admits the option only with queue dispatch. Poll-mode
+  starts and service starts refuse timeout cleanup, and bridge claims of an
+  opted-in embedded run return `timeout_cleanup_not_supported` without taking
+  the lease. Service support follows in [server issue 1201](https://github.com/durable-workflow/server/issues/1201).
 - Service mode: Server advertises `timeout_cleanup` (`{supported: true,
   version: 1}`) only when it implements this contract, and a service worker
   advertises it only when its SDK delivers the typed timeout interruption.

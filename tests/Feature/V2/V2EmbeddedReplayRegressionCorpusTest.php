@@ -305,6 +305,56 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         }
     }
 
+    public function testTimeoutCleanupTaskExpiryCorpusKeepsTheOutcome(): void
+    {
+        $path = self::FIXTURE_DIR . '/timeout-cleanup-task-expiry.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The timeout cleanup task expiry evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['timeout_cleanup_task_expiry'];
+        config()
+            ->set('queue.default', 'database');
+        Queue::fake();
+        $this->travelTo(now()->startOfSecond());
+        $stub = WorkflowStub::make($fixture['workflow']['type'], 'regression-timeout-cleanup-task-expiry');
+        $stub->start($fixture['workflow']['arguments'][0], new StartOptions(
+            executionTimeoutSeconds: $scenario['execution_timeout_seconds'],
+            timeoutCleanupSeconds: $scenario['timeout_cleanup_seconds'],
+        ));
+        $runId = $stub->runId();
+        $this->runReadyTaskOfType($runId, TaskType::Workflow);
+        $this->travel($scenario['detect_after_seconds'])->seconds();
+        \Workflow\V2\TaskWatchdog::runPass(runIds: [$runId]);
+        $this->runReadyTaskOfType($runId, TaskType::Workflow);
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $runId,
+            'namespace' => $run->namespace,
+            'task_type' => TaskType::Workflow,
+            'status' => TaskStatus::Ready,
+            'available_at' => now(),
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'compatibility' => $run->compatibility,
+            'payload' => [
+                'reason' => 'cleanup_resume',
+            ],
+        ]);
+        $this->travel($scenario['execution_timeout_seconds'] - $scenario['detect_after_seconds'])->seconds();
+        // The embedded task boundary must agree with watchdog expiry.
+        $this->app->call([new RunWorkflowTask($task->id), 'handle']);
+        $terminal = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->orderByDesc(
+            'sequence'
+        )->firstOrFail();
+        $this->assertSame(HistoryEventType::WorkflowTimedOut, $terminal->event_type);
+        $this->assertSame($scenario['outcome'], $terminal->payload['timeout_cleanup']['outcome'] ?? null);
+        $this->assertSame(
+            $run->execution_deadline_at->toIso8601String(),
+            $terminal->payload['timeout_cleanup']['cleanup_deadline_at'] ?? null
+        );
+    }
+
     public function testTimeoutCleanupContinueAsNewCorpusKeepsTheWorkDeadline(): void
     {
         $path = self::FIXTURE_DIR . '/timeout-cleanup-continue-as-new-inheritance.json';

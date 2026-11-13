@@ -85,6 +85,70 @@ final class V2TimeoutCleanupAdmissionTest extends TestCase
         $this->assertSame(10, $this->started($second->id)->payload['timeout_cleanup']['allowance_seconds']);
     }
 
+    public function testContinueAsNewDerivesANewRunWorkDeadline(): void
+    {
+        $this->travelTo(now()->startOfSecond());
+        $workflow = WorkflowStub::make(TestContinueAsNewLargePayloadWorkflow::class, 'timeout-cleanup-continue-run');
+        $workflow->start('x', 0, new StartOptions(runTimeoutSeconds: 70, timeoutCleanupSeconds: 10));
+        $first = WorkflowRun::query()->findOrFail($workflow->runId());
+        $this->travel(30)
+            ->seconds();
+        $task = WorkflowTask::query()->where('workflow_run_id', $first->id)
+            ->where('task_type', TaskType::Workflow->value)->where('status', TaskStatus::Ready->value)->sole();
+        $this->app->call([new RunWorkflowTask($task->id), 'handle']);
+        $second = WorkflowRun::query()->where('workflow_instance_id', $first->workflow_instance_id)
+            ->where('run_number', 2)
+            ->sole();
+        $this->assertNull($second->execution_deadline_at);
+        $this->assertTrue($second->run_deadline_at->equalTo(now()->addSeconds(70)));
+        $this->assertTrue($second->timeout_cleanup_work_deadline_at->equalTo(now()->addSeconds(60)));
+        $this->assertSame(
+            $second->timeout_cleanup_work_deadline_at->toIso8601String(),
+            $this->started($second->id)
+->payload['timeout_cleanup']['work_deadlines']['run']
+        );
+    }
+
+    public function testPollModeRefusesTimeoutCleanupBeforeStartWrites(): void
+    {
+        $workflow = WorkflowStub::make(TestContinueAsNewLargePayloadWorkflow::class, 'timeout-cleanup-poll');
+        config()
+            ->set('workflows.v2.task_dispatch_mode', 'poll');
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage('timeout cleanup is not supported by poll workers');
+        try {
+            $workflow->start('x', 1, new StartOptions(executionTimeoutSeconds: 70, timeoutCleanupSeconds: 10));
+        } finally {
+            $this->assertSame(0, WorkflowRun::query()->count());
+            $this->assertSame(0, \Workflow\V2\Models\WorkflowCommand::query()->count());
+        }
+    }
+
+    public function testTheBridgeRefusesAnEmbeddedTimeoutCleanupRunWithoutTakingItsLease(): void
+    {
+        $workflow = WorkflowStub::make(TestContinueAsNewLargePayloadWorkflow::class, 'timeout-cleanup-bridge');
+        $workflow->start('x', 1, new StartOptions(executionTimeoutSeconds: 70, timeoutCleanupSeconds: 10));
+        $task = WorkflowTask::query()->where('workflow_run_id', $workflow->runId())->sole();
+        $bridge = $this->app->make(\Workflow\V2\Contracts\WorkflowTaskBridge::class);
+        $result = $bridge->claimStatus($task->id, 'unsupported-worker');
+        $this->assertFalse($result['claimed']);
+        $this->assertSame('timeout_cleanup_not_supported', $result['reason']);
+        $this->assertSame(TaskStatus::Ready, $task->refresh()->status);
+        $this->assertNull($task->lease_owner);
+    }
+
+    public function testTheServiceStartRefusesTheOptionBeforeCreatingAnInstance(): void
+    {
+        $control = $this->app->make(\Workflow\V2\Contracts\WorkflowControlPlane::class);
+        $result = $control->start('foreign-workflow', 'timeout-cleanup-service', [
+            'execution_timeout_seconds' => 70,
+            'timeout_cleanup_seconds' => 10,
+        ]);
+        $this->assertFalse($result['accepted']);
+        $this->assertSame('timeout_cleanup_not_supported', $result['reason']);
+        $this->assertSame(0, \Workflow\V2\Models\WorkflowInstance::query()->count());
+    }
+
     private function started(string $runId): WorkflowHistoryEvent
     {
         return WorkflowHistoryEvent::query()

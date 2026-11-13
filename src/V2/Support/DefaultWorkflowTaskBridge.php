@@ -294,6 +294,16 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 return self::claimRejected($taskId, 'run_closed', "The workflow run is {$run->status->value}.");
             }
 
+            // This increment admits timeout cleanup only for embedded queue
+            // workers. A bridge worker must not silently run ordinary work.
+            if ($run->timeout_cleanup_work_deadline_at !== null) {
+                return self::claimRejected(
+                    $taskId,
+                    'timeout_cleanup_not_supported',
+                    'Timeout cleanup requires embedded queue workers.'
+                );
+            }
+
             TaskCompatibility::sync($task, $run);
 
             if (TaskBackendCapabilities::recordClaimFailureIfUnsupported($task) !== null) {
