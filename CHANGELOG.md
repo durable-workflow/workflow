@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Experimental domain entity references for top-level arguments of embedded
+  queued activities (#996). Register an entity class, deterministic
+  adapter and authorized resolver. History records a portable reference and
+  argument positions. Each real attempt resolves current state outside the
+  engine transaction; replay never calls the resolver. Ordinary maps and
+  unregistered objects retain their existing serialization behavior. See
+  [the registration and retry contract](docs/entity-references.md).
+
 - A run no longer leaves work running after its own code closes it (#1117).
   Before, an activity or timer the workflow never awaited, such as a
   `select()` loser, stayed open when the run completed, failed or continued as

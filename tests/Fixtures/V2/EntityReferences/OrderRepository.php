@@ -17,10 +17,19 @@ final class OrderRepository
 
     public static int $loads = 0;
 
+    public static array $contexts = [];
+
+    public static array $transactionLevels = [];
+
+    public static bool $deny = false;
+
     public static function reset(): void
     {
         self::$orders = [];
         self::$loads = 0;
+        self::$contexts = [];
+        self::$transactionLevels = [];
+        self::$deny = false;
     }
 
     public static function save(Order $order): void

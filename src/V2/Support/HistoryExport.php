@@ -1510,6 +1510,9 @@ final class HistoryExport
             'connection' => $activity['connection'] ?? ($state['connection'] ?? null),
             'queue' => $activity['queue'] ?? ($state['queue'] ?? null),
             'retry_policy' => $state['retry_policy'] ?? ($activity['retry_policy'] ?? null),
+            ...(isset($state[EntityReferenceArguments::POSITIONS]) ? [
+                EntityReferenceArguments::POSITIONS => $state[EntityReferenceArguments::POSITIONS],
+            ] : []),
             'attempt_count' => self::intValue($activity['attempt_count'] ?? null)
                 ?? self::intValue($state['attempt_count'] ?? null)
                 ?? 0,
@@ -1639,6 +1642,9 @@ final class HistoryExport
             'connection' => $activity['connection'] ?? null,
             'queue' => $activity['queue'] ?? null,
             'retry_policy' => $activity['retry_policy'] ?? null,
+            ...(isset($activity[EntityReferenceArguments::POSITIONS]) ? [
+                EntityReferenceArguments::POSITIONS => $activity[EntityReferenceArguments::POSITIONS],
+            ] : []),
             'attempt_count' => $activity['attempt_count'] ?? 0,
             'current_attempt_id' => $activity['current_attempt_id'] ?? null,
             'current_worker_attempt_id' => $activity['current_worker_attempt_id'] ?? null,

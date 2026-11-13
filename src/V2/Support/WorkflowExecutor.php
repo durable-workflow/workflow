@@ -2530,10 +2530,9 @@ final class WorkflowExecutor
                 ->addSeconds($options->scheduleToCloseTimeout)
             : null;
 
-        // Persist the sole v2 codec beside the activity row. Callers must adapt
-        // PHP-only objects to values representable by the fixed Avro schema.
-        $argumentsCodec = Serializer::chooseCodecForData($run->payload_codec, $activityCall->arguments);
-        $serializedArguments = Serializer::serializeWithCodec($argumentsCodec, $activityCall->arguments);
+        [$arguments, $referencePositions] = EntityReferenceArguments::encode($activityCall->arguments);
+        $argumentsCodec = Serializer::chooseCodecForData($run->payload_codec, $arguments);
+        $serializedArguments = Serializer::serializeWithCodec($argumentsCodec, $arguments);
         $this->logApproachingLimit(
             StructuralLimits::warnApproachingPayloadSize($serializedArguments),
             $run,
@@ -2562,7 +2561,12 @@ final class WorkflowExecutor
             'connection' => RoutingResolver::activityConnection($activityCall->activity, $run, $options),
             'queue' => RoutingResolver::activityQueue($activityCall->activity, $run, $options),
             'parallel_group_path' => self::parallelGroupPath($parallelMetadata),
-            'activity_options' => $options?->toSnapshot(),
+            'activity_options' => $referencePositions === [] ? $options?->toSnapshot() : array_merge(
+                $options?->toSnapshot() ?? [],
+                [
+                    EntityReferenceArguments::POSITIONS => $referencePositions,
+                ],
+            ),
             'schedule_deadline_at' => $scheduleDeadlineAt,
             'schedule_to_close_deadline_at' => $scheduleToCloseDeadlineAt,
         ]);

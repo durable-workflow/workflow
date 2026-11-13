@@ -3,6 +3,13 @@
 This document describes the v2 public API stability contract of the
 `durable-workflow/workflow` package.
 
+The [domain entity reference API](entity-references.md) is experimental. Its
+adapter/resolver registrations apply only to top-level arguments of in-process
+queued PHP activities. The optional `entity_reference_positions` in
+an activity snapshot identifies arguments adapted to portable `{type,id,version}`
+maps; absence preserves ordinary argument behavior. History recovery and export
+retain this discriminator. It does not advertise a service-mode capability.
+
 ## Relationship to the platform compatibility authority
 
 This document is the per-package stability contract for the PHP workflow

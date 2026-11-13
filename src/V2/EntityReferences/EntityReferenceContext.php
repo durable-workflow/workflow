@@ -14,7 +14,8 @@ final class EntityReferenceContext
 {
     /**
      * @param class-string|null $parameterType The declared parameter type the
-     *        resolved object must satisfy, or null for an untyped parameter.
+     *        resolved object must satisfy, or null for an untyped, built-in or
+     *        compound type. The worker also checks compound types locally.
      */
     public function __construct(
         public readonly ?string $namespace,

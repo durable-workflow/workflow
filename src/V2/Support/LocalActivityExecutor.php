@@ -12,6 +12,7 @@ use RuntimeException;
 use Throwable;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\EntityReferences\EntityReferenceRefused;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\FailureCategory;
@@ -626,6 +627,12 @@ final class LocalActivityExecutor
         $result = null;
         $throwable = null;
         try {
+            if (array_key_exists(EntityReferenceArguments::POSITIONS, $execution->activity_options ?? [])) {
+                throw new EntityReferenceRefused(
+                    EntityReferenceRefused::UNSUPPORTED_EXECUTION_MODE,
+                    'Local entity references require resolution outside the hosting workflow transaction.',
+                );
+            }
             $arguments = ActivityEntryArguments::resolve($activity, $activityArguments, $entryMethod);
         } catch (Throwable $error) {
             $arguments = [];
@@ -938,8 +945,15 @@ final class LocalActivityExecutor
             ? now()
                 ->addSeconds($options->scheduleToCloseTimeout)
             : null;
-        $argumentsCodec = Serializer::chooseCodecForData($run->payload_codec, $activityCall->arguments);
-        $serializedArguments = Serializer::serializeWithCodec($argumentsCodec, $activityCall->arguments);
+        [$arguments, $referencePositions] = EntityReferenceArguments::encode($activityCall->arguments);
+        if ($referencePositions !== []) {
+            throw new EntityReferenceRefused(
+                EntityReferenceRefused::UNSUPPORTED_EXECUTION_MODE,
+                'Local entity references require resolution outside the hosting workflow transaction.',
+            );
+        }
+        $argumentsCodec = Serializer::chooseCodecForData($run->payload_codec, $arguments);
+        $serializedArguments = Serializer::serializeWithCodec($argumentsCodec, $arguments);
         $storedArguments = ExternalPayloads::externalizeForNamespace(
             $serializedArguments,
             $argumentsCodec,

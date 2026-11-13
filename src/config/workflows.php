@@ -125,6 +125,7 @@ return [
         // attempt. Top-level activity arguments of in-process workers only.
         'entity_references' => [
             // 'orders.order' => [
+            //     'entity_class' => App\Domain\Order::class,
             //     'adapter' => App\Infrastructure\OrderReferenceAdapter::class,
             //     'resolver' => App\Infrastructure\OrderReferenceResolver::class,
             // ],

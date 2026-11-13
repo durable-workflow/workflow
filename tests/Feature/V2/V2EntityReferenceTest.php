@@ -12,6 +12,7 @@ use Tests\Fixtures\V2\EntityReferences\OrderRepository;
 use Tests\Fixtures\V2\EntityReferences\OrderStatusWorkflow;
 use Tests\TestCase;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\EntityReferences\EntityAccessDenied;
 use Workflow\V2\EntityReferences\EntityNotFound;
 use Workflow\V2\EntityReferences\EntityReferenceRefused;
 use Workflow\V2\Enums\HistoryEventType;
@@ -23,13 +24,11 @@ use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ActivityRecovery;
+use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\WorkflowStub;
 
-/**
- * Domain entity references in activity arguments (#996). Draft: these pin the
- * accepted behavior and fail until the adapter/resolver implementation lands.
- */
 final class V2EntityReferenceTest extends TestCase
 {
     protected function setUp(): void
@@ -41,6 +40,7 @@ final class V2EntityReferenceTest extends TestCase
         config()
             ->set('workflows.v2.entity_references', [
                 'orders.order' => [
+                    'entity_class' => Order::class,
                     'adapter' => OrderReferenceAdapter::class,
                     'resolver' => OrderReferenceResolver::class,
                 ],
@@ -71,12 +71,23 @@ final class V2EntityReferenceTest extends TestCase
         $this->assertSame([0], $execution->activity_options['entity_reference_positions'] ?? null);
         $this->assertSame([0], $scheduled->payload['activity']['entity_reference_positions'] ?? null);
 
+        OrderRepository::save(new Order('o-1', 'shipped'));
         $this->runReadyTask($runId, TaskType::Activity);
         $this->runReadyTask($runId, TaskType::Workflow);
 
         // The activity saw the persisted state, not the workflow's copy.
-        $this->assertSame('o-1:paid:checked', $workflow->refresh()->output());
+        $this->assertSame('o-1:shipped:checked', $workflow->refresh()->output());
         $this->assertSame(1, OrderRepository::$loads);
+        $context = OrderRepository::$contexts[0];
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $this->assertSame($run->namespace, $context->namespace);
+        $this->assertSame($run->workflow_instance_id, $context->workflowInstanceId);
+        $this->assertSame($runId, $context->workflowRunId);
+        $this->assertSame($execution->id, $context->activityExecutionId);
+        $this->assertSame(1, $context->attemptNumber);
+        $this->assertSame(0, $context->argumentPosition);
+        $this->assertSame(Order::class, $context->parameterType);
+        $this->assertSame([0], OrderRepository::$transactionLevels);
     }
 
     public function testReplayNeverResolvesTheReference(): void
@@ -146,6 +157,130 @@ final class V2EntityReferenceTest extends TestCase
             ->where('workflow_run_id', $runId)
             ->where('event_type', HistoryEventType::WorkflowFailed->value)
             ->exists());
+    }
+
+    public function testAnOrdinaryReferenceShapedMapIsNeverResolved(): void
+    {
+        $workflow = WorkflowStub::make(OrderStatusWorkflow::class, 'entity-reference-map');
+        $workflow->start('o-map', 'map');
+        $this->runReadyTask($workflow->runId(), TaskType::Workflow);
+        $execution = ActivityExecution::query()->where('workflow_run_id', $workflow->runId())->sole();
+        $this->assertArrayNotHasKey('entity_reference_positions', $execution->activity_options ?? []);
+        $this->runReadyTask($workflow->runId(), TaskType::Activity);
+        $this->runReadyTask($workflow->runId(), TaskType::Workflow);
+        $this->assertSame('o-map:checked', $workflow->refresh()->output());
+        $this->assertSame(0, OrderRepository::$loads);
+    }
+
+    public function testEntityResolutionPreservesMethodDependencyInjection(): void
+    {
+        OrderRepository::save(new Order('o-di', 'paid'));
+        $workflow = WorkflowStub::make(OrderStatusWorkflow::class, 'entity-reference-di');
+        $workflow->start('o-di', 'injected');
+        $this->runReadyTask($workflow->runId(), TaskType::Workflow);
+        $this->runReadyTask($workflow->runId(), TaskType::Activity);
+        $this->runReadyTask($workflow->runId(), TaskType::Workflow);
+        $this->assertSame('o-di:paid:checked', $workflow->refresh()->output());
+        $this->assertSame(Order::class, OrderRepository::$contexts[0]->parameterType);
+    }
+
+    public function testAParameterMismatchIsRefusedBeforeRepositoryAccess(): void
+    {
+        $workflow = WorkflowStub::make(OrderStatusWorkflow::class, 'entity-reference-mismatch');
+        $workflow->start('o-mismatch', 'mismatch');
+        $this->runReadyTask($workflow->runId(), TaskType::Workflow);
+        $this->runReadyTask($workflow->runId(), TaskType::Activity);
+        $failed = WorkflowHistoryEvent::query()->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::ActivityFailed->value)->sole();
+        $this->assertSame(EntityReferenceRefused::class, $failed->payload['exception_class']);
+        $this->assertTrue($failed->payload['non_retryable']);
+        $this->assertSame([], OrderRepository::$contexts);
+    }
+
+    public function testAnUnsupportedVersionIsRefusedBeforeRepositoryAccess(): void
+    {
+        $workflow = WorkflowStub::make(OrderStatusWorkflow::class, 'entity-reference-version');
+        $workflow->start('o-version');
+        $this->runReadyTask($workflow->runId(), TaskType::Workflow);
+        $execution = ActivityExecution::query()->where('workflow_run_id', $workflow->runId())->sole();
+        $arguments = $execution->activityArguments();
+        $arguments[0]['version'] = 2;
+        $execution->forceFill([
+            'arguments' => Serializer::serializeWithCodec($execution->payload_codec, $arguments),
+        ])->save();
+        $this->runReadyTask($workflow->runId(), TaskType::Activity);
+        $failed = WorkflowHistoryEvent::query()->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::ActivityFailed->value)->sole();
+        $this->assertSame(EntityReferenceRefused::class, $failed->payload['exception_class']);
+        $this->assertTrue($failed->payload['non_retryable']);
+        $this->assertSame([], OrderRepository::$contexts);
+    }
+
+    public function testAuthorizationUsesTheResolverAndNeverEntersTheActivity(): void
+    {
+        OrderRepository::$deny = true;
+        $workflow = WorkflowStub::make(OrderStatusWorkflow::class, 'entity-reference-denied');
+        $workflow->start('o-denied');
+        $this->runReadyTask($workflow->runId(), TaskType::Workflow);
+        $this->runReadyTask($workflow->runId(), TaskType::Activity);
+        $failed = WorkflowHistoryEvent::query()->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::ActivityFailed->value)->sole();
+        $this->assertSame(EntityAccessDenied::class, $failed->payload['exception_class']);
+        $this->assertSame(0, OrderRepository::$loads);
+        $this->assertCount(1, OrderRepository::$contexts);
+    }
+
+    public function testEachRetryLoadsCurrentStateAgain(): void
+    {
+        OrderRepository::save(new Order('o-retry', 'paid'));
+        $workflow = WorkflowStub::make(OrderStatusWorkflow::class, 'entity-reference-retry');
+        $workflow->start('o-retry', 'retry');
+        $this->runReadyTask($workflow->runId(), TaskType::Workflow);
+        $this->runReadyTask($workflow->runId(), TaskType::Activity);
+        OrderRepository::save(new Order('o-retry', 'refunded'));
+        $this->runReadyTask($workflow->runId(), TaskType::Activity);
+        $this->runReadyTask($workflow->runId(), TaskType::Workflow);
+        $this->assertSame('o-retry:refunded:checked', $workflow->refresh()->output());
+        $this->assertSame(
+            [1, 2],
+            array_map(static fn ($context) => $context->attemptNumber, OrderRepository::$contexts)
+        );
+        $this->assertSame([0, 0], OrderRepository::$transactionLevels);
+    }
+
+    public function testALocalActivityRefusesReferencesBeforeLookupOrScheduling(): void
+    {
+        OrderRepository::save(new Order('o-local', 'paid'));
+        $workflow = WorkflowStub::make(OrderStatusWorkflow::class, 'entity-reference-local');
+        $workflow->start('o-local', 'local');
+        try {
+            $this->runReadyTask($workflow->runId(), TaskType::Workflow);
+            $this->fail('Local resolution was admitted inside the workflow transaction.');
+        } catch (EntityReferenceRefused $error) {
+            $this->assertSame(EntityReferenceRefused::UNSUPPORTED_EXECUTION_MODE, $error->reason);
+        }
+        $this->assertSame([], OrderRepository::$contexts);
+        $this->assertSame(0, ActivityExecution::query()->where('workflow_run_id', $workflow->runId())->count());
+        $this->assertSame(0, WorkflowTask::query()->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Activity->value)->count());
+    }
+
+    public function testHistoryRecoveryAndExportRetainReferencePositions(): void
+    {
+        OrderRepository::save(new Order('o-recovered', 'paid'));
+        $workflow = WorkflowStub::make(OrderStatusWorkflow::class, 'entity-reference-recovery');
+        $workflow->start('o-recovered');
+        $this->runReadyTask($workflow->runId(), TaskType::Workflow);
+        $execution = ActivityExecution::query()->where('workflow_run_id', $workflow->runId())->sole();
+        $id = $execution->id;
+        $bundle = HistoryExport::forRun(WorkflowRun::query()->findOrFail($workflow->runId()));
+        $this->assertSame([0], $bundle['activities'][0]['entity_reference_positions'] ?? null);
+        $execution->delete();
+        $restored = ActivityRecovery::restore(WorkflowRun::query()->findOrFail($workflow->runId()), $id);
+        $this->assertSame([0], $restored?->activity_options['entity_reference_positions'] ?? null);
+        $this->runReadyTask($workflow->runId(), TaskType::Activity);
+        $this->runReadyTask($workflow->runId(), TaskType::Workflow);
+        $this->assertSame('o-recovered:paid:checked', $workflow->refresh()->output());
     }
 
     private function runReadyTask(string $runId, TaskType $taskType): void

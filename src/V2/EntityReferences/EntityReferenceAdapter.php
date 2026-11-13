@@ -11,6 +11,8 @@ namespace Workflow\V2\EntityReferences;
  * Registered by logical type in `workflows.v2.entity_references`. The domain
  * class itself implements nothing from Durable Workflow or Laravel; the
  * adapter belongs to the application's infrastructure layer.
+ * Its constructor and methods must be deterministic and perform no I/O:
+ * adaptation happens while the workflow turn is committed, including retries.
  *
  * @experimental Draft API for workflow issue 996; not covered by the stability
  *               guarantees until it ships.

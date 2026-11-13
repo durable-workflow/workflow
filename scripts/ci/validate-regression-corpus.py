@@ -158,6 +158,12 @@ OFFICIAL_BINDING_CONSUMER_SUPPORT = {
         )
     ]: (
         "tests/Feature/V2/V2EmbeddedReplayRegressionCorpusTest.php",
+        "tests/Fixtures/V2/EntityReferences/Order.php",
+        "tests/Fixtures/V2/EntityReferences/OrderReferenceAdapter.php",
+        "tests/Fixtures/V2/EntityReferences/OrderReferenceResolver.php",
+        "tests/Fixtures/V2/EntityReferences/OrderRepository.php",
+        "tests/Fixtures/V2/EntityReferences/OrderStatusActivity.php",
+        "tests/Fixtures/V2/EntityReferences/OrderStatusWorkflow.php",
         "tests/Fixtures/V2/TestConstructorInjectionActivity.php",
         "tests/Fixtures/V2/TestConstructorInjectionWorkflow.php",
         "tests/Fixtures/V2/TestTracingReplayActivity.php",
