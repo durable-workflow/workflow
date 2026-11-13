@@ -121,6 +121,50 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
     private int $workflowNumber = 0;
 
+    public function testEntityReferenceAttemptCorpusLoadsCurrentStateAndNeverLoadsOnReplay(): void
+    {
+        $path = self::FIXTURE_DIR . '/entity-reference-attempt-current-state.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The entity reference attempt evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['entity_reference_attempt'];
+        self::stopWorkers();
+        Queue::fake();
+        config([
+            'queue.default' => 'database',
+            'workflows.v2.entity_references' => [
+                $scenario['logical_type'] => [
+                    'entity_class' => \Tests\Fixtures\V2\EntityReferences\Order::class,
+                    'adapter' => \Tests\Fixtures\V2\EntityReferences\OrderReferenceAdapter::class,
+                    'resolver' => \Tests\Fixtures\V2\EntityReferences\OrderReferenceResolver::class,
+                ],
+            ],
+        ]);
+        \Tests\Fixtures\V2\EntityReferences\OrderRepository::reset();
+        $stub = WorkflowStub::make($fixture['workflow']['type'], 'regression-entity-reference');
+        $stub->start(...$fixture['workflow']['arguments']);
+        $runId = $stub->runId();
+        $this->runReadyTaskOfType($runId, TaskType::Workflow);
+        $execution = ActivityExecution::query()->where('workflow_run_id', $runId)->sole();
+        $this->assertSame($scenario['recorded_positions'], $execution->activity_options['entity_reference_positions']);
+        $this->assertSame([
+            'type' => $scenario['logical_type'],
+            'id' => $scenario['entity_id'],
+            'version' => 1,
+        ], $execution->activityArguments()[0]);
+        \Tests\Fixtures\V2\EntityReferences\OrderRepository::save(new \Tests\Fixtures\V2\EntityReferences\Order(
+            $scenario['entity_id'],
+            $scenario['state_at_attempt'],
+        ));
+        $this->runReadyTaskOfType($runId, TaskType::Activity);
+        $this->runReadyTaskOfType($runId, TaskType::Workflow);
+        $this->assertSame($scenario['expected_result'], $stub->refresh()->output());
+        (new WorkflowReplayer())->replay(WorkflowRun::query()->findOrFail($runId));
+        $this->assertSame($scenario['loads_after_replay'], \Tests\Fixtures\V2\EntityReferences\OrderRepository::$loads);
+        $this->assertSame([0], \Tests\Fixtures\V2\EntityReferences\OrderRepository::$transactionLevels);
+    }
+
     public function testImportedChildLineageCorpusDoesNotAttachAnUnrelatedLaterRun(): void
     {
         $path = self::FIXTURE_DIR . '/imported-child-lineage-requires-owned-edge.json';
