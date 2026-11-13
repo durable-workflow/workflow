@@ -17,12 +17,20 @@ return new class() extends WorkflowMigration {
         }
 
         $column = $connection->selectOne(
-            'SELECT EXTRA AS extra FROM information_schema.columns '
+            'SELECT COLUMN_TYPE AS column_type, IS_NULLABLE AS is_nullable, COLUMN_DEFAULT AS default_value, '
+            . 'DATETIME_PRECISION AS datetime_precision, EXTRA AS extra FROM information_schema.columns '
             . 'WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?',
             [$connection->getTablePrefix() . 'workflow_run_timers', 'fire_at'],
         );
         if ($column === null || ! str_contains(strtolower((string) $column->extra), 'on update')) {
             return;
+        }
+        if (strtolower((string) $column->column_type) !== 'timestamp(6)'
+            || $column->is_nullable !== 'NO'
+            || strtolower((string) $column->default_value) !== 'current_timestamp(6)'
+            || (int) $column->datetime_precision !== 6
+            || strtolower((string) $column->extra) !== 'on update current_timestamp(6)') {
+            throw new RuntimeException('workflow_timer_fire_at_legacy_shape_unavailable');
         }
 
         $table = $connection->getQueryGrammar()
