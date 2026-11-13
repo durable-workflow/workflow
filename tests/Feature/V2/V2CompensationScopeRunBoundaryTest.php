@@ -258,10 +258,14 @@ final class V2CompensationScopeRunBoundaryTest extends TestCase
                 $tasks->where('workflow_run_id', '!=', $excludedRunId);
             }
             $task = (clone $tasks)->where(static function ($query): void {
-                $query->whereNull('available_at')->orWhere('available_at', '<=', now()->format('Y-m-d H:i:s.u'));
+                $query->whereNull('available_at')
+                    ->orWhere('available_at', '<=', now()->format('Y-m-d H:i:s.u'));
             })->first();
             if ($task === null) {
-                $task = $tasks->reorder('available_at')->orderBy('created_at')->orderBy('id')->first();
+                $task = $tasks->reorder('available_at')
+                    ->orderBy('created_at')
+                    ->orderBy('id')
+                    ->first();
                 if ($task === null) {
                     return;
                 }
