@@ -12,6 +12,16 @@
   migration. Worker-protocol execution refuses the new calls. State-bound
   business bindings and retained compensation remain separate #1069 work.
 
+- Experimental domain entity references for top-level arguments of embedded
+  queued and local activities (#996). Register an entity class, deterministic
+  adapter and authorized resolver. History records a portable reference and
+  argument positions. Each real attempt resolves current state outside the
+  engine transaction; replay never calls the resolver. Local lookup retains
+  the original hosting claim and history budget, and the callback keeps its
+  existing transaction. Ordinary maps and
+  unregistered objects retain their existing serialization behavior. See
+  [the registration and retry contract](docs/entity-references.md).
+
 - Failed-run redrive accepts a verified linear activity retry chain. A retried
   completed prefix is reused and only the failed boundary step runs again.
   Substituted attempt/task identities refuse with

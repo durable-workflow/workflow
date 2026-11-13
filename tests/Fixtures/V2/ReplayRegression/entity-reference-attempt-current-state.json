@@ -1,0 +1,82 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "entity-reference-attempt-current-state",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\EntityReferences\\OrderStatusWorkflow",
+    "arguments": [
+      "corpus-order"
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-13T10:00:00.000000Z"
+    },
+    {
+      "sequence": 2,
+      "event_type": "ActivityScheduled",
+      "recorded_at": "2026-11-13T10:00:00.000001Z",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "01j00000000000000000000e01",
+        "activity_class": "Tests\\Fixtures\\V2\\EntityReferences\\OrderStatusActivity",
+        "activity_type": "tests.entity-references.order-status",
+        "activity": {
+          "id": "01j00000000000000000000e01",
+          "sequence": 1,
+          "class": "Tests\\Fixtures\\V2\\EntityReferences\\OrderStatusActivity",
+          "type": "tests.entity-references.order-status",
+          "arguments": "wwHioz3/VYAiNwwEDgYIdHlwZQoYb3JkZXJzLm9yZGVyBGlkChhjb3JwdXMtb3JkZXIOdmVyc2lvbgQCAAoOY2hlY2tlZAA=",
+          "payload_codec": "avro",
+          "entity_reference_positions": [
+            0
+          ]
+        }
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "ActivityCompleted",
+      "recorded_at": "2026-11-13T10:00:01.000000Z",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "01j00000000000000000000e01",
+        "activity_class": "Tests\\Fixtures\\V2\\EntityReferences\\OrderStatusActivity",
+        "activity_type": "tests.entity-references.order-status",
+        "result": "wwHioz3/VYAiNwo4Y29ycHVzLW9yZGVyOnNoaXBwZWQ6Y2hlY2tlZA==",
+        "payload_codec": "avro"
+      }
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": "corpus-order:shipped:checked",
+    "commands": [
+      {
+        "type": "complete_workflow"
+      }
+    ]
+  },
+  "entity_reference_attempt": {
+    "issue": "durable-workflow/workflow#996",
+    "logical_type": "orders.order",
+    "entity_id": "corpus-order",
+    "recorded_positions": [
+      0
+    ],
+    "state_at_attempt": "shipped",
+    "expected_result": "corpus-order:shipped:checked",
+    "loads_after_replay": 1
+  }
+}
