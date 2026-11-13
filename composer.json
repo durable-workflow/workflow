@@ -60,7 +60,7 @@
     ],
     "require": {
         "php": "^8.2",
-        "laravel/framework": "^12.69.0|^13.30.0",
+        "laravel/framework": "^12.72.0|^13.41.0",
         "react/promise": "^2.9|^3.0",
         "apache/avro": "^1.12",
         "symfony/yaml": "^6.0|^7.0|^8.0"

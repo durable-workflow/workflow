@@ -11,11 +11,11 @@
   },
   "supported_majors": {
     "12": {
-      "minimum": "12.69.0",
+      "minimum": "12.72.0",
       "disposition": "secure"
     },
     "13": {
-      "minimum": "13.30.0",
+      "minimum": "13.41.0",
       "disposition": "secure"
     }
   },

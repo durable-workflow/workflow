@@ -1,5 +1,9 @@
 # Embedded tracing overhead workload
 
+The active lockfile is refreshed for current framework security advisories.
+This metadata refresh does not rerun or qualify the recorded studies. Their
+source commits, dependency inputs and results remain historical evidence.
+
 This is the qualification recipe for Workflow #788. The
 [October 17 measurement](RESULTS-2026-10-17.md) and
 [October 20 official-Collector measurement](RESULTS-2026-10-20.md) completed;
