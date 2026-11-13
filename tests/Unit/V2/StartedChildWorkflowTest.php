@@ -283,7 +283,8 @@ final class StartedChildWorkflowTest extends TestCase
             $this->assertSame('cleaned', (new QueryStateReplayer())->query($run->fresh(), 'phase'));
             $this->assertSame(
                 $policy === CancellationPolicy::Abandon,
-                $child->fresh()->cancellation_request_command_id === null
+                $child->fresh()
+->cancellation_request_command_id === null
             );
             if ($policy !== CancellationPolicy::WaitCancellationCompleted) {
                 $this->assertSame(RunStatus::Waiting, $child->fresh()->status);
