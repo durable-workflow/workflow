@@ -2576,7 +2576,19 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 $this->assertSame(1, $run->historyEvents()
                     ->where('event_type', HistoryEventType::VersionMarkerRecorded)->count());
 
-                continue;
+                // Legacy absence is a compatibility control, not new regression
+                // evidence: neither query nor execution may acquire a current
+                // definition when the historical start recorded none.
+                $fixture['id'] .= '-legacy-absence-control';
+                $fixture['history'] = [$fixture['history'][0]];
+                unset(
+                    $fixture['history'][0]['payload']['workflow_definition_fingerprint'],
+                    $fixture['history'][0]['payload']['workflow_definition_fingerprint_source'],
+                    $fixture['expected'],
+                );
+                $fixture['expected_failure'] = [
+                    'exception' => VersionRangeMismatchException::class,
+                ];
             }
 
             if ($fixture['id'] === 'child-closure-sibling-history-bound') {
