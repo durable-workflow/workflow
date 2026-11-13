@@ -84,8 +84,11 @@ final class LaravelDependencySecurityPolicyTest extends TestCase
         ] as $version) {
             $this->assertFalse(Semver::satisfies($version, $constraint), "{$version} must be refused");
         }
-        foreach (['12.68.9', '13.29.9'] as $version) {
+        foreach (['12.68.9', '12.70.99', '12.71.99', '13.29.9', '13.39.99', '13.40.99'] as $version) {
             $this->assertFalse(Semver::satisfies($version, $constraint), "{$version} is below its floor");
+        }
+        foreach (['12.72.0', '13.41.0'] as $version) {
+            $this->assertTrue(Semver::satisfies($version, $constraint), $version);
         }
         foreach ($policy['supported_majors'] as $major) {
             $this->assertTrue(Semver::satisfies($major['minimum'], $constraint), $major['minimum']);
