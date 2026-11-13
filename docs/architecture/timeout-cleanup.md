@@ -1,6 +1,6 @@
 # Deadline-triggered cleanup (draft contract)
 
-Draft contract for [workflow#863](https://github.com/durable-workflow/workflow/issues/863),
+Draft contract for [workflow issue 863](https://github.com/durable-workflow/workflow/issues/863),
 following General's 2026-11-04 decision on that issue. Nothing here is shipped.
 The existing hard timeout stays the default and keeps its current meaning.
 
@@ -48,7 +48,7 @@ Validation at admission, before any write:
 The allowance is recorded in `WorkflowStarted` (`timeout_cleanup.allowance_seconds`,
 plus the derived `work_deadline_at` per timeout kind), which is immutable. There
 is no new `workflow_runs` column: the engine and native read the admitted values
-from `WorkflowStarted` (server review on #1122). Describe and run detail show them.
+from `WorkflowStarted` (server review on [workflow pull request 1122](https://github.com/durable-workflow/workflow/pull/1122)). Describe and run detail show them.
 
 ### Inheritance
 
@@ -76,7 +76,7 @@ notices first) does the following in one transaction under the run lock:
    accepted, because cleanup needs activities, timers and children. But the
    run's `cancellation_deadline_at` is set to the cleanup deadline, so the
    existing cleanup-deadline enforcement at task completion and lease renewal
-   (#595) applies unchanged.
+   ([workflow issue 595](https://github.com/durable-workflow/workflow/issues/595)) applies unchanged.
 3. Delivers the interruption through the existing cooperative-cancellation
    path. Workflow code receives a `WorkflowTimeoutCleanupRequested` exception,
    which extends `WorkflowCancellationRequestedException`, with a
@@ -114,7 +114,7 @@ outcome:
 | --- | --- | --- |
 | Workflow code returns, or rethrows the timeout exception, before the cleanup deadline | `completed` | The return value is discarded and never becomes the run's output. |
 | Workflow code throws any other exception before the cleanup deadline | `failed` | The exception is recorded as a failure row linked by `failure_id`. The run is still timed out, not failed. |
-| The cleanup deadline passes | `expired` | The engine closes the run, as today's hard timeout does, and settles open work as #1117 defines. |
+| The cleanup deadline passes | `expired` | The engine closes the run, as today's hard timeout does, and settles open work as [workflow issue 1117](https://github.com/durable-workflow/workflow/issues/1117) defines. |
 | `terminate()`, hard `cancel()`, or a hard deadline before the cleanup deadline | `preempted` | The terminal event is the preempting one (`WorkflowTerminated`, `WorkflowCancelled`) and carries `timeout_cleanup.outcome: preempted`. |
 
 An unavailable worker can't guarantee cleanup. If no worker runs the cleanup
@@ -164,14 +164,14 @@ tail and outcome. `T` is the start time.
 
 ## Review decisions
 
-- **Server (2026-11-13, on #1122):** keep `WorkflowTimeoutCleanupRequested` as a
+- **Server (2026-11-13, on [workflow pull request 1122](https://github.com/durable-workflow/workflow/pull/1122)):** keep `WorkflowTimeoutCleanupRequested` as a
   subtype of the cancellation exception. Reuse the cooperative-cancellation
   delivery with cause and deadline fields, with no new route. No new
   `workflow_runs` column; native reads `WorkflowStarted.timeout_cleanup`. The
   capability check is admission-only. Reuse `cancellation_cleanup_running`
   with a `cause`.
 
-- **General, as SDK owner (2026-11-13, on #1122):** `cause` is the
+- **General, as SDK owner (2026-11-13, on [workflow pull request 1122](https://github.com/durable-workflow/workflow/pull/1122)):** `cause` is the
   cross-SDK discriminator. Python uses a `BaseException`-rooted subclass of
   the SDK's cancellation-requested type, never `asyncio.CancelledError`. Rust
   adds no new error variant; a `cause` enum on `CancellationRequest` means
