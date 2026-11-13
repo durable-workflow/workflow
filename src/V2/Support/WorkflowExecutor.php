@@ -3745,6 +3745,12 @@ final class WorkflowExecutor
             'run_timeout_seconds' => $runTimeoutSeconds,
             'execution_deadline_at' => $executionDeadlineAt,
             'run_deadline_at' => $runDeadlineAt,
+            // Timeout cleanup carries over like the hard deadlines (#863).
+            'timeout_cleanup_work_deadline_at' => TimeoutCleanup::workDeadline(
+                $timeoutCleanupAllowance = TimeoutCleanup::allowanceForRun($run),
+                $executionDeadlineAt,
+                $runDeadlineAt,
+            ),
             'status' => RunStatus::Pending->value,
             'compatibility' => $run->compatibility,
             'payload_codec' => $run->payload_codec,
@@ -3930,6 +3936,13 @@ final class WorkflowExecutor
             'memo' => $continuedMemo,
             'search_attributes' => $continuedSearchAttributes,
             'workflow_definition_fingerprint' => WorkflowDefinition::fingerprint($continuedRun->workflow_class),
+            ...(($timeoutCleanup = TimeoutCleanup::startedPayload(
+                $timeoutCleanupAllowance,
+                $executionDeadlineAt,
+                $runDeadlineAt,
+            )) === null ? [] : [
+                TimeoutCleanup::STARTED_KEY => $timeoutCleanup,
+            ]),
             'continued_from_run_id' => $run->id,
             'workflow_link_id' => $link->id,
             'child_call_id' => $childCallId,

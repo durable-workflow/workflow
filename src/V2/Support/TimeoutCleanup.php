@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
+use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowRun;
 
 /**
  * Deadline-triggered cleanup (#863, contract in
@@ -23,6 +26,26 @@ final class TimeoutCleanup
      * `WorkflowStarted` payload key.
      */
     public const STARTED_KEY = 'timeout_cleanup';
+
+    /**
+     * The allowance a run was admitted with, read from its `WorkflowStarted`.
+     * A continued or redriven run inherits it, as it inherits the hard
+     * deadlines.
+     */
+    public static function allowanceForRun(WorkflowRun $run): ?int
+    {
+        /** @var WorkflowHistoryEvent|null $started */
+        $started = $run->relationLoaded('historyEvents')
+            ? $run->historyEvents->first(
+                static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::WorkflowStarted
+            )
+            : $run->historyEvents()
+                ->where('event_type', HistoryEventType::WorkflowStarted->value)
+                ->first();
+        $allowance = $started?->payload[self::STARTED_KEY]['allowance_seconds'] ?? null;
+
+        return is_int($allowance) && $allowance > 0 ? $allowance : null;
+    }
 
     /**
      * The earliest work deadline: each hard deadline minus the allowance.
