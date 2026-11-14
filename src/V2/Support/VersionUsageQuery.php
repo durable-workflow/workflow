@@ -12,6 +12,7 @@ use JsonException;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 
 /** Read-only, namespace-bound observations of retained open-run version decisions. */
@@ -54,7 +55,7 @@ final class VersionUsageQuery
         if ($through !== null) {
             $model = $base->getModel();
             foreach ($this->batches($base, $through) as $runs) {
-                $decisions = $this->decisions($runs, $model, $changeId, $minVersion);
+                $decisions = $this->decisions($runs, $model, $namespace, $changeId, $minVersion);
                 foreach ($runs as $run) {
                     $decision = $decisions[$run->id]->result();
                     ++$counts['total'];
@@ -105,7 +106,7 @@ final class VersionUsageQuery
         $after = null;
         do {
             $query = (clone $base)->select([
-                'id', 'workflow_instance_id', 'status', 'details_pruned_at', 'last_history_sequence',
+                'id', 'workflow_instance_id', 'status', 'details_pruned_at', 'last_history_sequence', 'import_source',
             ])->whereRaw($id . ' <= ' . $parameter, [$through])->orderByRaw($id . ' ASC');
             if ($after !== null) {
                 $query->whereRaw($id . ' > ' . $parameter, [$after]);
@@ -156,8 +157,23 @@ final class VersionUsageQuery
     /**
      * @return array<string, VersionUsageDecision>
      */
-    private function decisions(Collection $runs, WorkflowRun $runModel, string $changeId, int $minVersion): array
-    {
+    private function decisions(
+        Collection $runs,
+        WorkflowRun $runModel,
+        ?string $namespace,
+        string $changeId,
+        int $minVersion
+    ): array {
+        $instanceModel = ConfiguredV2Models::resolve('instance_model', WorkflowInstance::class);
+        $owners = NamespaceIdentity::constrain(
+            (new $instanceModel())->setConnection($runModel->getConnectionName())
+                ->newQuery()
+                ->setEagerLoads([]),
+            $namespace,
+        )->whereIn('id', $runs->pluck('workflow_instance_id')->all())
+            ->toBase()
+            ->pluck('id')
+            ->all();
         $eventModel = ConfiguredV2Models::resolve('history_event_model', WorkflowHistoryEvent::class);
         $history = (new $eventModel())->setConnection($runModel->getConnectionName())
             ->newQuery()
@@ -194,6 +210,8 @@ final class VersionUsageQuery
         foreach ($runs as $run) {
             $stats = $statistics->get($run->id);
             $available = $run->details_pruned_at === null && $stats !== null
+                && in_array($run->workflow_instance_id, $owners, true)
+                && in_array($run->import_source, [null, EmbeddedV2ImportContract::IMPORT_SOURCE], true)
                 && (int) $stats->first_sequence === 1
                 && (int) $stats->last_sequence === (int) $run->last_history_sequence
                 && (int) $stats->event_count === (int) $run->last_history_sequence
@@ -250,7 +268,7 @@ final class VersionUsageQuery
 
     private static function text(string $value, int $limit): void
     {
-        if ($value === '' || strlen($value) > $limit || preg_match('//u', $value) !== 1) {
+        if ($value === '' || strlen($value) > $limit || preg_match('/(*UCP)\S/u', $value) !== 1) {
             throw new InvalidArgumentException('Version-usage identities must be nonempty bounded UTF-8 strings.');
         }
     }

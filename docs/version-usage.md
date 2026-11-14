@@ -14,8 +14,8 @@ Namespace, workflow type and change ID comparisons are exact and case-sensitive.
 
 ## Request
 
-- `workflow_type`: required nonempty UTF-8 string, at most 255 bytes.
-- `change_id`: required nonempty UTF-8 string, at most 1024 bytes.
+- `workflow_type`: required nonblank UTF-8 string, at most 255 bytes.
+- `change_id`: required nonblank UTF-8 string, at most 1024 bytes.
 - `min_version`: required signed 32-bit integer, from -2147483648 to 2147483647.
   This is the proposed new `minSupported`, not the largest version deployed.
   For removing a `patched()` legacy branch, use 1.
@@ -47,7 +47,8 @@ Each run has `recorded_version` only for legacy/current. Unknown reasons are:
   an older definition that has not reached the change point. A matching current
   code fingerprint, build label, admission time or deployment time never upgrades
   this to current.
-- `history_unavailable`: details are pruned, the initial history/prefix is absent
+- `history_unavailable`: details are pruned or owning-instance/source provenance is unavailable,
+  the initial history/prefix is absent
   or incomplete, the stored event format is not supported, or the bounded
   inspection budget (1,000 version markers per run) is exceeded.
 - `history_invalid`: malformed decision data, invalid recorded range, or

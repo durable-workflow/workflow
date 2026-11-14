@@ -127,6 +127,31 @@ final class V2VersionUsageQueryTest extends TestCase
         );
     }
 
+    public function testUnavailableOwnershipAndUnrecognizedImportProvenanceStayInUnknownCounts(): void
+    {
+        $missing = $this->createRun(1, 2);
+        WorkflowInstance::query()->whereKey($missing->workflow_instance_id)->delete();
+        $foreign = $this->createRun(2, 2);
+        WorkflowInstance::query()->whereKey($foreign->workflow_instance_id)->update([
+            'namespace' => 'private',
+        ]);
+        $imported = $this->createRun(3, 2);
+        $imported->update([
+            'import_source' => 'unsupported-source',
+        ]);
+        $page = (new VersionUsageQuery())->page('orders', 'shipment', 'shipping', 2);
+        $this->assertSame([
+            'total' => 3,
+            'legacy' => 0,
+            'current' => 0,
+            'unknown' => 3,
+        ], $page['counts']);
+        $this->assertSame(
+            ['history_unavailable'],
+            array_values(array_unique(array_column($page['runs'], 'unknown_reason')))
+        );
+    }
+
     public function testOversizedMarkerHistoryIsUnknownWithoutReadingAPartialDecision(): void
     {
         $run = $this->createRun(1, null);
@@ -350,6 +375,14 @@ final class V2VersionUsageQueryTest extends TestCase
             $table->timestamp('details_pruned_at')
                 ->nullable();
             $table->integer('last_history_sequence');
+            $table->string('import_source')
+                ->nullable();
+        });
+        $schema->create('instances', static function (Blueprint $table): void {
+            $table->string('id')
+                ->primary();
+            $table->string('namespace')
+                ->nullable();
         });
         $schema->create('history', static function (Blueprint $table): void {
             $table->string('id')
@@ -365,6 +398,13 @@ final class V2VersionUsageQueryTest extends TestCase
                 ->set('workflows.v2.run_model', VersionUsageCustomRun::class);
             config()
                 ->set('workflows.v2.history_event_model', VersionUsageCustomHistory::class);
+            config()
+                ->set('workflows.v2.instance_model', VersionUsageCustomInstance::class);
+            $database->table('instances')
+                ->insert([
+                    'id' => 'custom-instance',
+                    'namespace' => 'orders',
+                ]);
             $database->table('runs')
                 ->insert([
                     'id' => 'custom-1',
@@ -403,7 +443,10 @@ final class V2VersionUsageQueryTest extends TestCase
             config()->set('workflows.v2.run_model', WorkflowRun::class);
             config()
                 ->set('workflows.v2.history_event_model', WorkflowHistoryEvent::class);
+            config()
+                ->set('workflows.v2.instance_model', WorkflowInstance::class);
             $schema->dropIfExists('history');
+            $schema->dropIfExists('instances');
             $schema->dropIfExists('runs');
             DB::purge($connection);
         }
@@ -476,4 +519,16 @@ final class VersionUsageCustomRun extends WorkflowRun
 final class VersionUsageCustomHistory extends WorkflowHistoryEvent
 {
     protected $table = 'history';
+}
+
+final class VersionUsageCustomInstance extends WorkflowInstance
+{
+    protected $table = 'instances';
+
+    protected $connection = 'version_usage_fixture';
+
+    public function getForeignKey(): string
+    {
+        return 'workflow_instance_id';
+    }
 }
