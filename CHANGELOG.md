@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Embedded schedule audits default to 1,000 snapshots, preserving the first and
+  newest events. Compact firing receipts keep occurrence deduplication intact;
+  a namespace-scoped prune command removes rows after physical schedule purge.
+  Run the occurrence migration and stop old schedule readers before enabling
+  compaction. Explicitly disable compaction during a rolling upgrade as described
+  in `docs/schedule-audit-retention.md`.
+
 - Add a namespace-scoped open-run version-usage query with legacy/current/unknown
   counts and byte-exact keyset pages. Missing markers and unavailable history
   remain unknown when assessing legacy branch retirement.
