@@ -17,8 +17,9 @@ To compact an idle legacy schedule, repeat:
 php artisan workflow:v2:schedule-audit-prune --namespace=orders --schedule=daily-invoices
 ```
 
-The JSON response reports deleted and retained counts. Stop when the retained
-count reaches the configured limit. An invalid limit refuses compaction.
+The JSON response reports deleted and physical retained counts, including rows
+hidden by application query filters. Stop when the retained count reaches the
+configured limit. An invalid limit refuses compaction.
 
 ## Firing receipts and upgrades
 

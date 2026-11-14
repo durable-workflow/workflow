@@ -58,12 +58,7 @@ class V2ScheduleAuditPruneCommand extends Command
                     $this->error('The exact schedule ID does not exist in the selected namespace.');
                     return self::FAILURE;
                 }
-                $report = [
-                    'audit_events_deleted' => ScheduleAuditRetention::prune($schedule),
-                    'retained_events' => $schedule->historyEvents()
-                        ->count(),
-                    'configured_limit' => ScheduleAuditRetention::limit(),
-                ];
+                $report = ScheduleAuditRetention::pruneWithReport($schedule);
             }
             $this->line(json_encode($report, JSON_THROW_ON_ERROR));
         } catch (LogicException $error) {

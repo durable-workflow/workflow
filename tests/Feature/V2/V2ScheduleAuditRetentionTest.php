@@ -6,6 +6,7 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schema;
 use InvalidArgumentException;
 use LogicException;
@@ -424,6 +425,37 @@ final class V2ScheduleAuditRetentionTest extends TestCase
             ->set('workflows.v2.schedules.audit_history_limit', 1);
         $this->expectException(InvalidArgumentException::class);
         ScheduleAuditRetention::limit();
+    }
+
+    public function testCommandReportsPhysicalRemainingRowsDespiteAnApplicationFilter(): void
+    {
+        config()->set('workflows.v2.schedules.audit_history_limit', null);
+        $schedule = $this->schedule('filtered-report', 'orders');
+        for ($i = 0; $i < 205; ++$i) {
+            WorkflowScheduleHistoryEvent::record($schedule, HistoryEventType::ScheduleUpdated);
+        }
+        config()
+            ->set('workflows.v2.schedule_history_event_model', HiddenScheduleHistoryForAuditRetention::class);
+        config()
+            ->set('workflows.v2.schedules.audit_history_limit', 3);
+        foreach ([[100, 106], [100, 6], [3, 3]] as [$deleted, $remaining]) {
+            $this->assertSame(0, Artisan::call('workflow:v2:schedule-audit-prune', [
+                '--namespace' => 'orders',
+                '--schedule' => 'filtered-report',
+            ]));
+            $report = json_decode(Artisan::output(), true, flags: JSON_THROW_ON_ERROR);
+            $this->assertSame($deleted, $report['audit_events_deleted']);
+            $this->assertSame($remaining, $report['retained_events']);
+            $this->assertSame(3, $report['configured_limit']);
+            $this->assertSame($remaining, WorkflowScheduleHistoryEvent::query()
+                ->where('workflow_schedule_id', $schedule->id)
+                ->count());
+        }
+        $this->assertSame([1, 205, 206], WorkflowScheduleHistoryEvent::query()
+            ->where('workflow_schedule_id', $schedule->id)
+            ->orderBy('sequence')
+            ->pluck('sequence')
+            ->all());
     }
 
     public function testMigrationCannotDiscardPopulatedOccurrenceReceipts(): void

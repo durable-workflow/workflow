@@ -73,7 +73,22 @@ final class ScheduleAuditRetention
 
     public static function prune(WorkflowSchedule $schedule): int
     {
-        return self::locked($schedule, self::pruneLocked(...));
+        return self::pruneWithReport($schedule)['audit_events_deleted'];
+    }
+
+    /**
+     * @return array{audit_events_deleted: int, retained_events: int, configured_limit: int|null}
+     */
+    public static function pruneWithReport(WorkflowSchedule $schedule): array
+    {
+        return self::locked($schedule, static function (WorkflowSchedule $locked): array {
+            $deleted = self::pruneLocked($locked);
+            return [
+                'audit_events_deleted' => $deleted,
+                'retained_events' => self::history($locked)->count(),
+                'configured_limit' => self::limit(),
+            ];
+        });
     }
 
     /**
