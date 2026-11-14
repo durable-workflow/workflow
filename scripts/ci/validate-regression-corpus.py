@@ -2065,7 +2065,9 @@ def _guard_matches(
     )
     for path in matching:
         if path in untracked and (root / path).is_file():
-            diff += "\n" + (root / path).read_text(encoding="utf-8", errors="replace")
+            diff += "\n" + "\n".join(
+                "+" + line for line in (root / path).read_text(encoding="utf-8", errors="replace").splitlines()
+            )
     changed_content = "\n".join(
         line[1:]
         for line in diff.splitlines()
