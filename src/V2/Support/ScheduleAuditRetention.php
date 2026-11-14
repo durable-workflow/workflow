@@ -49,7 +49,7 @@ final class ScheduleAuditRetention
         $connection = $schedule->getConnection();
         $model = ConfiguredV2Models::resolve('schedule_model', WorkflowSchedule::class);
         $query = (new $model())->setConnection($connection->getName())
-            ->newQuery();
+            ->newQueryWithoutScopes();
 
         return SqliteTransaction::run(static function () use ($query, $schedule, $operation): mixed {
             $locked = (clone $query)->whereKey($schedule->getKey())
@@ -153,7 +153,7 @@ final class ScheduleAuditRetention
         }
         $model = ConfiguredV2Models::resolve('schedule_occurrence_model', WorkflowScheduleOccurrence::class);
         $receipt = (new $model())->setConnection($schedule->getConnectionName())
-            ->newQuery()
+            ->newQueryWithoutScopes()
             ->firstOrCreate([
                 'workflow_schedule_id' => $schedule->getKey(),
                 'occurrence_at_utc' => $key,
@@ -192,11 +192,10 @@ final class ScheduleAuditRetention
                 $model = ConfiguredV2Models::resolve($config, $default);
                 $query = NamespaceIdentity::constrain(
                     (new $model())->setConnection($connection->getName())
-                        ->newQuery(),
+                        ->newQueryWithoutScopes(),
                     $namespace,
                 );
-                $owners = $schedule->newQuery()
-                    ->toBase()
+                $owners = $connection->table($schedule->getTable())
                     ->selectRaw('1');
                 $owners->whereRaw(NamespaceIdentity::columnsEqual(
                     $owners,
@@ -223,7 +222,7 @@ final class ScheduleAuditRetention
     {
         $model = ConfiguredV2Models::resolve('schedule_history_event_model', WorkflowScheduleHistoryEvent::class);
         return (new $model())->setConnection($schedule->getConnectionName())
-            ->newQuery()
+            ->newQueryWithoutScopes()
             ->where('workflow_schedule_id', $schedule->getKey());
     }
 }

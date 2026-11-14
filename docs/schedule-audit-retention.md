@@ -30,10 +30,11 @@ the snapshot cap does not bound this correctness data. Old trigger metadata
 is copied before its audit row is deleted. Malformed occurrence metadata refuses
 the transaction and retains the original audit evidence.
 
-Stop old scheduler processes before enabling compaction. Older packages read
+Stop old scheduler and schedule lifecycle writer processes before enabling
+compaction. Older packages read
 audit history for deduplication and cannot read the new compact receipts. For
 a staged upgrade, explicitly set `audit_history_limit` to PHP `null` in all
-new processes until every old schedule reader has stopped. This temporarily
+new processes until every old scheduler and lifecycle writer has stopped. This temporarily
 disables snapshot compaction. Then enable the configured cap. Setting this
 value to zero or an invalid string does not disable retention; it is an error.
 The migration creates the receipt table without scanning all existing history.
@@ -59,3 +60,6 @@ of `--namespace` only for legacy rows whose namespace is SQL `NULL`.
 Custom schedule, audit and occurrence models use the configured workflow storage
 connection and table prefix. Applications which replace tables must also provide
 the corresponding migration and configure `workflows.v2.schedule_occurrence_model`.
+Application query filters cannot hide firing receipts or make a physically
+existing schedule eligible for orphan cleanup. The maintenance paths enforce
+namespace and internal owner identity explicitly.

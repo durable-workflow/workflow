@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Schema;
 use InvalidArgumentException;
@@ -205,6 +206,69 @@ final class V2ScheduleAuditRetentionTest extends TestCase
         $this->assertSame(1, $other->historyEvents()->count());
     }
 
+    public function testApplicationFiltersCannotMakeAPhysicalOwnerAnOrphan(): void
+    {
+        $schedule = $this->schedule('filtered-owner', 'orders');
+        WorkflowScheduleHistoryEvent::record($schedule, HistoryEventType::ScheduleTriggered, [
+            'occurrence_time' => '2026-11-13T01:00:00Z',
+        ]);
+        config()
+            ->set('workflows.v2.schedule_model', HiddenScheduleForAuditRetention::class);
+        $report = ScheduleAuditRetention::cleanup('orders');
+        $this->assertSame(0, $report['audit_events_deleted']);
+        $this->assertSame(0, $report['occurrences_deleted']);
+        $this->assertSame(2, $schedule->historyEvents()->count());
+        $this->assertSame(1, WorkflowScheduleOccurrence::query()->count());
+    }
+
+    public function testApplicationFiltersCannotHideACompactedFiringReceipt(): void
+    {
+        config()->set('workflows.v2.schedules.audit_history_limit', 2);
+        $schedule = $this->schedule('filtered-receipt');
+        WorkflowScheduleHistoryEvent::record($schedule, HistoryEventType::ScheduleTriggered, [
+            'occurrence_time' => '2026-11-13T01:00:00Z',
+        ]);
+        WorkflowScheduleHistoryEvent::record($schedule, HistoryEventType::ScheduleUpdated);
+        $this->assertFalse(
+            $schedule->historyEvents()
+                ->where('event_type', HistoryEventType::ScheduleTriggered->value)->exists()
+        );
+        config()
+            ->set('workflows.v2.schedule_occurrence_model', HiddenOccurrenceForAuditRetention::class);
+        $starter = $this->createStub(ScheduleWorkflowStarter::class);
+        $starter->method('start')
+            ->willReturn(new ScheduleStartResult('unexpected-duplicate', null));
+        app()
+            ->instance(ScheduleWorkflowStarter::class, $starter);
+        $from = Carbon::parse('2026-11-13T01:00:00Z');
+        $answer = ScheduleManager::backfill($schedule, $from, $from->copy()->addMinute());
+        $this->assertNull($answer[0]['instance_id']);
+        $this->assertArrayNotHasKey('error', $answer[0]);
+        $this->assertSame('already_fired_occurrence', $schedule->fresh()->last_skip_reason);
+    }
+
+    public function testApplicationFiltersCannotHideAnUncompactedLegacyTrigger(): void
+    {
+        config()->set('workflows.v2.schedules.audit_history_limit', null);
+        $schedule = $this->schedule('filtered-legacy');
+        WorkflowScheduleHistoryEvent::record($schedule, HistoryEventType::ScheduleTriggered, [
+            'occurrence_time' => '2026-11-13T01:00:00Z',
+        ]);
+        WorkflowScheduleOccurrence::query()->delete();
+        config()
+            ->set('workflows.v2.schedule_history_event_model', HiddenScheduleHistoryForAuditRetention::class);
+        $starter = $this->createStub(ScheduleWorkflowStarter::class);
+        $starter->method('start')
+            ->willReturn(new ScheduleStartResult('unexpected-legacy-duplicate', null));
+        app()
+            ->instance(ScheduleWorkflowStarter::class, $starter);
+        $from = Carbon::parse('2026-11-13T01:00:00Z');
+        $answer = ScheduleManager::backfill($schedule, $from, $from->copy()->addMinute());
+        $this->assertNull($answer[0]['instance_id']);
+        $this->assertArrayNotHasKey('error', $answer[0]);
+        $this->assertSame('already_fired_occurrence', $schedule->fresh()->last_skip_reason);
+    }
+
     public function testARecreatedScheduleDoesNotInheritThePurgedOwnersFiringReceipt(): void
     {
         $old = $this->schedule('recreated', 'orders');
@@ -388,5 +452,35 @@ final class V2ScheduleAuditRetentionTest extends TestCase
             overlapPolicy: ScheduleOverlapPolicy::AllowAll,
             namespace: $namespace,
         );
+    }
+}
+
+final class HiddenScheduleForAuditRetention extends WorkflowSchedule
+{
+    protected static function booted(): void
+    {
+        static::addGlobalScope('application-filter', static function (Builder $query): void {
+            $query->whereRaw('1=0');
+        });
+    }
+}
+
+final class HiddenOccurrenceForAuditRetention extends WorkflowScheduleOccurrence
+{
+    protected static function booted(): void
+    {
+        static::addGlobalScope('application-filter', static function (Builder $query): void {
+            $query->whereRaw('1=0');
+        });
+    }
+}
+
+final class HiddenScheduleHistoryForAuditRetention extends WorkflowScheduleHistoryEvent
+{
+    protected static function booted(): void
+    {
+        static::addGlobalScope('application-filter', static function (Builder $query): void {
+            $query->whereRaw('1=0');
+        });
     }
 }

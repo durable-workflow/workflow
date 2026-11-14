@@ -1126,10 +1126,8 @@ final class V2ScheduleTest extends TestCase
             cronExpression: '* * * * *',
         );
 
-        // ScheduleCreated was written with sequence = 1. Simulate another
-        // concurrent writer that has already claimed sequence = 2 before we
-        // attempt to record the next lifecycle event — exactly the collision
-        // the unique(workflow_schedule_id, sequence) constraint would raise.
+        // An already committed sibling advances the initial maximum read.
+        // The independent-writer test below exercises the actual collision.
         WorkflowScheduleHistoryEvent::query()->create([
             'workflow_schedule_id' => $schedule->id,
             'schedule_id' => $schedule->schedule_id,
@@ -1149,8 +1147,7 @@ final class V2ScheduleTest extends TestCase
             ->orderBy('sequence')
             ->get();
 
-        // record() should have retried past the collision and landed on
-        // sequence = 3, preserving ordering rather than blowing up.
+        // The new append follows the committed sibling without reusing its slot.
         $this->assertSame([1, 2, 3], $events->pluck('sequence')->all());
         $this->assertSame(
             [
@@ -1173,9 +1170,7 @@ final class V2ScheduleTest extends TestCase
             cronExpression: '* * * * *',
         );
 
-        // Pre-claim sequences 2..6 to force record() to retry five times
-        // before landing on the next free slot. This exercises the retry
-        // loop under a larger pileup than a single collision.
+        // A committed pileup advances the first allocation to the next free slot.
         for ($claimed = 2; $claimed <= 6; $claimed++) {
             WorkflowScheduleHistoryEvent::query()->create([
                 'workflow_schedule_id' => $schedule->id,
@@ -1208,79 +1203,157 @@ final class V2ScheduleTest extends TestCase
         $this->assertSame('post-pileup', $tail->payload['reason']);
     }
 
-    public function testRecordRetriesWhenStaleMaxSequenceCollidesWithUniqueIndex(): void
+    public function testScheduleAuditHandlesIndependentSequenceContention(): void
     {
-        // Prior regression coverage (the two tests above) exercised the happy
-        // path where record() reads a fresh max(sequence) and lands on the
-        // next free slot. They do NOT hit the UniqueConstraintViolationException
-        // branch of record(), because by the time record() runs the
-        // pre-inserted rows have already pushed max() up.
-        //
-        // This test forces the collision path: we hook the Eloquent `creating`
-        // event so the *first* create() call inside record() runs into a
-        // sibling row at the same sequence, racing the unique index. The hook
-        // fires exactly once — record()'s retry loop must then re-read max()
-        // and insert at the next free slot.
-
         $schedule = ScheduleManager::create(
             scheduleId: 'stale-max-race-test',
             workflowClass: TestScheduledWorkflow::class,
             cronExpression: '* * * * *',
         );
-
-        $raced = false;
-
-        WorkflowScheduleHistoryEvent::creating(static function (WorkflowScheduleHistoryEvent $event) use (
-            &$raced,
-            $schedule
-        ): void {
-            // Only race the very first attempt inside record(). The retry
-            // re-reads max(sequence) and should land on the next slot, which
-            // this hook no longer interferes with.
-            if ($raced || (int) $event->sequence !== 2) {
-                return;
-            }
-
-            $raced = true;
-
-            // Commit a sibling row at the exact sequence record() is about to
-            // try. On MySQL/Postgres this produces UniqueConstraintViolationException
-            // when record()'s create() runs; on SQLite the same unique-index
-            // violation is raised by Laravel as UniqueConstraintViolationException.
-            WorkflowScheduleHistoryEvent::query()->create([
-                'workflow_schedule_id' => $schedule->id,
-                'schedule_id' => $schedule->schedule_id,
-                'namespace' => $schedule->namespace,
-                'sequence' => 2,
-                'event_type' => HistoryEventType::SchedulePaused->value,
-                'payload' => [
-                    'reason' => 'raced the pending writer',
-                ],
-                'recorded_at' => now(),
-            ]);
-        });
-
+        $original = $schedule->getConnection();
+        $driver = $original->getDriverName();
+        $this->assertSame(0, $original->transactionLevel());
+        $databaseFile = null;
+        $primaryName = 'schedule_audit_primary';
+        $competingName = 'schedule_audit_competing';
+        $storageConnection = config('workflows.storage.connection');
+        $modelConnection = $schedule->getConnectionName();
+        $dispatcher = WorkflowScheduleHistoryEvent::getEventDispatcher();
+        $this->assertNotNull($dispatcher);
         try {
+            $configuration = $original->getConfig();
+            unset($configuration['name'], $configuration['read'], $configuration['write'], $configuration['url']);
+            $configuration['options'][\PDO::ATTR_PERSISTENT] = false;
+            if ($driver === 'sqlite') {
+                // An in-memory fixture cannot provide a genuine second writer.
+                // Copy its logical state into an owned file without modifying it.
+                $createdFile = tempnam(sys_get_temp_dir(), 'schedule-audit-race-');
+                $this->assertNotFalse($createdFile);
+                $databaseFile = $createdFile;
+                $original->statement('VACUUM INTO ?', [$databaseFile]);
+                $configuration['database'] = $databaseFile;
+            }
+            config()
+                ->set('database.connections.' . $primaryName, $configuration);
+            config()
+                ->set('database.connections.' . $competingName, $configuration);
+            $primary = DB::connection($primaryName);
+            $competing = DB::connection($competingName);
+            $this->assertNotSame($primary->getPdo(), $competing->getPdo());
+            if (in_array($driver, ['mysql', 'mariadb'], true)) {
+                $primary->statement('SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+                $competing->statement('SET SESSION innodb_lock_wait_timeout = 1');
+                $this->assertNotSame(
+                    $primary->scalar('SELECT CONNECTION_ID()'),
+                    $competing->scalar('SELECT CONNECTION_ID()')
+                );
+            } elseif ($driver === 'pgsql') {
+                $primary->statement('SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ COMMITTED');
+                $competing->statement("SET lock_timeout = '1s'");
+                $this->assertNotSame(
+                    $primary->scalar('SELECT pg_backend_pid()'),
+                    $competing->scalar('SELECT pg_backend_pid()')
+                );
+            } elseif ($driver === 'sqlite') {
+                $competing->statement('PRAGMA busy_timeout = 0');
+            }
+            config()
+                ->set('workflows.storage.connection', $primaryName);
+            $schedule->setConnection($primaryName);
+            WorkflowScheduleHistoryEvent::setEventDispatcher(clone $dispatcher);
+            $raced = false;
+            $committed = false;
+            $blocked = false;
+            $attempts = 0;
+            WorkflowScheduleHistoryEvent::creating(function (WorkflowScheduleHistoryEvent $event) use (
+                &$raced,
+                &$committed,
+                &$blocked,
+                &$attempts,
+                $schedule,
+                $competing,
+                $driver
+            ): void {
+                if ($event->workflow_schedule_id !== $schedule->id) {
+                    return;
+                }
+                ++$attempts;
+                if ($raced || (int) $event->sequence !== 2) {
+                    return;
+                }
+                $raced = true;
+                $this->assertGreaterThan(0, $event->getConnection()->transactionLevel());
+                $this->assertSame(0, $competing->transactionLevel());
+                try {
+                    $competing->transaction(static function () use ($competing, $event): void {
+                        $competing->table($event->getTable())
+                            ->insert([
+                                'id' => (string) Str::ulid(),
+                                'workflow_schedule_id' => $event->workflow_schedule_id,
+                                'schedule_id' => $event->schedule_id,
+                                'namespace' => $event->namespace,
+                                'sequence' => 2,
+                                'event_type' => HistoryEventType::SchedulePaused->value,
+                                'payload' => json_encode([
+                                    'reason' => 'independently committed sibling',
+                                ], JSON_THROW_ON_ERROR),
+                                'recorded_at' => now()
+                                    ->format('Y-m-d H:i:s.u'),
+                                'created_at' => now()
+                                    ->format('Y-m-d H:i:s.u'),
+                                'updated_at' => now()
+                                    ->format('Y-m-d H:i:s.u'),
+                            ]);
+                    });
+                    $committed = true;
+                } catch (\Illuminate\Database\QueryException $error) {
+                    if ($driver !== 'sqlite') {
+                        throw $error;
+                    }
+                    $this->assertContains(((int) ($error->errorInfo[1] ?? 0)) & 255, [5, 6]);
+                    $blocked = true;
+                }
+                $this->assertSame(0, $competing->transactionLevel());
+            });
             ScheduleManager::pause($schedule, 'after retry');
+            $events = WorkflowScheduleHistoryEvent::query()
+                ->where('workflow_schedule_id', $schedule->id)
+                ->orderBy('sequence')
+                ->get();
+            $this->assertTrue($raced, 'The independent writer was not exercised.');
+            if ($driver === 'sqlite') {
+                // Writer admission prevents an independent SQLite collision.
+                $this->assertTrue($blocked);
+                $this->assertFalse($committed);
+                $this->assertSame(1, $attempts);
+                $this->assertSame([1, 2], $events->pluck('sequence')->all());
+                $this->assertSame('after retry', $events[1]->payload['reason']);
+            } else {
+                // The sibling commit survives our failed insert/savepoint.
+                $this->assertTrue($committed);
+                $this->assertFalse($blocked);
+                $this->assertSame(2, $attempts);
+                $this->assertSame([1, 2, 3], $events->pluck('sequence')->all());
+                $this->assertSame('independently committed sibling', $events[1]->payload['reason']);
+                $this->assertSame('after retry', $events[2]->payload['reason']);
+            }
+            $this->assertSame(HistoryEventType::ScheduleCreated, $events[0]->event_type);
+            $this->assertSame(HistoryEventType::SchedulePaused, $events->last()->event_type);
         } finally {
-            WorkflowScheduleHistoryEvent::flushEventListeners();
+            WorkflowScheduleHistoryEvent::setEventDispatcher($dispatcher);
+            config()
+                ->set('workflows.storage.connection', $storageConnection);
+            $schedule->setConnection($modelConnection);
+            DB::purge($competingName);
+            DB::purge($primaryName);
+            if ($databaseFile !== null) {
+                foreach (['', '-journal', '-wal', '-shm'] as $suffix) {
+                    if (is_file($databaseFile . $suffix)) {
+                        unlink($databaseFile . $suffix);
+                    }
+                }
+            }
         }
-
-        $this->assertTrue($raced, 'The creating-hook race was not exercised; test fixture is broken.');
-
-        $events = WorkflowScheduleHistoryEvent::query()
-            ->where('workflow_schedule_id', $schedule->id)
-            ->orderBy('sequence')
-            ->get();
-
-        // record() must land the SchedulePaused event at sequence 3 after the
-        // retry, preserving monotonic ordering without a duplicate-key fatal.
-        $this->assertSame([1, 2, 3], $events->pluck('sequence')->all());
-
-        $this->assertSame(HistoryEventType::ScheduleCreated->value, $events[0]->event_type->value);
-        $this->assertSame('raced the pending writer', $events[1]->payload['reason']);
-        $this->assertSame(HistoryEventType::SchedulePaused->value, $events[2]->event_type->value);
-        $this->assertSame('after retry', $events[2]->payload['reason']);
     }
 
     public function testTriggerDeletedScheduleTracksSkipReason(): void

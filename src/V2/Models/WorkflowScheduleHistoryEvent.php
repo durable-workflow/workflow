@@ -98,12 +98,17 @@ class WorkflowScheduleHistoryEvent extends Model
             : null;
         $historyModel = ConfiguredV2Models::resolve('schedule_history_event_model', self::class);
         $history = (new $historyModel())->setConnection($schedule->getConnectionName())
-            ->newQuery();
+            ->newQueryWithoutScopes();
 
         for ($attempt = 1; $attempt <= self::SEQUENCE_RETRY_LIMIT; $attempt++) {
-            $sequence = ((int) (clone $history)
-                ->where('workflow_schedule_id', $schedule->id)
-                ->max('sequence')) + 1;
+            $sequenceQuery = (clone $history)->where('workflow_schedule_id', $schedule->id);
+            // A committed old writer can win after our first read. On retry,
+            // bypass a repeatable-read snapshot without leaving this transaction.
+            $lastSequence = $attempt === 1 ? $sequenceQuery->max('sequence')
+                : $sequenceQuery->orderByDesc('sequence')
+                    ->lockForUpdate()
+                    ->value('sequence');
+            $sequence = ((int) $lastSequence) + 1;
             $attributes = [
                 'workflow_schedule_id' => $schedule->id,
                 'schedule_id' => $schedule->schedule_id,

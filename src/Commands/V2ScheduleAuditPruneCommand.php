@@ -50,7 +50,7 @@ class V2ScheduleAuditPruneCommand extends Command
                 $report = ScheduleAuditRetention::cleanup($namespace, $limit);
             } else {
                 $schedule = NamespaceIdentity::constrain(
-                    ConfiguredV2Models::query('schedule_model', WorkflowSchedule::class),
+                    ConfiguredV2Models::query('schedule_model', WorkflowSchedule::class)->withoutGlobalScopes(),
                     $namespace,
                 )->where('schedule_id', $id)
                     ->first();

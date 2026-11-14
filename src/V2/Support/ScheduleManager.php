@@ -978,12 +978,14 @@ final class ScheduleManager
     ): bool {
         $key = WorkflowScheduleHistoryEvent::utcOccurrenceKey($occurrenceTime);
         if (ConfiguredV2Models::query('schedule_occurrence_model', WorkflowScheduleOccurrence::class)
+            ->withoutGlobalScopes()
             ->where('workflow_schedule_id', $schedule->id)
             ->where('occurrence_at_utc', $key)
             ->exists()) {
             return true;
         }
         $history = ConfiguredV2Models::query('schedule_history_event_model', WorkflowScheduleHistoryEvent::class)
+            ->withoutGlobalScopes()
             ->where('workflow_schedule_id', $schedule->id)
             ->where('event_type', HistoryEventType::ScheduleTriggered->value);
 
