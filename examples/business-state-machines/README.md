@@ -28,4 +28,28 @@ The six cases observe the competing `SELECT ... FOR UPDATE` before releasing the
 
 The publication table stores an intent. A real application still needs an idempotent dispatcher and consumer; this transaction does not atomically publish to an external broker. Separate business and DW stores communicate through the recorded commit activity and exact decision identity, without a distributed transaction. Activity retries must retain the original request; they must not repeat provider effects while recovering a lost business commit acknowledgement.
 
-This example covers business persistence. Provider admission/fencing, uncertain effects, retained child compensation, the complete two-integration application workflow, policy migration, and resource budgets remain separate parts of the business state-machine work. The SQL tests do not establish those guarantees.
+The SQL tests above cover business persistence. They do not establish provider admission/fencing, uncertain effects, retained child compensation, the complete two-integration application workflow, policy migration or resource budgets. The native example below separately exercises retained child compensation with a local SQL service.
+
+## Native Order and Shipment compensation
+
+The [Order workflow](OrderWorkflow.php) and [Shipment workflow](ShipmentWorkflow.php) demonstrate the retained-scope foundation with actual native workflow runs and recorded SQL activities. Run the complete example in the repository's configured disposable test database:
+
+```bash
+vendor/bin/phpunit tests/Feature/V2/V2NestedCompensationExampleTest.php
+```
+
+`prepare` owns separate reservation and preparation effects; `imported` owns an import effect. Both use the same state catalogue and the same Shipment workflow. Every SQL effect has an original operation ID, retained compensation descriptor and permanent absent/voided receipt. The SQL service reconciles those receipts before reissuing an operation. It models a synchronous application-owned service, not a carrier API or an external callback stop guarantee.
+
+The Order registers its own obligations, then uses `DurableScope::reserveChild()` before admitting Shipment. The joint ownership policy pins the business subject, original parent run, state-entry generation, child policy and exact scope relationship. `ChildReservation::start()` confirms native admission. A separate recorded activity retains the authoritative admission receipt and hosting-state milestone. Waiting for the `finish` signal and awaiting that same child's result are later operations; they do not create a second child or compensation owner.
+
+Shipment can finish while Order remains open. Order completion additionally checks the exact admission, original child run, retained SQL delivery evidence and application business outcome. A technically completed child with missing business evidence fails explicitly. This example does not convert an arbitrary technical terminal status into business success.
+
+`NestedCompensationExample::requestCancellation()` first commits the application's forward-work fence, then calls the existing `ScopeRecovery` API. While Order is active, its native Saga compensates the registered child before earlier Order operations. After both runs close, native recovery uses the same original ledgers and preserves both terminal histories. The tests assert SQL compensation order, retained scope verification, no duplicated effects and cold replay without application writes. They also reject a different original parent generation.
+
+The startup-window test stops after recorded application initialization but before root scope registration. Cancellation persists, yet recovery explicitly refuses the absent ledger. Resuming the genuine original owner registers its obligation through the normal recorded activity, observes the SQL cancellation fence and verifies non-admission. If that owner closes before initialization/registration can complete, the missing scope remains unresolved; the example never creates a synthetic empty scope.
+
+The application retains `cancellation_requested` and scope resolution separately from the earlier business completion record. A successful technical cancellation or a queued recovery request is not a final business `Cancelled` decision. An application must retain its business policy for that final decision and for external uncertainty.
+
+`bootstrap.php` loads the example classes. `NestedCompensationExample::configure()` installs the closed demo registries and a single trusted worker principal for a disposable local application. The test creates the application tables from `schema.php`, `provider-schema.php` and `application-schema.php`; native DW migrations remain unchanged. A real application must compose its own authenticated authorization/registry configuration rather than install the demo principal globally.
+
+This executable compensation example is one integration scenario for [#1063](https://github.com/durable-workflow/workflow/issues/1063). It does not implement the complete StateMachine transition/rule adapter, profile migration, recursive child graphs, remote-provider reconciliation or all [#1069](https://github.com/durable-workflow/workflow/issues/1069) criteria. The retained-scope APIs remain experimental and require their own package/release qualification.
