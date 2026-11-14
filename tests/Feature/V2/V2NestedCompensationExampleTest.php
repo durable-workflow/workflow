@@ -292,6 +292,9 @@ final class V2NestedCompensationExampleTest extends TestCase
             'activities' => \Workflow\V2\Models\ActivityExecution::query()->get(
                 ['id', 'workflow_run_id', 'status', 'attempt_count', 'current_attempt_id']
             )->toArray(),
+            'recent_history' => WorkflowHistoryEvent::query()->orderByDesc('id')->limit(14)->get(
+                ['workflow_run_id', 'sequence', 'event_type', 'payload']
+            )->toArray(),
             'effects' => DB::table('example_machine_effects')->get(['action', 'status'])->all(),
         ], JSON_THROW_ON_ERROR);
     }
