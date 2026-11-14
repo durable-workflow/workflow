@@ -24,11 +24,11 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
-use Workflow\V2\StateMachine\Binding\BindingAuthorization;
 use Workflow\V2\StateMachine\Binding\BindingIdentity;
 use Workflow\V2\StateMachine\Binding\ChildBinding;
 use Workflow\V2\StateMachine\Binding\ChildReservation;
 use Workflow\V2\StateMachine\Binding\ChildReservationStore;
+use Workflow\V2\StateMachine\Binding\ChildScopeBindingAuthorization;
 use Workflow\V2\StateMachine\Binding\ChildScopeParticipation;
 use Workflow\V2\StateMachine\Binding\NeverAdmittedChild;
 use Workflow\V2\StateMachine\Execution\ExecutionReference;
@@ -160,7 +160,7 @@ final class V2ChildReservationConcurrencyTest extends TestCase
 
     private function store(): ChildReservationStore
     {
-        return new ChildReservationStore(new class() implements BindingAuthorization {
+        return new ChildReservationStore(new class() implements ChildScopeBindingAuthorization {
             public function assertAllowed(BindingIdentity $identity, string $principal, string $operation): string
             {
                 if ($principal !== 'owner' || $identity->namespace !== 'race-tenant'
@@ -168,6 +168,26 @@ final class V2ChildReservationConcurrencyTest extends TestCase
                     throw new LogicException('Race fixture authorization refused.');
                 }
                 return 'race-policy-v1';
+            }
+
+            public function assertParticipationAllowed(
+                BindingIdentity $identity,
+                ChildScopeParticipation $participation,
+                string $principal,
+                string $operation,
+                ?string $pinnedPolicyVersion = null,
+            ): string {
+                if ($principal !== 'owner' || DB::connection()->transactionLevel() !== 0
+                    || $identity->parentExecution->scope !== 'race-app'
+                    || $identity->parentExecution->subject !== 'subject'
+                    || $identity->parentExecution->executionId !== 'execution'
+                    || $identity->generation !== 'entry-1'
+                    || $participation->parent->key !== 'parent' || $participation->child->key !== 'child'
+                    || $participation->parent->generation !== $identity->parentRunId
+                    || $participation->child->generation !== $identity->parentRunId) {
+                    throw new LogicException('Race relationship authorization refused.');
+                }
+                return 'race-joint-policy-v1';
             }
         });
     }

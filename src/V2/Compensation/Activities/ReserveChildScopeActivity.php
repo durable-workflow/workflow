@@ -59,6 +59,8 @@ final class ReserveChildScopeActivity extends Activity
                     'principal' => $principal,
                     'operation' => 'participate',
                     'policyVersion' => $policy,
+                    'participationPolicyVersion' => $reservation->participationAuthorizationVersion,
+                    'bindingFingerprint' => $reservation->identity->fingerprint(),
                     'runId' => $this->runId(),
                     'activityId' => $this->activityId(),
                     'attemptId' => $this->attemptId(),
@@ -86,7 +88,7 @@ final class ReserveChildScopeActivity extends Activity
                 // refuses until the participant below is durably registered.
                 $store = app(ChildReservationStore::class);
                 try {
-                    $reservation = $store->load($binding, $principal);
+                    $reservation = $store->load($binding, $principal, $participation);
                 } catch (ModelNotFoundException) {
                     $reservation = $store->reserve(
                         $binding,
