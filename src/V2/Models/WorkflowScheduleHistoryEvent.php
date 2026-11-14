@@ -15,6 +15,7 @@ use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\HistoryEventPayloadContract;
+use Workflow\V2\Support\ScheduleAuditRetention;
 
 class WorkflowScheduleHistoryEvent extends Model
 {
@@ -64,6 +65,27 @@ class WorkflowScheduleHistoryEvent extends Model
     ): self {
         HistoryEventPayloadContract::assertKnownPayloadKeys($eventType, $payload);
 
+        return ScheduleAuditRetention::locked(
+            $schedule,
+            static fn (WorkflowSchedule $locked): self => self::recordLocked($locked, $eventType, $payload),
+        );
+    }
+
+    public static function utcOccurrenceKey(DateTimeInterface $occurrence): string
+    {
+        return \Carbon\CarbonImmutable::instance($occurrence)
+            ->utc()
+            ->format('Y-m-d H:i:s.u');
+    }
+
+    private static function recordLocked(
+        WorkflowSchedule $schedule,
+        HistoryEventType $eventType,
+        array $payload,
+    ): self {
+        // Validate configuration before appending an event.
+        ScheduleAuditRetention::limit();
+
         $snapshot = self::snapshotPayload($schedule, $payload);
         $workflowInstanceId = self::stringValue($payload['workflow_instance_id'] ?? null);
         $workflowRunId = self::stringValue($payload['workflow_run_id'] ?? null);
@@ -73,46 +95,49 @@ class WorkflowScheduleHistoryEvent extends Model
         $occurrenceAtUtc = $occurrenceTime !== null
             ? self::utcOccurrenceKey(new DateTimeImmutable($occurrenceTime))
             : null;
+        $historyModel = ConfiguredV2Models::resolve('schedule_history_event_model', self::class);
+        $history = (new $historyModel())->setConnection($schedule->getConnectionName())
+            ->newQuery();
 
         for ($attempt = 1; $attempt <= self::SEQUENCE_RETRY_LIMIT; $attempt++) {
-            $sequence = ((int) ConfiguredV2Models::query('schedule_history_event_model', self::class)
+            $sequence = ((int) (clone $history)
                 ->where('workflow_schedule_id', $schedule->id)
                 ->max('sequence')) + 1;
+            $attributes = [
+                'workflow_schedule_id' => $schedule->id,
+                'schedule_id' => $schedule->schedule_id,
+                'namespace' => $schedule->namespace,
+                'sequence' => $sequence,
+                'event_type' => $eventType->value,
+                'payload' => $snapshot,
+                'workflow_instance_id' => $workflowInstanceId,
+                'workflow_run_id' => $workflowRunId,
+                'occurrence_at_utc' => $occurrenceAtUtc,
+                'recorded_at' => now(),
+            ];
 
             try {
                 /** @var self $event */
-                $event = ConfiguredV2Models::query('schedule_history_event_model', self::class)->create([
-                    'workflow_schedule_id' => $schedule->id,
-                    'schedule_id' => $schedule->schedule_id,
-                    'namespace' => $schedule->namespace,
-                    'sequence' => $sequence,
-                    'event_type' => $eventType->value,
-                    'payload' => $snapshot,
-                    'workflow_instance_id' => $workflowInstanceId,
-                    'workflow_run_id' => $workflowRunId,
-                    'occurrence_at_utc' => $occurrenceAtUtc,
-                    'recorded_at' => now(),
-                ]);
-
-                return $event;
+                $event = $schedule->getConnection()
+                    ->transaction(static fn (): self => (clone $history)->create($attributes));
             } catch (UniqueConstraintViolationException $e) {
                 if ($attempt === self::SEQUENCE_RETRY_LIMIT) {
                     throw $e;
                 }
                 // Another writer claimed this sequence first. Re-read the max
                 // and try the next slot.
+                continue;
             }
+            if ($occurrenceAtUtc !== null) {
+                ScheduleAuditRetention::retainOccurrence($schedule, $occurrenceAtUtc);
+            }
+            ScheduleAuditRetention::pruneLocked($schedule);
+
+            return $event;
         }
 
         // Unreachable: the loop either returns or re-throws at the final attempt.
         throw new \LogicException('Schedule history sequence allocation exhausted retries.');
-    }
-
-    public static function utcOccurrenceKey(DateTimeInterface $occurrence): string
-    {
-        return \Carbon\CarbonImmutable::instance($occurrence)
-            ->utc()
-            ->format('Y-m-d H:i:s.u');
     }
 
     /**

@@ -1,0 +1,308 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Tests\Feature\V2;
+
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Schema;
+use InvalidArgumentException;
+use LogicException;
+use Tests\Fixtures\V2\TestScheduledWorkflow;
+use Tests\TestCase;
+use Workflow\V2\Contracts\ScheduleWorkflowStarter;
+use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\ScheduleOverlapPolicy;
+use Workflow\V2\Models\WorkflowSchedule;
+use Workflow\V2\Models\WorkflowScheduleHistoryEvent;
+use Workflow\V2\Models\WorkflowScheduleOccurrence;
+use Workflow\V2\Support\ScheduleAuditRetention;
+use Workflow\V2\Support\ScheduleManager;
+use Workflow\V2\Support\ScheduleStartResult;
+
+final class V2ScheduleAuditRetentionTest extends TestCase
+{
+    public function testRepeatedUpdatesKeepCreationAndNewestEventsWithoutReusingSequences(): void
+    {
+        config()->set('workflows.v2.schedules.audit_history_limit', 4);
+        $schedule = $this->schedule('bounded');
+        $creation = $schedule->historyEvents()
+            ->firstOrFail()
+            ->toArray();
+        for ($i = 1; $i <= 20; ++$i) {
+            ScheduleManager::update($schedule->fresh(), notes: 'revision ' . $i);
+            $this->assertLessThanOrEqual(4, $schedule->historyEvents()->count());
+        }
+        $events = $schedule->historyEvents()
+            ->orderBy('sequence')
+            ->get();
+        $this->assertSame([1, 19, 20, 21], $events->pluck('sequence')->all());
+        $this->assertSame($creation, $events->first()->toArray());
+        $this->assertSame('revision 20', $events->last()->payload['schedule']['note']);
+
+        config()
+            ->set('workflows.v2.schedules.audit_history_limit', 2);
+        ScheduleManager::update($schedule->fresh(), notes: 'revision 21');
+        $this->assertSame([1, 22], $schedule->historyEvents()->orderBy('sequence')->pluck('sequence')->all());
+    }
+
+    public function testExplicitlyDisabledCompactionSupportsAnUpgradeBeforeOldReadersStop(): void
+    {
+        config()->set('workflows.v2.schedules.audit_history_limit', null);
+        $schedule = $this->schedule('upgrade');
+        for ($i = 0; $i < 8; ++$i) {
+            ScheduleManager::update($schedule->fresh(), notes: 'revision ' . $i);
+        }
+        $this->assertSame(9, $schedule->historyEvents()->count());
+        config()
+            ->set('workflows.v2.schedules.audit_history_limit', 3);
+        $this->assertSame(6, ScheduleAuditRetention::prune($schedule));
+        $this->assertSame([1, 8, 9], $schedule->historyEvents()->orderBy('sequence')->pluck('sequence')->all());
+    }
+
+    public function testPrunedTriggerStillPreventsASecondStartForItsOccurrence(): void
+    {
+        config()->set('workflows.v2.schedules.audit_history_limit', 3);
+        $starter = $this->createMock(ScheduleWorkflowStarter::class);
+        $starter->expects($this->once())
+            ->method('start')
+            ->willReturn(new ScheduleStartResult('first-run', null));
+        app()
+            ->instance(ScheduleWorkflowStarter::class, $starter);
+        Carbon::setTestNow(Carbon::parse('2026-11-14T00:59:00Z'));
+        try {
+            $schedule = $this->schedule('deduplication');
+            $due = $schedule->next_fire_at;
+            Carbon::setTestNow($due);
+            $this->assertSame('triggered', ScheduleManager::tick()[0]['outcome']);
+            for ($i = 0; $i < 6; ++$i) {
+                ScheduleManager::update($schedule->fresh(), notes: 'revision ' . $i);
+            }
+            $this->assertFalse(
+                $schedule->historyEvents()
+                    ->where('event_type', HistoryEventType::ScheduleTriggered->value)->exists()
+            );
+            $this->assertSame(
+                1,
+                WorkflowScheduleOccurrence::query()->where('workflow_schedule_id', $schedule->id)->count()
+            );
+            $answer = ScheduleManager::backfill($schedule->fresh(), $due, $due->copy()->addMinute());
+            $this->assertNull($answer[0]['instance_id']);
+            $this->assertArrayNotHasKey('error', $answer[0]);
+            $this->assertSame(1, (int) $schedule->fresh()->fires_count);
+            $this->assertSame('already_fired_occurrence', $schedule->fresh()->last_skip_reason);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function testLegacyTriggerMetadataMovesBeforeItsAuditRowIsDeleted(): void
+    {
+        config()->set('workflows.v2.schedules.audit_history_limit', null);
+        $schedule = $this->schedule('legacy');
+        $event = WorkflowScheduleHistoryEvent::record($schedule, HistoryEventType::ScheduleTriggered, [
+            'occurrence_time' => '2026-11-13T01:02:03.123456-05:00',
+        ]);
+        WorkflowScheduleOccurrence::query()->delete();
+        $event->forceFill([
+            'occurrence_at_utc' => null,
+        ])->save();
+        for ($i = 0; $i < 4; ++$i) {
+            ScheduleManager::update($schedule->fresh(), notes: 'revision ' . $i);
+        }
+        config()
+            ->set('workflows.v2.schedules.audit_history_limit', 3);
+        ScheduleAuditRetention::prune($schedule);
+        $this->assertModelMissing($event);
+        $this->assertSame(
+            '2026-11-13 06:02:03.123456',
+            WorkflowScheduleOccurrence::query()->firstOrFail()->occurrence_at_utc
+        );
+        $this->assertSame(3, $schedule->historyEvents()->count());
+    }
+
+    public function testAnUnusableLegacyOccurrenceRollsBackTheWholeCompaction(): void
+    {
+        config()->set('workflows.v2.schedules.audit_history_limit', null);
+        $schedule = $this->schedule('malformed');
+        WorkflowScheduleHistoryEvent::record($schedule, HistoryEventType::ScheduleTriggered, [
+            'occurrence_time' => '2026-11-13T01:02:03Z',
+        ]);
+        $bad = WorkflowScheduleHistoryEvent::record($schedule, HistoryEventType::ScheduleTriggered, [
+            'occurrence_time' => '2026-11-13T02:02:03Z',
+        ]);
+        WorkflowScheduleOccurrence::query()->delete();
+        $bad->forceFill([
+            'occurrence_at_utc' => 'malformed',
+        ])->save();
+        for ($i = 0; $i < 3; ++$i) {
+            ScheduleManager::update($schedule->fresh(), notes: 'revision ' . $i);
+        }
+        $before = $schedule->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->toArray();
+        config()
+            ->set('workflows.v2.schedules.audit_history_limit', 2);
+        try {
+            ScheduleAuditRetention::prune($schedule);
+            $this->fail('Unusable occurrence metadata was discarded.');
+        } catch (LogicException $error) {
+            $this->assertStringContainsString('noncanonical schedule occurrence', $error->getMessage());
+        }
+        $this->assertSame($before, $schedule->historyEvents()->orderBy('sequence')->get()->toArray());
+        $this->assertSame(0, WorkflowScheduleOccurrence::query()->count());
+    }
+
+    public function testCleanupKeepsSoftDeletedAndOtherNamespaceSchedules(): void
+    {
+        $kept = $this->schedule('kept', 'orders');
+        ScheduleManager::delete($kept);
+        $purged = $this->schedule('purged', 'orders');
+        WorkflowScheduleHistoryEvent::record($purged, HistoryEventType::ScheduleTriggered, [
+            'occurrence_time' => '2026-11-13T01:02:03Z',
+        ]);
+        $other = $this->schedule('other', 'Orders');
+        $other->delete();
+        $purged->delete();
+        $before = $kept->historyEvents()
+            ->count();
+        $first = ScheduleAuditRetention::cleanup('orders', 1);
+        $this->assertSame(1, $first['audit_events_deleted']);
+        $this->assertTrue($first['limit_reached']);
+        $rest = ScheduleAuditRetention::cleanup('orders');
+        $this->assertSame(1, $rest['audit_events_deleted']);
+        $this->assertSame(1, $rest['occurrences_deleted']);
+        $this->assertSame($before, $kept->historyEvents()->count());
+        $this->assertSame(1, $other->historyEvents()->count());
+    }
+
+    public function testLegacyBacklogIsCompactedInBoundedPasses(): void
+    {
+        config()->set('workflows.v2.schedules.audit_history_limit', null);
+        $schedule = $this->schedule('backlog');
+        for ($i = 0; $i < 205; ++$i) {
+            WorkflowScheduleHistoryEvent::record($schedule, HistoryEventType::ScheduleUpdated);
+        }
+        config()
+            ->set('workflows.v2.schedules.audit_history_limit', 3);
+        $this->assertSame(100, ScheduleAuditRetention::prune($schedule));
+        $this->assertSame(106, $schedule->historyEvents()->count());
+        $this->assertSame(100, ScheduleAuditRetention::prune($schedule));
+        $this->assertSame(3, ScheduleAuditRetention::prune($schedule));
+        $this->assertSame(0, ScheduleAuditRetention::prune($schedule));
+        $this->assertSame([1, 205, 206], $schedule->historyEvents()->orderBy('sequence')->pluck('sequence')->all());
+    }
+
+    public function testCleanupCommandUsesAnExactNamespaceAndHonorsItsLimit(): void
+    {
+        $target = $this->schedule('target', 'orders');
+        WorkflowScheduleHistoryEvent::record($target, HistoryEventType::ScheduleUpdated);
+        $other = $this->schedule('other-command', 'Orders');
+        $target->delete();
+        $other->delete();
+        $this->artisan('workflow:v2:schedule-audit-prune', [
+            '--namespace' => 'orders',
+            '--limit' => '1',
+        ])
+            ->assertExitCode(0)
+            ->run();
+        $this->assertSame(1, $target->historyEvents()->count());
+        $this->assertSame(1, $other->historyEvents()->count());
+        $this->artisan('workflow:v2:schedule-audit-prune', [
+            '--namespace' => 'orders',
+        ])
+            ->assertExitCode(0)
+            ->run();
+        $this->assertSame(0, $target->historyEvents()->count());
+        $this->assertSame(1, $other->historyEvents()->count());
+    }
+
+    public function testCommandCanCompactAnIdleScheduleAndSelectLegacyNullRowsSeparately(): void
+    {
+        config()->set('workflows.v2.schedules.audit_history_limit', null);
+        $schedule = $this->schedule('idle', 'orders');
+        for ($i = 0; $i < 5; ++$i) {
+            WorkflowScheduleHistoryEvent::record($schedule, HistoryEventType::ScheduleUpdated);
+        }
+        config()
+            ->set('workflows.v2.schedules.audit_history_limit', 2);
+        $this->artisan('workflow:v2:schedule-audit-prune', [
+            '--namespace' => 'orders',
+            '--schedule' => 'idle',
+        ])
+            ->assertExitCode(0)
+            ->run();
+        $this->assertSame([1, 6], $schedule->historyEvents()->orderBy('sequence')->pluck('sequence')->all());
+        $schedule->historyEvents()
+            ->update([
+                'namespace' => null,
+            ]);
+        $schedule->delete();
+        $this->artisan('workflow:v2:schedule-audit-prune', [
+            '--namespace' => 'orders',
+        ])
+            ->assertExitCode(0)
+            ->run();
+        $this->assertSame(2, $schedule->historyEvents()->count());
+        $this->artisan('workflow:v2:schedule-audit-prune', [
+            '--null-namespace' => true,
+        ])
+            ->assertExitCode(0)
+            ->run();
+        $this->assertSame(0, $schedule->historyEvents()->count());
+    }
+
+    public function testInvalidLimitsAndConflictingNamespaceOptionsRefuseDeletion(): void
+    {
+        $schedule = $this->schedule('invalid', 'orders');
+        $schedule->delete();
+        foreach (['0', '1001', 'invalid'] as $limit) {
+            $this->artisan('workflow:v2:schedule-audit-prune', [
+                '--namespace' => 'orders',
+                '--limit' => $limit,
+            ])
+                ->assertExitCode(1)
+                ->run();
+        }
+        $this->artisan('workflow:v2:schedule-audit-prune', [
+            '--namespace' => 'orders',
+            '--null-namespace' => true,
+        ])
+            ->assertExitCode(1)
+            ->run();
+        $this->assertSame(1, $schedule->historyEvents()->count());
+        config()
+            ->set('workflows.v2.schedules.audit_history_limit', 1);
+        $this->expectException(InvalidArgumentException::class);
+        ScheduleAuditRetention::limit();
+    }
+
+    public function testMigrationCannotDiscardPopulatedOccurrenceReceipts(): void
+    {
+        $schedule = $this->schedule('rollback');
+        WorkflowScheduleHistoryEvent::record($schedule, HistoryEventType::ScheduleTriggered, [
+            'occurrence_time' => '2026-11-13T01:02:03Z',
+        ]);
+        $migration = require __DIR__ . '/../../../src/migrations/2026_11_14_000200_create_workflow_schedule_occurrences.php';
+        try {
+            $migration->down();
+            $this->fail('The deduplication receipt table was dropped.');
+        } catch (LogicException $error) {
+            $this->assertStringContainsString('receipts must be preserved', $error->getMessage());
+        }
+        $this->assertTrue(Schema::hasTable('workflow_schedule_occurrences'));
+        $this->assertSame(1, WorkflowScheduleOccurrence::query()->count());
+    }
+
+    private function schedule(string $id, ?string $namespace = null): WorkflowSchedule
+    {
+        return ScheduleManager::create(
+            scheduleId: $id,
+            workflowClass: TestScheduledWorkflow::class,
+            cronExpression: '* * * * *',
+            overlapPolicy: ScheduleOverlapPolicy::AllowAll,
+            namespace: $namespace,
+        );
+    }
+}
