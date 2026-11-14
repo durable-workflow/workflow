@@ -6,7 +6,7 @@
     "require": {
         "php": "^8.3",
         "durable-workflow/workflow": "2.5.19",
-        "laravel/framework": "12.69.3",
+        "laravel/framework": "12.72.0",
         "laravel/octane": "2.21.0",
         "spiral/roadrunner-cli": "^2.6.0",
         "spiral/roadrunner-http": "^3.3.0"

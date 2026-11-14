@@ -311,7 +311,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                     ]),
                     'replayed_started_at' => is_string($startedPayload['replayed_started_at'] ?? null)
                         ? $startedPayload['replayed_started_at']
-                        : $source->started_at?->toIso8601String(),
+                        : RedriveReplayClock::formatRecordedAt($source->started_at),
                     'workflow_link_id' => $link->id,
                     ...($recoveryReceipt === null ? [] : [
                         'compensation_recovery' => $recoveryReceipt,

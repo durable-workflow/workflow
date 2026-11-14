@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Illuminate\Database\Events\TransactionRolledBack;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -66,12 +67,11 @@ final class HostServiceQuerySqliteWriteRetryTest extends TestCase
                     'id' => $callId,
                 ]);
                 fwrite($pair[1], "locked\n");
-                // Hold the lock briefly. The owned root path retries for about
-                // 60 ms (3 attempts, 20 ms then 40 ms apart), so a short fixed
-                // hold keeps real contention without depending on how quickly
-                // a busy runner reschedules this process (#1096).
-                usleep(5_000);
+                if (fgets($pair[1]) !== "release\n") {
+                    throw new RuntimeException('The original root did not roll back before writer release.');
+                }
                 DB::commit();
+                fwrite($pair[1], "committed\n");
                 fclose($pair[1]);
                 exit(0);
             } catch (Throwable $failure) {
@@ -86,6 +86,35 @@ final class HostServiceQuerySqliteWriteRetryTest extends TestCase
         $connection = DB::connection();
         $connection->statement('PRAGMA busy_timeout=0');
         $entered = false;
+        $released = false;
+        $releaseLevels = [];
+        $connectionName = $connection->getName();
+        $dispatcher = $connection->getEventDispatcher();
+        $this->assertNotNull($dispatcher);
+        $dispatcher->listen(
+            TransactionRolledBack::class,
+            static function (TransactionRolledBack $event) use (
+                &$entered,
+                &$released,
+                &$releaseLevels,
+                $connectionName,
+                $pair
+            ): void {
+                if (! $entered || $released || $event->connection->getName() !== $connectionName
+                    || $event->connection->transactionLevel() !== 0) {
+                    return;
+                }
+                // Release only after the original root rollback. A committed
+                // acknowledgement removes the fixed-sleep scheduling race
+                // without changing the runtime's attempt or deadline limits.
+                $released = true;
+                $releaseLevels[] = $event->connection->transactionLevel();
+                fwrite($pair[0], "release\n");
+                if (fgets($pair[0]) !== "committed\n") {
+                    throw new RuntimeException('The competing writer did not confirm its commit.');
+                }
+            }
+        );
         DB::listen(static function ($event) use (&$entered, $pair): void {
             if ($entered || ! str_starts_with($event->sql, 'select * from "workflow_service_calls"')) {
                 return;
@@ -119,6 +148,8 @@ final class HostServiceQuerySqliteWriteRetryTest extends TestCase
                 $this->assertNotNull($result);
                 $this->assertSame(0, $connection->transactionLevel());
             }
+            $this->assertTrue($released);
+            $this->assertSame([0], $releaseLevels);
             pcntl_waitpid($pid, $status);
             $this->assertTrue(pcntl_wifexited($status));
             $this->assertSame(0, pcntl_wexitstatus($status));

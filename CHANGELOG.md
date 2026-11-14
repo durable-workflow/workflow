@@ -2,10 +2,6 @@
 
 ## Unreleased
 
-- Concurrent service child completions keep parent-history row locks on the
-  existing per-run index on MySQL and MariaDB. This prevents a parent-history
-  table scan from deadlocking against an unrelated sibling's completion.
-
 - Experimental embedded compensation scopes (#1063): retained versioned
   obligations, native Saga recovery, sequential child participation and explicit
   release. Each scope keeps its originating run; continue-as-new, origin redrive
@@ -13,11 +9,33 @@
   the exact paired native admission receipt and retained scope/original-owner
   binding before host authorization and again under native activity locks.
 
-- **Run migrations on MariaDB.** Timer status updates preserve the scheduled
-  deadline on older MariaDB schemas. The forward migration removes the implicit
-  timestamp update without rewriting retained rows. Condition occurrence
+- **Run migrations on MariaDB.** Timer status and service-dispatch metadata
+  updates preserve their scheduled timestamps on older MariaDB schemas. The
+  forward migrations remove implicit timestamp updates without rewriting
+  retained rows. Condition occurrence
   reopens use the original scheduled history deadline, including when an older
   cancelled timer row has already drifted (#1139).
+
+- Concurrent child completion keeps parent-history row locks on the existing
+  per-run index on MySQL and MariaDB, avoiding an unrelated sibling history
+  row in the parent barrier lock cycle. No new index or retry is introduced.
+
+- Experimental embedded child-start milestone: `Workflow::startChild()` returns
+  a versioned `StartedChildWorkflow` receipt after native child admission, and
+  `$child->await()` observes that same child later. Cold replay reuses the
+  original admission; a queued request alone cannot supply a receipt. The
+  existing `child()` still waits for completion. This adds a
+  `ChildWorkflowAwaited` history event and an optional
+  `child_completion_mode` on `ChildWorkflowScheduled`, with no database
+  migration. Worker-protocol execution refuses the new calls. State-bound
+  business bindings and retained compensation remain separate #1069 work.
+
+- Require patched Laravel 12.72 or 13.41 minimums for the current Composer
+  security advisories. Keep existing application audits enabled and update
+  application lockfiles before upgrading Workflow (#1133).
+- Failed-run redrive preserves fractional seconds in replay clocks for the
+  original run start and reused steps. Repeated redrive keeps previously
+  recorded clock strings unchanged.
 
 - Experimental domain entity references for top-level arguments of embedded
   queued and local activities (#996). Register an entity class, deterministic

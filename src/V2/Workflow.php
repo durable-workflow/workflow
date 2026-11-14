@@ -475,6 +475,17 @@ abstract class Workflow
     }
 
     /**
+     * Confirm native child admission, then await its result separately if needed.
+     *
+     * This milestone is available in embedded execution. A queued request is
+     * insufficient: the returned receipt identifies the durable child run.
+     */
+    public static function startChild(string $workflow, mixed ...$arguments): StartedChildWorkflow
+    {
+        return startChild($workflow, ...$arguments);
+    }
+
+    /**
      * Run a callable as an auto-generated child workflow.
      *
      * @see async()

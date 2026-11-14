@@ -9,8 +9,8 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\DataProvider;
-use RuntimeException;
 use Tests\SchemaTestCase;
+use UnexpectedValueException;
 use Workflow\Support\WorkflowMigration;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Models\WorkflowTimer;
@@ -150,7 +150,7 @@ final class V2TimerDeadlineMigrationTest extends SchemaTestCase
             $this->migration()
                 ->up();
             $this->fail('An unsupported automatic timestamp shape must refuse.');
-        } catch (RuntimeException $exception) {
+        } catch (UnexpectedValueException $exception) {
             $this->assertSame('workflow_timer_fire_at_legacy_shape_unavailable', $exception->getMessage());
         }
         $this->assertSame($before, $this->columnMetadata());

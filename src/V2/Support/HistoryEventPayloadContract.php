@@ -642,6 +642,7 @@ final class HistoryEventPayloadContract
         ],
         'ChildWorkflowScheduled' => [
             'sequence',
+            'child_completion_mode',
             'workflow_link_id',
             'child_call_id',
             'child_workflow_instance_id',
@@ -663,6 +664,8 @@ final class HistoryEventPayloadContract
             'reused_from_run_id',
             'reused_recorded_at',
         ],
+        'ChildWorkflowAwaited' => ['sequence', 'receipt', 'child_workflow_instance_id',
+            'child_workflow_run_id', 'child_call_id', 'child_workflow_type'],
         'ChildRunStarted' => [
             'sequence',
             'workflow_link_id',
