@@ -28,9 +28,33 @@ final class ChildReservationStore
     ) {
     }
 
-    public function reserve(BindingIdentity $identity, string $workflowClass, string $principal): ChildReservation
-    {
+    public function reserve(
+        BindingIdentity $identity,
+        string $workflowClass,
+        string $principal,
+        ?ChildScopeParticipation $participation = null,
+    ): ChildReservation {
         $version = $this->authorize($identity, $principal, 'reserve');
+        $participationVersion = $this->authorizeParticipation($identity, $participation, $principal, 'reserve');
+        if ($participation !== null) {
+            $connection = self::instances()->getModel()->getConnection();
+            foreach ([[$participation->parent, 'register'],
+                [$participation->child, 'participate'],
+            ] as [$scope, $operation]) {
+                $policy = app(\Workflow\V2\Compensation\Security\ScopeAuthorization::class)
+                    ->assertAllowed($scope, $principal, $operation);
+                if ($connection->transactionLevel() !== 0
+                    || self::instances()->getModel()->getConnection()->transactionLevel() !== 0) {
+                    throw new LogicException(
+                        'Retained participation authorization must leave the native transaction closed.'
+                    );
+                }
+                \Workflow\V2\Compensation\Definition\PortableDescriptor::identifier(
+                    $policy,
+                    'authorization policy version'
+                );
+            }
+        }
         if (! is_a($workflowClass, \Workflow\V2\Workflow::class, true)
             || TypeRegistry::for($workflowClass) !== $identity->childWorkflowType) {
             throw new LogicException('The binding child type does not match its definition.');
@@ -39,7 +63,14 @@ final class ChildReservationStore
         if ($fingerprint === null) {
             throw new LogicException('The child definition has no immutable fingerprint.');
         }
-        $candidate = new ChildReservation($identity, $workflowClass, $fingerprint, $version);
+        $candidate = new ChildReservation(
+            $identity,
+            $workflowClass,
+            $fingerprint,
+            $version,
+            $participation,
+            $participationVersion,
+        );
         $query = self::instances();
         $connection = $query->getModel()
             ->getConnection();
@@ -58,7 +89,9 @@ final class ChildReservationStore
                 self::matching($child, $stored);
                 if ($stored->identity->toArray() !== $identity->toArray()
                     || $stored->workflowClass !== $candidate->workflowClass
-                    || $stored->definitionFingerprint !== $candidate->definitionFingerprint) {
+                    || $stored->definitionFingerprint !== $candidate->definitionFingerprint
+                    || $stored->participation?->toArray() !== $candidate->participation?->toArray()
+                    || $stored->participationAuthorizationVersion !== $candidate->participationAuthorizationVersion) {
                     throw new LogicException('An existing binding generation has a different immutable descriptor.');
                 }
                 return $stored;
@@ -99,9 +132,13 @@ final class ChildReservationStore
      * Recover the original descriptor without selecting a deployed definition.
      * A missing reservation is not proof that its child was never admitted.
      */
-    public function load(BindingIdentity $identity, string $principal): ChildReservation
-    {
+    public function load(
+        BindingIdentity $identity,
+        string $principal,
+        ?ChildScopeParticipation $participation = null,
+    ): ChildReservation {
         $this->authorize($identity, $principal, 'load');
+        $participationVersion = $this->authorizeParticipation($identity, $participation, $principal, 'load');
         $child = self::instances()->findOrFail('dw-bound-child-' . $identity->key());
         // Check the caller's original owner before decoding protected metadata.
         if ($child->namespace !== $identity->namespace || $child->workflow_type !== $identity->childWorkflowType) {
@@ -113,6 +150,20 @@ final class ChildReservationStore
             throw new LogicException('The stored native child reservation differs from the original binding.');
         }
         self::matching($child, $reservation);
+        if ($participation !== null) {
+            if ($reservation->participation?->toArray() !== $participation->toArray()
+                || $reservation->participationAuthorizationVersion !== $participationVersion) {
+                throw new LogicException('The stored participation differs from the authorized original relationship.');
+            }
+        } else {
+            $this->authorizeParticipation(
+                $identity,
+                $reservation->participation,
+                $principal,
+                'load',
+                $reservation->participationAuthorizationVersion,
+            );
+        }
         return $reservation;
     }
 
@@ -123,6 +174,13 @@ final class ChildReservationStore
     public function close(ChildReservation $reservation, string $principal): ChildBinding|NeverAdmittedChild
     {
         $this->authorize($reservation->identity, $principal, 'close');
+        $this->authorizeParticipation(
+            $reservation->identity,
+            $reservation->participation,
+            $principal,
+            'close',
+            $reservation->participationAuthorizationVersion,
+        );
         return SqliteTransaction::run(static function () use ($reservation): ChildBinding|NeverAdmittedChild {
             $child = self::instances()->lockForUpdate()->findOrFail($reservation->childInstanceId());
             $state = self::matching($child, $reservation);
@@ -169,6 +227,9 @@ final class ChildReservationStore
             || $parent->cancellation_requested_at !== null) {
             throw new LogicException('The native child reservation is closed, already admitted or no longer eligible.');
         }
+        if ($reservation->participation !== null) {
+            \Workflow\V2\Compensation\Persistence\ChildScopes::assertReservedAdmission($reservation);
+        }
         // Persisted data does not choose a class to autoload. First bind the
         // supplied descriptor to the host-authorized reservation under its lock.
         if (TypeRegistry::for($call->workflow) !== $identity->childWorkflowType
@@ -195,6 +256,9 @@ final class ChildReservationStore
             throw new LogicException('The reservation cannot record this native admission.');
         }
         $binding = new ChildBinding($reservation->identity, $receipt);
+        if ($reservation->participation !== null) {
+            \Workflow\V2\Compensation\Persistence\ChildScopes::recordReservedAdmission($reservation, $receipt);
+        }
         $state['status'] = 'admitted';
         $state['admission'] = $binding->toArray();
         self::write($child, $state);
@@ -219,6 +283,38 @@ final class ChildReservationStore
         if ($descriptor !== $reservation?->toArray()) {
             throw new LogicException('The recorded native child reservation differs from this command.');
         }
+    }
+
+    private function authorizeParticipation(
+        BindingIdentity $identity,
+        ?ChildScopeParticipation $participation,
+        string $principal,
+        string $operation,
+        ?string $pinnedPolicyVersion = null,
+    ): ?string {
+        if ($participation === null) {
+            return null;
+        }
+        if (! $this->authorization instanceof ChildScopeBindingAuthorization) {
+            throw new LogicException('Retained child bindings require joint host authorization.');
+        }
+        $connection = self::instances()->getModel()->getConnection();
+        $version = $this->authorization->assertParticipationAllowed(
+            $identity,
+            $participation,
+            $principal,
+            $operation,
+            $pinnedPolicyVersion,
+        );
+        if ($connection->transactionLevel() !== 0
+            || self::instances()->getModel()->getConnection()->transactionLevel() !== 0) {
+            throw new LogicException('Joint binding authorization must leave the native transaction closed.');
+        }
+        if (trim($version) === '' || strlen($version) > 128
+            || ($pinnedPolicyVersion !== null && $version !== $pinnedPolicyVersion)) {
+            throw new LogicException('The original joint binding authorization policy is unavailable.');
+        }
+        return $version;
     }
 
     private function authorize(BindingIdentity $identity, string $principal, string $operation): string

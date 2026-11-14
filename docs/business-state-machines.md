@@ -244,4 +244,28 @@ Within the original parent workflow, `ChildReservation::start(...$arguments)` us
 
 `close()` locks that same instance. If admission committed first, it returns the exact `ChildBinding`. Otherwise it permanently closes the unused reservation and returns `NeverAdmittedChild` with the stored closure identity. Repeating close after a lost acknowledgement returns the same result. Late native work and ordinary start/signal-with-start cannot reopen that reservation. A missing record, malformed state or uncertain run pointer refuses rather than proving absence. Closed unused instances must remain retained; the reservation migration refuses rollback while any reservation exists.
 
-This primitive does not resolve an existing `dw.child-scope` participant whose child scope is missing. The retained-scope adapter must independently reread authoritative closure evidence or wait for the exact admitted child's verified compensation. A deserialized `NeverAdmittedChild`, technical cancellation or lookup absence is insufficient. That adapter, protected business cancellation/commit integration, real database race qualification and the two-integration example remain required before the full binding contract is delivered. Forward ownership transfer through continue-as-new or redrive is not supported for these reserved children.
+This primitive does not resolve an existing `dw.child-scope` participant whose child scope is missing. A deserialized `NeverAdmittedChild`, technical cancellation or lookup absence is insufficient. Forward ownership transfer through continue-as-new or redrive is not supported for these reserved children.
+
+### Retained child participation
+
+The experimental `DurableScope::reserveChild($key, $childScope, $bindingIdentity)` connects a native reservation to a retained Saga participant. Configure the binding policy to implement `ChildScopeBindingAuthorization`, alongside `ScopeAuthorization` and a trusted `ChildDefinitionRegistry`. The registry selects a workflow class by the binding's exact child workflow type and pinned child-policy fingerprint. Recorded arguments never select a PHP class to autoload.
+
+`ChildScopeBindingAuthorization` extends the ordinary `BindingAuthorization` contract. Its `assertParticipationAllowed()` receives the complete binding, parent/child scope pair, authenticated principal, operation and any pinned policy version. The host must authorize their relationship: the exact business owner, original execution, state-entry generation and corresponding retained scopes. Independently allowing the binding and both scopes does not authorize pairing them. The returned policy version is retained in the reservation and participant descriptor; loading or closing it must still enforce that original version or refuse. A changed policy cannot silently replace it. Version-1 reservations continue to use ordinary binding authorization.
+
+Inside the original parent workflow, reserve participation before starting the child:
+
+```php
+$reservation = $scope->reserveChild('shipment', $childScope, $bindingIdentity);
+$started = $reservation->start($businessInput, $childScope->toArray());
+// Commit the hosting business state through the application's protected boundary.
+// A later step awaits this original admission; it does not reserve another owner.
+$result = $started->await();
+```
+
+Here `$scope` is the parent's `DurableScope`, and `$bindingIdentity` pins the original owner, generation, policy, options and fingerprint of both child arguments. The child workflow must use the exact supplied child scope for its own `DurableScope` operations and establish coverage before every external effect. Child business outcome validation remains an application responsibility.
+
+The recorded reservation activity authorizes the requested relationship before its reservation lookup, then commits an unused native reservation and the retained participant under the native activity-attempt fence. Host policy code runs outside native SQL locks. A crash between those transactions can leave an unused reservation, but native admission refuses until the exact participant and joint policy binding are committed and the parent scope still permits forward work. Retrying can load that original descriptor even when its historical registry entry is no longer deployed, provided its original relationship policy remains enforceable. Native admission still requires the pinned executable definition; a changed definition cannot replace it.
+
+Admission commits the genuine child scope with its actual original native run, receipt and parent history in one transaction. Parent compensation first closes the native reservation. A committed never-admitted closure permanently fences late starts and can settle that participant without inventing a child ledger. If admission won, only that original child's verified retained scope can settle it. Missing, foreign or unresolved child scopes remain unresolved, and technical child completion is insufficient. The new `dw.reserved-child-scope` participant does not change the older `dw.child-scope` contract.
+
+Protected business cancellation/commit integration, real database race qualification, closed-run recovery scenarios and the runnable two-integration example remain required before the full business-state-machine contract is delivered.

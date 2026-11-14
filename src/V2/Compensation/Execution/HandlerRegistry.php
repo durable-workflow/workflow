@@ -20,7 +20,8 @@ final readonly class HandlerRegistry
     public function __construct(
         private array $handlers = []
     ) {
-        if (isset($handlers[\Workflow\V2\Compensation\Persistence\ChildScopes::TYPE])) {
+        if (isset($handlers[\Workflow\V2\Compensation\Persistence\ChildScopes::TYPE])
+            || isset($handlers[\Workflow\V2\Compensation\Persistence\ChildScopes::RESERVED_TYPE])) {
             throw new \InvalidArgumentException('The child-scope handler key is reserved.');
         }
         foreach ($handlers as $versions) {
