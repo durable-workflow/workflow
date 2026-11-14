@@ -1,0 +1,29 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "portable-descriptor-preserves-referenced-facts",
+  "protocol_version": "1.0",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestPortableDescriptorReferencesWorkflow",
+    "arguments": [{"z": 1, "a": 2}],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-14T19:15:00.000000Z"
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "canonical": "{\"facts\":{\"a\":2,\"z\":1}}",
+      "originalKeys": ["z", "a"]
+    },
+    "commands": [{"type": "complete_workflow"}]
+  }
+}
