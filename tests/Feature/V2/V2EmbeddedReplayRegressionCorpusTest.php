@@ -102,6 +102,7 @@ use Workflow\V2\Support\RunTimelineProjector;
 use Workflow\V2\Support\ScheduleManager;
 use Workflow\V2\Support\ServiceCallPrincipal;
 use Workflow\V2\Support\ServiceCallScheduler;
+use Workflow\V2\Support\VersionUsageQuery;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\Support\WorkflowDefinitionFingerprint;
@@ -122,6 +123,22 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     private const FIXTURE_DIR = __DIR__ . '/../../Fixtures/V2/ReplayRegression';
 
     private int $workflowNumber = 0;
+
+    public function testVersionUsageCorpusAlsoExecutesDeclaredReplayConsumers(): void
+    {
+        $path = self::FIXTURE_DIR . '/version-usage-retained-reused-decision.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The retained version-usage evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        self::stopWorkers();
+        Queue::fake();
+        config([
+            'queue.default' => 'database',
+            'app.key' => 'version-usage-corpus-signing-key',
+        ]);
+        $this->assertVersionUsageRetainedDecision($fixture);
+    }
 
     public function testEntityReferenceAttemptCorpusLoadsCurrentStateAndNeverLoadsOnReplay(): void
     {
@@ -2472,6 +2489,12 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         foreach ($this->fixtures() as $fixture) {
             $this->executeColdReplayFixture($fixture);
 
+            if ($fixture['id'] === 'version-usage-retained-reused-decision') {
+                config()->set('app.key', 'version-usage-corpus-signing-key');
+                $this->assertVersionUsageRetainedDecision($fixture);
+                continue;
+            }
+
             if ($fixture['id'] === 'cooperative-cleanup-terminal-notification') {
                 // Its live cleanup, commit and notification proof runs in the dedicated corpus test.
                 continue;
@@ -3010,6 +3033,53 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
                 ->count(), $close);
         }
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function assertVersionUsageRetainedDecision(array $fixture): void
+    {
+        $this->assertTrue(
+            class_exists(VersionUsageQuery::class),
+            'The retained version-usage reader capability is unavailable.'
+        );
+        $this->clearWorkflowState();
+        $run = $this->createRunFromFixture($fixture);
+        $history = $run->historyEvents()
+            ->get()
+            ->toArray();
+        $attempts = ActivityAttempt::query()->count();
+        $query = new VersionUsageQuery();
+        foreach ([[1, 'current'], [2, 'legacy']] as [$minimum, $state]) {
+            $page = $query->page($run->namespace, $run->workflow_type, 'same', $minimum);
+            $this->assertSame(1, $page['counts']['total']);
+            $this->assertSame(1, $page['counts'][$state]);
+            $this->assertSame($state, $page['runs'][0]['state']);
+            $this->assertSame(1, $page['runs'][0]['recorded_version']);
+        }
+        $missing = $query->page($run->namespace, $run->workflow_type, 'unreached-change', 1);
+        $this->assertSame(1, $missing['counts']['unknown']);
+        $this->assertSame('marker_absent', $missing['runs'][0]['unknown_reason']);
+        $this->assertSame($attempts, ActivityAttempt::query()->count());
+        $this->assertSame($history, $run->historyEvents()->get()->toArray());
+
+        $state = (new QueryStateReplayer())->replayState($run->fresh());
+        $this->assertInstanceOf(TestSinglePatchReplayWorkflow::class, $state->workflow);
+        $this->assertSame([true, null], $state->workflow->currentState());
+        $this->assertSame(2, $state->sequence);
+        $this->assertNotNull($state->current);
+        $this->assertSame($history, $run->historyEvents()->get()->toArray());
+        TestQueryReplayGuardActivity::$executions = 0;
+        $this->runReadyWorkflowTask($run);
+        $this->assertSame(RunStatus::Waiting, $run->fresh()->status);
+        $this->assertSame(0, TestQueryReplayGuardActivity::$executions);
+        $this->assertSame(
+            1,
+            $run->historyEvents()->where('event_type', HistoryEventType::VersionMarkerRecorded)->count()
+        );
+        $this->assertSame(1, $run->historyEvents()->where('event_type', HistoryEventType::ActivityScheduled)->count());
+        $this->assertSame($history, array_slice($run->historyEvents()->get()->toArray(), 0, count($history)));
     }
 
     private function runReadyTaskOfType(string $runId, TaskType $taskType): void
