@@ -1,0 +1,291 @@
+{
+    "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+    "fixture_schema": "durable-workflow.replay-regression/v1",
+    "id": "retained-child-reservation-cold-replay",
+    "protocol_version": "1.20",
+    "bindings": [
+        "php"
+    ],
+    "consumers": [
+        "workflow-fiber-runner",
+        "query-state-replayer",
+        "workflow-executor"
+    ],
+    "workflow": {
+        "type": "Tests\\Fixtures\\V2\\TestReservedScopeReplayWorkflow",
+        "arguments": [
+            {
+                "version": 1,
+                "application": "app",
+                "namespace": "tenant-a",
+                "key": "parent",
+                "generation": "01m7cw45kgcr0p2czqcyetp87f"
+            },
+            {
+                "version": 1,
+                "application": "app",
+                "namespace": "tenant-a",
+                "key": "child",
+                "generation": "01m7cw45kgcr0p2czqcyetp87f"
+            },
+            {
+                "version": 1,
+                "parentExecution": {
+                    "scope": "app",
+                    "subject": "business-1",
+                    "executionId": "execution-1",
+                    "policyFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "sourceState": "ready",
+                    "sourceRevision": "revision-1"
+                },
+                "namespace": "tenant-a",
+                "parentInstanceId": "retained-parent",
+                "parentRunId": "01m7cw45kgcr0p2czqcyetp87f",
+                "slot": "shipment",
+                "generation": "entry-1",
+                "hostingState": "delivering",
+                "childWorkflowType": "Tests\\Unit\\V2\\RetainedScopeChildFixture",
+                "childPolicyFingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "requiredOutcome": "delivered",
+                "inputFingerprint": "aa1c10b6ce2d97c28c6ccc8289d751c9eae388196aca97c2fdfbeabeb6ee07c1",
+                "childOptions": {
+                    "parent_close_policy": "abandon",
+                    "connection": null,
+                    "queue": null,
+                    "cancellation_policy": "abandon"
+                }
+            }
+        ],
+        "payload_codec": "avro"
+    },
+    "history": [
+        {
+            "sequence": 1,
+            "event_type": "WorkflowStarted",
+            "payload": {
+                "workflow_type": "Tests\\Fixtures\\V2\\TestReservedScopeReplayWorkflow"
+            },
+            "recorded_at": "2026-11-14T12:00:00Z"
+        },
+        {
+            "event_type": "VersionMarkerRecorded",
+            "payload": {
+                "sequence": 1,
+                "change_id": "dw.compensation.scope-activities",
+                "version": 1,
+                "min_supported": 1,
+                "max_supported": 1
+            },
+            "sequence": 2,
+            "recorded_at": "2026-11-14T12:00:01Z"
+        },
+        {
+            "event_type": "ActivityScheduled",
+            "payload": {
+                "activity_execution_id": "01m7cw45njpgnq35rcvn4w83rr",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\ReserveChildScopeActivity",
+                "activity_type": "dw.compensation.reserve-child-scope.v1",
+                "sequence": 2,
+                "activity": {
+                    "id": "01m7cw45njpgnq35rcvn4w83rr",
+                    "idempotency_key": "01m7cw45njpgnq35rcvn4w83rr",
+                    "sequence": 2,
+                    "type": "dw.compensation.reserve-child-scope.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\ReserveChildScopeActivity",
+                    "local_activity": false,
+                    "status": "pending",
+                    "payload_codec": "avro",
+                    "attempt_count": 0,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 3,
+                        "backoff_seconds": [
+                            1,
+                            2,
+                            5,
+                            10,
+                            15,
+                            30,
+                            60,
+                            120
+                        ],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "connection": "redis",
+                    "queue": "default",
+                    "created_at": "2026-11-14T11:12:18.098335Z",
+                    "arguments": "wwHioz3/VYAiNwwKDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCgZhcHASbmFtZXNwYWNlChB0ZW5hbnQtYQZrZXkKDHBhcmVudBRnZW5lcmF0aW9uCjQwMW03Y3c0NWtnY3IwcDJjenFjeWV0cDg3ZgAKCmNoaWxkDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCgZhcHASbmFtZXNwYWNlChB0ZW5hbnQtYQZrZXkKCmNoaWxkFGdlbmVyYXRpb24KNDAxbTdjdzQ1a2djcjBwMmN6cWN5ZXRwODdmAA4aDnZlcnNpb24EAh5wYXJlbnRFeGVjdXRpb24ODApzY29wZQoGYXBwDnN1YmplY3QKFGJ1c2luZXNzLTEWZXhlY3V0aW9uSWQKFmV4ZWN1dGlvbi0xInBvbGljeUZpbmdlcnByaW50CoABYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYRZzb3VyY2VTdGF0ZQoKcmVhZHkcc291cmNlUmV2aXNpb24KFHJldmlzaW9uLTEAEm5hbWVzcGFjZQoQdGVuYW50LWEgcGFyZW50SW5zdGFuY2VJZAoecmV0YWluZWQtcGFyZW50FnBhcmVudFJ1bklkCjQwMW03Y3c0NWtnY3IwcDJjenFjeWV0cDg3ZghzbG90ChBzaGlwbWVudBRnZW5lcmF0aW9uCg5lbnRyeS0xGGhvc3RpbmdTdGF0ZQoUZGVsaXZlcmluZyJjaGlsZFdvcmtmbG93VHlwZQpOVGVzdHNcVW5pdFxWMlxSZXRhaW5lZFNjb3BlQ2hpbGRGaXh0dXJlLGNoaWxkUG9saWN5RmluZ2VycHJpbnQKgAFiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiHnJlcXVpcmVkT3V0Y29tZQoSZGVsaXZlcmVkIGlucHV0RmluZ2VycHJpbnQKgAFhYTFjMTBiNmNlMmQ5N2MyOGM2Y2NjODI4OWQ3NTFjOWVhZTM4ODE5NmFjYTk3YzJmZGZiZWFiZWI2ZWUwN2MxGGNoaWxkT3B0aW9ucw4IJnBhcmVudF9jbG9zZV9wb2xpY3kKDmFiYW5kb24UY29ubmVjdGlvbgAKcXVldWUAJmNhbmNlbGxhdGlvbl9wb2xpY3kKDmFiYW5kb24AAAoKb3duZXIA"
+                }
+            },
+            "sequence": 3,
+            "recorded_at": "2026-11-14T12:00:02Z"
+        },
+        {
+            "event_type": "ActivityStarted",
+            "payload": {
+                "activity_execution_id": "01m7cw45njpgnq35rcvn4w83rr",
+                "activity_attempt_id": "01M7CW45QVDDG0C5BA5W26K1VX",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\ReserveChildScopeActivity",
+                "activity_type": "dw.compensation.reserve-child-scope.v1",
+                "sequence": 2,
+                "attempt_number": 1,
+                "activity": {
+                    "id": "01m7cw45njpgnq35rcvn4w83rr",
+                    "idempotency_key": "01m7cw45njpgnq35rcvn4w83rr",
+                    "sequence": 2,
+                    "type": "dw.compensation.reserve-child-scope.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\ReserveChildScopeActivity",
+                    "local_activity": false,
+                    "attempt_id": "01M7CW45QVDDG0C5BA5W26K1VX",
+                    "status": "running",
+                    "payload_codec": "avro",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 3,
+                        "backoff_seconds": [
+                            1,
+                            2,
+                            5,
+                            10,
+                            15,
+                            30,
+                            60,
+                            120
+                        ],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "connection": "redis",
+                    "queue": "default",
+                    "created_at": "2026-11-14T11:12:18.098335Z",
+                    "started_at": "2026-11-14T11:12:18.171633Z",
+                    "arguments": "wwHioz3/VYAiNwwKDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCgZhcHASbmFtZXNwYWNlChB0ZW5hbnQtYQZrZXkKDHBhcmVudBRnZW5lcmF0aW9uCjQwMW03Y3c0NWtnY3IwcDJjenFjeWV0cDg3ZgAKCmNoaWxkDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCgZhcHASbmFtZXNwYWNlChB0ZW5hbnQtYQZrZXkKCmNoaWxkFGdlbmVyYXRpb24KNDAxbTdjdzQ1a2djcjBwMmN6cWN5ZXRwODdmAA4aDnZlcnNpb24EAh5wYXJlbnRFeGVjdXRpb24ODApzY29wZQoGYXBwDnN1YmplY3QKFGJ1c2luZXNzLTEWZXhlY3V0aW9uSWQKFmV4ZWN1dGlvbi0xInBvbGljeUZpbmdlcnByaW50CoABYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYRZzb3VyY2VTdGF0ZQoKcmVhZHkcc291cmNlUmV2aXNpb24KFHJldmlzaW9uLTEAEm5hbWVzcGFjZQoQdGVuYW50LWEgcGFyZW50SW5zdGFuY2VJZAoecmV0YWluZWQtcGFyZW50FnBhcmVudFJ1bklkCjQwMW03Y3c0NWtnY3IwcDJjenFjeWV0cDg3ZghzbG90ChBzaGlwbWVudBRnZW5lcmF0aW9uCg5lbnRyeS0xGGhvc3RpbmdTdGF0ZQoUZGVsaXZlcmluZyJjaGlsZFdvcmtmbG93VHlwZQpOVGVzdHNcVW5pdFxWMlxSZXRhaW5lZFNjb3BlQ2hpbGRGaXh0dXJlLGNoaWxkUG9saWN5RmluZ2VycHJpbnQKgAFiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiHnJlcXVpcmVkT3V0Y29tZQoSZGVsaXZlcmVkIGlucHV0RmluZ2VycHJpbnQKgAFhYTFjMTBiNmNlMmQ5N2MyOGM2Y2NjODI4OWQ3NTFjOWVhZTM4ODE5NmFjYTk3YzJmZGZiZWFiZWI2ZWUwN2MxGGNoaWxkT3B0aW9ucw4IJnBhcmVudF9jbG9zZV9wb2xpY3kKDmFiYW5kb24UY29ubmVjdGlvbgAKcXVldWUAJmNhbmNlbGxhdGlvbl9wb2xpY3kKDmFiYW5kb24AAAoKb3duZXIA"
+                }
+            },
+            "sequence": 4,
+            "recorded_at": "2026-11-14T12:00:03Z"
+        },
+        {
+            "event_type": "ActivityCompleted",
+            "payload": {
+                "activity_execution_id": "01m7cw45njpgnq35rcvn4w83rr",
+                "activity_attempt_id": "01M7CW45QVDDG0C5BA5W26K1VX",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\ReserveChildScopeActivity",
+                "activity_type": "dw.compensation.reserve-child-scope.v1",
+                "sequence": 2,
+                "attempt_number": 1,
+                "result": "wwHioz3/VYAiNw4EFnJlc2VydmF0aW9uDgwOdmVyc2lvbgQEEGlkZW50aXR5DhoOdmVyc2lvbgQCHnBhcmVudEV4ZWN1dGlvbg4MCnNjb3BlCgZhcHAOc3ViamVjdAoUYnVzaW5lc3MtMRZleGVjdXRpb25JZAoWZXhlY3V0aW9uLTEicG9saWN5RmluZ2VycHJpbnQKgAFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhFnNvdXJjZVN0YXRlCgpyZWFkeRxzb3VyY2VSZXZpc2lvbgoUcmV2aXNpb24tMQASbmFtZXNwYWNlChB0ZW5hbnQtYSBwYXJlbnRJbnN0YW5jZUlkCh5yZXRhaW5lZC1wYXJlbnQWcGFyZW50UnVuSWQKNDAxbTdjdzQ1a2djcjBwMmN6cWN5ZXRwODdmCHNsb3QKEHNoaXBtZW50FGdlbmVyYXRpb24KDmVudHJ5LTEYaG9zdGluZ1N0YXRlChRkZWxpdmVyaW5nImNoaWxkV29ya2Zsb3dUeXBlCk5UZXN0c1xVbml0XFYyXFJldGFpbmVkU2NvcGVDaGlsZEZpeHR1cmUsY2hpbGRQb2xpY3lGaW5nZXJwcmludAqAAWJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmIecmVxdWlyZWRPdXRjb21lChJkZWxpdmVyZWQgaW5wdXRGaW5nZXJwcmludAqAAWFhMWMxMGI2Y2UyZDk3YzI4YzZjY2M4Mjg5ZDc1MWM5ZWFlMzg4MTk2YWNhOTdjMmZkZmJlYWJlYjZlZTA3YzEYY2hpbGRPcHRpb25zDggmcGFyZW50X2Nsb3NlX3BvbGljeQoOYWJhbmRvbhRjb25uZWN0aW9uAApxdWV1ZQAmY2FuY2VsbGF0aW9uX3BvbGljeQoOYWJhbmRvbgAAGndvcmtmbG93Q2xhc3MKTlRlc3RzXFVuaXRcVjJcUmV0YWluZWRTY29wZUNoaWxkRml4dHVyZSpkZWZpbml0aW9uRmluZ2VycHJpbnQKjgFzaGEyNTY6MmU5MzkyMTYxZjE4Y2E5MDViMzU5OTc5ZWZhODRhZWRmMGQyODQxOTMwZWJhODc2MWFjYTg4NzdlNTczMWUwNChhdXRob3JpemF0aW9uVmVyc2lvbgoiYmluZGluZy1wb2xpY3ktdjEacGFydGljaXBhdGlvbg4IDnZlcnNpb24EAgxwYXJlbnQOCg52ZXJzaW9uBAIWYXBwbGljYXRpb24KBmFwcBJuYW1lc3BhY2UKEHRlbmFudC1hBmtleQoMcGFyZW50FGdlbmVyYXRpb24KNDAxbTdjdzQ1a2djcjBwMmN6cWN5ZXRwODdmAApjaGlsZA4KDnZlcnNpb24EAhZhcHBsaWNhdGlvbgoGYXBwEm5hbWVzcGFjZQoQdGVuYW50LWEGa2V5CgpjaGlsZBRnZW5lcmF0aW9uCjQwMW03Y3c0NWtnY3IwcDJjenFjeWV0cDg3ZgAab2JsaWdhdGlvbktleQoKY2hpbGQAABhvYmxpZ2F0aW9uSWQKgAE3NWE2M2Q3NDM3M2UwNjljZDQ4Y2MwZTE0YzEzYThlYjMxNTkyOWU2Y2Q2NGE1MTFmM2E3MjBlMThjYzM5OWJlAA==",
+                "payload_codec": "avro",
+                "activity": {
+                    "id": "01m7cw45njpgnq35rcvn4w83rr",
+                    "idempotency_key": "01m7cw45njpgnq35rcvn4w83rr",
+                    "sequence": 2,
+                    "type": "dw.compensation.reserve-child-scope.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\ReserveChildScopeActivity",
+                    "local_activity": false,
+                    "attempt_id": "01M7CW45QVDDG0C5BA5W26K1VX",
+                    "status": "completed",
+                    "payload_codec": "avro",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 3,
+                        "backoff_seconds": [
+                            1,
+                            2,
+                            5,
+                            10,
+                            15,
+                            30,
+                            60,
+                            120
+                        ],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "connection": "redis",
+                    "queue": "default",
+                    "created_at": "2026-11-14T11:12:18.098335Z",
+                    "started_at": "2026-11-14T11:12:18.171633Z",
+                    "closed_at": "2026-11-14T11:12:18.329291Z",
+                    "arguments": "wwHioz3/VYAiNwwKDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCgZhcHASbmFtZXNwYWNlChB0ZW5hbnQtYQZrZXkKDHBhcmVudBRnZW5lcmF0aW9uCjQwMW03Y3c0NWtnY3IwcDJjenFjeWV0cDg3ZgAKCmNoaWxkDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCgZhcHASbmFtZXNwYWNlChB0ZW5hbnQtYQZrZXkKCmNoaWxkFGdlbmVyYXRpb24KNDAxbTdjdzQ1a2djcjBwMmN6cWN5ZXRwODdmAA4aDnZlcnNpb24EAh5wYXJlbnRFeGVjdXRpb24ODApzY29wZQoGYXBwDnN1YmplY3QKFGJ1c2luZXNzLTEWZXhlY3V0aW9uSWQKFmV4ZWN1dGlvbi0xInBvbGljeUZpbmdlcnByaW50CoABYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYRZzb3VyY2VTdGF0ZQoKcmVhZHkcc291cmNlUmV2aXNpb24KFHJldmlzaW9uLTEAEm5hbWVzcGFjZQoQdGVuYW50LWEgcGFyZW50SW5zdGFuY2VJZAoecmV0YWluZWQtcGFyZW50FnBhcmVudFJ1bklkCjQwMW03Y3c0NWtnY3IwcDJjenFjeWV0cDg3ZghzbG90ChBzaGlwbWVudBRnZW5lcmF0aW9uCg5lbnRyeS0xGGhvc3RpbmdTdGF0ZQoUZGVsaXZlcmluZyJjaGlsZFdvcmtmbG93VHlwZQpOVGVzdHNcVW5pdFxWMlxSZXRhaW5lZFNjb3BlQ2hpbGRGaXh0dXJlLGNoaWxkUG9saWN5RmluZ2VycHJpbnQKgAFiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiHnJlcXVpcmVkT3V0Y29tZQoSZGVsaXZlcmVkIGlucHV0RmluZ2VycHJpbnQKgAFhYTFjMTBiNmNlMmQ5N2MyOGM2Y2NjODI4OWQ3NTFjOWVhZTM4ODE5NmFjYTk3YzJmZGZiZWFiZWI2ZWUwN2MxGGNoaWxkT3B0aW9ucw4IJnBhcmVudF9jbG9zZV9wb2xpY3kKDmFiYW5kb24UY29ubmVjdGlvbgAKcXVldWUAJmNhbmNlbGxhdGlvbl9wb2xpY3kKDmFiYW5kb24AAAoKb3duZXIA",
+                    "result": "wwHioz3/VYAiNw4EFnJlc2VydmF0aW9uDgwOdmVyc2lvbgQEEGlkZW50aXR5DhoOdmVyc2lvbgQCHnBhcmVudEV4ZWN1dGlvbg4MCnNjb3BlCgZhcHAOc3ViamVjdAoUYnVzaW5lc3MtMRZleGVjdXRpb25JZAoWZXhlY3V0aW9uLTEicG9saWN5RmluZ2VycHJpbnQKgAFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhFnNvdXJjZVN0YXRlCgpyZWFkeRxzb3VyY2VSZXZpc2lvbgoUcmV2aXNpb24tMQASbmFtZXNwYWNlChB0ZW5hbnQtYSBwYXJlbnRJbnN0YW5jZUlkCh5yZXRhaW5lZC1wYXJlbnQWcGFyZW50UnVuSWQKNDAxbTdjdzQ1a2djcjBwMmN6cWN5ZXRwODdmCHNsb3QKEHNoaXBtZW50FGdlbmVyYXRpb24KDmVudHJ5LTEYaG9zdGluZ1N0YXRlChRkZWxpdmVyaW5nImNoaWxkV29ya2Zsb3dUeXBlCk5UZXN0c1xVbml0XFYyXFJldGFpbmVkU2NvcGVDaGlsZEZpeHR1cmUsY2hpbGRQb2xpY3lGaW5nZXJwcmludAqAAWJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmIecmVxdWlyZWRPdXRjb21lChJkZWxpdmVyZWQgaW5wdXRGaW5nZXJwcmludAqAAWFhMWMxMGI2Y2UyZDk3YzI4YzZjY2M4Mjg5ZDc1MWM5ZWFlMzg4MTk2YWNhOTdjMmZkZmJlYWJlYjZlZTA3YzEYY2hpbGRPcHRpb25zDggmcGFyZW50X2Nsb3NlX3BvbGljeQoOYWJhbmRvbhRjb25uZWN0aW9uAApxdWV1ZQAmY2FuY2VsbGF0aW9uX3BvbGljeQoOYWJhbmRvbgAAGndvcmtmbG93Q2xhc3MKTlRlc3RzXFVuaXRcVjJcUmV0YWluZWRTY29wZUNoaWxkRml4dHVyZSpkZWZpbml0aW9uRmluZ2VycHJpbnQKjgFzaGEyNTY6MmU5MzkyMTYxZjE4Y2E5MDViMzU5OTc5ZWZhODRhZWRmMGQyODQxOTMwZWJhODc2MWFjYTg4NzdlNTczMWUwNChhdXRob3JpemF0aW9uVmVyc2lvbgoiYmluZGluZy1wb2xpY3ktdjEacGFydGljaXBhdGlvbg4IDnZlcnNpb24EAgxwYXJlbnQOCg52ZXJzaW9uBAIWYXBwbGljYXRpb24KBmFwcBJuYW1lc3BhY2UKEHRlbmFudC1hBmtleQoMcGFyZW50FGdlbmVyYXRpb24KNDAxbTdjdzQ1a2djcjBwMmN6cWN5ZXRwODdmAApjaGlsZA4KDnZlcnNpb24EAhZhcHBsaWNhdGlvbgoGYXBwEm5hbWVzcGFjZQoQdGVuYW50LWEGa2V5CgpjaGlsZBRnZW5lcmF0aW9uCjQwMW03Y3c0NWtnY3IwcDJjenFjeWV0cDg3ZgAab2JsaWdhdGlvbktleQoKY2hpbGQAABhvYmxpZ2F0aW9uSWQKgAE3NWE2M2Q3NDM3M2UwNjljZDQ4Y2MwZTE0YzEzYThlYjMxNTkyOWU2Y2Q2NGE1MTFmM2E3MjBlMThjYzM5OWJlAA=="
+                }
+            },
+            "sequence": 5,
+            "recorded_at": "2026-11-14T12:00:04Z"
+        }
+    ],
+    "expected": {
+        "completed": true,
+        "result": {
+            "version": 2,
+            "identity": {
+                "version": 1,
+                "parentExecution": {
+                    "scope": "app",
+                    "subject": "business-1",
+                    "executionId": "execution-1",
+                    "policyFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "sourceState": "ready",
+                    "sourceRevision": "revision-1"
+                },
+                "namespace": "tenant-a",
+                "parentInstanceId": "retained-parent",
+                "parentRunId": "01m7cw45kgcr0p2czqcyetp87f",
+                "slot": "shipment",
+                "generation": "entry-1",
+                "hostingState": "delivering",
+                "childWorkflowType": "Tests\\Unit\\V2\\RetainedScopeChildFixture",
+                "childPolicyFingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "requiredOutcome": "delivered",
+                "inputFingerprint": "aa1c10b6ce2d97c28c6ccc8289d751c9eae388196aca97c2fdfbeabeb6ee07c1",
+                "childOptions": {
+                    "parent_close_policy": "abandon",
+                    "connection": null,
+                    "queue": null,
+                    "cancellation_policy": "abandon"
+                }
+            },
+            "workflowClass": "Tests\\Unit\\V2\\RetainedScopeChildFixture",
+            "definitionFingerprint": "sha256:2e9392161f18ca905b359979efa84aedf0d2841930eba8761aca8877e5731e04",
+            "authorizationVersion": "binding-policy-v1",
+            "participation": {
+                "version": 1,
+                "parent": {
+                    "version": 1,
+                    "application": "app",
+                    "namespace": "tenant-a",
+                    "key": "parent",
+                    "generation": "01m7cw45kgcr0p2czqcyetp87f"
+                },
+                "child": {
+                    "version": 1,
+                    "application": "app",
+                    "namespace": "tenant-a",
+                    "key": "child",
+                    "generation": "01m7cw45kgcr0p2czqcyetp87f"
+                },
+                "obligationKey": "child"
+            }
+        },
+        "commands": [
+            {
+                "type": "complete_workflow",
+                "result": "wwHioz3/VYAiNw4MDnZlcnNpb24EBBBpZGVudGl0eQ4aDnZlcnNpb24EAh5wYXJlbnRFeGVjdXRpb24ODApzY29wZQoGYXBwDnN1YmplY3QKFGJ1c2luZXNzLTEWZXhlY3V0aW9uSWQKFmV4ZWN1dGlvbi0xInBvbGljeUZpbmdlcnByaW50CoABYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYRZzb3VyY2VTdGF0ZQoKcmVhZHkcc291cmNlUmV2aXNpb24KFHJldmlzaW9uLTEAEm5hbWVzcGFjZQoQdGVuYW50LWEgcGFyZW50SW5zdGFuY2VJZAoecmV0YWluZWQtcGFyZW50FnBhcmVudFJ1bklkCjQwMW03Y3c0NWtnY3IwcDJjenFjeWV0cDg3ZghzbG90ChBzaGlwbWVudBRnZW5lcmF0aW9uCg5lbnRyeS0xGGhvc3RpbmdTdGF0ZQoUZGVsaXZlcmluZyJjaGlsZFdvcmtmbG93VHlwZQpOVGVzdHNcVW5pdFxWMlxSZXRhaW5lZFNjb3BlQ2hpbGRGaXh0dXJlLGNoaWxkUG9saWN5RmluZ2VycHJpbnQKgAFiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiHnJlcXVpcmVkT3V0Y29tZQoSZGVsaXZlcmVkIGlucHV0RmluZ2VycHJpbnQKgAFhYTFjMTBiNmNlMmQ5N2MyOGM2Y2NjODI4OWQ3NTFjOWVhZTM4ODE5NmFjYTk3YzJmZGZiZWFiZWI2ZWUwN2MxGGNoaWxkT3B0aW9ucw4IJnBhcmVudF9jbG9zZV9wb2xpY3kKDmFiYW5kb24UY29ubmVjdGlvbgAKcXVldWUAJmNhbmNlbGxhdGlvbl9wb2xpY3kKDmFiYW5kb24AABp3b3JrZmxvd0NsYXNzCk5UZXN0c1xVbml0XFYyXFJldGFpbmVkU2NvcGVDaGlsZEZpeHR1cmUqZGVmaW5pdGlvbkZpbmdlcnByaW50Co4Bc2hhMjU2OjJlOTM5MjE2MWYxOGNhOTA1YjM1OTk3OWVmYTg0YWVkZjBkMjg0MTkzMGViYTg3NjFhY2E4ODc3ZTU3MzFlMDQoYXV0aG9yaXphdGlvblZlcnNpb24KImJpbmRpbmctcG9saWN5LXYxGnBhcnRpY2lwYXRpb24OCA52ZXJzaW9uBAIMcGFyZW50DgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCgZhcHASbmFtZXNwYWNlChB0ZW5hbnQtYQZrZXkKDHBhcmVudBRnZW5lcmF0aW9uCjQwMW03Y3c0NWtnY3IwcDJjenFjeWV0cDg3ZgAKY2hpbGQOCg52ZXJzaW9uBAIWYXBwbGljYXRpb24KBmFwcBJuYW1lc3BhY2UKEHRlbmFudC1hBmtleQoKY2hpbGQUZ2VuZXJhdGlvbgo0MDFtN2N3NDVrZ2NyMHAyY3pxY3lldHA4N2YAGm9ibGlnYXRpb25LZXkKCmNoaWxkAAA=",
+                "payload_codec": "avro"
+            }
+        ]
+    }
+}

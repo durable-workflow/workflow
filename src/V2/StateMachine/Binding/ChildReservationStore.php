@@ -28,9 +28,32 @@ final class ChildReservationStore
     ) {
     }
 
-    public function reserve(BindingIdentity $identity, string $workflowClass, string $principal): ChildReservation
-    {
+    public function reserve(
+        BindingIdentity $identity,
+        string $workflowClass,
+        string $principal,
+        ?ChildScopeParticipation $participation = null,
+    ): ChildReservation {
         $version = $this->authorize($identity, $principal, 'reserve');
+        if ($participation !== null) {
+            $connection = self::instances()->getModel()->getConnection();
+            foreach ([[$participation->parent, 'register'],
+                [$participation->child, 'participate'],
+            ] as [$scope, $operation]) {
+                $policy = app(\Workflow\V2\Compensation\Security\ScopeAuthorization::class)
+                    ->assertAllowed($scope, $principal, $operation);
+                if ($connection->transactionLevel() !== 0
+                    || self::instances()->getModel()->getConnection()->transactionLevel() !== 0) {
+                    throw new LogicException(
+                        'Retained participation authorization must leave the native transaction closed.'
+                    );
+                }
+                \Workflow\V2\Compensation\Definition\PortableDescriptor::identifier(
+                    $policy,
+                    'authorization policy version'
+                );
+            }
+        }
         if (! is_a($workflowClass, \Workflow\V2\Workflow::class, true)
             || TypeRegistry::for($workflowClass) !== $identity->childWorkflowType) {
             throw new LogicException('The binding child type does not match its definition.');
@@ -39,7 +62,7 @@ final class ChildReservationStore
         if ($fingerprint === null) {
             throw new LogicException('The child definition has no immutable fingerprint.');
         }
-        $candidate = new ChildReservation($identity, $workflowClass, $fingerprint, $version);
+        $candidate = new ChildReservation($identity, $workflowClass, $fingerprint, $version, $participation);
         $query = self::instances();
         $connection = $query->getModel()
             ->getConnection();
@@ -58,7 +81,8 @@ final class ChildReservationStore
                 self::matching($child, $stored);
                 if ($stored->identity->toArray() !== $identity->toArray()
                     || $stored->workflowClass !== $candidate->workflowClass
-                    || $stored->definitionFingerprint !== $candidate->definitionFingerprint) {
+                    || $stored->definitionFingerprint !== $candidate->definitionFingerprint
+                    || $stored->participation?->toArray() !== $candidate->participation?->toArray()) {
                     throw new LogicException('An existing binding generation has a different immutable descriptor.');
                 }
                 return $stored;
@@ -169,6 +193,9 @@ final class ChildReservationStore
             || $parent->cancellation_requested_at !== null) {
             throw new LogicException('The native child reservation is closed, already admitted or no longer eligible.');
         }
+        if ($reservation->participation !== null) {
+            \Workflow\V2\Compensation\Persistence\ChildScopes::assertReservedAdmission($reservation);
+        }
         // Persisted data does not choose a class to autoload. First bind the
         // supplied descriptor to the host-authorized reservation under its lock.
         if (TypeRegistry::for($call->workflow) !== $identity->childWorkflowType
@@ -195,6 +222,9 @@ final class ChildReservationStore
             throw new LogicException('The reservation cannot record this native admission.');
         }
         $binding = new ChildBinding($reservation->identity, $receipt);
+        if ($reservation->participation !== null) {
+            \Workflow\V2\Compensation\Persistence\ChildScopes::recordReservedAdmission($reservation, $receipt);
+        }
         $state['status'] = 'admitted';
         $state['admission'] = $binding->toArray();
         self::write($child, $state);

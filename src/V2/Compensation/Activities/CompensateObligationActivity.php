@@ -16,6 +16,7 @@ use Workflow\V2\Compensation\Execution\Resolution;
 use Workflow\V2\Compensation\Persistence\ChildScopes;
 use Workflow\V2\Compensation\Persistence\ScopeProgress;
 use Workflow\V2\Compensation\Recovery\ChildResolution;
+use Workflow\V2\Compensation\Recovery\ReservedChildResolution;
 use Workflow\V2\Compensation\Security\ScopeBoundary;
 
 /**
@@ -60,6 +61,8 @@ final class CompensateObligationActivity extends Activity
         try {
             if ($obligation->handlerType === ChildScopes::TYPE) {
                 $result = app(ChildResolution::class)->resolve($scope, $obligation, $id);
+            } elseif ($obligation->handlerType === ChildScopes::RESERVED_TYPE) {
+                $result = app(ReservedChildResolution::class)->resolve($scope, $obligation, $id);
             } else {
                 $handler = app(HandlerRegistry::class)->resolve($obligation);
                 $result = $row['forward_status'] === 'registered'
