@@ -104,6 +104,7 @@ use Workflow\V2\Support\ServiceCallPrincipal;
 use Workflow\V2\Support\ServiceCallScheduler;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowDefinition;
+use Workflow\V2\Support\WorkflowDefinitionFingerprint;
 use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\Support\WorkflowRunRetentionCleanup;
@@ -2716,6 +2717,38 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 continue;
             }
 
+            if ($fixture['id'] === 'child-retry-definition-recorded-cold-replay') {
+                $this->assertNativeChildProducersRetainDefinition($fixture);
+                $run = $this->createRunFromFixture($fixture);
+                $before = $run->historyEvents()
+                    ->orderBy('sequence')
+                    ->get()
+                    ->toArray();
+                $state = (new QueryStateReplayer())->replayState($run->fresh(['historyEvents']));
+                $this->assertSame(2, $state->sequence);
+                $this->assertNull($state->current);
+                $this->assertSame($before, $run->historyEvents()->orderBy('sequence')->get()->toArray());
+                $this->runReadyWorkflowTask($run);
+                $this->assertSame(RunStatus::Completed, $run->fresh()->status);
+                $this->assertSame($fixture['expected']['result'], WorkflowStub::loadRun($run->id)->output());
+                $this->assertSame(1, $run->historyEvents()
+                    ->where('event_type', HistoryEventType::VersionMarkerRecorded)->count());
+
+                // Legacy absence is a compatibility control, not new regression
+                // evidence: neither query nor execution may acquire a current
+                // definition when the historical start recorded none.
+                $fixture['id'] .= '-legacy-absence-control';
+                $fixture['history'] = [$fixture['history'][0]];
+                unset(
+                    $fixture['history'][0]['payload']['workflow_definition_fingerprint'],
+                    $fixture['history'][0]['payload']['workflow_definition_fingerprint_source'],
+                    $fixture['expected'],
+                );
+                $fixture['expected_failure'] = [
+                    'exception' => VersionRangeMismatchException::class,
+                ];
+            }
+
             if ($fixture['id'] === 'child-closure-sibling-history-bound') {
                 $this->assertChildClosureReadsNoSiblingHistory($fixture);
 
@@ -3056,6 +3089,45 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             config()
                 ->set('workflows.v2', $previous);
         }
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function assertNativeChildProducersRetainDefinition(array $fixture): void
+    {
+        $parent = WorkflowStub::make(TestGreetingWorkflow::class);
+        $parent->start('definition-parent');
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $parentTask = WorkflowTask::query()->where('workflow_run_id', $parent->runId())->sole();
+        $this->assertTrue($bridge->claimStatus($parentTask->id, 'definition-parent-worker')['claimed']);
+        $admitted = $bridge->complete($parentTask->id, [[
+            'type' => 'start_child_workflow',
+            'workflow_type' => $fixture['workflow']['type'],
+            'arguments' => Serializer::serializeWithCodec('avro', $fixture['workflow']['arguments']),
+            'payload_codec' => 'avro',
+            'retry_policy' => [
+                'max_attempts' => 2,
+                'backoff_seconds' => [0],
+            ],
+        ]]);
+        $this->assertTrue($admitted['completed'], json_encode($admitted, JSON_THROW_ON_ERROR));
+        $link = WorkflowLink::query()->where('parent_workflow_run_id', $parent->runId())->sole();
+        $child = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+        $expected = $fixture['history'][0]['payload']['workflow_definition_fingerprint'];
+        $this->assertSame($expected, WorkflowDefinitionFingerprint::recordedForRun($child));
+
+        $childTask = WorkflowTask::query()->where('workflow_run_id', $child->id)->sole();
+        $this->assertTrue($bridge->claimStatus($childTask->id, 'definition-child-worker')['claimed']);
+        $failed = $bridge->complete($childTask->id, [[
+            'type' => 'fail_workflow',
+            'message' => 'retry the recorded child definition',
+        ]]);
+        $this->assertTrue($failed['completed'], json_encode($failed, JSON_THROW_ON_ERROR));
+        $retry = WorkflowRun::query()->where('workflow_instance_id', $child->workflow_instance_id)
+            ->where('run_number', 2)
+            ->sole();
+        $this->assertSame($expected, WorkflowDefinitionFingerprint::recordedForRun($retry));
     }
 
     private function assertHandedOverChildFailureStartsTheRecordedRetry(array $fixture): void
@@ -5455,6 +5527,21 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         foreach ($fixture['history'] as $event) {
             $eventType = HistoryEventType::from($event['event_type']);
             if ($eventType === HistoryEventType::WorkflowStarted) {
+                $started = $run->historyEvents()
+                    ->where('event_type', HistoryEventType::WorkflowStarted)->sole();
+                $payload = $started->payload;
+                // Keep the new run's routing/command IDs, but import definition
+                // authority exactly. A synthetic current fingerprint must not
+                // turn legacy absence into a fresh version decision.
+                foreach (['workflow_definition_fingerprint', 'workflow_definition_fingerprint_source'] as $key) {
+                    unset($payload[$key]);
+                    if (array_key_exists($key, $event['payload'])) {
+                        $payload[$key] = $event['payload'][$key];
+                    }
+                }
+                $started->forceFill([
+                    'payload' => $payload,
+                ])->save();
                 continue;
             }
 

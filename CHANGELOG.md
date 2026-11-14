@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Experimental embedded compensation scopes (#1063): retained versioned
+  obligations, native Saga recovery, sequential child participation and explicit
+  release. Each scope keeps its originating run; continue-as-new, origin redrive
+  and child retry do not transfer forward ownership. Recovery activities require
+  the exact paired native admission receipt and retained scope/original-owner
+  binding before host authorization and again under native activity locks.
+
 - **Run migrations on MariaDB.** Timer status and service-dispatch metadata
   updates preserve their scheduled timestamps on older MariaDB schemas. The
   forward migrations remove implicit timestamp updates without rewriting

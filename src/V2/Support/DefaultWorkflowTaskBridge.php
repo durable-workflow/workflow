@@ -4703,6 +4703,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         WorkflowHistoryEvent::record($childRun, HistoryEventType::WorkflowStarted, [
             'workflow_class' => $workflowType,
             'workflow_type' => $workflowType,
+            ...self::embeddedChildDefinition($workflowType),
             'workflow_instance_id' => $childRun->workflow_instance_id,
             'workflow_run_id' => $childRun->id,
             'parent_workflow_instance_id' => $run->workflow_instance_id,
@@ -4736,6 +4737,22 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         self::projectRunBestEffort($childRun, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY, 'child_workflow_start');
 
         return $sequence + 1;
+    }
+
+    /**
+     * @return array{workflow_definition_fingerprint?: string}
+     */
+    private static function embeddedChildDefinition(string $workflowType): array
+    {
+        try {
+            $class = TypeRegistry::resolveWorkflowClass($workflowType, $workflowType);
+        } catch (LogicException) {
+            return [];
+        }
+        $fingerprint = WorkflowDefinition::fingerprint($class);
+        return $fingerprint === null ? [] : [
+            'workflow_definition_fingerprint' => $fingerprint,
+        ];
     }
 
     /**
