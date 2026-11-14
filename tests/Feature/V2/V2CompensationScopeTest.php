@@ -96,6 +96,164 @@ final class V2CompensationScopeTest extends TestCase
         $this->assertSame(1, (int) Cache::get('test:scope:effect-count'));
     }
 
+    #[DataProvider('operatorStops')]
+    public function testClosureAfterOriginLookupRoutesTheSameRetainedRequestToRecovery(string $stop): void
+    {
+        [$scope, $origin] = $this->waitingClosureRaceOrigin();
+        $armed = true;
+        $history = null;
+        \Illuminate\Support\Facades\DB::listen(static function (QueryExecuted $query) use (
+            &$armed,
+            &$history,
+            $origin,
+            $stop,
+        ): void {
+            if (! $armed || ! str_starts_with(strtolower(ltrim($query->sql)), 'select')
+                || ! str_contains($query->sql, 'workflow_runs')
+                || ! in_array($origin->runId(), $query->bindings, true)
+                || $query->connection->transactionLevel() !== 0) {
+                return;
+            }
+            // The original status has been read, but cooperative delivery has not begun.
+            $armed = false;
+            $origin->{$stop}('Technical closure wins before the cleanup request reaches its origin.');
+            $history = WorkflowHistoryEvent::query()->where('workflow_run_id', $origin->runId())
+                ->orderBy('id')
+                ->get()
+                ->toArray();
+        });
+        try {
+            $result = app(ScopeRecovery::class)->request($scope, 'closure-race', 'operator-a', 'cancel-order');
+        } finally {
+            $armed = false;
+        }
+        $this->assertNotNull($history, 'The test must hit the unlocked origin-status read before routing.');
+        $this->assertSame('recovery', $result['route']);
+        $this->assertNotSame($origin->runId(), $result['runId']);
+        $this->assertSame('requested', $result['scopeStatus']);
+        $this->assertSame('observe_recovery', $result['nextAction']);
+        $this->assertNull(Cache::get('test:scope:undo-log'));
+        $this->drainClosureRaceTasks();
+        $this->assertClosureRaceResolved($scope, $origin, $result['runId'], $history);
+    }
+
+    #[DataProvider('operatorStops')]
+    public function testAcceptedOriginRequestSurvivesClosureBeforeItsSagaRuns(string $stop): void
+    {
+        [$scope, $origin] = $this->waitingClosureRaceOrigin();
+        $accepted = app(ScopeRecovery::class)->request($scope, 'closure-race', 'operator-a', 'cancel-order');
+        $this->assertSame('origin', $accepted['route']);
+        $this->assertSame($origin->runId(), $accepted['runId']);
+        $this->assertSame('requested', (new ScopeRepository())->inspect($scope)['status']);
+        $this->assertNull(Cache::get('test:scope:undo-log'));
+        $origin->{$stop}('Technical closure wins after request acceptance but before Saga cleanup.');
+        $history = WorkflowHistoryEvent::query()->where('workflow_run_id', $origin->runId())
+            ->orderBy('id')
+            ->get()
+            ->toArray();
+        $result = app(ScopeRecovery::class)->request($scope, 'closure-race', 'operator-a', 'cancel-order');
+        $this->assertSame('recovery', $result['route']);
+        $this->assertSame('requested', $result['scopeStatus']);
+        $this->drainClosureRaceTasks();
+        $this->assertClosureRaceResolved($scope, $origin, $result['runId'], $history);
+    }
+
+    public function testRecoveryWorkerLossDoesNotRepeatVerifiedCompensation(): void
+    {
+        if (! function_exists('posix_kill')) {
+            $this->markTestSkipped('The recovery-worker loss control requires POSIX signals.');
+        }
+        [$scope, $origin] = $this->waitingClosureRaceOrigin();
+        $origin->terminate('Recover the original effects from the retained ledger.');
+        $history = WorkflowHistoryEvent::query()->where('workflow_run_id', $origin->runId())
+            ->orderBy('id')
+            ->get()
+            ->toArray();
+        $input = tempnam(sys_get_temp_dir(), 'scope-resume-input-');
+        $report = tempnam(sys_get_temp_dir(), 'scope-resume-report-');
+        chmod($input, 0600);
+        chmod($report, 0600);
+        $process = null;
+        try {
+            $data = [
+                'scope' => $scope->toArray(),
+                'database' => config('database.connections.' . config('database.default')),
+                'redis' => config('database.redis'),
+                'cache' => config('cache.stores.redis'),
+                'cache_prefix' => config('cache.prefix'),
+                'report' => $report,
+                'crash_after_second' => true,
+            ];
+            file_put_contents($input, json_encode($data, JSON_THROW_ON_ERROR));
+            $command = [PHP_BINARY, 'vendor/bin/phpunit', 'tests/Support/CompensationScopeRecoveryProcessTest.php'];
+            $process = new \Symfony\Component\Process\Process(
+                $command,
+                dirname(__DIR__, 3),
+                [
+                    'DWF_SCOPE_RECOVERY_INPUT' => $input,
+                ],
+                timeout: 30
+            );
+            $process->start();
+            $crashedPid = $process->getPid();
+            try {
+                $process->wait();
+                $this->fail('The recovery worker must die after exactly one verified compensation.');
+            } catch (\Symfony\Component\Process\Exception\ProcessSignaledException $error) {
+                $this->assertSame(SIGKILL, $error->getProcess()->getTermSignal());
+            }
+            $cut = json_decode(file_get_contents($report), true, flags: JSON_THROW_ON_ERROR);
+            $this->assertSame($crashedPid, $cut['pid']);
+            $this->assertNotSame(getmypid(), $crashedPid);
+            $this->assertSame('requested', $cut['status']);
+            $before = (new ScopeRepository())->inspect($scope);
+            $this->assertSame('pending', $before['obligations'][0]['compensation_status']);
+            $this->assertSame('verified', $before['obligations'][1]['compensation_status']);
+            $this->assertSame(['second'], Cache::get('test:scope:undo-log'));
+            $this->assertSame('first', Cache::get('test:scope:effect:' . $before['obligations'][0]['id']));
+            $this->assertNull(Cache::get('test:scope:effect:' . $before['obligations'][1]['id']));
+
+            $data['crash_after_second'] = false;
+            file_put_contents($input, json_encode($data, JSON_THROW_ON_ERROR));
+            file_put_contents($report, '');
+            $process = new \Symfony\Component\Process\Process(
+                $command,
+                dirname(__DIR__, 3),
+                [
+                    'DWF_SCOPE_RECOVERY_INPUT' => $input,
+                ],
+                timeout: 30
+            );
+            $process->mustRun();
+            $recovered = json_decode(file_get_contents($report), true, flags: JSON_THROW_ON_ERROR);
+            $this->assertNotSame(getmypid(), $recovered['pid']);
+            $this->assertNotSame($crashedPid, $recovered['pid']);
+            $this->assertSame($cut['runId'], $recovered['runId']);
+            $this->assertSame('verified', $recovered['status']);
+            $after = (new ScopeRepository())->inspect($scope);
+            $this->assertSame($origin->runId(), $after['original_run_id']);
+            $this->assertSame(['verified', 'verified'], array_column($after['obligations'], 'compensation_status'));
+            $this->assertSame(array_column($before['obligations'], 'id'), array_column($after['obligations'], 'id'));
+            $this->assertSame(['second', 'first'], Cache::get('test:scope:undo-log'));
+            $this->assertSame(2, (int) Cache::get('test:scope:effect-count'));
+            $this->assertSame(
+                1,
+                WorkflowRun::query()->where('workflow_instance_id', $scope->recoveryInstanceId())->count()
+            );
+            $this->assertSame('terminated', $origin->refresh()->status());
+            $this->assertSame($history, WorkflowHistoryEvent::query()->where('workflow_run_id', $origin->runId())
+                ->orderBy('id')
+                ->get()
+                ->toArray());
+        } finally {
+            if ($process !== null && $process->isRunning()) {
+                $process->stop(0, SIGKILL);
+            }
+            unlink($input);
+            unlink($report);
+        }
+    }
+
     public static function operatorStops(): array
     {
         return [
@@ -995,6 +1153,68 @@ final class V2CompensationScopeTest extends TestCase
             }
         }
         $this->fail('Native retry budget did not terminate.');
+    }
+
+    private function waitingClosureRaceOrigin(): array
+    {
+        self::stopWorkers();
+        \Illuminate\Support\Facades\Queue::fake();
+        config([
+            'workflows.v2.task_dispatch_mode' => 'queue',
+            'queue.default' => 'redis',
+        ]);
+        $scope = $this->identity();
+        $origin = WorkflowStub::make(
+            \Tests\Fixtures\V2\TestWaitingScopeWorkflow::class,
+            'closure-race-origin',
+            'client-a'
+        );
+        $origin->start($scope->toArray());
+        $this->drainClosureRaceTasks();
+        $this->assertSame('waiting', $origin->refresh()->status());
+        $this->assertSame(2, (int) Cache::get('test:scope:effect-count'));
+        return [$scope, $origin];
+    }
+
+    private function drainClosureRaceTasks(): void
+    {
+        for ($step = 0; $step < 40; ++$step) {
+            $task = WorkflowTask::query()->where('status', 'ready')->orderBy('available_at')->orderBy('id')->first();
+            if ($task === null || ($task->available_at !== null && $task->available_at->isFuture())) {
+                return;
+            }
+            $job = match ($task->task_type->value) {
+                'workflow' => new \Workflow\V2\Jobs\RunWorkflowTask($task->id),
+                'activity' => new \Workflow\V2\Jobs\RunActivityTask($task->id),
+                'timer' => new \Workflow\V2\Jobs\RunTimerTask($task->id),
+            };
+            $this->app->call([$job, 'handle']);
+        }
+        $this->fail('The bounded request/closure control did not settle its native tasks.');
+    }
+
+    private function assertClosureRaceResolved(
+        ScopeIdentity $scope,
+        WorkflowStub $origin,
+        string $recoveryRun,
+        array $history,
+    ): void {
+        $again = app(ScopeRecovery::class)->request($scope, 'closure-race', 'operator-a', 'cancel-order');
+        $this->assertSame($recoveryRun, $again['runId']);
+        $this->assertSame('verified', $again['scopeStatus']);
+        $this->assertSame('none', $again['nextAction']);
+        $this->assertSame('verified', (new ScopeRepository())->inspect($scope)['status']);
+        $this->assertSame(['second', 'first'], Cache::get('test:scope:undo-log'));
+        $this->assertSame(2, (int) Cache::get('test:scope:effect-count'));
+        $this->assertSame(
+            1,
+            WorkflowRun::query()->where('workflow_instance_id', $scope->recoveryInstanceId())->count()
+        );
+        $this->assertSame(1, ConfiguredV2Models::connection()->table('workflow_compensation_requests')->count());
+        $this->assertSame($history, WorkflowHistoryEvent::query()->where('workflow_run_id', $origin->runId())
+            ->orderBy('id')
+            ->get()
+            ->toArray());
     }
 
     private function completedOrigin(): array
