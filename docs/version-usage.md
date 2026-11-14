@@ -1,7 +1,7 @@
 # Open-run version usage (draft v1)
 
-This read-only contract implements durable-workflow/.github#220. It answers which
-open runs still have a recorded decision below a proposed minimum supported
+This read-only contract answers which open runs still have a recorded decision
+below a proposed minimum supported
 version. It does not replay workflows, run application code, write a projection,
 change markers, or authorize deleting a branch.
 
@@ -47,13 +47,15 @@ Each run has `recorded_version` only for legacy/current. Unknown reasons are:
   an older definition that has not reached the change point. A matching current
   code fingerprint, build label, admission time or deployment time never upgrades
   this to current.
-- `history_unavailable`: details are pruned or owning-instance/source provenance is unavailable,
-  the initial history/prefix is absent
-  or incomplete, the stored event format is not supported, or the bounded
+- `history_unavailable`: details are pruned, owning-instance/source provenance is
+  unavailable, the initial history/prefix is absent or incomplete, the stored
+  event format is not supported, or the bounded
   inspection budget (1,000 version markers per run) is exceeded.
 - `history_invalid`: malformed decision data, invalid recorded range, or
-  conflicting decisions for the same change ID. Repeated decisions with the same version remain valid when each recorded
-  range is valid; range metadata may differ across repeated historical calls. Marker integer fields use the signed 32-bit range.
+  conflicting decisions for the same change ID. Repeated decisions with the same
+  version remain valid when each recorded range is valid; range metadata may
+  differ across repeated historical calls. Marker integer fields use the signed
+  32-bit range.
 
 Marker readers must understand their runtime's retained format. Embedded marker
 fields are `change_id`, `version`, `min_supported`, `max_supported` and positive
@@ -68,8 +70,8 @@ The response shape is in
 cohort, before the optional state filter and independently of page size/cursor.
 `runs` contains only the selected state when a state filter is present.
 
-Runs are ordered by byte-exact run ID ascending, with a strict keyset continuation. The
-first request captures the greatest matching open run ID as `through_run_id`;
+Runs are ordered by byte-exact run ID ascending, with a strict keyset continuation.
+The first request captures the greatest matching open run ID as `through_run_id`;
 all continuations retain that upper bound and advance after the last returned
 ID. New admissions beyond that bound cannot appear on later pages. Cursors bind
 all identity/classification filters, and every page re-applies authorization and
