@@ -45,8 +45,9 @@ final class VersionUsageDecision
         }
         if (array_diff(array_keys($payload), [
             'sequence', 'change_id', 'version', 'min_supported', 'max_supported',
-            'reused_from_run_id', 'reused_recorded_at',
-        ]) !== []) {
+            'reused_from_run_id', 'reused_recorded_at', 'task',
+        ]) !== [] || (array_key_exists('task', $payload) && (! is_array($payload['task'])
+            || array_is_list($payload['task'])))) {
             $this->reason = 'history_unavailable';
             return;
         }

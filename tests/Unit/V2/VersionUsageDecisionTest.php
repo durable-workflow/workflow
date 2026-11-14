@@ -140,6 +140,29 @@ final class VersionUsageDecisionTest extends TestCase
         $this->assertSame('history_invalid', $decision->result()['unknown_reason']);
     }
 
+    public function testTaskSnapshotIsKnownButOtherMarkerExtensionsRemainUnavailable(): void
+    {
+        $decision = new VersionUsageDecision('shipping', 2, true);
+        $decision->observe($this->marker(2) + [
+            'task' => [
+                'id' => 'task-1',
+                'status' => 'leased',
+            ],
+        ]);
+        $this->assertSame('current', $decision->result()['state']);
+        foreach ([[
+            'task' => 'bad',
+        ], [
+            'task' => ['list'],
+        ], [
+            'future_format' => 2,
+        ]] as $extension) {
+            $other = new VersionUsageDecision('shipping', 2, true);
+            $other->observe($this->marker(2) + $extension);
+            $this->assertSame('history_unavailable', $other->result()['unknown_reason']);
+        }
+    }
+
     public function testInspectionBudgetCannotReturnAnOptimisticPartialDecision(): void
     {
         $decision = new VersionUsageDecision('shipping', 1, true);

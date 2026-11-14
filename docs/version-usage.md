@@ -23,7 +23,10 @@ Namespace, workflow type and change ID comparisons are exact and case-sensitive.
 - `limit`: integer from 1 to 200, default 50.
 - `cursor`: optional opaque continuation from this exact namespace/type/change/
   minimum/state query. It is not an authorization token. Invalid or mismatched
-  cursors are errors; they never fall back to a first page.
+  cursors are errors; they never fall back to a first page. Cursor bodies are
+  authenticated before parsing. The embedded reader uses a domain-separated HMAC
+  with the configured application key; missing keys are errors and key rotation
+  invalidates prior cursors.
 
 Invalid arguments return the existing invalid-request error envelope (HTTP 422
 for the native endpoint). Storage or connection failures are errors, not empty
@@ -57,9 +60,14 @@ Each run has `recorded_version` only for legacy/current. Unknown reasons are:
   differ across repeated historical calls. Marker integer fields use the signed
   32-bit range.
 
+The v1 reader freezes its supported retained event-kind set; adding a runtime
+event enum case does not silently expand reader support.
+
 Marker readers must understand their runtime's retained format. Embedded marker
 fields are `change_id`, `version`, `min_supported`, `max_supported` and positive
-logical `sequence`; the range must contain the recorded version. No application
+logical `sequence`; the range must contain the recorded version. The known
+producer-injected `task` snapshot is supported; unknown marker extensions require
+a reader upgrade and remain unavailable. No application
 argument, output, memo or payload-store fetch is necessary for this query.
 
 ## Response and paging

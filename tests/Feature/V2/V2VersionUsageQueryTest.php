@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Casts\Json;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
 use InvalidArgumentException;
 use LogicException;
 use Tests\Fixtures\V2\TestVersionWorkflow;
@@ -16,12 +17,21 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\VersionUsageQuery;
 use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\Support\WorkflowDefinitionFingerprint;
+use Workflow\V2\WorkflowStub;
 
 final class V2VersionUsageQueryTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+        config()
+            ->set('app.key', 'version-usage-feature-signing-key');
+    }
+
     public function testCountsIncludeOldNewAndNoMarkerBeforeStateFilteringOrPagination(): void
     {
         $this->createRun(1, 1);
@@ -45,6 +55,57 @@ final class V2VersionUsageQueryTest extends TestCase
         $unknown = $query->page('orders', 'shipment', 'shipping', 2, state: 'unknown');
         $this->assertSame('marker_absent', $unknown['runs'][0]['unknown_reason']);
         $this->assertNull($unknown['runs'][0]['recorded_version']);
+    }
+
+    public function testActualRecordedMarkerWithTaskSnapshotClassifiesItsDecision(): void
+    {
+        config()->set('queue.default', 'database');
+        Queue::fake();
+        $workflow = WorkflowStub::make(TestVersionWorkflow::class, 'actual-version-usage', 'orders');
+        $workflow->start();
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $this->assertSame(['StartAccepted', 'WorkflowStarted'], $run->historyEvents->pluck('event_type')->map(
+            static fn (HistoryEventType $type): string => $type->value
+        )->all());
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'namespace' => $run->namespace,
+            'task_type' => 'workflow',
+            'status' => 'ready',
+            'available_at' => now(),
+            'payload' => [],
+        ]);
+        $event = WorkflowHistoryEvent::record($run, HistoryEventType::VersionMarkerRecorded, $this->marker(2), $task);
+        $this->assertSame($task->id, $event->payload['task']['id']);
+        $page = (new VersionUsageQuery())->page('orders', 'test-version-workflow', 'shipping', 2);
+        $this->assertSame('current', $page['runs'][0]['state']);
+        $this->assertSame(2, $page['runs'][0]['recorded_version']);
+        $this->assertNull($page['runs'][0]['unknown_reason']);
+    }
+
+    public function testIncompleteOrRepeatedStartPrefixesStayUnavailable(): void
+    {
+        $missingStarted = $this->createRun(1, 2);
+        DB::table((new WorkflowHistoryEvent())->getTable())->where('workflow_run_id', $missingStarted->id)
+            ->where('sequence', 1)
+            ->update([
+                'event_type' => 'StartAccepted',
+            ]);
+        $repeated = $this->createRun(2, 2);
+        $this->event($repeated, 'WorkflowStarted', []);
+        $page = (new VersionUsageQuery())->page('orders', 'shipment', 'shipping', 2);
+        $this->assertSame(2, $page['counts']['unknown']);
+        $this->assertSame(
+            ['history_unavailable', 'history_unavailable'],
+            array_column($page['runs'], 'unknown_reason')
+        );
+    }
+
+    public function testPagingRequiresTheConfiguredApplicationSigningKey(): void
+    {
+        config()->set('app.key', '');
+        $this->expectException(LogicException::class);
+        (new VersionUsageQuery())->page('orders', 'shipment', 'shipping', 2);
     }
 
     public function testNamespacesWorkflowTypesAndChangeIdsUseExactIdentities(): void

@@ -6,26 +6,34 @@ namespace Workflow\V2\Support;
 
 use InvalidArgumentException;
 use JsonException;
+use LogicException;
 
 /** @internal A continuation binds query identity; authorization is reapplied by every query. */
 final class VersionUsageCursor
 {
-    public static function encode(string $query, string $through, string $after): string
+    private const DOMAIN = "durable-workflow.version-usage-cursor.v1\0";
+
+    public static function encode(string $query, string $through, string $after, string $key): string
     {
-        return rtrim(strtr(base64_encode(json_encode([
+        $body = rtrim(strtr(base64_encode(json_encode([
             'version' => 1,
             'query' => $query,
             'through' => $through,
             'after' => $after,
         ], JSON_THROW_ON_ERROR)), '+/', '-_'), '=');
+        return $body . '.' . self::signature($body, $key);
     }
 
-    public static function decode(string $cursor, string $query): array
+    public static function decode(string $cursor, string $query, string $key): array
     {
-        if (strlen($cursor) > 2048 || preg_match('/\A[A-Za-z0-9_-]+\z/D', $cursor) !== 1) {
+        if (strlen($cursor) > 2048 || preg_match('/\A([A-Za-z0-9_-]+)\.([0-9a-f]{64})\z/D', $cursor, $parts) !== 1) {
             throw new InvalidArgumentException('Invalid version-usage cursor.');
         }
-        $decoded = base64_decode(strtr($cursor, '-_', '+/'), true);
+        // Authenticate the exact transport bytes before decoding or parsing them.
+        if (! hash_equals(self::signature($parts[1], $key), $parts[2])) {
+            throw new InvalidArgumentException('Invalid version-usage cursor signature.');
+        }
+        $decoded = base64_decode(strtr($parts[1], '-_', '+/'), true);
         try {
             $value = $decoded === false ? null : json_decode($decoded, true, 8, JSON_THROW_ON_ERROR);
         } catch (JsonException) {
@@ -40,10 +48,18 @@ final class VersionUsageCursor
             || ! is_string($value['query']) || ! hash_equals($query, $value['query'])
             || ! self::runId($value['after']) || ! self::runId($value['through'])
             || strcmp($value['after'], $value['through']) > 0
-            || self::encode($query, $value['through'], $value['after']) !== $cursor) {
+            || self::encode($query, $value['through'], $value['after'], $key) !== $cursor) {
             throw new InvalidArgumentException('Version-usage cursor does not match this query.');
         }
         return $value;
+    }
+
+    private static function signature(string $body, string $key): string
+    {
+        if ($key === '') {
+            throw new LogicException('A non-empty application key is required for version-usage cursors.');
+        }
+        return hash_hmac('sha256', self::DOMAIN . $body, $key);
     }
 
     private static function runId(mixed $value): bool

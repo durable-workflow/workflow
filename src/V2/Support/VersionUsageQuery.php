@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 use InvalidArgumentException;
 use JsonException;
+use LogicException;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -18,6 +19,92 @@ use Workflow\V2\Models\WorkflowRun;
 /** Read-only, namespace-bound observations of retained open-run version decisions. */
 final class VersionUsageQuery
 {
+    /**
+     * Frozen v1 retained format; enum growth does not silently expand reader support.
+     */
+    private const EVENT_TYPES = [
+        'StartAccepted',
+        'StartRejected',
+        'WorkflowStarted',
+        'WorkflowContinuedAsNew',
+        'ChildWorkflowScheduled',
+        'ChildWorkflowAwaited',
+        'ChildCancellationRequested',
+        'ChildCancellationResolved',
+        'ChildRunStarted',
+        'ChildRunCompleted',
+        'ChildRunFailed',
+        'ChildRunCancelled',
+        'ChildRunTerminated',
+        'ServiceOperationScheduled',
+        'ServiceCallStarted',
+        'ServiceCallCompleted',
+        'ServiceCallFailed',
+        'ServiceCallCancelled',
+        'ConditionWaitOpened',
+        'ConditionWaitSatisfied',
+        'ConditionWaitTimedOut',
+        'ConditionWaitCancelled',
+        'SignalWaitOpened',
+        'SignalWaitCancelled',
+        'SignalReceived',
+        'SignalApplied',
+        'SignalRejected',
+        'UpdateAccepted',
+        'UpdateRejected',
+        'UpdateApplied',
+        'UpdateCompleted',
+        'RepairRequested',
+        'CancelRequested',
+        'CooperativeCancellationRequested',
+        'CooperativeCancellationDelivered',
+        'CancellationScopeOpened',
+        'CancellationScopeRequested',
+        'CancellationScopeDeliveryPrepared',
+        'CancellationScopeDelivered',
+        'CancellationScopeRequestConflicted',
+        'WorkflowCancelled',
+        'TerminateRequested',
+        'WorkflowTerminated',
+        'ArchiveRequested',
+        'WorkflowArchived',
+        'ActivityScheduled',
+        'ActivityStarted',
+        'ActivityHeartbeatRecorded',
+        'ActivityRetryScheduled',
+        'ActivityCompleted',
+        'ActivityFailed',
+        'ActivityOutcomeRejected',
+        'ActivityCancelled',
+        'ActivityCancellationAcknowledged',
+        'ActivityTimedOut',
+        'FailureHandled',
+        'SideEffectRecorded',
+        'VersionMarkerRecorded',
+        'TimerScheduled',
+        'TimerFired',
+        'TimerCancelled',
+        'SelectionResolved',
+        'SelectionOperationCancelled',
+        'SearchAttributesUpserted',
+        'MemoUpserted',
+        'WorkflowTimedOut',
+        'WorkflowTimeoutCleanupStarted',
+        'WorkflowCompleted',
+        'WorkflowFailed',
+        'ParentClosePolicyApplied',
+        'ParentClosePolicyFailed',
+        'ParentCloseCancellationRequested',
+        'MessageCursorAdvanced',
+        'ScheduleCreated',
+        'SchedulePaused',
+        'ScheduleResumed',
+        'ScheduleUpdated',
+        'ScheduleTriggered',
+        'ScheduleDeleted',
+        'ScheduleTriggerSkipped',
+    ];
+
     public function page(
         ?string $namespace,
         string $workflowType,
@@ -39,7 +126,11 @@ final class VersionUsageQuery
         $identity = hash('sha256', json_encode([
             $namespace, $workflowType, $changeId, $minVersion, $state,
         ], JSON_THROW_ON_ERROR));
-        $continuation = $cursor === null ? null : VersionUsageCursor::decode($cursor, $identity);
+        $key = config('app.key');
+        if (! is_string($key) || $key === '') {
+            throw new LogicException('A non-empty application key is required for version-usage cursors.');
+        }
+        $continuation = $cursor === null ? null : VersionUsageCursor::decode($cursor, $identity, $key);
         $base = $this->runs($namespace, $workflowType);
         $through = $continuation['through'] ?? (clone $base)->orderByRaw($this->idExpression($base) . ' DESC')->value(
             'id'
@@ -91,7 +182,8 @@ final class VersionUsageQuery
             'next_cursor' => $hasMore ? VersionUsageCursor::encode(
                 $identity,
                 $through,
-                $results[array_key_last($results)]['run_id']
+                $results[array_key_last($results)]['run_id'],
+                $key
             ) : null,
         ];
     }
@@ -194,15 +286,20 @@ final class VersionUsageQuery
         $statistics = (clone $history)->select('workflow_run_id')
             ->selectRaw(
                 "COUNT(*) AS event_count, MIN({$sequence}) AS first_sequence, MAX({$sequence}) AS last_sequence, "
-                    . "SUM(CASE WHEN {$kind} = {$marker} THEN 1 ELSE 0 END) AS marker_count",
-                [HistoryEventType::VersionMarkerRecorded->value]
+                    . "SUM(CASE WHEN {$kind} = {$marker} THEN 1 ELSE 0 END) AS marker_count, "
+                    . "SUM(CASE WHEN {$kind} = {$marker} THEN 1 ELSE 0 END) AS started_count, "
+                    . "SUM(CASE WHEN {$kind} = {$marker} THEN 1 ELSE 0 END) AS accepted_count",
+                [HistoryEventType::VersionMarkerRecorded->value, HistoryEventType::WorkflowStarted->value,
+                    HistoryEventType::StartAccepted->value]
             )
             ->groupBy('workflow_run_id')
             ->get()
             ->keyBy('workflow_run_id');
         $starts = (clone $history)->where('sequence', 1)
             ->pluck('event_type', 'workflow_run_id');
-        $types = array_map(static fn (HistoryEventType $type): string => $type->value, HistoryEventType::cases());
+        $seconds = (clone $history)->where('sequence', 2)
+            ->pluck('event_type', 'workflow_run_id');
+        $types = self::EVENT_TYPES;
         $driver = $history->getConnection()
             ->getDriverName();
         $kind = self::binary($history->getGrammar()->wrap('event_type'), $driver);
@@ -223,7 +320,10 @@ final class VersionUsageQuery
                 && (int) $stats->last_sequence === (int) $run->last_history_sequence
                 && (int) $stats->event_count === (int) $run->last_history_sequence
                 && (int) $stats->marker_count <= 1000
-                && $starts->get($run->id) === $startedType
+                && (int) $stats->started_count === 1
+                && (($starts->get($run->id) === $startedType && (int) $stats->accepted_count === 0)
+                    || ($starts->get($run->id) === HistoryEventType::StartAccepted->value
+                        && $seconds->get($run->id) === $startedType && (int) $stats->accepted_count === 1))
                 && ! in_array($run->id, $unsupported, true);
             $decisions[$run->id] = new VersionUsageDecision($changeId, $minVersion, $available);
             if ($available) {
