@@ -806,6 +806,127 @@ final class V2CompensationScopeTest extends TestCase
         }
     }
 
+    public function testWorkerKilledAfterEffectCommitRecoversWithoutAForwardAcknowledgement(): void
+    {
+        if (! function_exists('posix_kill')) {
+            $this->markTestSkipped('The worker-loss control requires POSIX signals.');
+        }
+        self::stopWorkers();
+        \Illuminate\Support\Facades\Queue::fake();
+        config([
+            'workflows.v2.task_dispatch_mode' => 'queue',
+            'queue.default' => 'redis',
+        ]);
+        $scope = $this->identity();
+        $origin = WorkflowStub::make(
+            \Tests\Fixtures\V2\TestForwardAdmissionWorkflow::class,
+            'crashed-forward-origin',
+            'client-a'
+        );
+        $origin->start($scope->toArray(), 'worker-crash');
+        $forward = null;
+        for ($step = 0; $step < 20; ++$step) {
+            $task = WorkflowTask::query()->where('workflow_run_id', $origin->runId())
+                ->where('status', 'ready')
+                ->orderBy('available_at')
+                ->orderBy('id')
+                ->firstOrFail();
+            if ($task->task_type->value === 'activity') {
+                $execution = \Workflow\V2\Models\ActivityExecution::query()
+                    ->findOrFail($task->payload['activity_execution_id']);
+                if ($execution->activity_class === \Workflow\V2\Compensation\Activities\ForwardOperationActivity::class) {
+                    $forward = $task;
+                    break;
+                }
+                $this->app->call([new \Workflow\V2\Jobs\RunActivityTask($task->id), 'handle']);
+            } else {
+                $this->app->call([new \Workflow\V2\Jobs\RunWorkflowTask($task->id), 'handle']);
+            }
+        }
+        $this->assertNotNull($forward, 'Registration must commit before the worker-loss boundary.');
+        $input = tempnam(sys_get_temp_dir(), 'scope-crash-input-');
+        $report = tempnam(sys_get_temp_dir(), 'scope-crash-report-');
+        chmod($input, 0600);
+        chmod($report, 0600);
+        $process = null;
+        try {
+            $data = [
+                'scope' => $scope->toArray(),
+                'database' => config('database.connections.' . config('database.default')),
+                'redis' => config('database.redis'),
+                'cache' => config('cache.stores.redis'),
+                'cache_prefix' => config('cache.prefix'),
+                'report' => $report,
+                'task_id' => $forward->id,
+            ];
+            file_put_contents($input, json_encode($data, JSON_THROW_ON_ERROR));
+            $process = new \Symfony\Component\Process\Process([
+                PHP_BINARY, 'vendor/bin/phpunit', 'tests/Support/CompensationForwardCrashProcessTest.php',
+            ], dirname(__DIR__, 3), [
+                'DWF_SCOPE_FORWARD_CRASH_INPUT' => $input,
+            ], timeout: 30);
+            $process->start();
+            $crashedPid = $process->getPid();
+            try {
+                $process->wait();
+                $this->fail('The forward worker must die before returning its activity result.');
+            } catch (\Symfony\Component\Process\Exception\ProcessSignaledException $error) {
+                $this->assertSame(SIGKILL, $error->getProcess()->getTermSignal());
+            }
+            $cut = json_decode(file_get_contents($report), true, flags: JSON_THROW_ON_ERROR);
+            $this->assertSame($crashedPid, $cut['pid']);
+            $this->assertNotSame(getmypid(), $crashedPid);
+            $before = (new ScopeRepository())->inspect($scope);
+            $obligation = $before['obligations'][0];
+            $this->assertSame($obligation['id'], $cut['operationId']);
+            $this->assertSame($obligation['forward_attempt_id'], $cut['attemptId']);
+            $this->assertSame('in_flight', $obligation['forward_status']);
+            $this->assertNull($obligation['forward_result']);
+            $this->assertSame('first', Cache::get('test:scope:effect:' . $cut['operationId']));
+            $this->assertSame(1, (int) Cache::get('test:scope:effect-count'));
+
+            // Closing the technical run fences its attempt; it does not settle the provider effect.
+            $origin->terminate('Worker died after the provider committed.');
+            $this->assertSame('terminated', $origin->refresh()->status());
+            $this->assertSame('first', Cache::get('test:scope:effect:' . $cut['operationId']));
+            $history = WorkflowHistoryEvent::query()->where('workflow_run_id', $origin->runId())
+                ->orderBy('id')
+                ->get()
+                ->toArray();
+
+            file_put_contents($report, '');
+            $process = new \Symfony\Component\Process\Process([
+                PHP_BINARY, 'vendor/bin/phpunit', 'tests/Support/CompensationScopeRecoveryProcessTest.php',
+            ], dirname(__DIR__, 3), [
+                'DWF_SCOPE_RECOVERY_INPUT' => $input,
+            ], timeout: 30);
+            $process->mustRun();
+            $recovered = json_decode(file_get_contents($report), true, flags: JSON_THROW_ON_ERROR);
+            $this->assertNotSame(getmypid(), $recovered['pid']);
+            $this->assertNotSame($crashedPid, $recovered['pid']);
+            $this->assertSame('verified', $recovered['status']);
+            $after = (new ScopeRepository())->inspect($scope);
+            $this->assertSame('verified', $after['status']);
+            $this->assertSame($origin->runId(), $after['original_run_id']);
+            $this->assertSame($cut['operationId'], $after['obligations'][0]['id']);
+            $this->assertSame($cut['attemptId'], $after['obligations'][0]['forward_attempt_id']);
+            $this->assertSame('terminated', $origin->refresh()->status());
+            $this->assertNull(Cache::get('test:scope:effect:' . $cut['operationId']));
+            $this->assertSame(['first'], Cache::get('test:scope:undo-log'));
+            $this->assertSame(1, (int) Cache::get('test:scope:effect-count'));
+            $this->assertSame($history, WorkflowHistoryEvent::query()->where('workflow_run_id', $origin->runId())
+                ->orderBy('id')
+                ->get()
+                ->toArray());
+        } finally {
+            if ($process !== null && $process->isRunning()) {
+                $process->stop(0, SIGKILL);
+            }
+            unlink($input);
+            unlink($report);
+        }
+    }
+
     public function testCancellationWhileChildWaitsResolvesItsSagaBeforeEarlierParentWork(): void
     {
         WorkflowStub::fake();
