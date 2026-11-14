@@ -22,6 +22,8 @@ final class WorkflowStepHistory
 
     public const CHILD_WORKFLOW = 'child workflow';
 
+    public const CHILD_WORKFLOW_AWAIT = 'await admitted child workflow';
+
     public const CANCELLATION_SCOPE = 'cancellation scope';
 
     public const CONDITION_WAIT = 'condition wait';
@@ -60,6 +62,7 @@ final class WorkflowStepHistory
         HistoryEventType::ActivityCancelled,
         HistoryEventType::ActivityTimedOut,
         HistoryEventType::ChildWorkflowScheduled,
+        HistoryEventType::ChildWorkflowAwaited,
         HistoryEventType::ChildRunStarted,
         HistoryEventType::ChildRunCompleted,
         HistoryEventType::ChildRunFailed,
@@ -135,6 +138,19 @@ final class WorkflowStepHistory
 
         if ($conflictingEventTypes !== []) {
             throw new HistoryEventShapeMismatchException($sequence, $expectedShape, $conflictingEventTypes);
+        }
+
+        if ($expectedShape === self::CHILD_WORKFLOW && array_key_exists('child_completion_mode', $expectedDetails)) {
+            $scheduled = ChildRunHistory::scheduledEventForSequence($run, $sequence);
+            if ($scheduled !== null && ($scheduled->payload['child_completion_mode'] ?? 'result')
+                !== ($expectedDetails['child_completion_mode'] ?? 'result')) {
+                throw new HistoryEventShapeMismatchException(
+                    $sequence,
+                    $expectedShape,
+                    [HistoryEventType::ChildWorkflowScheduled->value],
+                    'Starting a child and waiting for its result are different durable steps.'
+                );
+            }
         }
 
         $detailMismatch = self::detailMismatchForSequence($run, $sequence, $expectedShape, $expectedDetails);
@@ -441,6 +457,7 @@ final class WorkflowStepHistory
                 HistoryEventType::ActivityCancelled,
                 HistoryEventType::ActivityTimedOut,
             ], true) && self::isLocalActivityEvent($event),
+            self::CHILD_WORKFLOW_AWAIT => $event->event_type === HistoryEventType::ChildWorkflowAwaited,
             self::CHILD_WORKFLOW => in_array($event->event_type, [
                 HistoryEventType::ChildWorkflowScheduled,
                 HistoryEventType::ChildRunStarted,

@@ -429,6 +429,7 @@ final class HistoryTimeline
             HistoryEventType::UpdateApplied,
             HistoryEventType::UpdateCompleted => 'update',
             HistoryEventType::ChildWorkflowScheduled,
+            HistoryEventType::ChildWorkflowAwaited,
             HistoryEventType::ChildRunStarted,
             HistoryEventType::ChildRunCompleted,
             HistoryEventType::ChildRunFailed,
@@ -530,6 +531,7 @@ final class HistoryTimeline
                     ?? (string) (self::intValue($payload['member_index'] ?? null) ?? 0),
             ),
             HistoryEventType::ChildWorkflowScheduled => sprintf('Scheduled child workflow %s.', $childLabel),
+            HistoryEventType::ChildWorkflowAwaited => sprintf('Awaited admitted child workflow %s.', $childLabel),
             HistoryEventType::ChildRunStarted => sprintf('Child workflow %s started.', $childLabel),
             HistoryEventType::ChildRunCompleted => sprintf('Child workflow %s completed.', $childLabel),
             HistoryEventType::ChildRunFailed => $message === null
@@ -1286,6 +1288,7 @@ final class HistoryTimeline
             HistoryEventType::SignalWaitOpened,
             HistoryEventType::SignalApplied => 'signal_wait',
             HistoryEventType::ChildWorkflowScheduled,
+            HistoryEventType::ChildWorkflowAwaited,
             HistoryEventType::ChildRunStarted,
             HistoryEventType::ChildRunCompleted,
             HistoryEventType::ChildRunFailed,

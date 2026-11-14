@@ -497,6 +497,16 @@ final class WorkflowExecutor
                 $state->task,
                 $state->frame
             ),
+            $current instanceof StartChildWorkflowCall => $this->executeChildStart(
+                $state->run,
+                $state->task,
+                $state->frame
+            ),
+            $current instanceof AwaitStartedChildWorkflowCall => $this->executeStartedChildAwait(
+                $state->run,
+                $state->task,
+                $state->frame
+            ),
             $current instanceof ChildWorkflowCall => $this->executeChild($state->run, $state->task, $state->frame),
             $current instanceof AllCall => $this->executeAll($state->run, $state->task, $state->frame),
             $current instanceof ContinueAsNewCall => $this->executeContinueAsNew(
@@ -1592,6 +1602,130 @@ final class WorkflowExecutor
         return WorkflowTaskStep::ContinueExecution;
     }
 
+    private function executeChildStart(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowContinuation $frame,
+    ): WorkflowTask|WorkflowTaskStep|null {
+        /** @var StartChildWorkflowCall $call */
+        $call = $frame->current;
+        $sequence = $frame->sequence;
+        $this->syncWorkflowCursorForCurrent($frame->workflow, $run, $call, $sequence);
+        if (! $this->applyRecordedUpdates($run, $frame->workflow, $sequence, $task)) {
+            return $this->restartAfterPendingUpdateFailure($run, $task);
+        }
+        if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::CHILD_WORKFLOW, [
+            'child_workflow_type' => $call->child->workflow,
+            'child_completion_mode' => 'started',
+        ])) {
+            return null;
+        }
+        try {
+            $receipt = ChildStartHistory::receipt($run, $sequence);
+            $admitted = ChildRunHistory::scheduledEventForSequence($run, $sequence);
+            $delivery = $this->deliverCancellationAtCall($run, $task, $sequence, 'child', $admitted, $frame->execution);
+            if ($delivery === CancellationDeliveryState::Waiting) {
+                return $this->waitForNextResumeSource($run, $task);
+            }
+            if ($delivery === CancellationDeliveryState::Delivered) {
+                return $this->resumeCancellation($run, $task, $frame);
+            }
+            if ($receipt === null) {
+                $childTask = $this->scheduleChildWorkflowOrFailRun(
+                    $run,
+                    $task,
+                    $sequence,
+                    $call->child,
+                    parkRun: false,
+                    startMilestone: true
+                );
+                if ($childTask === null) {
+                    return null;
+                }
+                $run->load('historyEvents');
+                $receipt = ChildStartHistory::receipt($run, $sequence);
+                if ($receipt === null) {
+                    throw new LogicException('Native child creation produced no confirmed admission.');
+                }
+                TaskDispatcher::dispatch($childTask);
+            }
+            $this->syncWorkflowCursor($frame->workflow, $sequence + 1);
+            $frame->current = $frame->execution->send($receipt, RedriveReplayClock::recordedAt(
+                ChildRunHistory::scheduledEventForSequence($run, $sequence)
+            ));
+            ++$frame->sequence;
+            return WorkflowTaskStep::ContinueExecution;
+        } catch (Throwable $error) {
+            $this->failRun($run, $task, $error, 'workflow_run', $run->id);
+            return null;
+        }
+    }
+
+    private function executeStartedChildAwait(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowContinuation $frame,
+    ): WorkflowTask|WorkflowTaskStep|null {
+        /** @var AwaitStartedChildWorkflowCall $call */
+        $call = $frame->current;
+        $sequence = $frame->sequence;
+        $child = $call->child;
+        $this->syncWorkflowCursorForCurrent($frame->workflow, $run, $call, $sequence);
+        if (! $this->applyRecordedUpdates($run, $frame->workflow, $sequence, $task)) {
+            return $this->restartAfterPendingUpdateFailure($run, $task);
+        }
+        if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::CHILD_WORKFLOW_AWAIT)) {
+            return null;
+        }
+        try {
+            ChildStartHistory::assertReceipt($run, $child, $sequence);
+            $awaited = ChildStartHistory::awaitedEvent($run, $child, $sequence);
+            if (ChildStartHistory::cancellationDelivery($run, $child, $sequence) !== null) {
+                return $this->resumeCancellation($run, $task, $frame);
+            }
+            $resolution = ChildRunHistory::resolutionEventForSequence($run, $child->startSequence);
+            $target = ChildStartHistory::target($run, $child, $resolution, $sequence);
+            if ($awaited === null) {
+                WorkflowHistoryEvent::record(
+                    $run,
+                    HistoryEventType::ChildWorkflowAwaited,
+                    ChildStartHistory::awaitPayload($child, $sequence),
+                    $task
+                );
+                $run->load('historyEvents');
+            }
+            $delivery = $this->deliverCancellationAtCall(
+                $run,
+                $task,
+                $sequence,
+                'started_child_await',
+                $resolution,
+                $frame->execution,
+                operationSequence: $child->startSequence
+            );
+            if ($delivery === CancellationDeliveryState::Waiting) {
+                return $this->waitForNextResumeSource($run, $task);
+            }
+            if ($delivery === CancellationDeliveryState::Delivered) {
+                return $this->resumeCancellation($run, $task, $frame);
+            }
+            if ($resolution === null && $target !== null) {
+                $status = ChildRunHistory::resolvedStatus(null, $target);
+                if ($status !== null && $status->isTerminal()) {
+                    $resolution = $this->recordChildResolution($run, $task, $child->startSequence, $target);
+                }
+            }
+            if ($resolution !== null) {
+                return $this->resumeChildResolution($run, $task, $frame, $resolution, $target);
+            }
+            $this->syncWorkflowCursor($frame->workflow, $sequence + 1);
+            return $this->waitForNextResumeSource($run, $task);
+        } catch (Throwable $error) {
+            $this->failRun($run, $task, $error, 'workflow_run', $run->id);
+            return null;
+        }
+    }
+
     private function executeChild(
         WorkflowRun $run,
         WorkflowTask $task,
@@ -1609,6 +1743,7 @@ final class WorkflowExecutor
         }
         if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::CHILD_WORKFLOW, [
             'child_workflow_type' => $current->workflow,
+            'child_completion_mode' => 'result',
         ])) {
             return null;
         }
@@ -1780,6 +1915,7 @@ final class WorkflowExecutor
             ],
             $call instanceof ChildWorkflowCall => [
                 'child_workflow_type' => $call->workflow,
+                'child_completion_mode' => 'result',
             ],
             default => [],
         };
@@ -2752,6 +2888,7 @@ final class WorkflowExecutor
         ChildWorkflowCall $childWorkflowCall,
         ?array $parallelMetadata = null,
         bool $parkRun = true,
+        bool $startMilestone = false,
     ): WorkflowTask {
         StructuralLimits::guardPendingChildren($run);
         $this->logApproachingLimit(StructuralLimits::warnApproachingPendingChildren($run), $run);
@@ -2882,6 +3019,9 @@ final class WorkflowExecutor
 
         WorkflowHistoryEvent::record($run, HistoryEventType::ChildWorkflowScheduled, array_merge([
             'sequence' => $sequence,
+            ...($startMilestone ? [
+                'child_completion_mode' => 'started',
+            ] : []),
             'workflow_link_id' => $link->id,
             'child_call_id' => $childCallId,
             'child_workflow_instance_id' => $childInstance->id,
@@ -2977,6 +3117,7 @@ final class WorkflowExecutor
         ChildWorkflowCall $childWorkflowCall,
         ?array $parallelMetadata = null,
         bool $parkRun = true,
+        bool $startMilestone = false,
     ): ?WorkflowTask {
         try {
             return $this->scheduleChildWorkflow(
@@ -2985,7 +3126,8 @@ final class WorkflowExecutor
                 $sequence,
                 $childWorkflowCall,
                 $parallelMetadata,
-                $parkRun
+                $parkRun,
+                $startMilestone
             );
         } catch (Throwable $throwable) {
             $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);

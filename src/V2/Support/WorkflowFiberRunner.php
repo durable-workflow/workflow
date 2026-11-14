@@ -312,6 +312,12 @@ final class WorkflowFiberRunner
 
             $current = $this->execution->current();
 
+            if ($current instanceof StartChildWorkflowCall || $current instanceof AwaitStartedChildWorkflowCall) {
+                throw new UnsupportedWorkflowYieldException(
+                    'Confirmed child admission currently requires embedded native execution.'
+                );
+            }
+
             if (! $current instanceof YieldedCommand) {
                 throw new UnsupportedWorkflowYieldException(sprintf(
                     'Worker protocol runner received an unsupported workflow suspension of type %s.',
@@ -807,6 +813,17 @@ final class WorkflowFiberRunner
 
             if ($current instanceof ChildWorkflowCall) {
                 $historySequence = $this->historySequenceForCurrentPosition();
+                if ($historySequence !== null) {
+                    WorkflowStepHistory::assertCompatible(
+                        $this->workflow->run,
+                        $historySequence,
+                        WorkflowStepHistory::CHILD_WORKFLOW,
+                        [
+                            'child_workflow_type' => $current->workflow,
+                            'child_completion_mode' => 'result',
+                        ]
+                    );
+                }
                 $recorded = $historySequence === null
                     ? null
                     : ($this->recordedChildOutcomes[$historySequence] ?? null);
