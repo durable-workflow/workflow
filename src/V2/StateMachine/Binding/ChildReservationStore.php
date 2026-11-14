@@ -96,6 +96,27 @@ final class ChildReservationStore
     }
 
     /**
+     * Recover the original descriptor without selecting a deployed definition.
+     * A missing reservation is not proof that its child was never admitted.
+     */
+    public function load(BindingIdentity $identity, string $principal): ChildReservation
+    {
+        $this->authorize($identity, $principal, 'load');
+        $child = self::instances()->findOrFail('dw-bound-child-' . $identity->key());
+        // Check the caller's original owner before decoding protected metadata.
+        if ($child->namespace !== $identity->namespace || $child->workflow_type !== $identity->childWorkflowType) {
+            throw new LogicException('The stored native child reservation does not match the original owner.');
+        }
+        $state = self::read($child);
+        $reservation = ChildReservation::fromArray($state['reservation']);
+        if ($reservation->identity->toArray() !== $identity->toArray()) {
+            throw new LogicException('The stored native child reservation differs from the original binding.');
+        }
+        self::matching($child, $reservation);
+        return $reservation;
+    }
+
+    /**
      * Linearize against native admission. A lost acknowledgement returns the
      * same closed receipt or the exact admitted child, never lookup absence.
      */

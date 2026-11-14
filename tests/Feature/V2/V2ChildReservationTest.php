@@ -75,6 +75,121 @@ final class V2ChildReservationTest extends TestCase
         $this->assertSame(0, WorkflowHistoryEvent::query()->count());
     }
 
+    public function testOriginalDescriptorCanBeLoadedAndClosedAfterItsDefinitionChanges(): void
+    {
+        $parent = $this->parent();
+        $reservation = $this->reserve($parent);
+        $historical = new ChildReservation(
+            $reservation->identity,
+            $reservation->workflowClass,
+            'sha256:' . str_repeat('f', 64),
+            $reservation->authorizationVersion,
+        );
+        $instance = WorkflowInstance::query()->findOrFail($reservation->childInstanceId());
+        $state = json_decode($instance->getRawOriginal('native_child_reservation'), true, flags: JSON_THROW_ON_ERROR);
+        $state['reservation'] = $historical->toArray();
+        WorkflowInstance::query()->whereKey($instance->id)->toBase()->update([
+            'native_child_reservation' => json_encode($state, JSON_THROW_ON_ERROR),
+        ]);
+        $parent->forceFill([
+            'status' => RunStatus::Completed,
+        ])->save();
+
+        try {
+            $this->reserve($parent);
+            $this->fail('A new deployed definition silently replaced the historical reservation.');
+        } catch (LogicException $error) {
+            $this->assertStringContainsString('different immutable descriptor', $error->getMessage());
+        }
+        $loaded = $this->store()
+            ->load($reservation->identity, 'trusted-owner');
+        $this->assertSame($historical->toArray(), $loaded->toArray());
+        $closed = $this->store()
+            ->close($loaded, 'trusted-owner');
+        $this->assertInstanceOf(NeverAdmittedChild::class, $closed);
+        $again = $this->store()
+            ->load($reservation->identity, 'trusted-owner');
+        $this->assertSame($loaded->toArray(), $again->toArray());
+        $this->assertSame($closed->closureId, $this->store()->close($again, 'trusted-owner')->closureId);
+    }
+
+    public function testLoadingAStoredDescriptorDoesNotAutoloadItsHistoricalClass(): void
+    {
+        $reservation = $this->reserve($this->parent());
+        $historicalClass = 'Tests\\Fixtures\\V2\\UnavailableHistoricalReservedChild';
+        $historical = new ChildReservation(
+            $reservation->identity,
+            $historicalClass,
+            $reservation->definitionFingerprint,
+            $reservation->authorizationVersion,
+        );
+        $instance = WorkflowInstance::query()->findOrFail($reservation->childInstanceId());
+        $state = json_decode($instance->getRawOriginal('native_child_reservation'), true, flags: JSON_THROW_ON_ERROR);
+        $state['reservation'] = $historical->toArray();
+        WorkflowInstance::query()->whereKey($instance->id)->toBase()->update([
+            'workflow_class' => $historicalClass,
+            'native_child_reservation' => json_encode($state, JSON_THROW_ON_ERROR),
+        ]);
+        $autoloaded = [];
+        $loader = static function (string $class) use (&$autoloaded): void {
+            $autoloaded[] = $class;
+        };
+        spl_autoload_register($loader);
+        try {
+            $loaded = $this->store()
+                ->load($reservation->identity, 'trusted-owner');
+            $this->assertSame($historical->toArray(), $loaded->toArray());
+            $this->assertInstanceOf(NeverAdmittedChild::class, $this->store()->close($loaded, 'trusted-owner'));
+        } finally {
+            spl_autoload_unregister($loader);
+        }
+        $this->assertNotContains($historicalClass, $autoloaded);
+    }
+
+    public function testLoadingRejectsAChangedDescriptorWithTheSameLookupKey(): void
+    {
+        $reservation = $this->reserve($this->parent());
+        $changed = $reservation->identity->toArray();
+        $changed['requiredOutcome'] = 'substituted-outcome';
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('differs from the original binding');
+        $this->store()
+            ->load(BindingIdentity::fromArray($changed), 'trusted-owner');
+    }
+
+    public function testLoadingRequiresAnExistingReservationAndCannotCreateOne(): void
+    {
+        $identity = $this->identity($this->parent());
+        try {
+            $this->store()
+                ->load($identity, 'trusted-owner');
+            $this->fail('Lookup absence became a child reservation.');
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException) {
+            $this->assertSame(1, WorkflowInstance::query()->count());
+            $this->assertSame(1, WorkflowRun::query()->count());
+        }
+    }
+
+    public function testLoadingReauthorizesItsOwnOperationWithoutReplacingThePinnedPolicy(): void
+    {
+        $reservation = $this->reserve($this->parent());
+        $authorization = new class() implements BindingAuthorization {
+            public array $calls = [];
+
+            public function assertAllowed(BindingIdentity $identity, string $principal, string $operation): string
+            {
+                $this->calls[] = [$identity->toArray(), $principal, $operation, DB::transactionLevel()];
+                return 'current-host-policy-v2';
+            }
+        };
+        $loaded = (new ChildReservationStore($authorization))->load($reservation->identity, 'current-principal');
+        $this->assertSame([
+            [$reservation->identity->toArray(), 'current-principal', 'load', 0],
+        ], $authorization->calls);
+        $this->assertSame($reservation->toArray(), $loaded->toArray());
+        $this->assertSame('host-policy-v1', $loaded->authorizationVersion);
+    }
+
     public function testAdmissionBeforeCloseReturnsExactNativeReceiptAndHonorsPinnedRouting(): void
     {
         $parent = $this->parent();
@@ -180,10 +295,13 @@ final class V2ChildReservationTest extends TestCase
                 'protected' => 'not-a-reservation',
             ], JSON_THROW_ON_ERROR),
         ]);
-        foreach (['reserve', 'close'] as $operation) {
+        foreach (['reserve', 'load', 'close'] as $operation) {
             try {
                 if ($operation === 'reserve') {
                     $this->reserve($parent);
+                } elseif ($operation === 'load') {
+                    $this->store()
+                        ->load($reservation->identity, 'trusted-owner');
                 } else {
                     $this->store()
                         ->close($reservation, 'trusted-owner');
@@ -226,6 +344,14 @@ final class V2ChildReservationTest extends TestCase
             $this->assertSame('binding_access_refused', $error->getMessage());
         }
         $this->assertSame([], $queries);
+        try {
+            $this->store(false)
+                ->load($reservation->identity, 'untrusted');
+            $this->fail('An unauthorized lookup reached binding storage.');
+        } catch (LogicException $error) {
+            $this->assertSame('binding_access_refused', $error->getMessage());
+        }
+        $this->assertSame([], $queries);
     }
 
     public function testCallerTransactionsCannotExposeUncommittedClosureOrRunHostAuthorizationUnderLocks(): void
@@ -242,11 +368,13 @@ final class V2ChildReservationTest extends TestCase
             }
         };
         $store = new ChildReservationStore($authorization);
-        foreach (['reserve', 'close'] as $operation) {
+        foreach (['reserve', 'load', 'close'] as $operation) {
             try {
                 DB::transaction(static function () use ($operation, $store, $reservation): void {
                     if ($operation === 'reserve') {
                         $store->reserve($reservation->identity, $reservation->workflowClass, 'owner');
+                    } elseif ($operation === 'load') {
+                        $store->load($reservation->identity, 'owner');
                     } else {
                         $store->close($reservation, 'owner');
                     }
