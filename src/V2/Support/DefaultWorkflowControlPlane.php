@@ -11,6 +11,7 @@ use Workflow\Serializers\AvroValueJsonProjection;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\CommandContext;
+use Workflow\V2\Compensation\Recovery\RecoveryRunAdmission;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\RuntimeSignalControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
@@ -99,6 +100,10 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 return;
             }
 
+            // Check both immutable copies even for retained redrive lookup. A
+            // missing history marker must not hide a command-bound recovery.
+            $recoveryReceipt = RecoveryRunAdmission::sourceReceipt($instance, $source);
+
             /** @var WorkflowLink|null $existingLink */
             $existingLink = WorkflowLink::query()
                 ->where('parent_workflow_run_id', $source->id)
@@ -106,6 +111,28 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 ->first();
 
             if ($existingLink instanceof WorkflowLink) {
+                if ($recoveryReceipt !== null) {
+                    /** @var WorkflowRun|null $target */
+                    $target = $this->runQuery()
+                        ->where('workflow_instance_id', $instance->id)
+                        ->where('namespace', $instance->namespace)
+                        ->lockForUpdate()
+                        ->find($existingLink->child_workflow_run_id);
+                    if (! $target instanceof WorkflowRun
+                        || $existingLink->parent_workflow_instance_id !== $instance->id
+                        || $existingLink->child_workflow_instance_id !== $instance->id) {
+                        throw new LogicException('Recovery redrive successor is outside its canonical instance.');
+                    }
+                    $targetReceipt = RecoveryRunAdmission::sourceReceipt($instance, $target);
+                    if ($targetReceipt === null
+                        || ($targetReceipt['operation'] ?? null) !== 'redrive'
+                        || ($targetReceipt['intent']['binding_fingerprint'] ?? null)
+                            !== $recoveryReceipt['intent']['binding_fingerprint']
+                        || ($targetReceipt['intent']['expected_predecessor_run_id'] ?? null) !== $source->id
+                        || ($targetReceipt['execution_deadline_at'] ?? null) !== $recoveryReceipt['execution_deadline_at']) {
+                        throw new LogicException('Recovery redrive successor does not match its retained admission.');
+                    }
+                }
                 $result = array_merge($result, [
                     'accepted' => true,
                     'workflow_run_id' => $existingLink->child_workflow_run_id,
@@ -118,6 +145,11 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             }
 
             $currentRun = CurrentRunResolver::forInstance($instance, lockForUpdate: true);
+
+            if ($recoveryReceipt !== null && WorkflowDefinitionFingerprint::currentForRun($source)
+                !== $recoveryReceipt['intent']['binding']['definition']) {
+                throw new LogicException('Recovery redrive cannot change its authorized workflow definition.');
+            }
 
             $externalFingerprint = $options['external_workflow_definition_fingerprint'] ?? null;
             $eligibility = FailedRunRedriveEligibility::evaluate(
@@ -141,6 +173,9 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             $plan = $eligibility['plan'];
             $startedPayload = $eligibility['started_payload'];
             $definitionChange = $eligibility['definition_change'] ?? null;
+            if ($recoveryReceipt !== null && $definitionChange !== null) {
+                throw new LogicException('Recovery redrive cannot change its authorized workflow definition.');
+            }
             $successorClass = $definitionChange['workflow_class'] ?? $source->workflow_class;
             // Change provenance describes one transition. A successor that keeps
             // its source's definition records none, even if the source changed.
@@ -224,6 +259,14 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 ],
             ));
 
+            $recoveryReceipt = RecoveryRunAdmission::carryToRedrive(
+                $instance,
+                $source,
+                $continuedRun,
+                $command,
+                $recoveryReceipt,
+            );
+
             $link = WorkflowLink::query()->create([
                 'link_type' => 'redrive',
                 'sequence' => $plan['resume_step_sequence'],
@@ -268,8 +311,11 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                     ]),
                     'replayed_started_at' => is_string($startedPayload['replayed_started_at'] ?? null)
                         ? $startedPayload['replayed_started_at']
-                        : $source->started_at?->toIso8601String(),
+                        : RedriveReplayClock::formatRecordedAt($source->started_at),
                     'workflow_link_id' => $link->id,
+                    ...($recoveryReceipt === null ? [] : [
+                        'compensation_recovery' => $recoveryReceipt,
+                    ]),
                 ],
             ), null, $command);
 

@@ -6,14 +6,52 @@ namespace Workflow\Support;
 
 use Illuminate\Database\Connection;
 use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\MySqlConnection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use UnexpectedValueException;
 
 abstract class WorkflowMigration extends Migration
 {
     public function getConnection(): ?string
     {
         return config('workflows.storage.connection') ?? $this->connection;
+    }
+
+    protected function preserveMariaDbScheduledTimestamp(string $table, string $column, string $refusal): void
+    {
+        $connection = DB::connection($this->getConnection());
+        if (! $connection instanceof MySqlConnection || ! $connection->isMaria()) {
+            return;
+        }
+
+        // Older MariaDB implicitly rewrites its first non-null TIMESTAMP.
+        // Remove only that behavior, preserving the rest of its definition.
+        $metadata = $connection->selectOne(
+            'SELECT COLUMN_TYPE AS column_type, IS_NULLABLE AS is_nullable, COLUMN_DEFAULT AS default_value, '
+            . 'DATETIME_PRECISION AS datetime_precision, EXTRA AS extra FROM information_schema.columns '
+            . 'WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?',
+            [$connection->getTablePrefix() . $table, $column],
+        );
+        if ($metadata === null || ! str_contains(strtolower((string) $metadata->extra), 'on update')) {
+            return;
+        }
+        if (strtolower((string) $metadata->column_type) !== 'timestamp(6)'
+            || $metadata->is_nullable !== 'NO'
+            || strtolower((string) $metadata->default_value) !== 'current_timestamp(6)'
+            || (int) $metadata->datetime_precision !== 6
+            || strtolower((string) $metadata->extra) !== 'on update current_timestamp(6)') {
+            throw new UnexpectedValueException($refusal);
+        }
+
+        $grammar = $connection->getQueryGrammar();
+        $wrappedTable = $grammar->wrapTable($table);
+        $wrappedColumn = $grammar->wrap($column);
+        $this->withSchemaLockBudget(static function () use ($connection, $wrappedTable, $wrappedColumn): void {
+            $connection->statement(
+                "ALTER TABLE {$wrappedTable} MODIFY {$wrappedColumn} TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), ALGORITHM=INPLACE, LOCK=NONE",
+            );
+        });
     }
 
     /**

@@ -33,6 +33,7 @@ SEARCH_ATTRIBUTE_TYPE_IDENTITY_MISMATCH = "search_attribute_type_identity_mismat
 WORKFLOW_HISTORY_SHAPE_MISMATCH = "workflow_history_shape_mismatch"
 VERSION_MARKER_INCOMPATIBLE_RANGE = "version_marker_incompatible_range"
 VERSION_MARKER_HISTORY_RANGE_INVALID = "version_marker_history_range_invalid"
+UNSUPPORTED_COMPENSATION_FORMAT = "unsupported_compensation_format"
 UNSUPPORTED_PAYLOAD_CODEC = "unsupported_payload_codec"
 PHP_GOLDEN_REPLAY_WORKFLOW = "Tests\\Fixtures\\V2\\TestGoldenReplayWorkflow"
 PHP_REPLAY_CONSUMERS = {
@@ -1297,6 +1298,7 @@ def _replay_expected_failure(value: Any, context: str) -> Mapping[str, str]:
         WORKFLOW_HISTORY_SHAPE_MISMATCH,
         VERSION_MARKER_INCOMPATIBLE_RANGE,
         VERSION_MARKER_HISTORY_RANGE_INVALID,
+        UNSUPPORTED_COMPENSATION_FORMAT,
         "activity_retry_policy_mismatch",
         "workflow_entry_arguments_mismatch",
         UNSUPPORTED_PAYLOAD_CODEC,

@@ -17,6 +17,7 @@ use Throwable;
 use Workflow\Serializers\AvroValueJsonProjection;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Compensation\Recovery\RecoveryRunAdmission;
 use Workflow\V2\Contracts\BufferedSignalProjectionRole;
 use Workflow\V2\Contracts\HistoryExportRedactor;
 use Workflow\V2\Contracts\HistoryProjectionRole;
@@ -1012,6 +1013,27 @@ final class WorkflowStub
         );
     }
 
+    /**
+     * The scope service must authorize and retain the request's first predecessor
+     * before calling this data-only native boundary. Ordinary start is unchanged.
+     *
+     * @internal Experimental compensation recovery admission.
+     */
+    public function attemptRecoveryStart(RecoveryRunAdmission $admission): StartResult
+    {
+        if ($this->runTargeted) {
+            throw new LogicException('Recovery admission requires a canonical instance-targeted stub.');
+        }
+        TimeoutCleanup::assertEmbeddedAdmission($admission->profile->timeoutCleanupSeconds);
+
+        return $this->admitStart(
+            WorkflowMetadata::fromStartArguments([$admission->scope->toArray()]),
+            $admission->profile,
+            null,
+            $admission,
+        );
+    }
+
     public function signalWithStart(
         string $name,
         array $signalArguments = [],
@@ -1729,6 +1751,7 @@ final class WorkflowStub
         WorkflowMetadata $metadata,
         StartOptions $startOptions,
         ?array $observabilityContext,
+        ?RecoveryRunAdmission $recoveryAdmission = null,
     ): StartResult {
         /** @var WorkflowCommand|null $command */
         $command = null;
@@ -1739,6 +1762,7 @@ final class WorkflowStub
             $metadata,
             $startOptions,
             $observabilityContext,
+            $recoveryAdmission,
             &$task,
             &$command,
             &$startedRun,
@@ -1752,9 +1776,52 @@ final class WorkflowStub
                 ->lockForUpdate()
                 ->findOrFail($this->instance->id);
 
-            $run = $this->currentRunForInstance($instance, true);
+            $recoveryIntent = null;
+            if ($recoveryAdmission !== null) {
+                $workflowClass = TypeRegistry::resolveWorkflowClass(
+                    $instance->workflow_class,
+                    $instance->workflow_type
+                );
+                $recoveryIntent = $recoveryAdmission->intent(
+                    $instance,
+                    $workflowClass,
+                    RoutingResolver::workflowConnection($workflowClass, $metadata),
+                    RoutingResolver::workflowQueue($workflowClass, $metadata),
+                );
+                $command = $recoveryAdmission->retained($instance, $recoveryIntent);
+                if ($command !== null) {
+                    return;
+                }
+            }
 
-            if ($run instanceof WorkflowRun) {
+            // Refused recovery requests must not repair pointers or append to a
+            // stopped predecessor. The instance writer still serializes admission.
+            $run = $recoveryAdmission === null
+                ? $this->currentRunForInstance($instance, true)
+                : CurrentRunResolver::forInstance($instance, lockForUpdate: true);
+            $predecessor = null;
+            if ($recoveryAdmission !== null && $recoveryIntent !== null) {
+                $creationReceipt = $recoveryAdmission->predecessor($instance, $run, $recoveryIntent);
+                if ($run !== null && ! $run->status->isTerminal()) {
+                    $command = $this->recordExistingStart(
+                        $instance,
+                        $run,
+                        $metadata,
+                        StartOptions::returnExistingActive(),
+                        $recoveryAdmission->context(
+                            CommandContext::system('compensation_recovery'),
+                            $recoveryIntent,
+                            $run,
+                            $creationReceipt,
+                        ),
+                    );
+                    $recoveryAdmission->bind($command, $run);
+                    return;
+                }
+                $predecessor = $run;
+            }
+
+            if ($recoveryAdmission === null && $run instanceof WorkflowRun) {
                 $command = $this->recordExistingStart($instance, $run, $metadata, $startOptions);
 
                 return;
@@ -1766,6 +1833,12 @@ final class WorkflowStub
                 $instance,
                 $startOptions,
             );
+            if ($recoveryAdmission !== null) {
+                $businessKey = $startOptions->businessKey;
+                $visibilityLabels = $startOptions->labels ?: null;
+                $memo = $startOptions->memo ?: null;
+                $searchAttributes = $startOptions->searchAttributes ?: null;
+            }
             $executionTimeoutSeconds = $startOptions->executionTimeoutSeconds;
             $runTimeoutSeconds = $startOptions->runTimeoutSeconds;
             $connection = RoutingResolver::workflowConnection($workflowClass, $metadata);
@@ -1790,6 +1863,10 @@ final class WorkflowStub
                 ? $startedAt->copy()
                     ->addSeconds($runTimeoutSeconds)
                 : null;
+            if ($predecessor !== null) {
+                $executionDeadlineAt = $predecessor->execution_deadline_at;
+                $runDeadlineAt = $predecessor->run_deadline_at;
+            }
             $payloadCodec = CodecRegistry::defaultCodec();
             $serializedArguments = ExternalPayloads::externalizeForNamespace(
                 Serializer::serializeWithCodec($payloadCodec, $metadata->arguments),
@@ -1837,7 +1914,24 @@ final class WorkflowStub
 
             $this->seedTypedVisibilityMetadata($run, $memo, $searchAttributes);
 
-            $command = $this->recordNewStartCommand($instance, $run, $payloadCodec, $serializedArguments);
+            $command = $this->recordNewStartCommand(
+                $instance,
+                $run,
+                $payloadCodec,
+                $serializedArguments,
+                $recoveryAdmission !== null && $recoveryIntent !== null
+                    ? $recoveryAdmission->context(
+                        CommandContext::system('compensation_recovery'),
+                        $recoveryIntent,
+                        $run
+                    )
+                    : null,
+            );
+            $recoveryAdmission?->bind($command, $run);
+            $recoveryLink = null;
+            if ($recoveryAdmission !== null && $predecessor !== null) {
+                $recoveryLink = $recoveryAdmission->link($predecessor, $run);
+            }
 
             $instance->forceFill([
                 'current_run_id' => $run->id,
@@ -1845,7 +1939,7 @@ final class WorkflowStub
                 'visibility_labels' => $visibilityLabels,
                 'memo' => $memo,
                 'execution_timeout_seconds' => $executionTimeoutSeconds,
-                'started_at' => $startedAt,
+                'started_at' => $predecessor === null ? $startedAt : $instance->started_at,
                 'run_count' => $run->run_number,
             ])->save();
 
@@ -1860,6 +1954,14 @@ final class WorkflowStub
                 'run_timeout_seconds' => $runTimeoutSeconds,
                 'execution_deadline_at' => $executionDeadlineAt,
                 'run_deadline_at' => $runDeadlineAt,
+                ...($recoveryAdmission === null ? [] : [
+                    'compensation_recovery' => $command->context['compensation_recovery'],
+                ]),
+                ...($recoveryLink === null ? [] : [
+                    'continued_from_run_id' => $predecessor->id,
+                    'workflow_link_id' => $recoveryLink->id,
+                    'recovery_kind' => 'compensation_recovery_restart',
+                ]),
                 TimeoutCleanup::STARTED_KEY => TimeoutCleanup::startedPayload(
                     $startOptions->timeoutCleanupSeconds,
                     $executionDeadlineAt,
@@ -1901,37 +2003,41 @@ final class WorkflowStub
         WorkflowRun $run,
         WorkflowMetadata $metadata,
         StartOptions $startOptions,
+        ?CommandContext $commandContext = null,
     ): WorkflowCommand {
         $canReturnExisting = $startOptions->duplicateStartPolicy === DuplicateStartPolicy::ReturnExistingActive
             && in_array($run->status, [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting], true);
 
-        $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
-            'command_type' => CommandType::Start->value,
-            'target_scope' => 'instance',
-            'status' => $canReturnExisting
-                ? CommandStatus::Accepted->value
-                : CommandStatus::Rejected->value,
-            'outcome' => $canReturnExisting
-                ? CommandOutcome::ReturnedExistingActive->value
-                : CommandOutcome::RejectedDuplicate->value,
-            'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
-            'payload' => Serializer::serializeWithCodec(
-                $run->payload_codec ?? CodecRegistry::defaultCodec(),
-                $metadata->arguments
-            ),
-            'rejection_reason' => $canReturnExisting
-                ? null
-                : 'instance_already_started',
-            'accepted_at' => $canReturnExisting
-                ? now()
-                : null,
-            'applied_at' => $canReturnExisting
-                ? now()
-                : null,
-            'rejected_at' => $canReturnExisting
-                ? null
-                : now(),
-        ]));
+        $command = WorkflowCommand::record($instance, $run, $this->commandAttributesForContext(
+            $commandContext ?? $this->resolvedCommandContext(),
+            [
+                'command_type' => CommandType::Start->value,
+                'target_scope' => 'instance',
+                'status' => $canReturnExisting
+                    ? CommandStatus::Accepted->value
+                    : CommandStatus::Rejected->value,
+                'outcome' => $canReturnExisting
+                    ? CommandOutcome::ReturnedExistingActive->value
+                    : CommandOutcome::RejectedDuplicate->value,
+                'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                'payload' => Serializer::serializeWithCodec(
+                    $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                    $metadata->arguments
+                ),
+                'rejection_reason' => $canReturnExisting
+                    ? null
+                    : 'instance_already_started',
+                'accepted_at' => $canReturnExisting
+                    ? now()
+                    : null,
+                'applied_at' => $canReturnExisting
+                    ? now()
+                    : null,
+                'rejected_at' => $canReturnExisting
+                    ? null
+                    : now(),
+            ]
+        ));
 
         WorkflowHistoryEvent::record($run, $canReturnExisting
             ? HistoryEventType::StartAccepted
@@ -2101,6 +2207,14 @@ final class WorkflowStub
             'run_timeout_seconds' => $startMetadata['run_timeout_seconds'],
             'execution_deadline_at' => $startMetadata['execution_deadline_at']?->toIso8601String(),
             'run_deadline_at' => $startMetadata['run_deadline_at']?->toIso8601String(),
+            ...(isset($startMetadata['compensation_recovery']) ? [
+                'compensation_recovery' => $startMetadata['compensation_recovery'],
+            ] : []),
+            ...(isset($startMetadata['continued_from_run_id']) ? [
+                'continued_from_run_id' => $startMetadata['continued_from_run_id'],
+                'workflow_link_id' => $startMetadata['workflow_link_id'],
+                'recovery_kind' => $startMetadata['recovery_kind'],
+            ] : []),
             ...(isset($startMetadata[TimeoutCleanup::STARTED_KEY]) ? [
                 TimeoutCleanup::STARTED_KEY => $startMetadata[TimeoutCleanup::STARTED_KEY],
             ] : []),

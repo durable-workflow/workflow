@@ -7,6 +7,7 @@ namespace Workflow\V2\Support;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use LogicException;
+use Workflow\V2\Compensation\Persistence\ScopeStorage;
 use Workflow\V2\Enums\CancellationPolicy;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
@@ -197,6 +198,17 @@ final class WorkflowRunRetentionCleanup
     {
         $run = $run instanceof WorkflowRun ? $run
             : ConfiguredV2Models::query('run_model', WorkflowRun::class)->findOrFail($run);
+        $database = $run->getConnection();
+        // Retained request keys still need both native receipt copies and
+        // redrive links, even after verification. Only explicit release ends
+        // this hold. A concurrent release can at most defer pruning one pass.
+        if ($database->getSchemaBuilder()->hasTable(ScopeStorage::SCOPES)
+            && $database->table(ScopeStorage::SCOPES)
+                ->where('recovery_instance_id', $run->workflow_instance_id)
+                ->where('status', '!=', 'released')
+                ->exists()) {
+            return 'retained_compensation_scope';
+        }
         $schedules = $run->historyEvents()
             ->where('event_type', HistoryEventType::ActivityScheduled->value)
             ->where('payload->activity->cancellation_policy', CancellationPolicy::Abandon->value)->get();
