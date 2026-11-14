@@ -19,11 +19,18 @@ final readonly class ChildReservation
         public string $workflowClass,
         public string $definitionFingerprint,
         public string $authorizationVersion,
+        public ?ChildScopeParticipation $participation = null,
     ) {
         if ($workflowClass === '' || strlen($workflowClass) > 512
             || trim($authorizationVersion) === '' || strlen($authorizationVersion) > 128
             || preg_match('/\Asha256:[0-9a-f]{64}\z/D', $definitionFingerprint) !== 1) {
             throw new InvalidArgumentException('Invalid child reservation definition or authorization version.');
+        }
+        if ($participation !== null && ($participation->parent->namespace !== $identity->namespace
+            || $participation->parent->application !== $identity->parentExecution->scope)) {
+            throw new InvalidArgumentException(
+                'The retained participant belongs to another application or native namespace.'
+            );
         }
         PortableDescriptor::encode($this->toArray());
     }
@@ -60,11 +67,14 @@ final readonly class ChildReservation
     public function toArray(): array
     {
         return [
-            'version' => 1,
+            'version' => $this->participation === null ? 1 : 2,
             'identity' => $this->identity->toArray(),
             'workflowClass' => $this->workflowClass,
             'definitionFingerprint' => $this->definitionFingerprint,
             'authorizationVersion' => $this->authorizationVersion,
+            ...($this->participation === null ? [] : [
+                'participation' => $this->participation->toArray(),
+            ]),
         ];
     }
 
@@ -73,11 +83,13 @@ final readonly class ChildReservation
      */
     public static function fromArray(array $value): self
     {
-        if (count($value) !== 5 || ($value['version'] ?? null) !== 1
+        $version = $value['version'] ?? null;
+        if (! in_array($version, [1, 2], true) || count($value) !== ($version === 1 ? 5 : 6)
             || ! is_array($value['identity'] ?? null)
             || ! is_string($value['workflowClass'] ?? null)
             || ! is_string($value['definitionFingerprint'] ?? null)
-            || ! is_string($value['authorizationVersion'] ?? null)) {
+            || ! is_string($value['authorizationVersion'] ?? null)
+            || ($version === 2 && ! is_array($value['participation'] ?? null))) {
             throw new InvalidArgumentException('Unsupported or malformed child reservation.');
         }
         return new self(
@@ -85,6 +97,7 @@ final readonly class ChildReservation
             $value['workflowClass'],
             $value['definitionFingerprint'],
             $value['authorizationVersion'],
+            $version === 1 ? null : ChildScopeParticipation::fromArray($value['participation']),
         );
     }
 }
