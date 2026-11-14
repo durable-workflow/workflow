@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schema;
 use InvalidArgumentException;
 use LogicException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\V2\TestScheduledWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Contracts\ScheduleWorkflowStarter;
@@ -456,6 +457,187 @@ final class V2ScheduleAuditRetentionTest extends TestCase
             ->orderBy('sequence')
             ->pluck('sequence')
             ->all());
+    }
+
+    public function testCanonicalEnvironmentLimitIsParsedAndOverflowRefuses(): void
+    {
+        config()->set('workflows.v2.schedules.audit_history_limit', '3');
+        $this->assertSame(3, ScheduleAuditRetention::limit());
+        config()
+            ->set('workflows.v2.schedules.audit_history_limit', (string) PHP_INT_MAX);
+        $this->assertSame(PHP_INT_MAX, ScheduleAuditRetention::limit());
+        config()
+            ->set('workflows.v2.schedules.audit_history_limit', PHP_INT_MAX . '0');
+        $this->expectException(InvalidArgumentException::class);
+        ScheduleAuditRetention::limit();
+    }
+
+    public function testCompactingAManualTriggerDoesNotInventAnOccurrenceReceipt(): void
+    {
+        config()->set('workflows.v2.schedules.audit_history_limit', null);
+        $schedule = $this->schedule('manual');
+        $manual = WorkflowScheduleHistoryEvent::record($schedule, HistoryEventType::ScheduleTriggered);
+        WorkflowScheduleHistoryEvent::record($schedule, HistoryEventType::ScheduleUpdated);
+        config()
+            ->set('workflows.v2.schedules.audit_history_limit', 2);
+        $this->assertSame(1, ScheduleAuditRetention::prune($schedule));
+        $this->assertModelMissing($manual);
+        $this->assertSame(0, WorkflowScheduleOccurrence::query()->count());
+        $this->assertSame([1, 3], $schedule->historyEvents()->orderBy('sequence')->pluck('sequence')->all());
+    }
+
+    public static function unusableLegacyClocks(): array
+    {
+        return [
+            'non-string clock' => [123],
+            'unsupported clock syntax' => ['not-a-clock'],
+            'invalid calendar day' => ['2026-02-30T01:02:03Z'],
+        ];
+    }
+
+    #[DataProvider('unusableLegacyClocks')]
+    public function testUnusableLegacyPayloadRefusesBothCompactionAndTheCommand(mixed $clock): void
+    {
+        config()->set('workflows.v2.schedules.audit_history_limit', null);
+        $schedule = $this->schedule('legacy-refusal', 'orders');
+        $legacy = WorkflowScheduleHistoryEvent::record($schedule, HistoryEventType::ScheduleTriggered, [
+            'occurrence_time' => '2026-11-13T01:02:03Z',
+        ]);
+        $payload = $legacy->payload;
+        $payload['occurrence_time'] = $clock;
+        $legacy->forceFill([
+            'occurrence_at_utc' => null,
+            'payload' => $payload,
+        ])->save();
+        WorkflowScheduleOccurrence::query()->delete();
+        WorkflowScheduleHistoryEvent::record($schedule, HistoryEventType::ScheduleUpdated);
+        $before = $schedule->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->toArray();
+        config()
+            ->set('workflows.v2.schedules.audit_history_limit', 2);
+        try {
+            ScheduleAuditRetention::prune($schedule);
+            $this->fail('Unusable legacy payload was discarded.');
+        } catch (LogicException $error) {
+            $this->assertStringContainsString('legacy schedule occurrence cannot be established', $error->getMessage());
+        }
+        $this->assertSame($before, $schedule->historyEvents()->orderBy('sequence')->get()->toArray());
+        $this->assertSame(1, Artisan::call('workflow:v2:schedule-audit-prune', [
+            '--namespace' => 'orders',
+            '--schedule' => 'legacy-refusal',
+        ]));
+        $this->assertStringContainsString('audit row was retained', Artisan::output());
+        $this->assertSame($before, $schedule->historyEvents()->orderBy('sequence')->get()->toArray());
+        $this->assertSame(0, WorkflowScheduleOccurrence::query()->count());
+    }
+
+    public function testAConflictingReceiptNamespaceRollsBackTheAuditAppend(): void
+    {
+        $schedule = $this->schedule('conflicting-receipt', 'orders');
+        $receipt = WorkflowScheduleOccurrence::query()->create([
+            'workflow_schedule_id' => $schedule->id,
+            'namespace' => 'other',
+            'occurrence_at_utc' => '2026-11-13 01:02:03.000000',
+        ]);
+        $before = $schedule->historyEvents()
+            ->get()
+            ->toArray();
+        try {
+            WorkflowScheduleHistoryEvent::record($schedule, HistoryEventType::ScheduleTriggered, [
+                'occurrence_time' => '2026-11-13T01:02:03Z',
+            ]);
+            $this->fail('An occurrence receipt with another namespace was reused.');
+        } catch (LogicException $error) {
+            $this->assertStringContainsString('conflicting namespace ownership', $error->getMessage());
+        }
+        $this->assertSame($before, $schedule->historyEvents()->get()->toArray());
+        $this->assertSame('other', $receipt->fresh()->namespace);
+        $this->assertSame(1, WorkflowScheduleOccurrence::query()->count());
+    }
+
+    public function testTheCleanupApiRejectsOutOfRangeLimitsWithoutDeletingOrphans(): void
+    {
+        $schedule = $this->schedule('invalid-api-limit', 'orders');
+        $schedule->delete();
+        foreach ([0, 1001] as $limit) {
+            try {
+                ScheduleAuditRetention::cleanup('orders', $limit);
+                $this->fail('An invalid cleanup limit was accepted.');
+            } catch (InvalidArgumentException $error) {
+                $this->assertStringContainsString('between 1 and 1000', $error->getMessage());
+            }
+            $this->assertSame(1, $schedule->historyEvents()->count());
+        }
+    }
+
+    public static function invalidCommandNamespaces(): array
+    {
+        return [
+            'empty' => [''],
+            'too long' => [str_repeat('x', 256)],
+            'invalid UTF-8' => ["\xff"],
+        ];
+    }
+
+    #[DataProvider('invalidCommandNamespaces')]
+    public function testAnInvalidCommandNamespaceCannotDeleteRows(string $namespace): void
+    {
+        $schedule = $this->schedule('invalid-namespace', 'orders');
+        $schedule->delete();
+        $this->assertSame(1, Artisan::call('workflow:v2:schedule-audit-prune', [
+            '--namespace' => $namespace,
+        ]));
+        $this->assertStringContainsString('namespace must be a nonempty UTF-8 string', Artisan::output());
+        $this->assertSame(1, $schedule->historyEvents()->count());
+    }
+
+    public function testARequestedScheduleMustExistWithItsExactIdInTheSelectedNamespace(): void
+    {
+        $schedule = $this->schedule('exact-schedule', 'orders');
+        $before = $schedule->historyEvents()
+            ->get()
+            ->toArray();
+        foreach ([['other', 'exact-schedule'],
+            ['orders', 'missing'],
+            ['orders', 'EXACT-SCHEDULE'],
+        ] as [$namespace, $id]) {
+            $this->assertSame(1, Artisan::call('workflow:v2:schedule-audit-prune', [
+                '--namespace' => $namespace,
+                '--schedule' => $id,
+            ]));
+            $this->assertStringContainsString('exact schedule ID does not exist', Artisan::output());
+            $this->assertSame($before, $schedule->historyEvents()->get()->toArray());
+        }
+    }
+
+    public function testTheOccurrenceMigrationIsIdempotentWithoutDiscardingReceipts(): void
+    {
+        $schedule = $this->schedule('migration-repeat');
+        WorkflowScheduleHistoryEvent::record($schedule, HistoryEventType::ScheduleTriggered, [
+            'occurrence_time' => '2026-11-13T01:02:03Z',
+        ]);
+        $before = WorkflowScheduleOccurrence::query()->get()->toArray();
+        $migration = require __DIR__ . '/../../../src/migrations/2026_11_14_000200_create_workflow_schedule_occurrences.php';
+        $migration->up();
+        $this->assertSame($before, WorkflowScheduleOccurrence::query()->get()->toArray());
+    }
+
+    public function testAnEmptyOccurrenceMigrationCanRollBackAndRepeatWithoutAnExistingTable(): void
+    {
+        $migration = require __DIR__ . '/../../../src/migrations/2026_11_14_000200_create_workflow_schedule_occurrences.php';
+        $this->assertSame(0, WorkflowScheduleOccurrence::query()->count());
+        try {
+            $migration->down();
+            $this->assertFalse(Schema::hasTable('workflow_schedule_occurrences'));
+            $migration->down();
+            $this->assertFalse(Schema::hasTable('workflow_schedule_occurrences'));
+        } finally {
+            $migration->up();
+        }
+        $this->assertTrue(Schema::hasTable('workflow_schedule_occurrences'));
+        $this->assertSame(0, WorkflowScheduleOccurrence::query()->count());
     }
 
     public function testMigrationCannotDiscardPopulatedOccurrenceReceipts(): void
