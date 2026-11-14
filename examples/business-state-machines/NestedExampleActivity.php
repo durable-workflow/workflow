@@ -14,6 +14,9 @@ final class NestedExampleActivity extends Activity
 {
     public function handle(string $operation, array $input): array
     {
+        if ($this->run->namespace !== ExampleOwnershipPolicy::NAMESPACE) {
+            throw new LogicException('The native activity namespace is outside this example.');
+        }
         $fields = match ($operation) {
             'initialize' => ['subject', 'integration', 'version', 'role', 'parentRun'],
             'bind' => ['reservation'],

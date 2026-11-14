@@ -218,6 +218,29 @@ final class V2NestedCompensationExampleTest extends TestCase
         $this->assertSame(0, DB::table('example_machine_bindings')->count());
     }
 
+    public static function foreignNativeOwners(): array
+    {
+        return [
+            'foreign instance' => ['foreign-instance', ExampleOwnershipPolicy::NAMESPACE],
+            'foreign namespace' => [ExampleOwnershipPolicy::instanceId(self::SUBJECT), 'other-example'],
+        ];
+    }
+
+    #[DataProvider('foreignNativeOwners')]
+    public function testForeignNativeOwnerRefusesBeforeApplicationWrites(string $instance, string $namespace): void
+    {
+        config([
+            'workflows.v2.namespaces' => [ExampleOwnershipPolicy::NAMESPACE, 'other-example'],
+        ]);
+        $stub = WorkflowStub::make(OrderWorkflow::class, $instance, $namespace);
+        $stub->start(self::SUBJECT, 'prepare', '1');
+        $this->drain();
+        $this->assertSame(RunStatus::Failed, WorkflowRun::query()->findOrFail($stub->runId())->status);
+        foreach (['example_machine_subjects', 'example_machine_bindings', 'example_machine_effects'] as $table) {
+            $this->assertSame(0, DB::table($table)->count());
+        }
+    }
+
     private function start(string $integration): WorkflowStub
     {
         $stub = WorkflowStub::make(

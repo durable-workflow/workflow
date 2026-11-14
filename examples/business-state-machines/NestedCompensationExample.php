@@ -87,8 +87,8 @@ final readonly class NestedCompensationExample
         string $run,
         string $instance,
     ): array {
-        if ($role === 'parent' && $parentRun !== $run) {
-            throw new LogicException('The Order must retain its actual original native run.');
+        if ($role === 'parent' && ($parentRun !== $run || $instance !== ExampleOwnershipPolicy::instanceId($subject))) {
+            throw new LogicException('The Order must retain its canonical instance and original native run.');
         }
         $scope = ExampleOwnershipPolicy::scope($subject, $parentRun, $role);
         (new ExampleOwnershipPolicy(self::PRINCIPAL))->assertScopeAllowed($scope, self::PRINCIPAL, 'register');
