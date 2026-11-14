@@ -39,21 +39,25 @@ final class CompensationScopeRecoveryProcessTest extends TestCase
         $result = app(ScopeRecovery::class)->request($scope, 'cold-request', 'operator-a', 'cancel');
         $started = hrtime(true);
         $progress = [$this->progress($result['runId'], -1, $started)];
-        for ($step = 0; $step < 20 && app(ScopeRepository::class)->inspect($scope)['status'] !== 'verified'; $step++) {
+        for ($step = 0; $step < 20; $step++) {
+            if (app(ScopeRepository::class)->inspect($scope)['status'] === 'verified'
+                && WorkflowRun::query()->findOrFail($result['runId'])->status->value === 'completed') {
+                break;
+            }
+            // PHP 8.2/8.3 cannot enter workflow fibers from PendingCommand's destructor.
             $this->artisan('queue:work', [
                 '--once' => true,
                 '--queue' => 'scope-recovery-test',
                 '--sleep' => 0,
                 '--tries' => 1,
-            ])->assertExitCode(0);
+            ])->assertExitCode(0)
+                ->run();
             $progress[] = $this->progress($result['runId'], $step, $started);
         }
         $status = app(ScopeRepository::class)->inspect($scope)['status'];
-        $this->assertSame(
-            'verified',
-            $status,
-            json_encode($progress, JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE)
-        );
+        $diagnostic = json_encode($progress, JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE);
+        $this->assertSame('verified', $status, $diagnostic);
+        $this->assertSame('completed', WorkflowRun::query()->findOrFail($result['runId'])->status->value, $diagnostic);
         file_put_contents($input['report'], json_encode([
             'pid' => getmypid(),
             'status' => $status,
