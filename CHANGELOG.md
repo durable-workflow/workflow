@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add a namespace-scoped open-run version-usage query with legacy/current/unknown
+  counts and byte-exact keyset pages. Missing markers and unavailable history
+  remain unknown when assessing legacy branch retirement (#220).
+
 - Experimental embedded compensation scopes (#1063): retained versioned
   obligations, native Saga recovery, sequential child participation and explicit
   release. Each scope keeps its originating run; continue-as-new, origin redrive
