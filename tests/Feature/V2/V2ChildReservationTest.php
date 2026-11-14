@@ -180,10 +180,13 @@ final class V2ChildReservationTest extends TestCase
                 'protected' => 'not-a-reservation',
             ], JSON_THROW_ON_ERROR),
         ]);
-        foreach (['reserve', 'close'] as $operation) {
+        foreach (['reserve', 'load', 'close'] as $operation) {
             try {
                 if ($operation === 'reserve') {
                     $this->reserve($parent);
+                } elseif ($operation === 'load') {
+                    $this->store()
+                        ->load($reservation->identity, 'trusted-owner');
                 } else {
                     $this->store()
                         ->close($reservation, 'trusted-owner');
@@ -226,6 +229,14 @@ final class V2ChildReservationTest extends TestCase
             $this->assertSame('binding_access_refused', $error->getMessage());
         }
         $this->assertSame([], $queries);
+        try {
+            $this->store(false)
+                ->load($reservation->identity, 'untrusted');
+            $this->fail('An unauthorized lookup reached binding storage.');
+        } catch (LogicException $error) {
+            $this->assertSame('binding_access_refused', $error->getMessage());
+        }
+        $this->assertSame([], $queries);
     }
 
     public function testCallerTransactionsCannotExposeUncommittedClosureOrRunHostAuthorizationUnderLocks(): void
@@ -242,11 +253,13 @@ final class V2ChildReservationTest extends TestCase
             }
         };
         $store = new ChildReservationStore($authorization);
-        foreach (['reserve', 'close'] as $operation) {
+        foreach (['reserve', 'load', 'close'] as $operation) {
             try {
                 DB::transaction(static function () use ($operation, $store, $reservation): void {
                     if ($operation === 'reserve') {
                         $store->reserve($reservation->identity, $reservation->workflowClass, 'owner');
+                    } elseif ($operation === 'load') {
+                        $store->load($reservation->identity, 'owner');
                     } else {
                         $store->close($reservation, 'owner');
                     }
