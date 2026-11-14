@@ -100,6 +100,12 @@ final class CompensationScopeRecoveryProcessTest extends TestCase
         try {
             $run = WorkflowRun::query()->findOrFail($runId);
             $database = DB::connection();
+            $delivery = app('queue')
+                ->connection($run->connection);
+            if (! $delivery instanceof \Illuminate\Queue\DatabaseQueue) {
+                throw new \LogicException('The cold recovery diagnostic requires its database queue.');
+            }
+            $physicalQueue = $delivery->getQueue($run->queue);
             $tasks = $database->table('workflow_tasks')
                 ->where('workflow_run_id', $runId)
                 ->orderBy('id')
@@ -110,7 +116,7 @@ final class CompensationScopeRecoveryProcessTest extends TestCase
                 ]);
             $references = [];
             foreach ($tasks as $task) {
-                $reference = $this->deliveryReference($task, $runId, $run->queue);
+                $reference = $this->deliveryReference($task, $runId, $physicalQueue);
                 if ($reference !== null) {
                     $references[$reference['job_id']] = $reference;
                 }
@@ -118,14 +124,15 @@ final class CompensationScopeRecoveryProcessTest extends TestCase
             $snapshot += [
                 'run' => $run->only(['id', 'workflow_instance_id', 'status', 'connection', 'queue']),
                 'queue_connection' => config('queue.default'),
+                'physical_queue' => $physicalQueue,
                 'maintenance' => app()
                     ->isDownForMaintenance(),
                 'worker_output' => $step < 0 ? null : $this->bounded(\Illuminate\Support\Facades\Artisan::output()),
                 'queue_jobs_count' => $database->table('jobs')
-                    ->where('queue', $run->queue)
+                    ->where('queue', $physicalQueue)
                     ->count(),
                 'jobs' => $database->table('jobs')
-                    ->where('queue', $run->queue)
+                    ->where('queue', $physicalQueue)
                     ->whereIn('id', array_keys($references))
                     ->orderBy('id')
                     ->limit(32)
@@ -146,12 +153,27 @@ final class CompensationScopeRecoveryProcessTest extends TestCase
                                 && ($payload['uuid'] ?? null) === $expected['payload_uuid'],
                         ];
                     })->all(),
-                'tasks' => $tasks->map(function (object $task) use ($runId, $run): array {
+                'failures' => $database->table('workflow_failures')
+                    ->where('workflow_run_id', $runId)
+                    ->orderBy('id')
+                    ->limit(4)
+                    ->get([
+                        'id', 'exception_class', 'failure_category', 'non_retryable', 'message', 'file', 'line',
+                    ])->map(fn (object $failure): array => [
+                        'id' => $failure->id,
+                        'exception_class' => $failure->exception_class,
+                        'failure_category' => $failure->failure_category,
+                        'non_retryable' => $failure->non_retryable,
+                        'message' => $this->bounded($failure->message),
+                        'file' => $this->bounded($failure->file),
+                        'line' => $failure->line,
+                    ])->all(),
+                'tasks' => $tasks->map(function (object $task) use ($runId, $physicalQueue): array {
                     $value = (array) $task;
                     foreach (['last_error', 'last_dispatch_error'] as $key) {
                         $value[$key] = $this->bounded($value[$key]);
                     }
-                    $value['queue_delivery_reference'] = $this->deliveryReference($task, $runId, $run->queue);
+                    $value['queue_delivery_reference'] = $this->deliveryReference($task, $runId, $physicalQueue);
                     return $value;
                 })->all(),
             ];
