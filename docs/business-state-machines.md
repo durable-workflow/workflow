@@ -159,7 +159,9 @@ An application commit adapter must:
 
 An immutable snapshot is not a concurrency fence. The runner checks snapshot correlation and source consistency, but the application activity must implement the transaction, operation admission and provider reconciliation. A database fence cannot recall a request already sent to a provider.
 
-For separate application and DW stores, the application's decision record is the business commit authority. Use an explicit durable handoff and idempotent outcome lookup. No distributed transaction is implied. Shared-store and cross-store persistence race guarantees are not demonstrated by this slice's in-memory runner tests.
+For separate application and DW stores, the application's decision record is the business commit authority. Use an explicit durable handoff and idempotent outcome lookup. No distributed transaction is implied.
+
+The [SQL business-decision example](../examples/business-state-machines/README.md) supplies an application-owned reference boundary and real database tests for cancellation/completion, authority revocation, atomic publication intent and lost acknowledgement. It does not replace application authentication, evidence validation, provider fencing or publication delivery. The in-memory runner tests alone do not establish persistence race guarantees.
 
 ## Compensation and nested-machine boundary
 
