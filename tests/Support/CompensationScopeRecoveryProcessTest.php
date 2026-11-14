@@ -53,6 +53,22 @@ final class CompensationScopeRecoveryProcessTest extends TestCase
             ])->assertExitCode(0)
                 ->run();
             $progress[] = $this->progress($result['runId'], $step, $started);
+            if (($input['crash_after_second'] ?? false) === true) {
+                $retained = app(ScopeRepository::class)->inspect($scope);
+                $obligations = $retained['obligations'];
+                if (count($obligations) === 2 && $obligations[0]['descriptor']['key'] === 'first'
+                    && $obligations[1]['descriptor']['key'] === 'second'
+                    && $obligations[0]['compensation_status'] === 'pending'
+                    && $obligations[1]['compensation_status'] === 'verified') {
+                    file_put_contents($input['report'], json_encode([
+                        'pid' => getmypid(),
+                        'status' => $retained['status'],
+                        'runId' => $result['runId'],
+                    ], JSON_THROW_ON_ERROR));
+                    posix_kill(getmypid(), SIGKILL);
+                    throw new \LogicException('The recovery-worker loss signal did not terminate this process.');
+                }
+            }
         }
         $status = app(ScopeRepository::class)->inspect($scope)['status'];
         $diagnostic = json_encode($progress, JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE);
@@ -61,6 +77,7 @@ final class CompensationScopeRecoveryProcessTest extends TestCase
         file_put_contents($input['report'], json_encode([
             'pid' => getmypid(),
             'status' => $status,
+            'runId' => $result['runId'],
         ], JSON_THROW_ON_ERROR));
     }
 

@@ -158,6 +158,102 @@ final class V2CompensationScopeTest extends TestCase
         $this->assertClosureRaceResolved($scope, $origin, $result['runId'], $history);
     }
 
+    public function testRecoveryWorkerLossDoesNotRepeatVerifiedCompensation(): void
+    {
+        if (! function_exists('posix_kill')) {
+            $this->markTestSkipped('The recovery-worker loss control requires POSIX signals.');
+        }
+        [$scope, $origin] = $this->waitingClosureRaceOrigin();
+        $origin->terminate('Recover the original effects from the retained ledger.');
+        $history = WorkflowHistoryEvent::query()->where('workflow_run_id', $origin->runId())
+            ->orderBy('id')
+            ->get()
+            ->toArray();
+        $input = tempnam(sys_get_temp_dir(), 'scope-resume-input-');
+        $report = tempnam(sys_get_temp_dir(), 'scope-resume-report-');
+        chmod($input, 0600);
+        chmod($report, 0600);
+        $process = null;
+        try {
+            $data = [
+                'scope' => $scope->toArray(),
+                'database' => config('database.connections.' . config('database.default')),
+                'redis' => config('database.redis'),
+                'cache' => config('cache.stores.redis'),
+                'cache_prefix' => config('cache.prefix'),
+                'report' => $report,
+                'crash_after_second' => true,
+            ];
+            file_put_contents($input, json_encode($data, JSON_THROW_ON_ERROR));
+            $command = [PHP_BINARY, 'vendor/bin/phpunit', 'tests/Support/CompensationScopeRecoveryProcessTest.php'];
+            $process = new \Symfony\Component\Process\Process(
+                $command,
+                dirname(__DIR__, 3),
+                [
+                    'DWF_SCOPE_RECOVERY_INPUT' => $input,
+                ],
+                timeout: 30
+            );
+            $process->start();
+            $crashedPid = $process->getPid();
+            try {
+                $process->wait();
+                $this->fail('The recovery worker must die after exactly one verified compensation.');
+            } catch (\Symfony\Component\Process\Exception\ProcessSignaledException $error) {
+                $this->assertSame(SIGKILL, $error->getProcess()->getTermSignal());
+            }
+            $cut = json_decode(file_get_contents($report), true, flags: JSON_THROW_ON_ERROR);
+            $this->assertSame($crashedPid, $cut['pid']);
+            $this->assertNotSame(getmypid(), $crashedPid);
+            $this->assertSame('requested', $cut['status']);
+            $before = (new ScopeRepository())->inspect($scope);
+            $this->assertSame('pending', $before['obligations'][0]['compensation_status']);
+            $this->assertSame('verified', $before['obligations'][1]['compensation_status']);
+            $this->assertSame(['second'], Cache::get('test:scope:undo-log'));
+            $this->assertSame('first', Cache::get('test:scope:effect:' . $before['obligations'][0]['id']));
+            $this->assertNull(Cache::get('test:scope:effect:' . $before['obligations'][1]['id']));
+
+            $data['crash_after_second'] = false;
+            file_put_contents($input, json_encode($data, JSON_THROW_ON_ERROR));
+            file_put_contents($report, '');
+            $process = new \Symfony\Component\Process\Process(
+                $command,
+                dirname(__DIR__, 3),
+                [
+                    'DWF_SCOPE_RECOVERY_INPUT' => $input,
+                ],
+                timeout: 30
+            );
+            $process->mustRun();
+            $recovered = json_decode(file_get_contents($report), true, flags: JSON_THROW_ON_ERROR);
+            $this->assertNotSame(getmypid(), $recovered['pid']);
+            $this->assertNotSame($crashedPid, $recovered['pid']);
+            $this->assertSame($cut['runId'], $recovered['runId']);
+            $this->assertSame('verified', $recovered['status']);
+            $after = (new ScopeRepository())->inspect($scope);
+            $this->assertSame($origin->runId(), $after['original_run_id']);
+            $this->assertSame(['verified', 'verified'], array_column($after['obligations'], 'compensation_status'));
+            $this->assertSame(array_column($before['obligations'], 'id'), array_column($after['obligations'], 'id'));
+            $this->assertSame(['second', 'first'], Cache::get('test:scope:undo-log'));
+            $this->assertSame(2, (int) Cache::get('test:scope:effect-count'));
+            $this->assertSame(
+                1,
+                WorkflowRun::query()->where('workflow_instance_id', $scope->recoveryInstanceId())->count()
+            );
+            $this->assertSame('terminated', $origin->refresh()->status());
+            $this->assertSame($history, WorkflowHistoryEvent::query()->where('workflow_run_id', $origin->runId())
+                ->orderBy('id')
+                ->get()
+                ->toArray());
+        } finally {
+            if ($process !== null && $process->isRunning()) {
+                $process->stop(0, SIGKILL);
+            }
+            unlink($input);
+            unlink($report);
+        }
+    }
+
     public static function operatorStops(): array
     {
         return [
