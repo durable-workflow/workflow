@@ -49,7 +49,11 @@ final class CompensationScopeRecoveryProcessTest extends TestCase
             $progress[] = $this->progress($result['runId'], $step, $started);
         }
         $status = app(ScopeRepository::class)->inspect($scope)['status'];
-        $this->assertSame('verified', $status, json_encode($progress, JSON_THROW_ON_ERROR));
+        $this->assertSame(
+            'verified',
+            $status,
+            json_encode($progress, JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE)
+        );
         file_put_contents($input['report'], json_encode([
             'pid' => getmypid(),
             'status' => $status,
@@ -87,43 +91,102 @@ final class CompensationScopeRecoveryProcessTest extends TestCase
 
     private function progress(string $runId, int $step, int $started): array
     {
-        $run = WorkflowRun::query()->findOrFail($runId);
-        $database = DB::connection();
-        return [
+        $snapshot = [
             'step' => $step,
             'elapsed_ms' => (hrtime(true) - $started) / 1_000_000,
             'now' => now()
                 ->toISOString(),
-            'run' => $run->only(['id', 'workflow_instance_id', 'status', 'connection', 'queue']),
-            'queue_connection' => config('queue.default'),
-            'maintenance' => app()
-                ->isDownForMaintenance(),
-            'worker_output' => $step < 0 ? '' : substr(\Illuminate\Support\Facades\Artisan::output(), 0, 4096),
-            'jobs' => $database->table('jobs')
-                ->orderBy('id')
-                ->limit(32)
-                ->get(['id', 'queue', 'attempts', 'reserved_at', 'available_at', 'payload'])
-                ->map(static function (object $job): array {
-                    $payload = json_decode($job->payload, true, flags: JSON_THROW_ON_ERROR);
-                    return [
-                        'id' => $job->id,
-                        'queue' => $job->queue,
-                        'attempts' => $job->attempts,
-                        'reserved_at' => $job->reserved_at,
-                        'available_at' => $job->available_at,
-                        'payload_sha256' => hash('sha256', $job->payload),
-                        'uuid' => $payload['uuid'] ?? null,
-                        'job' => $payload['displayName'] ?? null,
-                    ];
-                })->all(),
-            'tasks' => $database->table('workflow_tasks')
+        ];
+        try {
+            $run = WorkflowRun::query()->findOrFail($runId);
+            $database = DB::connection();
+            $tasks = $database->table('workflow_tasks')
                 ->where('workflow_run_id', $runId)
                 ->orderBy('id')
                 ->limit(64)
                 ->get([
                     'id', 'task_type', 'status', 'connection', 'queue', 'available_at',
                     'last_error', 'last_dispatch_error', 'queue_delivery_reference',
-                ])->all(),
+                ]);
+            $references = [];
+            foreach ($tasks as $task) {
+                $reference = $this->deliveryReference($task, $runId, $run->queue);
+                if ($reference !== null) {
+                    $references[$reference['job_id']] = $reference;
+                }
+            }
+            $snapshot += [
+                'run' => $run->only(['id', 'workflow_instance_id', 'status', 'connection', 'queue']),
+                'queue_connection' => config('queue.default'),
+                'maintenance' => app()
+                    ->isDownForMaintenance(),
+                'worker_output' => $step < 0 ? null : $this->bounded(\Illuminate\Support\Facades\Artisan::output()),
+                'queue_jobs_count' => $database->table('jobs')
+                    ->where('queue', $run->queue)
+                    ->count(),
+                'jobs' => $database->table('jobs')
+                    ->where('queue', $run->queue)
+                    ->whereIn('id', array_keys($references))
+                    ->orderBy('id')
+                    ->limit(32)
+                    ->get(['id', 'queue', 'attempts', 'reserved_at', 'available_at', 'payload'])
+                    ->map(static function (object $job) use ($references): array {
+                        $payload = strlen($job->payload) <= 262144 ? json_decode($job->payload, true) : null;
+                        $expected = $references[$job->id];
+                        return [
+                            'id' => $job->id,
+                            'queue' => $job->queue,
+                            'attempts' => $job->attempts,
+                            'reserved_at' => $job->reserved_at,
+                            'available_at' => $job->available_at,
+                            'payload_sha256' => hash('sha256', $job->payload),
+                            'task_id' => $expected['task_id'],
+                            'expected_uuid' => $expected['payload_uuid'],
+                            'payload_identity_matches' => is_array($payload)
+                                && ($payload['uuid'] ?? null) === $expected['payload_uuid'],
+                        ];
+                    })->all(),
+                'tasks' => $tasks->map(function (object $task) use ($runId, $run): array {
+                    $value = (array) $task;
+                    foreach (['last_error', 'last_dispatch_error'] as $key) {
+                        $value[$key] = $this->bounded($value[$key]);
+                    }
+                    $value['queue_delivery_reference'] = $this->deliveryReference($task, $runId, $run->queue);
+                    return $value;
+                })->all(),
+            ];
+        } catch (\Throwable $error) {
+            $snapshot['diagnostic_error'] = $this->bounded($error->getMessage());
+        }
+        return $snapshot;
+    }
+
+    private function deliveryReference(object $task, string $runId, ?string $queue): ?array
+    {
+        $raw = $task->queue_delivery_reference;
+        $reference = is_string($raw) && strlen($raw) <= 2048 ? json_decode($raw, true) : null;
+        if (! is_array($reference) || ($reference['version'] ?? null) !== 1
+            || ($reference['task_id'] ?? null) !== $task->id
+            || ($reference['run_id'] ?? null) !== $runId
+            || ($reference['queue'] ?? null) !== $queue
+            || ! is_string($reference['job_id'] ?? null)
+            || preg_match('/^[1-9]\d{0,19}$/D', $reference['job_id']) !== 1
+            || ! is_string($reference['payload_uuid'] ?? null)
+            || preg_match(
+                '/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/D',
+                $reference['payload_uuid']
+            ) !== 1) {
+            return null;
+        }
+        return array_intersect_key($reference, array_flip(['task_id', 'job_id', 'payload_uuid']));
+    }
+
+    private function bounded(?string $value): ?array
+    {
+        return $value === null ? null : [
+            'length' => strlen($value),
+            'sha256' => hash('sha256', $value),
+            'prefix' => substr($value, 0, 256),
         ];
     }
 
