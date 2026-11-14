@@ -15,6 +15,28 @@ use Workflow\V2\Compensation\Persistence\ScopeRepository;
 
 final class ScopeProgressTest extends TestCase
 {
+    public function testObservedForwardIsReturnedWithoutAdmittingAnotherAttempt(): void
+    {
+        [$scope, $id] = $this->registered();
+        $progress = new ScopeProgress();
+        $repository = new ScopeRepository();
+        $result = ForwardResult::observed([
+            'reference' => 'booking-1',
+        ], ['provider:proof']);
+        $progress->admitForward($scope, $id, 'native-attempt-1');
+        $progress->forwardResult($scope, $id, 'native-attempt-1', $result);
+        $before = $repository->inspect($scope);
+        $journal = $repository->journal($scope);
+
+        $admission = $progress->admitForward($scope, $id, 'native-attempt-2');
+
+        $this->assertSame($result->toArray(), $admission['cached']);
+        $this->assertFalse($admission['uncertain']);
+        $this->assertSame('native-attempt-1', $admission['row']['forward_attempt_id']);
+        $this->assertSame($before, $repository->inspect($scope));
+        $this->assertSame($journal, $repository->journal($scope));
+    }
+
     public function testUnknownForwardIsReconciledOnRetryAndCancellationClosesAdmission(): void
     {
         [$scope, $id] = $this->registered();

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Unit\V2\Compensation;
 
 use InvalidArgumentException;
+use JsonException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
@@ -68,6 +69,67 @@ final class ScopeDescriptorTest extends TestCase
             'sha256',
             PortableDescriptor::encode(Resolution::verified(['provider:proof'], true)->toArray()),
         ));
+    }
+
+    public function testStoredForwardOutcomesPreserveTheirValueEvidenceAndUnknownState(): void
+    {
+        foreach ([
+            ForwardResult::observed([
+                'items' => ['second', 'first'],
+                'amount' => 1.0,
+            ], ['provider:proof']),
+            ForwardResult::unknown('response-lost'),
+        ] as $result) {
+            $stored = PortableDescriptor::encode($result->toArray());
+            $restored = ForwardResult::fromArray(json_decode($stored, true, flags: JSON_THROW_ON_ERROR));
+            $this->assertSame($stored, PortableDescriptor::encode($restored->toArray()));
+            $this->assertSame($result->observed, $restored->observed);
+            $this->assertSame($result->evidence, $restored->evidence);
+        }
+    }
+
+    public function testStoredResolutionsPreserveAuthoritativeEvidenceAndSettlement(): void
+    {
+        foreach ([
+            Resolution::verified(['provider:proof'], true),
+            Resolution::verified(['provider:proof'], false),
+            Resolution::unknown('provider-unavailable'),
+        ] as $result) {
+            $stored = PortableDescriptor::encode($result->toArray());
+            $restored = Resolution::fromArray(json_decode($stored, true, flags: JSON_THROW_ON_ERROR));
+            $this->assertSame($stored, PortableDescriptor::encode($restored->toArray()));
+            $this->assertSame($result->verified, $restored->verified);
+            $this->assertSame($result->forwardSettled, $restored->forwardSettled);
+        }
+    }
+
+    public static function claimsWithoutEvidence(): iterable
+    {
+        yield 'observed-forward' => ['forward', ForwardResult::observed([], ['proof'])->toArray()];
+        yield 'verified-compensation' => ['resolution', Resolution::verified(['proof'], true)->toArray()];
+    }
+
+    #[DataProvider('claimsWithoutEvidence')]
+    public function testStoredSuccessClaimsCannotDiscardTheirEvidence(string $kind, array $payload): void
+    {
+        $payload['evidence'] = [];
+        $this->expectException(InvalidArgumentException::class);
+        match ($kind) {
+            'forward' => ForwardResult::fromArray($payload),
+            'resolution' => Resolution::fromArray($payload),
+        };
+    }
+
+    public function testInvalidUtf8CannotBePersistedAsACompensationDescriptor(): void
+    {
+        try {
+            new Obligation('book', 'carrier.cancel', '1', [
+                'reference' => "\xFF",
+            ]);
+            $this->fail('The retained descriptor accepted invalid UTF-8.');
+        } catch (InvalidArgumentException $error) {
+            $this->assertInstanceOf(JsonException::class, $error->getPrevious());
+        }
     }
 
     public static function unsupportedVersions(): iterable
