@@ -2056,28 +2056,6 @@ def _guard_matches(
         )
         if classification.returncode == 0 and classification.stdout == "true":
             return False
-    if guard["glob"] == "src/V2/Support/*.php":
-        # Metadata observers do not reconstruct workflow commands. Closed call
-        # classification keeps writes and replay dependencies under this guard.
-        observers = {
-            "src/V2/Support/VersionUsageQuery.php",
-            "src/V2/Support/VersionUsageDecision.php",
-            "src/V2/Support/VersionUsageCursor.php",
-        }
-        for path in list(matching):
-            if path not in observers:
-                continue
-            classification = subprocess.run(
-                ["php", str(Path(__file__).with_name("classify-version-usage-observer.php"))],
-                input=json.dumps({"path": path, "source": (root / path).read_text(encoding="utf-8")}),
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if classification.returncode == 0 and classification.stdout == "true":
-                matching.remove(path)
-        if not matching:
-            return False
     patterns = guard.get("content_patterns")
     if patterns is None:
         return True

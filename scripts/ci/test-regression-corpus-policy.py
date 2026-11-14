@@ -2141,66 +2141,34 @@ exit(0);
                 )
                 target.write_text("<?php\nreturn 'base';\n", encoding="utf-8")
 
-    def test_version_usage_metadata_reads_do_not_require_replay_growth(self) -> None:
-        for name in ("VersionUsageQuery", "VersionUsageDecision", "VersionUsageCursor"):
-            source = self.root / f"src/V2/Support/{name}.php"
-            source.write_text(
-                "<?php\nnamespace Workflow\\V2\\Support;\n"
-                f"final class {name} {{\n"
-                "public function page($run): mixed { return $run->last_history_sequence; }\n}",
-                encoding="utf-8",
-            )
-        self.git("add", "src/V2/Support")
-        result = self.validate()
-        self.assertEqual(0, result.returncode, result.stderr)
-
-    def test_version_usage_names_cannot_hide_writes_replay_or_dynamic_execution(self) -> None:
-        source = self.root / "src/V2/Support/VersionUsageQuery.php"
-        for body in (
-            "$run->save(); return $run->last_history_sequence;",
-            "WorkflowHistoryEvent::record($run, $type); return $run->last_history_sequence;",
-            "WorkflowFiberRunner::forClass('demo'); return $run->last_history_sequence;",
-            "$function(); return $run->last_history_sequence;",
-            "$functions[0](); return $run->last_history_sequence;",
-            "($function)(); return $run->last_history_sequence;",
-            "$run->$method(); return $run->last_history_sequence;",
-            "eval('return 1;'); return $run->last_history_sequence;",
-            "$run->selectRaw('DELETE FROM workflow_runs'); return $run->last_history_sequence;",
-            "$run->selectRaw('id INTO OUTFILE name'); return $run->last_history_sequence;",
-            "$run->selectRaw('id IN'.'TO OUTFILE \\'/tmp/version-usage-write\\'')->get(); return $run->last_history_sequence;",
-            "$run->selectRaw('id IN'.('TO OUTFILE \\'/tmp/version-usage-write\\''))->get(); return $run->last_history_sequence;",
-        ):
-            with self.subTest(body=body):
+    def test_untracked_history_observers_keep_the_existing_replay_guard(self) -> None:
+        for name in ("VersionUsageQuery", "VersionUsageDecision", "VersionUsageCursor", "AnotherHistoryHelper"):
+            with self.subTest(name=name):
+                source = self.root / f"src/V2/Support/{name}.php"
                 source.write_text(
                     "<?php\nnamespace Workflow\\V2\\Support;\n"
-                    f"final class VersionUsageQuery {{ public function page($run) {{ {body} }} }}",
+                    f"final class {name} {{ public function page($run) {{ return $run->last_history_sequence; }} }}",
                     encoding="utf-8",
                 )
                 result = self.validate()
                 self.assertNotEqual(0, result.returncode, result.stdout)
                 self.assertIn("replay implementation changed but its corpus did not grow", result.stderr)
-        source.write_text(
-            "<?php\nnamespace Workflow\\V2\\Support;\n"
-            "use Workflow\\V2\\Support\\WorkflowFiberRunner as VersionUsageDecision;\n"
-            "final class VersionUsageQuery { public function page($run) { return $run->last_history_sequence; } }",
-            encoding="utf-8",
-        )
-        result = self.validate()
-        self.assertNotEqual(0, result.returncode, result.stdout)
-        self.assertIn("replay implementation changed but its corpus did not grow", result.stderr)
+                source.unlink()
 
-    def test_version_usage_read_exception_does_not_exempt_other_support_changes(self) -> None:
+    def test_replacing_observation_with_transformed_raw_sql_still_requires_evidence(self) -> None:
         source = self.root / "src/V2/Support/VersionUsageQuery.php"
-        source.write_text(
-            "<?php\nnamespace Workflow\\V2\\Support;\n"
-            "final class VersionUsageQuery { public function page($run) { return $run->last_history_sequence; } }",
-            encoding="utf-8",
-        )
-        companion = self.root / "src/V2/Support/AnotherHistoryHelper.php"
-        companion.write_text("<?php\nreturn $run->last_history_sequence + 1;", encoding="utf-8")
-        result = self.validate()
-        self.assertNotEqual(0, result.returncode, result.stdout)
-        self.assertIn("replay implementation changed but its corpus did not grow", result.stderr)
+        header = "<?php\nnamespace Workflow\\V2\\Support;\nfinal class VersionUsageQuery { public function page($run) { "
+        source.write_text(header + "return $run->last_history_sequence; } }", encoding="utf-8")
+        self.commit_current_as_base()
+        for body in (
+            "$sql = base64_decode('aWQgSU5UTyBPVVRGSUxFICcvdG1wL3ZlcnNpb24tdXNhZ2Utd3JpdGUn'); return $run->selectRaw($sql)->get();",
+            "$sql = implode('', ['id IN', 'TO OUT', 'FILE name']); return $run->selectRaw($sql)->get();",
+        ):
+            with self.subTest(body=body):
+                source.write_text(header + body + " } }", encoding="utf-8")
+                result = self.validate()
+                self.assertNotEqual(0, result.returncode, result.stdout)
+                self.assertIn("replay implementation changed but its corpus did not grow", result.stderr)
 
     def test_task_discovery_helper_body_does_not_require_replay_growth(self) -> None:
         source = self.root / "src/V2/Support/DefaultWorkflowTaskBridge.php"

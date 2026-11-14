@@ -1,0 +1,56 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "version-usage-retained-reused-decision",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner",
+    "query-state-replayer",
+    "workflow-executor"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestSinglePatchReplayWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-14T01:00:00.123456+00:00"
+    },
+    {
+      "sequence": 2,
+      "event_type": "VersionMarkerRecorded",
+      "payload": {
+        "sequence": 1,
+        "change_id": "same",
+        "version": 1,
+        "min_supported": 0,
+        "max_supported": 3,
+        "reused_from_run_id": "retained-source-run",
+        "reused_recorded_at": "2026-11-13T23:59:59.654321+00:00"
+      },
+      "recorded_at": "2026-11-14T01:00:01.123456+00:00"
+    },
+    {
+      "sequence": 3,
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 2,
+        "activity_type": "Tests\\Fixtures\\V2\\TestQueryReplayGuardActivity",
+        "activity_execution_id": "01j00000000000000000000009"
+      },
+      "recorded_at": "2026-11-14T01:00:02.123456+00:00"
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": []
+  }
+}
