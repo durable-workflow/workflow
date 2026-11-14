@@ -83,6 +83,20 @@ final class ReplayRegressionCorpusTest extends TestCase
     public function testFixtureExecutesThroughColdReplayRunner(array $fixture): void
     {
         $this->assertHistoryPayloadContract($fixture);
+        if (isset($fixture['reservation_replay'])) {
+            $scheduled = array_values(array_filter($fixture['history'], static fn (array $event): bool =>
+                $event['event_type'] === 'ChildWorkflowScheduled'))[0];
+            try {
+                \Workflow\V2\StateMachine\Binding\ChildReservationStore::assertRecordedCommand(
+                    $scheduled['payload']['child_reservation'],
+                    $fixture['reservation_replay']['current'],
+                );
+                $this->fail('A recorded reservation was silently removed during cold replay.');
+            } catch (\LogicException $error) {
+                $this->assertSame('refused', $fixture['reservation_replay']['expected']);
+                $this->assertStringContainsString('recorded native child reservation differs', $error->getMessage());
+            }
+        }
         if (isset($fixture['redrive_plan'])) {
             $this->assertRetriedActivityRedrivePlan($fixture);
         }
