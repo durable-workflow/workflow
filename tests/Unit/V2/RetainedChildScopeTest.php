@@ -222,12 +222,7 @@ final class RetainedChildScopeTest extends TestCase
             'tenant-a',
             'parent',
             '1'
-        ), new ScopeIdentity(
-            'other-app',
-            'tenant-a',
-            'child',
-            '1'
-        ), 'child');
+        ), new ScopeIdentity('other-app', 'tenant-a', 'child', '1'), 'child');
         $this->expectException(InvalidArgumentException::class);
         new ChildReservation(
             $plain->identity,
