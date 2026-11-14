@@ -3,9 +3,11 @@
 This diagnostic prepares an independent reproduction of the embedded fan-out
 observations in [#809](https://github.com/durable-workflow/workflow/issues/809).
 It installs a published package independently of the source checkout. It does
-not load the draft tracing implementation. Admission and the first workflow
-delivery have been checked. Full qualification of this portable fixture is
-pending; the issue's original cohorts used its preceding preparation.
+not load the draft tracing implementation. Active lockfiles have been refreshed
+for current framework security advisories. Earlier admission and delivery
+observations apply to their recorded older input; this metadata refresh awaits
+new installed qualification. The issue's original cohorts used its preceding
+preparation.
 
 Run these commands in a disposable PHP 8.5 container with SQLite and Composer:
 
@@ -38,8 +40,9 @@ The default legacy drainer retains its 45-second limit and
 ## Current published PHP 8.3 control
 
 The separate `current` manifest selects the published patch and exact framework
-versions for the hosted tracing failure. It leaves the original locked input
-unchanged. Run:
+versions for the hosted tracing failure. Active locks are refreshed for current
+security advisories. The original measured inputs remain in their linked
+historical commits; a dependency refresh does not qualify an earlier result. Run:
 
 ```sh
 composer install --working-dir=.github/queue-contention/current --no-plugins --no-scripts
