@@ -2,7 +2,7 @@
 
 This is the first implementation slice of the composable business state-machine proposal. It provides an optional embedded V2 transition protocol with a four-method step contract, recorded assessments, versioned profiles and active-run native Saga integration. Existing workflows and `Workflow\States\StateMachine` are unchanged. Symfony Workflow is not a dependency.
 
-**Experimental.** The `Workflow\V2\StateMachine` API is under review and may change in a minor release until the nested slices land; it carries no backward-compatibility promise yet. This slice does not implement state-bound child start/adoption, retained compensation scopes, a business-state database schema or a persistence adapter for a specific application. It does not complete that proposal.
+**Experimental.** The `Workflow\V2\StateMachine` API is under review and may change in a minor release until the nested slices land; it carries no backward-compatibility promise yet. The complete state-bound binding runtime, retained compensation adapter, business-state database schema and application persistence integration remain unfinished. This does not complete the proposal.
 
 ## Responsibilities and flow
 
@@ -231,3 +231,15 @@ Tests exercise refusal/unknown outcomes, source and scope substitution, changed 
 | 21–22 | Runnable V2 regression example, existing APIs unchanged | Full integration example, persistence crash tests and upstream qualification |
 
 This table reports scope, not completion of the issue's unchecked acceptance criteria.
+
+## Native child reservation boundary
+
+The experimental `Binding\ChildReservationStore` provides the native reservation needed before state-bound child admission. Call `reserve()` and `close()` inside recorded application activities, outside caller-owned SQL transactions. Each method owns its transaction so a returned closure is committed and host authorization runs before native locks. The supplied `BindingAuthorization` must validate the authenticated principal, original application/business owner, generation and requested operation before protected storage is read. Identity values and a serialized reservation are not credentials.
+
+A reservation pins the original parent instance/run, business execution, slot/generation, policies, required outcome, portable input fingerprint, child definition fingerprint and child options. Repeating the exact reservation returns the stored descriptor. Reusing that lookup key with changed content refuses. New reservations require the active original parent; retrieving an existing reservation does not follow a newer current run or state entry.
+
+Within the original parent workflow, `ChildReservation::start(...$arguments)` uses the normal confirmed native child-start command. Admission locks the reserved child instance before payload storage or child creation, checks the actual executing parent and pinned definition/input/options, and commits the original child receipt with the run and paired parent history. Replay compares the original reservation and reuses its original admission. It does not start another child.
+
+`close()` locks that same instance. If admission committed first, it returns the exact `ChildBinding`. Otherwise it permanently closes the unused reservation and returns `NeverAdmittedChild` with the stored closure identity. Repeating close after a lost acknowledgement returns the same result. Late native work and ordinary start/signal-with-start cannot reopen that reservation. A missing record, malformed state or uncertain run pointer refuses rather than proving absence. Closed unused instances must remain retained; the reservation migration refuses rollback while any reservation exists.
+
+This primitive does not resolve an existing `dw.child-scope` participant whose child scope is missing. The retained-scope adapter must independently reread authoritative closure evidence or wait for the exact admitted child's verified compensation. A deserialized `NeverAdmittedChild`, technical cancellation or lookup absence is insufficient. That adapter, protected business cancellation/commit integration, real database race qualification and the two-integration example remain required before the full binding contract is delivered. Forward ownership transfer through continue-as-new or redrive is not supported for these reserved children.

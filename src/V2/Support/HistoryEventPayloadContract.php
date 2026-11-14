@@ -643,6 +643,7 @@ final class HistoryEventPayloadContract
         'ChildWorkflowScheduled' => [
             'sequence',
             'child_completion_mode',
+            'child_reservation',
             'workflow_link_id',
             'child_call_id',
             'child_workflow_instance_id',
@@ -668,6 +669,7 @@ final class HistoryEventPayloadContract
             'child_workflow_run_id', 'child_call_id', 'child_workflow_type'],
         'ChildRunStarted' => [
             'sequence',
+            'child_reservation',
             'workflow_link_id',
             'child_call_id',
             'child_workflow_instance_id',
@@ -1173,6 +1175,18 @@ final class HistoryEventPayloadContract
                 $eventType->value,
                 implode(', ', $unknown),
             ));
+        }
+
+        if (array_key_exists('child_reservation', $payload)) {
+            if (! is_array($payload['child_reservation'])) {
+                throw new InvalidArgumentException('A native child reservation must be its versioned descriptor.');
+            }
+            $reservation = \Workflow\V2\StateMachine\Binding\ChildReservation::fromArray($payload['child_reservation']);
+            if (($payload['child_workflow_instance_id'] ?? null) !== $reservation->childInstanceId()
+                || ($payload['child_workflow_type'] ?? null) !== $reservation->identity->childWorkflowType
+                || ($payload['child_workflow_class'] ?? null) !== $reservation->workflowClass) {
+                throw new InvalidArgumentException('Native child history does not match its reserved definition.');
+            }
         }
     }
 }

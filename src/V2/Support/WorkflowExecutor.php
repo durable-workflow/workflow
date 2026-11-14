@@ -55,6 +55,8 @@ use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
+use Workflow\V2\StartedChildWorkflow;
+use Workflow\V2\StateMachine\Binding\ChildReservationStore;
 use Workflow\V2\Workflow;
 use Workflow\WorkflowMetadata;
 
@@ -1623,6 +1625,12 @@ final class WorkflowExecutor
         try {
             $receipt = ChildStartHistory::receipt($run, $sequence);
             $admitted = ChildRunHistory::scheduledEventForSequence($run, $sequence);
+            if ($admitted !== null) {
+                ChildReservationStore::assertRecordedCommand(
+                    $admitted->payload['child_reservation'] ?? null,
+                    $call->child->reservation,
+                );
+            }
             $delivery = $this->deliverCancellationAtCall($run, $task, $sequence, 'child', $admitted, $frame->execution);
             if ($delivery === CancellationDeliveryState::Waiting) {
                 return $this->waitForNextResumeSource($run, $task);
@@ -2890,6 +2898,8 @@ final class WorkflowExecutor
         bool $parkRun = true,
         bool $startMilestone = false,
     ): WorkflowTask {
+        $reservedChild = $childWorkflowCall->reservation === null ? null
+            : ChildReservationStore::lockForAdmission($run, $childWorkflowCall);
         StructuralLimits::guardPendingChildren($run);
         $this->logApproachingLimit(StructuralLimits::warnApproachingPendingChildren($run), $run);
 
@@ -2925,7 +2935,7 @@ final class WorkflowExecutor
         StructuralLimits::guardPayloadSize($storedChildArguments);
 
         /** @var WorkflowInstance $childInstance */
-        $childInstance = WorkflowInstance::query()->create([
+        $childInstance = $reservedChild ?? WorkflowInstance::query()->create([
             'workflow_class' => $childWorkflowCall->workflow,
             'workflow_type' => $workflowType,
             'namespace' => $run->namespace,
@@ -2933,6 +2943,12 @@ final class WorkflowExecutor
             'started_at' => $now,
             'run_count' => 1,
         ]);
+        if ($reservedChild !== null) {
+            $childInstance->forceFill([
+                'started_at' => $now,
+                'run_count' => 1,
+            ])->save();
+        }
 
         /** @var WorkflowRun $childRun */
         $childRun = WorkflowRun::query()->create([
@@ -2948,8 +2964,10 @@ final class WorkflowExecutor
             'compatibility' => $run->compatibility ?? WorkerCompatibility::current(),
             'payload_codec' => $childCodec,
             'arguments' => $storedChildArguments,
-            'connection' => RoutingResolver::workflowConnection($childWorkflowCall->workflow, $metadata),
-            'queue' => RoutingResolver::workflowQueue($childWorkflowCall->workflow, $metadata),
+            'connection' => ($reservedChild !== null ? $childWorkflowCall->options?->connection : null)
+                ?? RoutingResolver::workflowConnection($childWorkflowCall->workflow, $metadata),
+            'queue' => ($reservedChild !== null ? $childWorkflowCall->options?->queue : null)
+                ?? RoutingResolver::workflowQueue($childWorkflowCall->workflow, $metadata),
             'started_at' => $now,
             'last_progress_at' => $now,
             'last_history_sequence' => 0,
@@ -3019,6 +3037,9 @@ final class WorkflowExecutor
 
         WorkflowHistoryEvent::record($run, HistoryEventType::ChildWorkflowScheduled, array_merge([
             'sequence' => $sequence,
+            ...($childWorkflowCall->reservation === null ? [] : [
+                'child_reservation' => $childWorkflowCall->reservation->toArray(),
+            ]),
             ...($startMilestone ? [
                 'child_completion_mode' => 'started',
             ] : []),
@@ -3034,6 +3055,9 @@ final class WorkflowExecutor
 
         WorkflowHistoryEvent::record($run, HistoryEventType::ChildRunStarted, array_merge([
             'sequence' => $sequence,
+            ...($childWorkflowCall->reservation === null ? [] : [
+                'child_reservation' => $childWorkflowCall->reservation->toArray(),
+            ]),
             'workflow_link_id' => $link->id,
             'child_call_id' => $childCallId,
             'child_workflow_instance_id' => $childInstance->id,
@@ -3107,6 +3131,22 @@ final class WorkflowExecutor
             ])
         );
 
+        if ($childWorkflowCall->reservation !== null) {
+            ChildReservationStore::recordAdmission(
+                $childInstance,
+                $childWorkflowCall->reservation,
+                new StartedChildWorkflow(
+                    (string) $run->namespace,
+                    $run->workflow_instance_id,
+                    $run->id,
+                    $sequence,
+                    $childInstance->id,
+                    $childRun->id,
+                    $childCallId,
+                    $workflowType,
+                )
+            );
+        }
         return $childTask;
     }
 
@@ -3120,6 +3160,22 @@ final class WorkflowExecutor
         bool $startMilestone = false,
     ): ?WorkflowTask {
         try {
+            if ($childWorkflowCall->reservation !== null) {
+                if (! $startMilestone || $run->getConnection()->transactionLevel() === 0) {
+                    throw new LogicException('Reserved children require the native start milestone transaction.');
+                }
+                // Roll back every child write on refusal before failing the parent.
+                return $run->getConnection()
+                    ->transaction(fn (): WorkflowTask => $this->scheduleChildWorkflow(
+                        $run,
+                        $task,
+                        $sequence,
+                        $childWorkflowCall,
+                        $parallelMetadata,
+                        $parkRun,
+                        $startMilestone,
+                    ));
+            }
             return $this->scheduleChildWorkflow(
                 $run,
                 $task,
@@ -3857,6 +3913,8 @@ final class WorkflowExecutor
         $instance = WorkflowInstance::query()
             ->lockForUpdate()
             ->findOrFail($run->workflow_instance_id);
+
+        ChildReservationStore::assertOrdinaryStartAllowed($instance);
 
         if ($instance->workflow_class !== $workflowClass) {
             $instance->forceFill([

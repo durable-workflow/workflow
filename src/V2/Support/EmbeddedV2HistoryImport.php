@@ -357,6 +357,8 @@ final class EmbeddedV2HistoryImport
             throw new InvalidArgumentException('The stored workflow instance no longer matches the target namespace.');
         }
 
+        \Workflow\V2\StateMachine\Binding\ChildReservationStore::assertOrdinaryStartAllowed($instance);
+
         /** @var WorkflowRun $run */
         $run = WorkflowRun::query()->create([
             'id' => $runId,

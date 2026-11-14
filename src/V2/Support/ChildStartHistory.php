@@ -36,6 +36,9 @@ final class ChildStartHistory
         if ($scheduled->workflow_run_id !== $run->id || $started->workflow_run_id !== $run->id) {
             throw self::mismatch($sequence, 'Child admission history belongs to another parent.');
         }
+        if (($scheduled->payload['child_reservation'] ?? null) !== ($started->payload['child_reservation'] ?? null)) {
+            throw self::mismatch($sequence, 'The native child reservation differs between its paired history events.');
+        }
         return new StartedChildWorkflow(
             (string) $run->namespace,
             $run->workflow_instance_id,

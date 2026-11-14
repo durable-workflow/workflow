@@ -286,6 +286,8 @@ final class StandaloneActivityStartService
             ->lockForUpdate()
             ->findOrFail($providedActivityId);
 
+        \Workflow\V2\StateMachine\Binding\ChildReservationStore::assertOrdinaryStartAllowed($instance);
+
         if ($instance->workflow_type !== StandaloneActivityHostType::WORKFLOW_TYPE) {
             throw new InvalidArgumentException(sprintf(
                 'Identifier [%s] is already reserved for workflow type [%s] and cannot be reused for a standalone activity.',
