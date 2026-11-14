@@ -64,10 +64,11 @@ class WorkflowScheduleHistoryEvent extends Model
         array $payload = [],
     ): self {
         HistoryEventPayloadContract::assertKnownPayloadKeys($eventType, $payload);
+        $snapshot = self::snapshotPayload($schedule, $payload);
 
         return ScheduleAuditRetention::locked(
             $schedule,
-            static fn (WorkflowSchedule $locked): self => self::recordLocked($locked, $eventType, $payload),
+            static fn (WorkflowSchedule $locked): self => self::recordLocked($locked, $eventType, $snapshot),
         );
     }
 

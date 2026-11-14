@@ -60,6 +60,34 @@ final class V2ScheduleAuditRetentionTest extends TestCase
         $this->assertSame([1, 8, 9], $schedule->historyEvents()->orderBy('sequence')->pluck('sequence')->all());
     }
 
+    public function testSnapshotStillRepresentsTheCallerStateWithoutChangingThePersistedOwner(): void
+    {
+        $schedule = $this->schedule('snapshot', 'orders');
+        $persisted = $schedule->note;
+        $schedule->note = 'caller snapshot';
+        $event = WorkflowScheduleHistoryEvent::record($schedule, HistoryEventType::ScheduleUpdated);
+        $this->assertSame('caller snapshot', $event->payload['schedule']['note']);
+        $this->assertSame($persisted, $schedule->fresh()->note);
+        $this->assertSame('orders', $event->namespace);
+    }
+
+    public function testAStaleOrForgedNamespaceCannotCompactAnotherOwner(): void
+    {
+        $schedule = $this->schedule('owner', 'orders');
+        $before = $schedule->historyEvents()
+            ->get()
+            ->toArray();
+        $schedule->namespace = 'other';
+        try {
+            ScheduleAuditRetention::prune($schedule);
+            $this->fail('A conflicting schedule namespace was admitted.');
+        } catch (LogicException $error) {
+            $this->assertStringContainsString('schedule identity changed', $error->getMessage());
+        }
+        $this->assertSame($before, $schedule->historyEvents()->get()->toArray());
+        $this->assertSame(0, WorkflowScheduleOccurrence::query()->count());
+    }
+
     public function testPrunedTriggerStillPreventsASecondStartForItsOccurrence(): void
     {
         config()->set('workflows.v2.schedules.audit_history_limit', 3);
@@ -175,6 +203,62 @@ final class V2ScheduleAuditRetentionTest extends TestCase
         $this->assertSame(1, $rest['occurrences_deleted']);
         $this->assertSame($before, $kept->historyEvents()->count());
         $this->assertSame(1, $other->historyEvents()->count());
+    }
+
+    public function testARecreatedScheduleDoesNotInheritThePurgedOwnersFiringReceipt(): void
+    {
+        $old = $this->schedule('recreated', 'orders');
+        WorkflowScheduleHistoryEvent::record($old, HistoryEventType::ScheduleTriggered, [
+            'occurrence_time' => '2026-11-13T01:00:00Z',
+        ]);
+        $old->delete();
+        $new = $this->schedule('recreated', 'orders');
+        $this->assertNotSame($old->id, $new->id);
+        $starter = $this->createMock(ScheduleWorkflowStarter::class);
+        $starter->expects($this->once())
+            ->method('start')
+            ->willReturn(new ScheduleStartResult('new-owner', null));
+        app()
+            ->instance(ScheduleWorkflowStarter::class, $starter);
+        $from = Carbon::parse('2026-11-13T01:00:00Z');
+        $answer = ScheduleManager::backfill($new, $from, $from->copy()->addMinute());
+        $this->assertSame('new-owner', $answer[0]['instance_id']);
+        $this->assertSame(1, (int) $new->fresh()->fires_count);
+        $this->assertSame(2, WorkflowScheduleOccurrence::query()->count());
+    }
+
+    public function testARefusedCompactionRollsBackTheNewAuditAppendAndItsFiringReceipt(): void
+    {
+        config()->set('workflows.v2.schedules.audit_history_limit', null);
+        $schedule = $this->schedule('append-rollback');
+        $bad = WorkflowScheduleHistoryEvent::record($schedule, HistoryEventType::ScheduleTriggered, [
+            'occurrence_time' => '2026-11-13T01:00:00Z',
+        ]);
+        $bad->forceFill([
+            'occurrence_at_utc' => 'malformed',
+        ])->save();
+        WorkflowScheduleOccurrence::query()->delete();
+        WorkflowScheduleHistoryEvent::record($schedule, HistoryEventType::ScheduleUpdated);
+        $before = $schedule->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->toArray();
+        config()
+            ->set('workflows.v2.schedules.audit_history_limit', 2);
+        try {
+            WorkflowScheduleHistoryEvent::record($schedule, HistoryEventType::ScheduleTriggered, [
+                'occurrence_time' => '2026-11-13T02:00:00Z',
+            ]);
+            $this->fail('An audit append escaped the refused compaction transaction.');
+        } catch (LogicException $error) {
+            $this->assertStringContainsString('noncanonical schedule occurrence', $error->getMessage());
+        }
+        $this->assertSame($before, $schedule->historyEvents()->orderBy('sequence')->get()->toArray());
+        $this->assertSame(0, WorkflowScheduleOccurrence::query()->count());
+        config()
+            ->set('workflows.v2.schedules.audit_history_limit', null);
+        $next = WorkflowScheduleHistoryEvent::record($schedule, HistoryEventType::ScheduleUpdated);
+        $this->assertSame(4, $next->sequence);
     }
 
     public function testLegacyBacklogIsCompactedInBoundedPasses(): void

@@ -55,6 +55,10 @@ final class ScheduleAuditRetention
             $locked = (clone $query)->whereKey($schedule->getKey())
                 ->lockForUpdate()
                 ->firstOrFail();
+            if ($locked->getKey() !== $schedule->getKey() || $locked->namespace !== $schedule->namespace
+                || $locked->schedule_id !== $schedule->schedule_id) {
+                throw new LogicException('The schedule identity changed before audit retention acquired its lock.');
+            }
             return $operation($locked);
         }, admission: static function () use ($query, $schedule): void {
             $key = $query->getModel()
