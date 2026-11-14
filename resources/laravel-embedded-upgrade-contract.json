@@ -27,7 +27,7 @@
       },
       "embedded_v2": {
         "php": "^8.2",
-        "laravel": "^12.69.0|^13.30.0"
+        "laravel": "^12.72.0|^13.41.0"
       },
       "qualified_php_minors": ["8.2", "8.3", "8.4"],
       "laravel_minimum_php": {

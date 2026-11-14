@@ -6914,6 +6914,9 @@ final class V2WorkflowTest extends TestCase
 
     public function testTaskWatchdogReclaimsExpiredActivityTaskLease(): void
     {
+        // The manual watchdog pass owns the frozen clock. Queue workers
+        // use wall time and can otherwise reclaim this attempt first.
+        self::stopWorkers();
         Queue::fake();
         Carbon::setTestNow('2026-10-21 08:00:00.123456');
 

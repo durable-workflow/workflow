@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 2.28.1 - 2026-11-13
+
+- Require patched Laravel 12.72 or 13.41 minimums for the current Composer
+  security advisories. Keep existing application audits enabled and update
+  application lockfiles before upgrading Workflow (#1133).
+
 ## 2.28.0 - 2026-11-13
 
 **Behavior change:** an un-awaited `select()` loser is cancelled when the run
