@@ -91,6 +91,7 @@ return [
         'run_lineage_entry_model' => Workflow\V2\Models\WorkflowRunLineageEntry::class,
         'schedule_model' => Workflow\V2\Models\WorkflowSchedule::class,
         'schedule_history_event_model' => Workflow\V2\Models\WorkflowScheduleHistoryEvent::class,
+        'schedule_occurrence_model' => Workflow\V2\Models\WorkflowScheduleOccurrence::class,
         // One-time upgrade conversion of pre-UTC schedule timestamp columns.
         // Set this to the PHP timezone used when the existing rows were written
         // if it differs from the application's timezone during migration.
@@ -412,6 +413,14 @@ return [
         ],
 
         'schedules' => [
+            // Keep the first audit event and the newest remaining events.
+            // Explicit null disables compaction during a rolling upgrade;
+            // enable it only after all old schedule readers have stopped.
+            'audit_history_limit' => Env::dw(
+                'DW_V2_SCHEDULE_AUDIT_HISTORY_LIMIT',
+                'WORKFLOW_V2_SCHEDULE_AUDIT_HISTORY_LIMIT',
+                Workflow\V2\Support\ScheduleAuditRetention::DEFAULT_LIMIT,
+            ),
             // Pass size for `workflow:v2:schedule-tick`. Each pass starts at
             // most this many due schedules, plus at most this many buffered
             // actions, shared round-robin across namespaces (oldest first).

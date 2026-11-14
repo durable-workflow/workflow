@@ -25,6 +25,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSchedule;
 use Workflow\V2\Models\WorkflowScheduleHistoryEvent;
+use Workflow\V2\Models\WorkflowScheduleOccurrence;
 use Workflow\V2\StartOptions;
 use Workflow\V2\WorkflowStub;
 
@@ -976,7 +977,15 @@ final class ScheduleManager
         DateTimeInterface $occurrenceTime,
     ): bool {
         $key = WorkflowScheduleHistoryEvent::utcOccurrenceKey($occurrenceTime);
+        if (ConfiguredV2Models::query('schedule_occurrence_model', WorkflowScheduleOccurrence::class)
+            ->withoutGlobalScopes()
+            ->where('workflow_schedule_id', $schedule->id)
+            ->where('occurrence_at_utc', $key)
+            ->exists()) {
+            return true;
+        }
         $history = ConfiguredV2Models::query('schedule_history_event_model', WorkflowScheduleHistoryEvent::class)
+            ->withoutGlobalScopes()
             ->where('workflow_schedule_id', $schedule->id)
             ->where('event_type', HistoryEventType::ScheduleTriggered->value);
 

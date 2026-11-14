@@ -24,6 +24,7 @@ use Workflow\Commands\V2RepairSearchDatetimesCommand;
 use Workflow\Commands\V2ReplayConformanceCommand;
 use Workflow\Commands\V2ReplaySimulateCommand;
 use Workflow\Commands\V2ReplayVerifyCommand;
+use Workflow\Commands\V2ScheduleAuditPruneCommand;
 use Workflow\Commands\V2ScheduleTickCommand;
 use Workflow\Commands\V2UpgradeStatusCommand;
 use Workflow\Commands\WorkflowMakeCommand;
@@ -206,6 +207,7 @@ final class WorkflowServiceProvider extends ServiceProvider
             V2ReplaySimulateCommand::class,
             V2ReplayVerifyCommand::class,
             V2ScheduleTickCommand::class,
+            V2ScheduleAuditPruneCommand::class,
             V2UpgradeStatusCommand::class,
         ]);
 
