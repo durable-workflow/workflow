@@ -92,7 +92,16 @@ final class ChildStartHistory
             && ($event->payload['sequence'] ?? null) === $sequence);
         if ($event !== null) {
             foreach (self::awaitPayload($child, $sequence) as $key => $value) {
-                if (($event->payload[$key] ?? null) !== $value) {
+                $recorded = $event->payload[$key] ?? null;
+                if ($key === 'receipt') {
+                    // Database JSON member order may change during replay; the typed identity must not.
+                    try {
+                        $recorded = is_array($recorded) ? StartedChildWorkflow::fromArray($recorded)->toArray() : null;
+                    } catch (\InvalidArgumentException) {
+                        throw self::mismatch($sequence, 'The recorded child admission receipt is malformed.');
+                    }
+                }
+                if ($recorded !== $value) {
                     throw self::mismatch($sequence, 'The await step belongs to a different child admission.');
                 }
             }

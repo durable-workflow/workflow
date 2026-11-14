@@ -1,0 +1,56 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "child-await-json-object-member-order",
+  "protocol_version": "1.0",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestChildAwaitReceiptReplayWorkflow",
+    "arguments": [
+      {
+        "version": 1,
+        "namespace": "example",
+        "parentInstanceId": "parent",
+        "parentRunId": "parent-run",
+        "startSequence": 1,
+        "childInstanceId": "child",
+        "childRunId": "child-run",
+        "childCallId": "call",
+        "workflowType": "child-type"
+      },
+      {
+        "sequence": 2,
+        "receipt": {
+          "workflowType": "child-type",
+          "childCallId": "call",
+          "childRunId": "child-run",
+          "childInstanceId": "child",
+          "startSequence": 1,
+          "parentRunId": "parent-run",
+          "parentInstanceId": "parent",
+          "namespace": "example",
+          "version": 1
+        },
+        "child_workflow_instance_id": "child",
+        "child_workflow_run_id": "child-run",
+        "child_call_id": "call",
+        "child_workflow_type": "child-type"
+      }
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-14T20:10:00.000000Z"
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {"accepted": true},
+    "commands": [{"type": "complete_workflow"}]
+  }
+}
