@@ -2755,6 +2755,12 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 continue;
             }
 
+            if ($fixture['id'] === 'retained-child-reservation-cold-replay') {
+                $this->assertRetainedChildReservationReplaysWithoutNewOwnership($fixture);
+
+                continue;
+            }
+
             if ($fixture['id'] === 'cooperative-delivery-before-wait-sequence') {
                 $run = $this->createRunFromFixture($fixture);
                 $this->assertSame(2, WorkflowStepHistory::nextDurableCommandSequence($run->fresh()));
@@ -5295,6 +5301,42 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     /**
      * @param array<string, mixed> $fixture
      */
+    private function assertRetainedChildReservationReplaysWithoutNewOwnership(array $fixture): void
+    {
+        $run = $this->createRunFromFixture($fixture);
+        $history = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->toArray();
+        $ownership = [
+            DB::table('workflow_compensation_scopes')->count(),
+            DB::table('workflow_compensation_obligations')->count(),
+            DB::table('workflow_compensation_children')->count(),
+            WorkflowInstance::query()->count(),
+            ActivityExecution::query()->count(),
+            ActivityAttempt::query()->count(),
+        ];
+        $workflow = (new QueryStateReplayer())->replay($run->fresh(['historyEvents']));
+        $this->assertInstanceOf(\Tests\Fixtures\V2\TestReservedScopeReplayWorkflow::class, $workflow);
+        $this->assertSame($fixture['expected']['result'], $workflow->reservation);
+        $this->assertSame($history, $run->historyEvents()->orderBy('sequence')->get()->toArray());
+        $this->runReadyWorkflowTask($run);
+        $this->assertSame(RunStatus::Completed, $run->fresh()->status);
+        $this->assertSame($fixture['expected']['result'], WorkflowStub::loadRun($run->id)->output());
+        $this->assertSame(
+            $history,
+            $run->historyEvents()->orderBy('sequence')->limit(count($history))->get()->toArray()
+        );
+        $this->assertSame($ownership, [
+            DB::table('workflow_compensation_scopes')->count(),
+            DB::table('workflow_compensation_obligations')->count(),
+            DB::table('workflow_compensation_children')->count(),
+            WorkflowInstance::query()->count(),
+            ActivityExecution::query()->count(),
+            ActivityAttempt::query()->count(),
+        ]);
+    }
+
     private function executeColdReplayFixture(array $fixture): void
     {
         $workflow = $fixture['workflow'];

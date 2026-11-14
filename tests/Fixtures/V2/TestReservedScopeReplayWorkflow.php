@@ -11,12 +11,15 @@ use Workflow\V2\Workflow;
 
 final class TestReservedScopeReplayWorkflow extends Workflow
 {
+    public array $reservation = [];
+
     public function handle(array $parent, array $child, array $binding): array
     {
-        return (new DurableScope($this, ScopeIdentity::fromArray($parent), 'owner'))->reserveChild(
+        $this->reservation = (new DurableScope($this, ScopeIdentity::fromArray($parent), 'owner'))->reserveChild(
             'child',
             ScopeIdentity::fromArray($child),
             BindingIdentity::fromArray($binding),
         )->toArray();
+        return $this->reservation;
     }
 }
