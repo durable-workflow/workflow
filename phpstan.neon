@@ -1,4 +1,6 @@
 parameters:
     level: 0
+    scanDirectories:
+        - examples/business-state-machines
     scanFiles:
         - scripts/ci/check-committed-composer-locks.php
