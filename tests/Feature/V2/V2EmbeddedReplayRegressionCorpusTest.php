@@ -3076,7 +3076,8 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertSame(0, TestQueryReplayGuardActivity::$executions);
         $this->assertSame(
             1,
-            $run->historyEvents()->where('event_type', HistoryEventType::VersionMarkerRecorded)->count()
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::VersionMarkerRecorded)->count()
         );
         $this->assertSame(1, $run->historyEvents()->where('event_type', HistoryEventType::ActivityScheduled)->count());
         $this->assertSame($history, array_slice($run->historyEvents()->get()->toArray(), 0, count($history)));
