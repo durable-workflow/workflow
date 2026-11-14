@@ -12,6 +12,16 @@
   per-run index on MySQL and MariaDB, avoiding an unrelated sibling history
   row in the parent barrier lock cycle. No new index or retry is introduced.
 
+- Experimental embedded child-start milestone: `Workflow::startChild()` returns
+  a versioned `StartedChildWorkflow` receipt after native child admission, and
+  `$child->await()` observes that same child later. Cold replay reuses the
+  original admission; a queued request alone cannot supply a receipt. The
+  existing `child()` still waits for completion. This adds a
+  `ChildWorkflowAwaited` history event and an optional
+  `child_completion_mode` on `ChildWorkflowScheduled`, with no database
+  migration. Worker-protocol execution refuses the new calls. State-bound
+  business bindings and retained compensation remain separate #1069 work.
+
 - Require patched Laravel 12.72 or 13.41 minimums for the current Composer
   security advisories. Keep existing application audits enabled and update
   application lockfiles before upgrading Workflow (#1133).
