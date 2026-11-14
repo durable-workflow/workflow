@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Database\DeadlockException;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
@@ -69,11 +70,13 @@ final class V2ActivityLeaseRepairLockTest extends TestCase
                     $run = WorkflowRun::query()->lockForUpdate()->findOrFail($task->workflow_run_id);
                     TaskRepair::recoverExistingTask($task->fresh(), $run);
                 });
-            } catch (QueryException $error) {
-                $failure = $error;
+            } catch (QueryException|DeadlockException $error) {
+                // Laravel wraps MariaDB NOWAIT contention in nested transactions.
+                $failure = $error instanceof DeadlockException ? $error->getPrevious() : $error;
             }
             $elapsed = (hrtime(true) - $started) / 1e9;
             $this->assertInstanceOf(QueryException::class, $failure);
+            $this->assertStringContainsString('for update nowait', $failure->getSql());
             $this->assertLessThan(
                 2.0,
                 $elapsed,

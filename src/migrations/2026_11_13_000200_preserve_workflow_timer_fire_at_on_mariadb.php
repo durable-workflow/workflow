@@ -30,7 +30,7 @@ return new class() extends WorkflowMigration {
             || strtolower((string) $column->default_value) !== 'current_timestamp(6)'
             || (int) $column->datetime_precision !== 6
             || strtolower((string) $column->extra) !== 'on update current_timestamp(6)') {
-            throw new RuntimeException('workflow_timer_fire_at_legacy_shape_unavailable');
+            throw new UnexpectedValueException('workflow_timer_fire_at_legacy_shape_unavailable');
         }
 
         $table = $connection->getQueryGrammar()
