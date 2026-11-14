@@ -1777,6 +1777,7 @@ final class WorkflowStub
                 ->findOrFail($this->instance->id);
 
             $recoveryIntent = null;
+            \Workflow\V2\StateMachine\Binding\ChildReservationStore::assertOrdinaryStartAllowed($instance);
             if ($recoveryAdmission !== null) {
                 $workflowClass = TypeRegistry::resolveWorkflowClass(
                     $instance->workflow_class,
@@ -3627,6 +3628,7 @@ final class WorkflowStub
                 ->findOrFail($this->instance->id);
 
             $commandContext = $this->signalWithStartCommandContext($intakeGroupId);
+            \Workflow\V2\StateMachine\Binding\ChildReservationStore::assertOrdinaryStartAllowed($instance);
             // A keyed retry returns the original intake instead of recording a
             // second start/signal pair under a new intake group.
             $retainedReceipt = $this->retainedCommandForRequest(
@@ -6103,6 +6105,8 @@ final class WorkflowStub
 
         /** @var WorkflowInstance $instance */
         $instance = $instanceQuery->findOrFail($instanceId);
+
+        \Workflow\V2\StateMachine\Binding\ChildReservationStore::assertOrdinaryStartAllowed($instance);
 
         if ($instance->workflow_type !== $workflowType) {
             throw new LogicException(sprintf(

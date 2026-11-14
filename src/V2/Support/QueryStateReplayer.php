@@ -535,6 +535,13 @@ final class QueryStateReplayer
                     $this->syncWorkflowCursor($workflow, $sequence);
                     return new ReplayState($workflow, $sequence, $current);
                 }
+                \Workflow\V2\StateMachine\Binding\ChildReservationStore::assertRecordedCommand(
+                    ChildRunHistory::scheduledEventForSequence(
+                        $run,
+                        $historySequence
+                    )?->payload['child_reservation'] ?? null,
+                    $current->child->reservation,
+                );
                 $this->syncWorkflowCursor($workflow, $sequence + 1);
                 $current = $workflowExecution->send($receipt, RedriveReplayClock::recordedAt(
                     ChildRunHistory::scheduledEventForSequence($run, $historySequence)

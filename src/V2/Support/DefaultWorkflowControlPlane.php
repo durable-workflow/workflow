@@ -87,6 +87,12 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 return;
             }
 
+            if ($instance->getRawOriginal('native_child_reservation') !== null) {
+                $result['reason'] = 'native_child_reservation_requires_original_run';
+                $result['status'] = 409;
+                return;
+            }
+
             /** @var WorkflowRun|null $source */
             $source = $this->runQuery()
                 ->where('workflow_instance_id', $instanceId)
@@ -1251,6 +1257,8 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             ->with('currentRun')
             ->lockForUpdate()
             ->findOrFail($instanceId);
+
+        \Workflow\V2\StateMachine\Binding\ChildReservationStore::assertOrdinaryStartAllowed($instance);
 
         if ($instance->namespace !== $namespace) {
             throw new LogicException(sprintf(

@@ -5361,6 +5361,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             ->findOrFail($run->workflow_instance_id);
 
         /** @var WorkflowRun $continuedRun */
+        \Workflow\V2\StateMachine\Binding\ChildReservationStore::assertOrdinaryStartAllowed($instance);
         $continuedRun = WorkflowRun::query()->create([
             'workflow_instance_id' => $run->workflow_instance_id,
             'run_number' => $run->run_number + 1,
