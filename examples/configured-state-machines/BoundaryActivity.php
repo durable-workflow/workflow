@@ -32,7 +32,7 @@ final class BoundaryActivity extends Activity
         $store = app(MachineStore::class);
         return match ($operation) {
             'initialize' => $store->initialize($this->run, $input['subject'], $input['rootRun'], $input['begin']),
-            'initialize-finalizer' => $store->initializeFinalizer(
+            'initialize-finalizer' => app(CancellationStore::class)->initializeFinalizer(
                 $this->run,
                 $input['subject'],
                 $input['rootRun'],

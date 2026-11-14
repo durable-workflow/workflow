@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use DurableWorkflow\Examples\ConfiguredStateMachines\AssessmentStore;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Catalogue;
 use DurableWorkflow\Examples\ConfiguredStateMachines\MachineStore;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Order;
@@ -301,9 +302,9 @@ final class V2ConfiguredStateMachineExampleTest extends TestCase
         $publications = DB::table('example_machine_publications')->count();
         $revision = $this->root()
 ->revision;
-        $first = $this->store->commit($actual, $request);
+        $first = app(AssessmentStore::class)->commit($actual, $request);
         $this->store->requestCancellation(self::SUBJECT, $actual->id, 'cancel-after-commit');
-        $this->assertSame($first, $this->store->commit($actual, $request));
+        $this->assertSame($first, app(AssessmentStore::class)->commit($actual, $request));
         $this->assertSame('committed', $first['status']);
         $this->assertSame($revision, $this->root()->revision);
         $this->assertSame($publications, DB::table('example_machine_publications')->count());

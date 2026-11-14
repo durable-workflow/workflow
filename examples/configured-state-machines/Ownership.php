@@ -20,6 +20,8 @@ final readonly class Ownership implements ChildScopeBindingAuthorization
 {
     public const APPLICATION = 'configured.orders';
 
+    public const SHIPMENT_APPLICATION = self::APPLICATION . '.shipment';
+
     public const NAMESPACE = 'configured-example';
 
     public const CHILD_TYPE = 'example.configured.shipment.v1';
@@ -179,7 +181,7 @@ final readonly class Ownership implements ChildScopeBindingAuthorization
 
     private static function assertSubject(string $subject): void
     {
-        if (preg_match('/\Acase-[0-9a-f]{16}-g[1-9][0-9]{0,5}\z/D', $subject) !== 1) {
+        if (preg_match('/\Acase-[0-9a-f]{16}-g[1-9]\d{0,5}\z/D', $subject) !== 1) {
             throw new LogicException('The subject is outside this configured example.');
         }
     }

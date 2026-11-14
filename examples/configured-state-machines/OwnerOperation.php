@@ -14,7 +14,7 @@ use Workflow\V2\Compensation\Execution\ScopedOperation;
 final readonly class OwnerOperation implements ScopedOperation
 {
     public function __construct(
-        private MachineStore $store
+        private MachineAuthority $store
     ) {
     }
 

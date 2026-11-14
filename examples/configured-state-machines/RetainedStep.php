@@ -34,8 +34,12 @@ final class RetainedStep extends AssessedTransitionStep
         $execution = $context->execution();
         $key = $context->transition->key;
         $operations = [];
-        foreach ($key === 'begin' ? Catalogue::actions($this->initialization['integration'])
-            : ($key === 'deliver' ? ['deliver'] : []) as $action) {
+        $actions = match ($key) {
+            'begin' => Catalogue::actions($this->initialization['integration']),
+            'deliver' => ['deliver'],
+            default => [],
+        };
+        foreach ($actions as $action) {
             $result = $this->scope->execute(new Obligation(
                 $execution->executionId . '.' . $action,
                 'configured.sql.' . $action,

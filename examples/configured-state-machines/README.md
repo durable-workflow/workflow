@@ -32,6 +32,11 @@ then follows the existing protocol:
    assessment can reach the protected business commit, which atomically writes
    business state, decision and publication intent in the example database.
 
+`MachineAuthority` owns native/business authorization, `AssessmentStore` owns
+recorded assessments and forward commits, and `CancellationStore` owns the
+cancellation fence and verified finalization. The common enabled/forward-open
+guards apply to ordinary work; cancellation uses its separate retained proof.
+
 Starting Shipment and awaiting its result are separate transitions. `begin`
 reserves and admits the child, persists the exact binding and commits the hosting
 state. `finish` observes that same binding after a durable `finish` signal; it does
@@ -65,6 +70,12 @@ owner, live authority and expected business revision. It atomically commits
 `cancelled`, its decision and publication intent. A queued request, technical
 closure, failed compensation or temporarily absent effect cannot supply that
 proof. Original terminal workflow histories remain unchanged.
+
+The host must resume an accepted cancellation intent if it loses the routing
+acknowledgement, and call the finalization milestone after recovery verifies.
+This example supplies neither a background intent dispatcher nor cross-store
+atomicity. Shipment's recorded business completion remains historical; retained
+compensation is inspected separately from that completed state.
 
 Root startup is still a boundary: business initialization does not atomically
 open the native scope. The first genuine recorded no-effect ownership obligation

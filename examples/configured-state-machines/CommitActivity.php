@@ -12,6 +12,6 @@ final class CommitActivity extends Activity
 {
     public function handle(array $request): array
     {
-        return app(MachineStore::class)->commit($this->run, $request);
+        return app(AssessmentStore::class)->commit($this->run, $request);
     }
 }

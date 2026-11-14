@@ -18,7 +18,7 @@ final class Shipment extends Workflow
     public function handle(string $subject, string $rootRun, array $begin, array $identity): array
     {
         $initialization = self::activity(BoundaryActivity::class, 'initialize', compact('subject', 'rootRun', 'begin'));
-        $execution = MachineStore::reference($begin);
+        $execution = MachineAuthority::reference($begin);
         $machine = new MachineExecution($this, $initialization, $initialization['principal'], $execution->executionId);
         if (PortableDescriptor::encode($identity) !== PortableDescriptor::encode($machine->identity->toArray())) {
             throw new LogicException('Shipment has a different recorded compensation generation.');

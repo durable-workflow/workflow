@@ -12,6 +12,6 @@ final class AdmissionActivity extends Activity
 {
     public function handle(array $request): array
     {
-        return app(MachineStore::class)->admit($this->run, $request);
+        return app(AssessmentStore::class)->admit($this->run, $request);
     }
 }

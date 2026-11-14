@@ -12,6 +12,6 @@ final class SnapshotActivity extends Activity
 {
     public function handle(array $request): array
     {
-        return app(MachineStore::class)->snapshot($this->run, $this->activityId(), $request);
+        return app(AssessmentStore::class)->snapshot($this->run, $this->activityId(), $request);
     }
 }

@@ -36,10 +36,16 @@ final class BooleanFact implements ConditionRule
             ), [$name]);
         }
         $value = $facts->values[$name];
+        if (! is_bool($value)) {
+            return new RuleEvaluation($rule, $facts->snapshotId, new Decision(
+                Verdict::Unknown,
+                'fact_type_incompatible',
+                [$facts->evidence[$name]]
+            ));
+        }
         return new RuleEvaluation($rule, $facts->snapshotId, new Decision(
-            ! is_bool($value) ? Verdict::Unknown : ($value === $rule->parameters['expected']
-                ? Verdict::Satisfied : Verdict::Unsatisfied),
-            ! is_bool($value) ? 'fact_type_incompatible' : 'recorded_boolean_assessed',
+            $value === $rule->parameters['expected'] ? Verdict::Satisfied : Verdict::Unsatisfied,
+            'recorded_boolean_assessed',
             [$facts->evidence[$name]],
         ));
     }

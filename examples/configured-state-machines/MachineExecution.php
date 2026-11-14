@@ -55,7 +55,7 @@ final readonly class MachineExecution
 
     public function transition(string $key): TransitionResult
     {
-        $execution = MachineStore::reference(Workflow::activity(BoundaryActivity::class, 'execution', [
+        $execution = MachineAuthority::reference(Workflow::activity(BoundaryActivity::class, 'execution', [
             'key' => $key,
         ]));
         $step = new RetainedStep($this->scope, $this->identity, $this->principal, $this->initialization);
