@@ -18,6 +18,8 @@ class PhpContainerLauncherTests(unittest.TestCase):
         self.state = Path(self.temporary.name)
         self.binary = self.state / "bin"
         self.binary.mkdir()
+        (self.state / "tmp").mkdir()
+        (self.state / "composer-home").mkdir()
         self.log = self.state / "docker-arguments.json"
         docker = self.binary / "docker"
         docker.write_text("#!/usr/bin/env python3\nimport json,os,sys\n"
@@ -55,6 +57,13 @@ class PhpContainerLauncherTests(unittest.TestCase):
         for name in ("GH_TOKEN", "GITHUB_TOKEN", "COMPOSER_AUTH"):
             self.assertNotIn(name, arguments)
         self.assertNotIn("synthetic-unforwarded-canary", str(arguments))
+        self.assertIn(f"type=bind,source={ROOT},target={ROOT},readonly", arguments)
+        self.assertIn(f"type=bind,source={self.state},target={self.state},readonly", arguments)
+        for directory in ("tmp", "composer-home"):
+            selected = self.state / directory
+            self.assertIn(f"type=bind,source={selected},target={selected}", arguments)
+        self.assertNotIn(f"type=bind,source={ROOT},target={ROOT}", arguments)
+        self.assertNotIn(f"type=bind,source={self.state},target={self.state}", arguments)
 
     def test_mutable_image_selector_refuses_before_docker(self):
         self.environment["WORKFLOW_PHP_CI_IMAGE"] = "php:8.4"

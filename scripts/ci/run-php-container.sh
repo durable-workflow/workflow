@@ -15,8 +15,10 @@ options=(--rm --init --interactive --name "workflow-php-ci-${command}-${BASHPID}
     --cpus 2 --memory 2g --pids-limit 512 --network host
     --cap-drop ALL --security-opt no-new-privileges
     --user "$(id -u):$(id -g)" --workdir "$PWD"
-    --mount "type=bind,source=$root,target=$root"
-    --mount "type=bind,source=$state,target=$state"
+    --mount "type=bind,source=$root,target=$root,readonly"
+    --mount "type=bind,source=$state,target=$state,readonly"
+    --mount "type=bind,source=$state/tmp,target=$state/tmp"
+    --mount "type=bind,source=$state/composer-home,target=$state/composer-home"
     --mount "type=bind,source=$root/docker/php-ci/ci-defaults.ini,target=/usr/local/etc/php/conf.d/zz-workflow-php-ci.ini,readonly")
 
 # Composer's guard is a composite action outside the repository checkout.

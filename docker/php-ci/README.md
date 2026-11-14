@@ -17,8 +17,10 @@ Host Python uses isolated imports.
 
 The `php` and `composer` launchers select the inspected immutable config ID,
 run as the caller with two CPUs, 2 GiB and 512 PIDs, and remove their containers
-on exit. Only source, private dependency state, selected read-only trust inputs
-and the owned temporary SQLite directory are mounted. That directory preserves
+on exit. Repository/control source and the state root containing host wrappers
+are read-only. Only the separate temporary data, Composer home/cache and owned
+SQLite directories are writable; selected trust inputs remain read-only.
+The SQLite directory preserves
 the original shared-memory database and its sidecars across PHP invocations.
 Host credentials are not forwarded. Composer trust is checked before each
 networked upgrade operation using the accepted read-only verifier.
