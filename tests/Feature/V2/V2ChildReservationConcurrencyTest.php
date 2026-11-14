@@ -14,6 +14,10 @@ use RuntimeException;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
 use Throwable;
+use Workflow\V2\Compensation\Definition\ScopeIdentity;
+use Workflow\V2\Compensation\Persistence\ChildScopes;
+use Workflow\V2\Compensation\Persistence\ScopeRepository;
+use Workflow\V2\Compensation\Security\ScopeAuthorization;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -25,6 +29,7 @@ use Workflow\V2\StateMachine\Binding\BindingIdentity;
 use Workflow\V2\StateMachine\Binding\ChildBinding;
 use Workflow\V2\StateMachine\Binding\ChildReservation;
 use Workflow\V2\StateMachine\Binding\ChildReservationStore;
+use Workflow\V2\StateMachine\Binding\ChildScopeParticipation;
 use Workflow\V2\StateMachine\Binding\NeverAdmittedChild;
 use Workflow\V2\StateMachine\Execution\ExecutionReference;
 use Workflow\V2\Support\ChildWorkflowCall;
@@ -42,6 +47,17 @@ final class V2ChildReservationConcurrencyTest extends TestCase
         }
         self::stopWorkers();
         Queue::fake();
+        app()
+            ->instance(ScopeAuthorization::class, new class() implements ScopeAuthorization {
+                public function assertAllowed(ScopeIdentity $scope, string $principal, string $operation): string
+                {
+                    if ($scope->application !== 'race-app' || $scope->namespace !== 'race-tenant'
+                        || $principal !== 'owner' || DB::connection()->transactionLevel() !== 0) {
+                        throw new LogicException('Race scope authorization refused.');
+                    }
+                    return 'race-scope-policy-v1';
+                }
+            });
     }
 
     public static function winners(): array
@@ -49,13 +65,17 @@ final class V2ChildReservationConcurrencyTest extends TestCase
         return [
             'closure wins' => ['close'],
             'admission wins' => ['admit'],
+            'retained closure wins' => ['close', true],
+            'retained admission wins' => ['admit', true],
         ];
     }
 
     #[DataProvider('winners')]
-    public function testNativeAdmissionAndClosureSerializeOnTheReservedInstance(string $winner): void
-    {
-        [$parent, $task, $reservation] = $this->reserve();
+    public function testNativeAdmissionAndClosureSerializeOnTheReservedInstance(
+        string $winner,
+        bool $retained = false
+    ): void {
+        [$parent, $task, $reservation] = $this->reserve($retained);
         $results = $this->race($parent, $task, $reservation, $winner);
         if ($winner === 'close') {
             $this->assertSame('closed', $results[0]['kind']);
@@ -68,6 +88,11 @@ final class V2ChildReservationConcurrencyTest extends TestCase
                 ->close($reservation, 'owner');
             $this->assertInstanceOf(NeverAdmittedChild::class, $closed);
             $this->assertSame($results[0]['closureId'], $closed->closureId);
+            if ($retained) {
+                $this->assertSame(0, DB::table('workflow_compensation_scopes')
+                    ->where('id', $reservation->participation->child->id())
+                    ->count());
+            }
         } else {
             $this->assertSame('admitted', $results[0]['kind']);
             $this->assertSame('admitted', $results[1]['kind']);
@@ -77,7 +102,60 @@ final class V2ChildReservationConcurrencyTest extends TestCase
                 WorkflowRun::query()->where('workflow_instance_id', $reservation->childInstanceId())->count()
             );
             $this->assertSame(1, $parent->historyEvents()->where('event_type', 'ChildRunStarted')->count());
+            if ($retained) {
+                $this->assertGenuineChildScope($reservation, $results[0]['binding']);
+            }
         }
+    }
+
+    public static function requestWinners(): array
+    {
+        return [
+            'request wins' => ['request'],
+            'admission wins' => ['admit'],
+        ];
+    }
+
+    #[DataProvider('requestWinners')]
+    public function testParentForwardClosureSerializesWithRetainedAdmission(string $winner): void
+    {
+        [$parent, $task, $reservation] = $this->reserve(true);
+        $results = $this->race($parent, $task, $reservation, $winner, $winner === 'request' ? 'admit' : 'request');
+        $this->assertSame(
+            'requested',
+            (new ScopeRepository())->metadata($reservation->participation->parent)['status']
+        );
+        if ($winner === 'request') {
+            $this->assertSame(['requested', 'refused'], array_column($results, 'kind'));
+            $this->assertSame(0, WorkflowRun::query()
+                ->where('workflow_instance_id', $reservation->childInstanceId())
+                ->count());
+            $this->assertSame(0, DB::table('workflow_compensation_scopes')
+                ->where('id', $reservation->participation->child->id())
+                ->count());
+            $this->assertSame(0, $parent->historyEvents()->where('event_type', 'ChildRunStarted')->count());
+            $this->assertInstanceOf(NeverAdmittedChild::class, $this->store()->close($reservation, 'owner'));
+        } else {
+            $this->assertSame(['admitted', 'requested'], array_column($results, 'kind'));
+            $this->assertSame(1, WorkflowRun::query()
+                ->where('workflow_instance_id', $reservation->childInstanceId())
+                ->count());
+            $this->assertSame(1, $parent->historyEvents()->where('event_type', 'ChildRunStarted')->count());
+            $this->assertGenuineChildScope($reservation, $results[0]['binding']);
+        }
+    }
+
+    private function assertGenuineChildScope(ChildReservation $reservation, array $binding): void
+    {
+        $repository = new ScopeRepository();
+        $scope = $repository->metadata($reservation->participation->child);
+        $this->assertSame($binding['admission']['childRunId'], $scope['original_run_id']);
+        $this->assertSame('open', $scope['status']);
+        $events = array_column($repository->journal($reservation->participation->parent), 'kind');
+        $this->assertSame(
+            1,
+            count(array_filter($events, static fn (string $kind): bool => $kind === 'child_admitted'))
+        );
     }
 
     private function store(): ChildReservationStore
@@ -94,7 +172,7 @@ final class V2ChildReservationConcurrencyTest extends TestCase
         });
     }
 
-    private function reserve(): array
+    private function reserve(bool $retained = false): array
     {
         $type = TypeRegistry::for(TestGreetingWorkflow::class);
         $instance = WorkflowInstance::query()->create([
@@ -130,8 +208,16 @@ final class V2ChildReservationConcurrencyTest extends TestCase
             'delivered',
             ChildReservation::inputFingerprint(['Taylor']),
         );
+        $participation = $retained ? new ChildScopeParticipation(
+            new ScopeIdentity('race-app', 'race-tenant', 'parent', $run->id),
+            new ScopeIdentity('race-app', 'race-tenant', 'child', $run->id),
+            'child',
+        ) : null;
         $reservation = $this->store()
-            ->reserve($identity, TestGreetingWorkflow::class, 'owner');
+            ->reserve($identity, TestGreetingWorkflow::class, 'owner', $participation);
+        if ($retained) {
+            (new ChildScopes())->registerReserved($reservation);
+        }
         $task = WorkflowTask::query()->create([
             'workflow_run_id' => $run->id,
             'namespace' => $run->namespace,
@@ -149,6 +235,12 @@ final class V2ChildReservationConcurrencyTest extends TestCase
         WorkflowTask $task,
         ChildReservation $reservation
     ): array {
+        if ($operation === 'request') {
+            (new ScopeRepository())->request($reservation->participation->parent, 'cancel', 'owner', 'cancellation');
+            return [
+                'kind' => 'requested',
+            ];
+        }
         if ($operation === 'admit') {
             try {
                 DB::transaction(static function () use ($parent, $task, $reservation): void {
@@ -166,7 +258,8 @@ final class V2ChildReservationConcurrencyTest extends TestCase
                     );
                 });
             } catch (LogicException $error) {
-                if (! str_contains($error->getMessage(), 'closed, already admitted')) {
+                if (! str_contains($error->getMessage(), 'closed, already admitted')
+                    && $error->getMessage() !== 'The exact retained participant has not admitted this child.') {
                     throw $error;
                 }
                 return [
@@ -190,8 +283,16 @@ final class V2ChildReservationConcurrencyTest extends TestCase
     /**
      * @return list<array<string, mixed>>
      */
-    private function race(WorkflowRun $parent, WorkflowTask $task, ChildReservation $reservation, string $winner): array
-    {
+    private function race(
+        WorkflowRun $parent,
+        WorkflowTask $task,
+        ChildReservation $reservation,
+        string $winner,
+        ?string $loser = null,
+    ): array {
+        $loser ??= $winner === 'close' ? 'admit' : 'close';
+        $lockTable = in_array('request', [$winner, $loser], true)
+            ? 'workflow_compensation_scopes' : 'workflow_instances';
         $root = sys_get_temp_dir() . '/dw-child-reservation-race-' . bin2hex(random_bytes(8));
         mkdir($root, 0700);
         $driver = DB::connection()->getDriverName();
@@ -218,8 +319,24 @@ final class V2ChildReservationConcurrencyTest extends TestCase
                         if ($index === 0) {
                             $held = false;
                             DB::listen(static function (QueryExecuted $query) use ($root, $winner, &$held): void {
-                                if ($held || ! str_starts_with(strtolower($query->sql), 'update')
-                                    || ! str_contains($query->sql, 'native_child_reservation')) {
+                                if ($held || ! str_starts_with(strtolower($query->sql), 'update')) {
+                                    return;
+                                }
+                                if ($winner === 'request') {
+                                    if (str_contains($query->sql, 'workflow_compensation_scopes')
+                                        && in_array('requested', $query->bindings, true)) {
+                                        if ($query->connection->transactionLevel() === 0) {
+                                            throw new RuntimeException(
+                                                'The request did not retain its scope transaction.'
+                                            );
+                                        }
+                                        $held = true;
+                                        touch($root . '/held');
+                                        self::waitFile($root . '/release');
+                                    }
+                                    return;
+                                }
+                                if (! str_contains($query->sql, 'native_child_reservation')) {
                                     return;
                                 }
                                 foreach ($query->bindings as $binding) {
@@ -241,12 +358,7 @@ final class V2ChildReservationConcurrencyTest extends TestCase
                         } else {
                             self::waitFile($root . '/held');
                         }
-                        $result = $this->operate(
-                            $index === 0 ? $winner : ($winner === 'close' ? 'admit' : 'close'),
-                            $parent,
-                            $task,
-                            $reservation
-                        );
+                        $result = $this->operate($index === 0 ? $winner : $loser, $parent, $task, $reservation);
                         file_put_contents($root . '/' . $index . '.json', json_encode([
                             'result' => $result,
                         ], JSON_THROW_ON_ERROR));
@@ -279,7 +391,7 @@ final class V2ChildReservationConcurrencyTest extends TestCase
                     $id = (int) ($driver === 'pgsql' ? $row->id : $row->Id);
                     $sql = strtolower((string) ($driver === 'pgsql' ? $row->statement : $row->Info));
                     $waiting = $id === $backend && str_starts_with($sql, 'select')
-                        && str_contains($sql, 'workflow_instances') && str_contains($sql, 'for update')
+                        && str_contains($sql, $lockTable) && str_contains($sql, 'for update')
                         && ($driver !== 'pgsql' || $row->wait_event_type === 'Lock');
                     if ($waiting) {
                         break;

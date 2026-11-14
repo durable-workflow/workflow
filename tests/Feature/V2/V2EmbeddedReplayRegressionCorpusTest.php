@@ -5325,7 +5325,11 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertSame($fixture['expected']['result'], WorkflowStub::loadRun($run->id)->output());
         $this->assertSame(
             $history,
-            $run->historyEvents()->orderBy('sequence')->limit(count($history))->get()->toArray()
+            $run->historyEvents()
+                ->orderBy('sequence')
+                ->limit(count($history))
+                ->get()
+                ->toArray()
         );
         $this->assertSame($ownership, [
             DB::table('workflow_compensation_scopes')->count(),
