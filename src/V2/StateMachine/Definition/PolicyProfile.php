@@ -11,19 +11,42 @@ use Workflow\V2\Compensation\Definition\PortableDescriptor;
 /** A pinned application definition. Selection and authorization belong to the application. */
 final readonly class PolicyProfile
 {
+    public string $machine;
+
+    public string $definitionVersion;
+
+    public string $profile;
+
+    public string $profileVersion;
+
+    /**
+     * @var non-empty-list<string>
+     */
+    public array $states;
+
+    /**
+     * @var list<TransitionDefinition>
+     */
+    public array $transitions;
+
+    /**
+     * @var array<string, ConditionDefinition>
+     */
+    public array $conditions;
+
     /**
      * @param non-empty-list<string> $states
      * @param list<TransitionDefinition> $transitions
      * @param array<string, ConditionDefinition> $conditions
      */
     public function __construct(
-        public string $machine,
-        public string $definitionVersion,
-        public string $profile,
-        public string $profileVersion,
-        public array $states,
-        public array $transitions,
-        public array $conditions = [],
+        string $machine,
+        string $definitionVersion,
+        string $profile,
+        string $profileVersion,
+        array $states,
+        array $transitions,
+        array $conditions = [],
     ) {
         foreach ([$machine, $definitionVersion, $profile, $profileVersion] as $value) {
             if (trim($value) === '') {
@@ -59,6 +82,15 @@ final readonly class PolicyProfile
             }
             PortableDescriptor::identifier($name, 'policy condition');
         }
+        $this->machine = $machine;
+        $this->definitionVersion = $definitionVersion;
+        $this->profile = $profile;
+        $this->profileVersion = $profileVersion;
+        $this->states = array_map(static fn (string $state): string => $state, $states);
+        $this->transitions = array_map(static fn (TransitionDefinition $transition): TransitionDefinition =>
+            $transition, $transitions);
+        $this->conditions = array_map(static fn (ConditionDefinition $condition): ConditionDefinition =>
+            $condition, $conditions);
     }
 
     public function fingerprint(): string

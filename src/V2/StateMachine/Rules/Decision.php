@@ -9,12 +9,17 @@ use InvalidArgumentException;
 final readonly class Decision
 {
     /**
+     * @var list<string>
+     */
+    public array $evidence;
+
+    /**
      * @param list<string> $evidence
      */
     public function __construct(
         public Verdict $verdict,
         public string $reason,
-        public array $evidence = [],
+        array $evidence = [],
     ) {
         if (trim($reason) === '' || ! array_is_list($evidence)) {
             throw new InvalidArgumentException('A decision requires a reason and a list of evidence references.');
@@ -24,6 +29,7 @@ final readonly class Decision
                 throw new InvalidArgumentException('Evidence references must be non-empty strings.');
             }
         }
+        $this->evidence = array_map(static fn (string $reference): string => $reference, $evidence);
     }
 
     /**

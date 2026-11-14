@@ -12,13 +12,18 @@ use Workflow\V2\StateMachine\Definition\RuleReference;
 final readonly class RuleEvaluation
 {
     /**
+     * @var list<string>
+     */
+    public array $missingFacts;
+
+    /**
      * @param list<string> $missingFacts
      */
     public function __construct(
         public RuleReference $rule,
         public string $snapshotId,
         public Decision $decision,
-        public array $missingFacts = [],
+        array $missingFacts = [],
     ) {
         PortableDescriptor::identifier($snapshotId, 'fact snapshot');
         if (! array_is_list($missingFacts)
@@ -34,6 +39,7 @@ final readonly class RuleEvaluation
         if (count(array_unique($missingFacts)) !== count($missingFacts)) {
             throw new InvalidArgumentException('Missing fact names must be unique.');
         }
+        $this->missingFacts = array_map(static fn (string $name): string => $name, $missingFacts);
         PortableDescriptor::encode($this->toArray());
     }
 

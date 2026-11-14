@@ -14,11 +14,15 @@ use Workflow\V2\StateMachine\Definition\RuleReference;
 final readonly class RuleRegistry
 {
     /**
+     * @var array<string, array<string, ConditionRule>>
+     */
+    private array $rules;
+
+    /**
      * @param array<string, array<string, ConditionRule>> $rules
      */
-    public function __construct(
-        private array $rules
-    ) {
+    public function __construct(array $rules)
+    {
         foreach ($rules as $type => $versions) {
             if (! is_string($type) || preg_match('/\A[a-z][a-z0-9._-]{0,127}\z/D', $type) !== 1
                 || ! is_array($versions)) {
@@ -31,6 +35,8 @@ final readonly class RuleRegistry
                 PortableDescriptor::identifier((string) $version, 'rule version');
             }
         }
+        $this->rules = array_map(static fn (array $versions): array =>
+            array_map(static fn (ConditionRule $rule): ConditionRule => $rule, $versions), $rules);
     }
 
     public function evaluate(RuleReference $reference, RecordedFacts $facts): RuleEvaluation

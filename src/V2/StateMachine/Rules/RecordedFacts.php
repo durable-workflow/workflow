@@ -11,13 +11,23 @@ use Workflow\V2\Compensation\Definition\PortableDescriptor;
 final readonly class RecordedFacts
 {
     /**
+     * @var array<string, mixed>
+     */
+    public array $values;
+
+    /**
+     * @var array<string, string>
+     */
+    public array $evidence;
+
+    /**
      * @param array<string, mixed> $values
      * @param array<string, string> $evidence
      */
     public function __construct(
         public string $snapshotId,
-        public array $values,
-        public array $evidence,
+        array $values,
+        array $evidence,
     ) {
         PortableDescriptor::identifier($snapshotId, 'fact snapshot');
         $keys = array_keys($values);
@@ -37,6 +47,8 @@ final readonly class RecordedFacts
                 throw new InvalidArgumentException('Fact evidence must be a bounded immutable reference.');
             }
         }
+        $this->values = PortableDescriptor::snapshot($values);
+        $this->evidence = PortableDescriptor::snapshot($evidence);
         PortableDescriptor::encode($this->toArray());
     }
 

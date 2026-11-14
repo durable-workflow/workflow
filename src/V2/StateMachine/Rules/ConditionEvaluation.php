@@ -12,6 +12,11 @@ use Workflow\V2\StateMachine\Definition\ConditionDefinition;
 final readonly class ConditionEvaluation
 {
     /**
+     * @var list<self>
+     */
+    public array $children;
+
+    /**
      * @param list<self> $children
      */
     private function __construct(
@@ -19,8 +24,9 @@ final readonly class ConditionEvaluation
         public string $snapshotId,
         public Decision $decision,
         public ?RuleEvaluation $rule,
-        public array $children,
+        array $children,
     ) {
+        $this->children = array_map(static fn (self $child): self => $child, $children);
         PortableDescriptor::encode($this->toArray());
     }
 

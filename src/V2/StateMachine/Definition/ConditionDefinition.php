@@ -13,13 +13,19 @@ final readonly class ConditionDefinition
     public const MAX_NODES = 64;
 
     /**
+     * @var list<self>
+     */
+    public array $children;
+
+    /**
      * @param list<self> $children
      */
     private function __construct(
         public string $kind,
         public ?RuleReference $rule,
-        public array $children,
+        array $children,
     ) {
+        $this->children = array_map(static fn (self $child): self => $child, $children);
         $count = 0;
         self::count($this, $count);
         PortableDescriptor::encode($this->toArray());

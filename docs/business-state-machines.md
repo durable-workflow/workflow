@@ -137,6 +137,8 @@ The registered types and variables above are application configuration. A condit
 
 Inside the recorded snapshot activity, collect `RecordedFacts` with a snapshot identity, a named value map and an evidence reference for every provided fact. A provided `null` remains distinct from an absent fact. Evaluate the pinned condition with `RuleRegistry::evaluateCondition()`, then return its decision through the existing snapshot `target` or `permission` field. Retain the complete `ConditionEvaluation::toArray()` with the immutable assessment for inspection. It includes the structure fingerprint, snapshot identity, rule versions, reasons, evidence and missing facts.
 
+Constructors copy configuration, facts, evidence and child lists so that later changes through PHP array references cannot rewrite a validated profile or explanation. The registry also retains its original type/version mapping. Rule implementation objects remain trusted application code; their purity and version compatibility are application responsibilities.
+
 Rules validate their parameters and evaluate only the supplied recorded facts. Live database/provider reads, action dispatch and waits belong in their recorded activity boundaries. The registry rejects substituted rule configurations, snapshots, foreign evidence and claims that a provided fact is missing. The application still owns authentication, evidence collection and validation at the protected commit; a serialized explanation is not an authority token.
 
 Condition definitions have at most 64 nodes and also use the existing portable descriptor's byte, value and nesting bounds. Inputs contain portable data only. Parameter incompatibility and resource-limit refusals are explicit exceptions, without invoking an unregistered handler.

@@ -11,12 +11,17 @@ use Workflow\V2\Compensation\Definition\PortableDescriptor;
 final readonly class RuleReference
 {
     /**
+     * @var array<string, mixed>
+     */
+    public array $parameters;
+
+    /**
      * @param array<string, mixed> $parameters
      */
     public function __construct(
         public string $type,
         public string $version,
-        public array $parameters = [],
+        array $parameters = [],
     ) {
         if (preg_match('/\A[a-z][a-z0-9._-]{0,127}\z/D', $type) !== 1) {
             throw new InvalidArgumentException('A rule requires a registered type, not a PHP class or callable.');
@@ -28,6 +33,7 @@ final readonly class RuleReference
             }
             PortableDescriptor::identifier($key, 'rule parameter');
         }
+        $this->parameters = PortableDescriptor::snapshot($parameters);
         PortableDescriptor::encode($this->toArray());
     }
 

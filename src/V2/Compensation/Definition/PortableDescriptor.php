@@ -50,6 +50,20 @@ final class PortableDescriptor
         }
     }
 
+    /**
+     * @template T of array
+     * @param T $value
+     * @return T
+     */
+    public static function snapshot(array $value): array
+    {
+        self::encode($value);
+        $count = 0;
+        /** @var T $snapshot */
+        $snapshot = self::normalize($value, 0, $count);
+        return $snapshot;
+    }
+
     private static function normalize(mixed $value, int $depth, int &$count): mixed
     {
         if (++$count > self::MAX_VALUES || $depth > self::MAX_DEPTH) {
@@ -59,10 +73,11 @@ final class PortableDescriptor
             if (! array_is_list($value)) {
                 ksort($value, SORT_STRING);
             }
+            $copy = [];
             foreach ($value as $key => $child) {
-                $value[$key] = self::normalize($child, $depth + 1, $count);
+                $copy[$key] = self::normalize($child, $depth + 1, $count);
             }
-            return $value;
+            return $copy;
         }
         if ($value === null || is_bool($value) || is_int($value) || is_string($value)
             || (is_float($value) && is_finite($value))) {
