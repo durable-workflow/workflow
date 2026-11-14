@@ -905,7 +905,12 @@ final class V2CompensationScopeTest extends TestCase
             $this->assertNotSame(getmypid(), $recovered['pid']);
             $this->assertNotSame($crashedPid, $recovered['pid']);
             $this->assertSame('verified', $recovered['status']);
-            $this->assertSame('verified', (new ScopeRepository())->inspect($scope)['status']);
+            $after = (new ScopeRepository())->inspect($scope);
+            $this->assertSame('verified', $after['status']);
+            $this->assertSame($origin->runId(), $after['original_run_id']);
+            $this->assertSame($cut['operationId'], $after['obligations'][0]['id']);
+            $this->assertSame($cut['attemptId'], $after['obligations'][0]['forward_attempt_id']);
+            $this->assertSame('terminated', $origin->refresh()->status());
             $this->assertNull(Cache::get('test:scope:effect:' . $cut['operationId']));
             $this->assertSame(['first'], Cache::get('test:scope:undo-log'));
             $this->assertSame(1, (int) Cache::get('test:scope:effect-count'));
