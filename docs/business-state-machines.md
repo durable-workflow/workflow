@@ -234,7 +234,7 @@ This table reports scope, not completion of the issue's unchecked acceptance cri
 
 ## Native child reservation boundary
 
-The experimental `Binding\ChildReservationStore` provides the native reservation needed before state-bound child admission. Call `reserve()` and `close()` inside recorded application activities. The supplied `BindingAuthorization` must validate the authenticated principal, original application/business owner, generation and requested operation before protected storage is read. Identity values and a serialized reservation are not credentials.
+The experimental `Binding\ChildReservationStore` provides the native reservation needed before state-bound child admission. Call `reserve()` and `close()` inside recorded application activities, outside caller-owned SQL transactions. Each method owns its transaction so a returned closure is committed and host authorization runs before native locks. The supplied `BindingAuthorization` must validate the authenticated principal, original application/business owner, generation and requested operation before protected storage is read. Identity values and a serialized reservation are not credentials.
 
 A reservation pins the original parent instance/run, business execution, slot/generation, policies, required outcome, portable input fingerprint, child definition fingerprint and child options. Repeating the exact reservation returns the stored descriptor. Reusing that lookup key with changed content refuses. New reservations require the active original parent; retrieving an existing reservation does not follow a newer current run or state entry.
 

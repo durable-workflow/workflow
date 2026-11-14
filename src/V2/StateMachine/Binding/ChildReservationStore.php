@@ -31,7 +31,8 @@ final class ChildReservationStore
     public function reserve(BindingIdentity $identity, string $workflowClass, string $principal): ChildReservation
     {
         $version = $this->authorize($identity, $principal, 'reserve');
-        if (TypeRegistry::for($workflowClass) !== $identity->childWorkflowType) {
+        if (! is_a($workflowClass, \Workflow\V2\Workflow::class, true)
+            || TypeRegistry::for($workflowClass) !== $identity->childWorkflowType) {
             throw new LogicException('The binding child type does not match its definition.');
         }
         $fingerprint = WorkflowDefinition::fingerprint($workflowClass);
@@ -51,6 +52,7 @@ final class ChildReservationStore
             $parent = self::instances()->lockForUpdate()->find($identity->parentInstanceId);
             $child = self::instances()->lockForUpdate()->find($candidate->childInstanceId());
             if ($child !== null) {
+                self::assertInstance($child, $candidate);
                 $state = self::read($child);
                 $stored = ChildReservation::fromArray($state['reservation']);
                 self::matching($child, $stored);
@@ -106,10 +108,10 @@ final class ChildReservationStore
             if ($state['status'] === 'admitted') {
                 return ChildBinding::fromArray($state['admission']);
             }
+            if ((int) $child->run_count !== 0 || $child->current_run_id !== null || $child->runs()->exists()) {
+                throw new LogicException('An uncertain child cannot be certified never admitted.');
+            }
             if ($state['status'] === 'reserved') {
-                if ((int) $child->run_count !== 0 || $child->current_run_id !== null || $child->runs()->exists()) {
-                    throw new LogicException('An uncertain child cannot be certified never admitted.');
-                }
                 $state['status'] = 'closed';
                 $state['closureId'] = (string) Str::ulid();
                 self::write($child, $state);
@@ -134,8 +136,6 @@ final class ChildReservationStore
         // Check the actual executing parent before looking up the protected child.
         if ($parent->namespace !== $identity->namespace || $parent->workflow_instance_id !== $identity->parentInstanceId
             || $parent->id !== $identity->parentRunId || $call->workflow !== $reservation->workflowClass
-            || TypeRegistry::for($call->workflow) !== $identity->childWorkflowType
-            || WorkflowDefinition::fingerprint($call->workflow) !== $reservation->definitionFingerprint
             || ChildReservation::inputFingerprint($call->arguments) !== $identity->inputFingerprint
             || $call->options?->toSnapshot() !== $identity->childOptions->toSnapshot()) {
             throw new LogicException('The native child command differs from its reserved owner, definition or input.');
@@ -147,6 +147,12 @@ final class ChildReservationStore
                 ->exists() || $parent->status->isTerminal()
             || $parent->cancellation_requested_at !== null) {
             throw new LogicException('The native child reservation is closed, already admitted or no longer eligible.');
+        }
+        // Persisted data does not choose a class to autoload. First bind the
+        // supplied descriptor to the host-authorized reservation under its lock.
+        if (TypeRegistry::for($call->workflow) !== $identity->childWorkflowType
+            || WorkflowDefinition::fingerprint($call->workflow) !== $reservation->definitionFingerprint) {
+            throw new LogicException('The native child definition differs from its reserved source.');
         }
         return $child;
     }
@@ -196,7 +202,17 @@ final class ChildReservationStore
 
     private function authorize(BindingIdentity $identity, string $principal, string $operation): string
     {
+        // A returned closure must already be committed, and host authorization
+        // must not execute beneath a caller's SQL locks.
+        $connection = self::instances()->getModel()->getConnection();
+        if ($connection->transactionLevel() !== 0) {
+            throw new LogicException('Binding operations require their own recorded activity transaction boundary.');
+        }
         $version = $this->authorization->assertAllowed($identity, $principal, $operation);
+        if ($connection->transactionLevel() !== 0
+            || self::instances()->getModel()->getConnection()->transactionLevel() !== 0) {
+            throw new LogicException('Binding authorization must leave the native transaction boundary closed.');
+        }
         if (trim($version) === '' || strlen($version) > 128) {
             throw new LogicException('Binding authorization must identify its policy version.');
         }
@@ -227,15 +243,22 @@ final class ChildReservationStore
      */
     private static function matching(WorkflowInstance $child, ChildReservation $reservation): array
     {
+        self::assertInstance($child, $reservation);
         $state = self::read($child);
-        if ($state['reservation'] !== $reservation->toArray()
-            || $child->id !== $reservation->childInstanceId()
+        if ($state['reservation'] !== $reservation->toArray()) {
+            throw new LogicException('The stored native child reservation does not match the original descriptor.');
+        }
+        return $state;
+    }
+
+    private static function assertInstance(WorkflowInstance $child, ChildReservation $reservation): void
+    {
+        if ($child->id !== $reservation->childInstanceId()
             || $child->namespace !== $reservation->identity->namespace
             || $child->workflow_class !== $reservation->workflowClass
             || $child->workflow_type !== $reservation->identity->childWorkflowType) {
             throw new LogicException('The stored native child reservation does not match the original descriptor.');
         }
-        return $state;
     }
 
     /**

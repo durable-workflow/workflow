@@ -118,6 +118,86 @@ final class V2ChildReservationTest extends TestCase
         $this->assertSame(1, $parent->historyEvents->where('event_type', HistoryEventType::ChildRunStarted)->count());
     }
 
+    public function testForgedReservationCannotSelectAnAutoloadedDefinition(): void
+    {
+        $parent = $this->parent();
+        $reservation = $this->reserve($parent);
+        $untrustedClass = 'Tests\\Fixtures\\V2\\UntrustedReservationDefinition';
+        $forged = new ChildReservation(
+            $reservation->identity,
+            $untrustedClass,
+            $reservation->definitionFingerprint,
+            $reservation->authorizationVersion,
+        );
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $parent->id,
+            'namespace' => $parent->namespace,
+            'task_type' => TaskType::Workflow,
+            'status' => TaskStatus::Ready,
+            'available_at' => now(),
+            'payload' => [],
+        ]);
+        $autoloaded = [];
+        $loader = static function (string $class) use (&$autoloaded): void {
+            $autoloaded[] = $class;
+        };
+        spl_autoload_register($loader);
+        $failure = null;
+        try {
+            DB::transaction(static function () use ($parent, $task, $forged): void {
+                (new ReflectionMethod(WorkflowExecutor::class, 'scheduleChildWorkflow'))->invoke(
+                    new WorkflowExecutor(),
+                    $parent,
+                    $task,
+                    1,
+                    new ChildWorkflowCall($forged->workflowClass, ['Taylor'], $forged->identity->childOptions, $forged),
+                    null,
+                    false,
+                    true,
+                );
+            });
+        } catch (\Throwable $error) {
+            $failure = $error;
+        } finally {
+            spl_autoload_unregister($loader);
+        }
+        $this->assertInstanceOf(LogicException::class, $failure);
+        $this->assertStringContainsString('stored native child reservation does not match', $failure->getMessage());
+        $this->assertNotContains($untrustedClass, $autoloaded);
+        $this->assertSame(
+            0,
+            WorkflowRun::query()->where('workflow_instance_id', $reservation->childInstanceId())->count()
+        );
+    }
+
+    public function testForeignInstanceOwnershipIsRefusedBeforeDecodingItsReservation(): void
+    {
+        $parent = $this->parent();
+        $reservation = $this->reserve($parent);
+        WorkflowInstance::query()->whereKey($reservation->childInstanceId())->toBase()->update([
+            'namespace' => 'foreign-tenant',
+            'native_child_reservation' => json_encode([
+                'protected' => 'not-a-reservation',
+            ], JSON_THROW_ON_ERROR),
+        ]);
+        foreach (['reserve', 'close'] as $operation) {
+            try {
+                if ($operation === 'reserve') {
+                    $this->reserve($parent);
+                } else {
+                    $this->store()
+                        ->close($reservation, 'trusted-owner');
+                }
+                $this->fail('A foreign native instance reached reservation decoding.');
+            } catch (LogicException $error) {
+                $this->assertStringContainsString(
+                    'stored native child reservation does not match',
+                    $error->getMessage()
+                );
+            }
+        }
+    }
+
     public function testChangedImmutableDescriptorCannotReuseItsOriginalLookupKey(): void
     {
         $parent = $this->parent();
@@ -146,6 +226,61 @@ final class V2ChildReservationTest extends TestCase
             $this->assertSame('binding_access_refused', $error->getMessage());
         }
         $this->assertSame([], $queries);
+    }
+
+    public function testCallerTransactionsCannotExposeUncommittedClosureOrRunHostAuthorizationUnderLocks(): void
+    {
+        $parent = $this->parent();
+        $reservation = $this->reserve($parent);
+        $authorization = new class() implements BindingAuthorization {
+            public int $calls = 0;
+
+            public function assertAllowed(BindingIdentity $identity, string $principal, string $operation): string
+            {
+                ++$this->calls;
+                return 'policy-v1';
+            }
+        };
+        $store = new ChildReservationStore($authorization);
+        foreach (['reserve', 'close'] as $operation) {
+            try {
+                DB::transaction(static function () use ($operation, $store, $reservation): void {
+                    if ($operation === 'reserve') {
+                        $store->reserve($reservation->identity, $reservation->workflowClass, 'owner');
+                    } else {
+                        $store->close($reservation, 'owner');
+                    }
+                });
+                $this->fail('A binding outcome escaped an uncommitted caller transaction.');
+            } catch (LogicException $error) {
+                $this->assertStringContainsString('own recorded activity transaction boundary', $error->getMessage());
+            }
+        }
+        $this->assertSame(0, $authorization->calls);
+        $this->assertInstanceOf(NeverAdmittedChild::class, $store->close($reservation, 'owner'));
+    }
+
+    public function testAuthorizationCannotLeaveAnUncommittedNativeTransaction(): void
+    {
+        $reservation = $this->reserve($this->parent());
+        $authorization = new class() implements BindingAuthorization {
+            public function assertAllowed(BindingIdentity $identity, string $principal, string $operation): string
+            {
+                DB::beginTransaction();
+                return 'policy-v1';
+            }
+        };
+        try {
+            (new ChildReservationStore($authorization))->close($reservation, 'owner');
+            $this->fail('Authorization left an uncommitted native closure boundary.');
+        } catch (LogicException $error) {
+            $this->assertStringContainsString('transaction boundary closed', $error->getMessage());
+        } finally {
+            if (DB::transactionLevel() !== 0) {
+                DB::rollBack();
+            }
+        }
+        $this->assertInstanceOf(NeverAdmittedChild::class, $this->store()->close($reservation, 'trusted-owner'));
     }
 
     public function testOrdinaryStartCannotBypassAClosedNativeReservation(): void
@@ -226,6 +361,28 @@ final class V2ChildReservationTest extends TestCase
         $reservation = $this->reserve($this->parent());
         WorkflowInstance::query()->whereKey($reservation->childInstanceId())->update([
             'run_count' => 1,
+        ]);
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('uncertain child');
+        $this->store()
+            ->close($reservation, 'trusted-owner');
+    }
+
+    public function testAClosedReservationWithAnUnexpectedRunCannotCertifyAbsence(): void
+    {
+        $parent = $this->parent();
+        $reservation = $this->reserve($parent);
+        $this->store()
+            ->close($reservation, 'trusted-owner');
+        WorkflowRun::query()->create([
+            'workflow_instance_id' => $reservation->childInstanceId(),
+            'run_number' => 1,
+            'workflow_class' => $reservation->workflowClass,
+            'workflow_type' => $reservation->identity->childWorkflowType,
+            'namespace' => $reservation->identity->namespace,
+            'status' => RunStatus::Pending,
+            'started_at' => now(),
+            'last_history_sequence' => 0,
         ]);
         $this->expectException(LogicException::class);
         $this->expectExceptionMessage('uncertain child');

@@ -2898,6 +2898,8 @@ final class WorkflowExecutor
         bool $parkRun = true,
         bool $startMilestone = false,
     ): WorkflowTask {
+        $reservedChild = $childWorkflowCall->reservation === null ? null
+            : ChildReservationStore::lockForAdmission($run, $childWorkflowCall);
         StructuralLimits::guardPendingChildren($run);
         $this->logApproachingLimit(StructuralLimits::warnApproachingPendingChildren($run), $run);
 
@@ -2905,8 +2907,6 @@ final class WorkflowExecutor
         $workflowType = TypeRegistry::for($childWorkflowCall->workflow);
         $commandContract = RunCommandContract::snapshot($childWorkflowCall->workflow);
         $now = now();
-        $reservedChild = $childWorkflowCall->reservation === null ? null
-            : ChildReservationStore::lockForAdmission($run, $childWorkflowCall);
 
         // Inherit the parent's run codec for the child so the encoded
         // arguments (next line) match the codec stamped on the child run.
