@@ -2141,6 +2141,35 @@ exit(0);
                 )
                 target.write_text("<?php\nreturn 'base';\n", encoding="utf-8")
 
+    def test_untracked_history_observers_keep_the_existing_replay_guard(self) -> None:
+        for name in ("VersionUsageQuery", "VersionUsageDecision", "VersionUsageCursor", "AnotherHistoryHelper"):
+            with self.subTest(name=name):
+                source = self.root / f"src/V2/Support/{name}.php"
+                source.write_text(
+                    "<?php\nnamespace Workflow\\V2\\Support;\n"
+                    f"final class {name} {{ public function page($run) {{ return $run->last_history_sequence; }} }}",
+                    encoding="utf-8",
+                )
+                result = self.validate()
+                self.assertNotEqual(0, result.returncode, result.stdout)
+                self.assertIn("replay implementation changed but its corpus did not grow", result.stderr)
+                source.unlink()
+
+    def test_replacing_observation_with_transformed_raw_sql_still_requires_evidence(self) -> None:
+        source = self.root / "src/V2/Support/VersionUsageQuery.php"
+        header = "<?php\nnamespace Workflow\\V2\\Support;\nfinal class VersionUsageQuery { public function page($run) { "
+        source.write_text(header + "return $run->last_history_sequence; } }", encoding="utf-8")
+        self.commit_current_as_base()
+        for body in (
+            "$sql = base64_decode('aWQgSU5UTyBPVVRGSUxFICcvdG1wL3ZlcnNpb24tdXNhZ2Utd3JpdGUn'); return $run->selectRaw($sql)->get();",
+            "$sql = implode('', ['id IN', 'TO OUT', 'FILE name']); return $run->selectRaw($sql)->get();",
+        ):
+            with self.subTest(body=body):
+                source.write_text(header + body + " } }", encoding="utf-8")
+                result = self.validate()
+                self.assertNotEqual(0, result.returncode, result.stdout)
+                self.assertIn("replay implementation changed but its corpus did not grow", result.stderr)
+
     def test_task_discovery_helper_body_does_not_require_replay_growth(self) -> None:
         source = self.root / "src/V2/Support/DefaultWorkflowTaskBridge.php"
         original = """<?php

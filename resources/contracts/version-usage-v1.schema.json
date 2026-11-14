@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Workflow open-run version usage v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "namespace",
+    "workflow_type",
+    "change_id",
+    "min_version",
+    "state",
+    "consistency",
+    "through_run_id",
+    "counts",
+    "runs",
+    "limit",
+    "returned_count",
+    "has_more",
+    "next_cursor"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "namespace": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "workflow_type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "change_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "min_version": {
+      "type": "integer",
+      "minimum": -2147483648,
+      "maximum": 2147483647
+    },
+    "state": {
+      "enum": [
+        null,
+        "legacy",
+        "current",
+        "unknown"
+      ]
+    },
+    "consistency": {
+      "const": "live"
+    },
+    "through_run_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total",
+        "legacy",
+        "current",
+        "unknown"
+      ],
+      "properties": {
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "legacy": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "current": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unknown": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "runs": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {
+        "$ref": "#/$defs/run"
+      }
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 200
+    },
+    "returned_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 200
+    },
+    "has_more": {
+      "type": "boolean"
+    },
+    "next_cursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "$defs": {
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "instance_id",
+        "run_id",
+        "status",
+        "state",
+        "recorded_version",
+        "unknown_reason"
+      ],
+      "properties": {
+        "instance_id": {
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "running",
+            "waiting"
+          ]
+        },
+        "state": {
+          "enum": [
+            "legacy",
+            "current",
+            "unknown"
+          ]
+        },
+        "recorded_version": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": -2147483648,
+          "maximum": 2147483647
+        },
+        "unknown_reason": {
+          "enum": [
+            null,
+            "marker_absent",
+            "history_unavailable",
+            "history_invalid"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "unknown"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "recorded_version": {
+                "type": "null"
+              },
+              "unknown_reason": {
+                "enum": [
+                  "marker_absent",
+                  "history_unavailable",
+                  "history_invalid"
+                ]
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "recorded_version": {
+                "type": "integer"
+              },
+              "unknown_reason": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
