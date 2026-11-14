@@ -77,7 +77,7 @@ final class V2NestedCompensationExampleTest extends TestCase
         $origin = WorkflowRun::query()->findOrFail($stub->runId());
         $child = WorkflowRun::query()->where('id', '!=', $origin->id)->sole();
         $this->assertSame(RunStatus::Waiting, $origin->status);
-        $this->assertSame(RunStatus::Completed, $child->status);
+        $this->assertSame(RunStatus::Completed, $child->status, $this->nativeProgress());
         $this->assertFalse((bool) DB::table('example_machine_bindings')->value('business_outcome_verified'));
         $stub->signal('finish');
         $this->drain();
@@ -280,6 +280,20 @@ final class V2NestedCompensationExampleTest extends TestCase
                 'type' => $event->event_type->value,
                 'payload' => $event->payload,
             ])->all();
+    }
+
+    private function nativeProgress(): string
+    {
+        return json_encode([
+            'runs' => WorkflowRun::query()->get(['id', 'workflow_instance_id', 'status'])->toArray(),
+            'tasks' => WorkflowTask::query()->get(
+                ['id', 'workflow_run_id', 'task_type', 'status', 'available_at', 'last_error', 'last_claim_error']
+            )->toArray(),
+            'activities' => \Workflow\V2\Models\ActivityExecution::query()->get(
+                ['id', 'workflow_run_id', 'status', 'attempt_count', 'current_attempt_id']
+            )->toArray(),
+            'effects' => DB::table('example_machine_effects')->get(['action', 'status'])->all(),
+        ], JSON_THROW_ON_ERROR);
     }
 
     private function drain(?callable $stopWhen = null): void
