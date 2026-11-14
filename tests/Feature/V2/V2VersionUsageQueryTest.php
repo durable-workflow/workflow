@@ -127,6 +127,28 @@ final class V2VersionUsageQueryTest extends TestCase
         );
     }
 
+    public function testNoncanonicalStatusSpellingsCannotEnterTheOpenRunCohort(): void
+    {
+        $this->createRun(1, 1);
+        foreach ([
+            2 => 'WAITING',
+            3 => 'waiting ',
+        ] as $number => $status) {
+            $run = $this->createRun($number, 2);
+            DB::table((new WorkflowRun())->getTable())->where('id', $run->id)->update([
+                'status' => $status,
+            ]);
+        }
+        $page = (new VersionUsageQuery())->page('orders', 'shipment', 'shipping', 2);
+        $this->assertSame([
+            'total' => 1,
+            'legacy' => 1,
+            'current' => 0,
+            'unknown' => 0,
+        ], $page['counts']);
+        $this->assertSame(['waiting'], array_column($page['runs'], 'status'));
+    }
+
     public function testUnavailableOwnershipAndUnrecognizedImportProvenanceStayInUnknownCounts(): void
     {
         $missing = $this->createRun(1, 2);

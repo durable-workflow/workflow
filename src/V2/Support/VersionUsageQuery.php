@@ -151,6 +151,13 @@ final class VersionUsageQuery
             ->getConnection()
             ->getDriverName();
         $query->whereRaw(self::binary($column, $driver) . ' = ' . self::binary('?', $driver), [$workflowType]);
+        $status = $query->getQuery()
+            ->getGrammar()
+            ->wrap($query->getModel()->qualifyColumn('status'));
+        $parameters = implode(', ', array_fill(0, 3, self::binary('?', $driver)));
+        $query->whereRaw(self::binary($status, $driver) . ' IN (' . $parameters . ')', [
+            RunStatus::Pending->value, RunStatus::Running->value, RunStatus::Waiting->value,
+        ]);
         return $query;
     }
 
