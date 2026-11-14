@@ -230,3 +230,101 @@ boundary. Only the verified scope ledger clears the unresolved obligation.
 Inspecting or requesting retained work
 must go through an authorized host boundary; the `@internal` persistence classes
 are not an HTTP-facing data access API.
+
+## Reserving a retained child before admission
+
+For a new child whose admission can race with compensation, use
+`DurableScope::reserveChild($key, $childIdentity, $bindingIdentity)` inside the
+original parent workflow. Unlike `participate()`, this records both the retained
+participant and its native child reservation. Native admission refuses until the
+participant is committed. Then call `$reservation->start(...$arguments)` to obtain
+the original `StartedChildWorkflow`. Starting the child and later calling
+`$child->await()` are separate recorded operations using that same admission.
+
+The host supplies `ChildDefinitionRegistry` and binds `BindingAuthorization` to
+an implementation of `ChildScopeBindingAuthorization`. Alongside ordinary scope
+and binding permissions, its `assertParticipationAllowed()` must authorize the
+exact relationship between the original business execution, binding generation,
+parent scope and child scope. Independent permission for each object is
+insufficient, even within one application and namespace. The reservation pins
+that relationship's authorization version; load and closure reauthorize the
+same relationship against that version. These callbacks run outside replay and
+database transactions.
+
+Admission commits the original child's native run, paired history/admission
+receipt and genuine child scope together. During compensation,
+`ChildReservationStore::close()` serializes against admission on the reserved
+native instance. It returns one of two authoritative outcomes:
+
+- `NeverAdmittedChild`: the unused reservation is permanently closed. Future
+  starts cannot admit that child, so this participant can be resolved without
+  manufacturing a child scope.
+- `ChildBinding`: the child was admitted. Compensation must inspect the scope
+  belonging to that exact original child run and wait for its verified ledger.
+  Technical child completion, cancellation or termination does not replace that
+  evidence. A missing admitted-child ledger stays unresolved.
+
+`ChildReservationStore::load()` recovers the original descriptor through the
+authorized host boundary. It does not start or close the child, create an
+admission receipt or prove non-admission. Keep the original descriptor after a
+lost acknowledgement; do not substitute a new generation or infer an outcome
+from lookup absence. Invoke live store operations from recorded activities or
+an authorized application boundary, never from deterministic workflow replay.
+
+The earlier `participate()` contract is unchanged: if its child scope never
+opened, that participant remains unresolved. Only the reservation-backed path
+has the native admission fence and authoritative never-admitted outcome.
+
+## Root initialization and application cancellation
+
+Ordinary root workflow start does not atomically open a compensation scope.
+Constructing `DurableScope` also does not create its ledger; scope registration
+happens at a recorded activity boundary. An application can therefore have an
+accepted root run with no scope yet. Technical root closure does not prove that
+business work was never admitted.
+
+Persist the business cancellation request and fence forward effects and business
+commits using the application's authoritative admission policy. If the genuine
+original workflow can resume, let it initialize and register through recorded
+activities under that fence. If it closes before registration, keep the missing
+scope unresolved and reconcile the application outcome. Do not call internal
+scope persistence directly to invent an empty verified ledger. The child
+reservation contract above does not provide an atomic root-start/scope-open
+primitive.
+
+## Runnable Order and Shipment example
+
+The [application example](../examples/business-state-machines/README.md#native-order-and-shipment-compensation)
+uses native Order/Shipment workflows, recorded SQL activities and reserved child
+participation. Its `prepare` and `imported` profiles share a state catalogue while
+performing different SQL effects. It demonstrates late cancellation after both
+runs complete, cancellation while Order awaits a completed Shipment, original
+operation reconciliation and verified child-first compensation. It also keeps a
+lost admission acknowledgement idempotent and preserves the root-initialization
+gap described above. The local SQL service does not establish remote-provider
+admission or callback fencing.
+
+Run it using the repository's configured disposable test database:
+
+```bash
+vendor/bin/phpunit tests/Feature/V2/V2NestedCompensationExampleTest.php
+```
+
+Related executable boundaries are
+[`RetainedChildScopeTest`](../tests/Unit/V2/RetainedChildScopeTest.php), including
+unused-reservation closure, missing admitted ledgers and joint ownership;
+[`V2ChildReservationConcurrencyTest`](../tests/Feature/V2/V2ChildReservationConcurrencyTest.php),
+which checks both native admission/closure orderings;
+[`V2CompensationScopeTest`](../tests/Feature/V2/V2CompensationScopeTest.php), including
+lost forward results, fresh-process recovery and failed compensation; and
+[`V2CompensationScopeRunBoundaryTest`](../tests/Feature/V2/V2CompensationScopeRunBoundaryTest.php),
+which preserves original scope ownership across continue-as-new and redrive.
+Separate-process locking cases require a supported MySQL/MariaDB or PostgreSQL
+test database; SQLite does not qualify those race orderings.
+
+The example is an integration starting point for these experimental APIs. The
+complete StateMachine transition/rule adapter, policy migration and all
+[#1069](https://github.com/durable-workflow/workflow/issues/1069) criteria remain
+separate. These APIs are absent from the published 2.28.1 package; a supported
+package, upgrade/recovery qualification and versioned consumer documentation are
+still publication milestones.
