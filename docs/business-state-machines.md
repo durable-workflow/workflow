@@ -75,7 +75,7 @@ interface TransitionStep
 
 Existing application contracts can be bridged by a step/runtime adapter. Keep application domain objects behind that adapter rather than serializing them into workflow history. Reuse the same adapter and runner across integration profiles.
 
-Guards perform no I/O. Their boolean result must agree with the corresponding recorded assessment. The application supplies the shared state catalogue and enforces machine-wide invariants in its evaluator and protected commit across every profile; this slice validates structural definitions, not business-invariant semantics. Rules can be arbitrarily complex inside the application's evaluator, but the evaluator must retain its pinned rule versions, fact provenance and explainable result. This slice carries that assessment rather than introducing a rule-expression language.
+Guards perform no I/O. Their boolean result must agree with the corresponding recorded assessment. The application supplies the shared state catalogue and enforces machine-wide invariants in its evaluator and protected commit across every profile. Registered condition rules can evaluate recorded facts and retain their pinned versions, provenance and complete explanation as described below.
 
 Inside a V2 workflow's `handle()` method:
 
@@ -113,6 +113,33 @@ Use `TransitionResult::toArray()` across workflow/history boundaries. The typed 
 Handlers are selected from the explicitly supplied type/version registry. Stored data cannot provide an arbitrary PHP class or callable to this registry. Retain compatible implementations for active runs. A changed profile or removed handler fails explicitly before application I/O. The fingerprint covers the definition/profile metadata, graph and handler versions. It does not hash PHP implementations or replace deployment/version compatibility discipline.
 
 The scope string is identity, not authentication. Live application activities must authorize it against trusted credentials and the original business subject before reading protected data or performing effects.
+
+## Registered condition rules
+
+Configure a `Rules\RuleRegistry` in trusted application bootstrap with a map of registered type, version and `ConditionRule` object. Configuration selects those keys and validated parameters. Keep older implementations available for active profiles. A missing version refuses evaluation instead of selecting a newer implementation.
+
+`RuleReference` pins the type, version and parameters. `ConditionDefinition::all()`, `any()` and `not()` combine registered leaves. Groups retain every child explanation, including unknown children when another child determines the result. For `all`, an unsatisfied child makes the group unsatisfied; otherwise an unknown child makes it unknown. For `any`, a satisfied child makes the group satisfied; otherwise an unknown child makes it unknown. Negating unknown remains unknown. Permission remains a separately evaluated decision.
+
+Attach named conditions to a profile through its optional `conditions` constructor argument:
+
+```php
+$target = ConditionDefinition::all([
+    ConditionDefinition::rule(new RuleReference('receipt.confirmed', '1', ['kind' => 'delivery'])),
+    ConditionDefinition::rule(new RuleReference('account.allowed', '2')),
+]);
+$profile = new PolicyProfile(
+    'fulfilment', '1', 'integration-a', '1', $sharedStates, $transitions,
+    conditions: ['finish.target' => $target],
+);
+```
+
+The registered types and variables above are application configuration. A condition's structure, parameters and rule versions contribute to the profile fingerprint. Existing profiles without named conditions retain their original fingerprints. Renaming a condition or changing its content requires selecting the new profile explicitly; `condition($name)` refuses a missing name.
+
+Inside the recorded snapshot activity, collect `RecordedFacts` with a snapshot identity, a named value map and an evidence reference for every provided fact. A provided `null` remains distinct from an absent fact. Evaluate the pinned condition with `RuleRegistry::evaluateCondition()`, then return its decision through the existing snapshot `target` or `permission` field. Retain the complete `ConditionEvaluation::toArray()` with the immutable assessment for inspection. It includes the structure fingerprint, snapshot identity, rule versions, reasons, evidence and missing facts.
+
+Rules validate their parameters and evaluate only the supplied recorded facts. Live database/provider reads, action dispatch and waits belong in their recorded activity boundaries. The registry rejects substituted rule configurations, snapshots, foreign evidence and claims that a provided fact is missing. The application still owns authentication, evidence collection and validation at the protected commit; a serialized explanation is not an authority token.
+
+Condition definitions have at most 64 nodes and also use the existing portable descriptor's byte, value and nesting bounds. Inputs contain portable data only. Parameter incompatibility and resource-limit refusals are explicit exceptions, without invoking an unregistered handler.
 
 ## Activity payload boundary
 
