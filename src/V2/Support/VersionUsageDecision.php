@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use DateTimeImmutable;
+
 /** @internal Reduces retained marker data without replay or application payload decoding. */
 final class VersionUsageDecision
 {
@@ -40,6 +42,10 @@ final class VersionUsageDecision
             || $payload['min_supported'] > $payload['max_supported']
             || $payload['version'] < $payload['min_supported']
             || $payload['version'] > $payload['max_supported']) {
+            $this->reason = 'history_invalid';
+            return;
+        }
+        if (! self::validReuse($payload)) {
             $this->reason = 'history_invalid';
             return;
         }
@@ -80,5 +86,32 @@ final class VersionUsageDecision
     public static function integer(mixed $value): bool
     {
         return is_int($value) && $value >= -2147483648 && $value <= 2147483647;
+    }
+
+    private static function validReuse(array $payload): bool
+    {
+        $hasSource = array_key_exists('reused_from_run_id', $payload);
+        if ($hasSource !== array_key_exists('reused_recorded_at', $payload)) {
+            return false;
+        }
+        if (! $hasSource) {
+            return true;
+        }
+        $source = $payload['reused_from_run_id'];
+        $clock = $payload['reused_recorded_at'];
+        if (! is_string($source) || preg_match('/\A[A-Za-z0-9][A-Za-z0-9_.:-]{0,190}\z/D', $source) !== 1
+            || ! is_string($clock) || strlen($clock) > 64
+            || preg_match(
+                '/\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])\z/D',
+                $clock
+            ) !== 1) {
+            return false;
+        }
+        $time = DateTimeImmutable::createFromFormat(
+            str_contains($clock, '.') ? '!Y-m-d\TH:i:s.uP' : '!Y-m-d\TH:i:sP',
+            $clock,
+        );
+        $errors = DateTimeImmutable::getLastErrors();
+        return $time !== false && ($errors === false || ($errors['warning_count'] === 0 && $errors['error_count'] === 0));
     }
 }

@@ -178,6 +178,58 @@ final class VersionUsageDecisionTest extends TestCase
         ], $decision->result());
     }
 
+    public static function invalidReuse(): iterable
+    {
+        yield 'source only' => [[
+            'reused_from_run_id' => 'original-run',
+        ]];
+        yield 'clock only' => [[
+            'reused_recorded_at' => '2026-11-14T01:02:03+00:00',
+        ]];
+        foreach ([[], null, '', ' '] as $index => $source) {
+            yield 'source value ' . $index => [[
+                'reused_from_run_id' => $source,
+                'reused_recorded_at' => '2026-11-14T01:02:03+00:00',
+            ]];
+        }
+        foreach ([[], null, '', ' ', 'tomorrow', 'not-a-clock', '2026-02-30T01:02:03+00:00',
+            '2026-11-14T25:02:03+00:00', '2026-11-14T01:02:03+25:00',
+            '2026-11-14T01:02:03.1234567+00:00'] as $index => $clock) {
+            yield 'clock value ' . $index => [[
+                'reused_from_run_id' => 'original-run',
+                'reused_recorded_at' => $clock,
+            ]];
+        }
+    }
+
+    #[DataProvider('invalidReuse')]
+    public function testMalformedReuseProvenanceCannotBecomeCurrent(array $reuse): void
+    {
+        $decision = new VersionUsageDecision('shipping', 2, true);
+        $decision->observe($this->marker(2) + $reuse);
+        $this->assertSame([
+            'state' => 'unknown',
+            'recorded_version' => null,
+            'unknown_reason' => 'history_invalid',
+        ], $decision->result());
+    }
+
+    public function testValidRetainedClocksKeepTheirOriginalVersionWithoutRewritingStrings(): void
+    {
+        foreach (['2026-11-14T01:02:03+00:00', '2026-11-14T01:02:03.123456+00:00',
+            '2026-11-14T01:02:03.123Z', '2026-11-14T01:02:03Z', '2026-11-14T01:02:03-05:30'] as $clock) {
+            $decision = new VersionUsageDecision('shipping', 2, true);
+            $marker = $this->marker(2) + [
+                'reused_from_run_id' => 'original-run',
+                'reused_recorded_at' => $clock,
+            ];
+            $original = $marker;
+            $decision->observe($marker);
+            $this->assertSame('current', $decision->result()['state']);
+            $this->assertSame($original, $marker);
+        }
+    }
+
     private function marker(int $version): array
     {
         return array_replace(self::validMarker(), [

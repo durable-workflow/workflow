@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use Generator;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Support\Collection;
 use InvalidArgumentException;
 use JsonException;
@@ -132,9 +133,8 @@ final class VersionUsageQuery
         }
         $continuation = $cursor === null ? null : VersionUsageCursor::decode($cursor, $identity, $key);
         $base = $this->runs($namespace, $workflowType);
-        $through = $continuation['through'] ?? (clone $base)->orderByRaw($this->idExpression($base) . ' DESC')->value(
-            'id'
-        );
+        $idExpression = $this->idExpression($base);
+        $through = $continuation['through'] ?? (clone $base)->orderByRaw("{$idExpression} DESC")->value('id');
         $after = $continuation['after'] ?? null;
         $counts = [
             'total' => 0,
@@ -195,16 +195,28 @@ final class VersionUsageQuery
     {
         $id = $this->idExpression($base);
         $parameter = self::binary('?', $base->getQuery()->getConnection()->getDriverName());
+        $query = (clone $base)->select([
+            'id', 'workflow_instance_id', 'status', 'details_pruned_at', 'last_history_sequence', 'import_source',
+        ])->whereRaw("{$id} <= {$parameter}", [$through])->toBase();
+        yield from $this->rows($query, 100);
+    }
+
+    /**
+     * @return Generator<int, Collection>
+     */
+    private function rows(QueryBuilder $base, int $size): Generator
+    {
+        $driver = $base->getConnection()
+            ->getDriverName();
+        $id = self::binary($base->getGrammar()->wrap('id'), $driver);
+        $parameter = self::binary('?', $driver);
         $after = null;
         do {
-            $query = (clone $base)->select([
-                'id', 'workflow_instance_id', 'status', 'details_pruned_at', 'last_history_sequence', 'import_source',
-            ])->whereRaw($id . ' <= ' . $parameter, [$through])->orderByRaw($id . ' ASC');
+            $query = (clone $base)->orderByRaw("{$id} ASC");
             if ($after !== null) {
-                $query->whereRaw($id . ' > ' . $parameter, [$after]);
+                $query->whereRaw("{$id} > {$parameter}", [$after]);
             }
-            $rows = $query->limit(100)
-                ->toBase()
+            $rows = $query->limit($size)
                 ->get();
             if ($rows->isEmpty()) {
                 return;
@@ -212,7 +224,20 @@ final class VersionUsageQuery
             yield $rows;
             $after = $rows->last()
 ->id;
-        } while ($rows->count() === 100);
+        } while ($rows->count() === $size);
+    }
+
+    private function identities(QueryBuilder $query, string $column, array $values): QueryBuilder
+    {
+        $query->whereIn($column, $values);
+        if ($values === []) {
+            return $query;
+        }
+        $driver = $query->getConnection()
+            ->getDriverName();
+        $field = self::binary($query->getGrammar()->wrap($column), $driver);
+        $parameters = implode(', ', array_fill(0, count($values), self::binary('?', $driver)));
+        return $query->whereRaw("{$field} IN ({$parameters})", $values);
     }
 
     private function idExpression(Builder $query): string
@@ -242,12 +267,15 @@ final class VersionUsageQuery
         $driver = $query->getQuery()
             ->getConnection()
             ->getDriverName();
-        $query->whereRaw(self::binary($column, $driver) . ' = ' . self::binary('?', $driver), [$workflowType]);
+        $column = self::binary($column, $driver);
+        $parameter = self::binary('?', $driver);
+        $query->whereRaw("{$column} = {$parameter}", [$workflowType]);
         $status = $query->getQuery()
             ->getGrammar()
             ->wrap($query->getModel()->qualifyColumn('status'));
         $parameters = implode(', ', array_fill(0, 3, self::binary('?', $driver)));
-        $query->whereRaw(self::binary($status, $driver) . ' IN (' . $parameters . ')', [
+        $status = self::binary($status, $driver);
+        $query->whereRaw("{$status} IN ({$parameters})", [
             RunStatus::Pending->value, RunStatus::Running->value, RunStatus::Waiting->value,
         ]);
         return $query;
@@ -264,35 +292,35 @@ final class VersionUsageQuery
         int $minVersion
     ): array {
         $instanceModel = ConfiguredV2Models::resolve('instance_model', WorkflowInstance::class);
-        $owners = NamespaceIdentity::constrain(
+        $owners = $this->identities(NamespaceIdentity::constrain(
             (new $instanceModel())->setConnection($runModel->getConnectionName())
                 ->newQuery()
                 ->setEagerLoads([]),
             $namespace,
-        )->whereIn('id', $runs->pluck('workflow_instance_id')->all())
-            ->toBase()
-            ->pluck('id')
+        )->toBase(), 'id', $runs->pluck('workflow_instance_id')
+            ->all())->pluck('id')
             ->all();
         $eventModel = ConfiguredV2Models::resolve('history_event_model', WorkflowHistoryEvent::class);
-        $history = (new $eventModel())->setConnection($runModel->getConnectionName())
-            ->newQuery()
-            ->setEagerLoads([])->whereIn('workflow_run_id', $runs->pluck('id')->all())->toBase();
+        $history = $this->identities(
+            (new $eventModel())->setConnection($runModel->getConnectionName())
+                ->newQuery()
+                ->setEagerLoads([])->toBase(),
+            'workflow_run_id',
+            $runs->pluck('id')
+                ->all(),
+        );
         $driver = $history->getConnection()
             ->getDriverName();
         $sequence = $history->getGrammar()
             ->wrap('sequence');
         $kind = self::binary($history->getGrammar()->wrap('event_type'), $driver);
         $marker = self::binary('?', $driver);
-        $statistics = (clone $history)->select('workflow_run_id')
-            ->selectRaw(
-                "COUNT(*) AS event_count, MIN({$sequence}) AS first_sequence, MAX({$sequence}) AS last_sequence, "
-                    . "SUM(CASE WHEN {$kind} = {$marker} THEN 1 ELSE 0 END) AS marker_count, "
-                    . "SUM(CASE WHEN {$kind} = {$marker} THEN 1 ELSE 0 END) AS started_count, "
-                    . "SUM(CASE WHEN {$kind} = {$marker} THEN 1 ELSE 0 END) AS accepted_count",
-                [HistoryEventType::VersionMarkerRecorded->value, HistoryEventType::WorkflowStarted->value,
-                    HistoryEventType::StartAccepted->value]
-            )
-            ->groupBy('workflow_run_id')
+        $runId = self::binary($history->getGrammar()->wrap('workflow_run_id'), $driver);
+        $statistics = (clone $history)->selectRaw(
+            "{$runId} AS workflow_run_id, COUNT(*) AS event_count, MIN({$sequence}) AS first_sequence, MAX({$sequence}) AS last_sequence, SUM(CASE WHEN {$kind} = {$marker} THEN 1 ELSE 0 END) AS marker_count, SUM(CASE WHEN {$kind} = {$marker} THEN 1 ELSE 0 END) AS started_count, SUM(CASE WHEN {$kind} = {$marker} THEN 1 ELSE 0 END) AS accepted_count",
+            [HistoryEventType::VersionMarkerRecorded->value, HistoryEventType::WorkflowStarted->value,
+                HistoryEventType::StartAccepted->value],
+        )->groupByRaw($runId)
             ->get()
             ->keyBy('workflow_run_id');
         $starts = (clone $history)->where('sequence', 1)
@@ -304,8 +332,10 @@ final class VersionUsageQuery
             ->getDriverName();
         $kind = self::binary($history->getGrammar()->wrap('event_type'), $driver);
         $parameters = implode(', ', array_fill(0, count($types), self::binary('?', $driver)));
-        $unsupported = (clone $history)->whereRaw($kind . ' NOT IN (' . $parameters . ')', $types)
+        $unsupported = (clone $history)->whereRaw("{$kind} NOT IN ({$parameters})", $types)
+            ->selectRaw("{$runId} AS workflow_run_id")
             ->distinct()
+            ->get()
             ->pluck('workflow_run_id')
             ->all();
         $startedType = HistoryEventType::WorkflowStarted->value;
@@ -330,28 +360,31 @@ final class VersionUsageQuery
                 $inspect[] = $run->id;
             }
         }
-        foreach ((clone $history)->whereIn('workflow_run_id', $inspect)->where(
-            'event_type',
-            HistoryEventType::VersionMarkerRecorded->value
-        )
-            ->lazyById(250) as $event) {
-            if ($event->event_type !== HistoryEventType::VersionMarkerRecorded->value) {
-                $decisions[$event->workflow_run_id]->unavailable();
-                continue;
+        $markers = $this->identities(clone $history, 'workflow_run_id', $inspect)
+            ->where('event_type', HistoryEventType::VersionMarkerRecorded->value)
+            ->select(['id', 'workflow_run_id', 'event_type', 'payload']);
+        foreach ($this->rows($markers, 250) as $events) {
+            foreach ($events as $event) {
+                if ($event->event_type !== HistoryEventType::VersionMarkerRecorded->value) {
+                    $decisions[$event->workflow_run_id]->unavailable();
+                    continue;
+                }
+                try {
+                    $payload = is_string($event->payload)
+                        ? json_decode($event->payload, true, 32, JSON_THROW_ON_ERROR) : $event->payload;
+                } catch (JsonException) {
+                    $payload = null;
+                }
+                $decisions[$event->workflow_run_id]->observe($payload);
             }
-            try {
-                $payload = is_string($event->payload)
-                    ? json_decode($event->payload, true, 32, JSON_THROW_ON_ERROR) : $event->payload;
-            } catch (JsonException) {
-                $payload = null;
-            }
-            $decisions[$event->workflow_run_id]->observe($payload);
         }
         // A prune or append racing this observation cannot turn a partial read into current usage.
-        $latest = $runModel->newQuery()
-            ->setEagerLoads([])->whereIn('id', $runs->pluck('id')->all())
-            ->toBase()
-            ->get(['id', 'last_history_sequence', 'details_pruned_at'])->keyBy('id');
+        $latest = $this->identities(
+            NamespaceIdentity::constrain($runModel->newQuery()->setEagerLoads([]), $namespace)->toBase(),
+            'id',
+            $runs->pluck('id')
+                ->all(),
+        )->get(['id', 'last_history_sequence', 'details_pruned_at'])->keyBy('id');
         foreach ($runs as $run) {
             $end = $latest->get($run->id);
             if ($end === null || $end->details_pruned_at !== null

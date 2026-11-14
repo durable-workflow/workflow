@@ -67,7 +67,13 @@ Marker readers must understand their runtime's retained format. Embedded marker
 fields are `change_id`, `version`, `min_supported`, `max_supported` and positive
 logical `sequence`; the range must contain the recorded version. The known
 producer-injected `task` snapshot is supported; unknown marker extensions require
-a reader upgrade and remain unavailable. No application
+a reader upgrade and remain unavailable. Reused decisions must retain both
+`reused_from_run_id` and `reused_recorded_at`, or neither. The source ID is a
+nonempty bounded run identity; the clock is a valid RFC 3339 instant with an
+explicit offset and the runtime's supported precision (at most six fractional
+digits for embedded). Malformed or incomplete reuse
+provenance remains `history_invalid`; readers never rewrite retained clock strings.
+No application
 argument, output, memo or payload-store fetch is necessary for this query.
 
 ## Response and paging

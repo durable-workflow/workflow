@@ -2167,6 +2167,8 @@ exit(0);
             "eval('return 1;'); return $run->last_history_sequence;",
             "$run->selectRaw('DELETE FROM workflow_runs'); return $run->last_history_sequence;",
             "$run->selectRaw('id INTO OUTFILE name'); return $run->last_history_sequence;",
+            "$run->selectRaw('id IN'.'TO OUTFILE \\'/tmp/version-usage-write\\'')->get(); return $run->last_history_sequence;",
+            "$run->selectRaw('id IN'.('TO OUTFILE \\'/tmp/version-usage-write\\''))->get(); return $run->last_history_sequence;",
         ):
             with self.subTest(body=body):
                 source.write_text(

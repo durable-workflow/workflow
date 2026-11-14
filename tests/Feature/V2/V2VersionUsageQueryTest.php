@@ -276,6 +276,104 @@ final class V2VersionUsageQueryTest extends TestCase
         $this->assertSame(['history_invalid', 'history_invalid'], array_column($page['runs'], 'unknown_reason'));
     }
 
+    public function testMalformedReusedMarkersRemainUnknownThroughTheStoredQuery(): void
+    {
+        foreach ([[
+            'reused_from_run_id' => [],
+        ], [
+            'reused_recorded_at' => '2026-11-14T01:02:03Z',
+        ],
+            [
+                'reused_from_run_id' => '',
+                'reused_recorded_at' => '2026-11-14T01:02:03Z',
+            ],
+            [
+                'reused_from_run_id' => 'original',
+                'reused_recorded_at' => '',
+            ],
+            [
+                'reused_from_run_id' => 'original',
+                'reused_recorded_at' => '2026-02-30T01:02:03Z',
+            ],
+        ] as $index => $reuse) {
+            $run = $this->createRun($index + 1, null);
+            $this->event($run, 'VersionMarkerRecorded', $this->marker(2) + $reuse);
+        }
+        $page = (new VersionUsageQuery())->page('orders', 'shipment', 'shipping', 2);
+        $this->assertSame([
+            'total' => 5,
+            'legacy' => 0,
+            'current' => 0,
+            'unknown' => 5,
+        ], $page['counts']);
+        $this->assertSame(
+            ['history_invalid'],
+            array_values(array_unique(array_column($page['runs'], 'unknown_reason')))
+        );
+    }
+
+    public function testCaseVariantHistoryCannotContaminateOrCompleteAnotherRunsPrefix(): void
+    {
+        foreach ([
+            1 => 'Case-A',
+            2 => 'Gap-A',
+        ] as $number => $id) {
+            $run = $this->createRun($number, 2);
+            DB::table((new WorkflowHistoryEvent())->getTable())->where('workflow_run_id', $run->id)->update([
+                'workflow_run_id' => $id,
+            ]);
+            DB::table((new WorkflowRun())->getTable())->where('id', $run->id)->update([
+                'id' => $id,
+                'last_history_sequence' => $number === 2 ? 3 : 2,
+            ]);
+            DB::table((new WorkflowHistoryEvent())->getTable())->insert([
+                'id' => (string) \Illuminate\Support\Str::ulid(),
+                'workflow_run_id' => strtolower($id),
+                'sequence' => 3,
+                'event_type' => 'VersionMarkerRecorded',
+                'payload' => json_encode($this->marker(1, 2), JSON_THROW_ON_ERROR),
+                'recorded_at' => now(),
+            ]);
+        }
+        $page = (new VersionUsageQuery())->page('orders', 'shipment', 'shipping', 2);
+        $this->assertSame([
+            'total' => 2,
+            'legacy' => 0,
+            'current' => 1,
+            'unknown' => 1,
+        ], $page['counts']);
+        $this->assertSame(['Case-A', 'Gap-A'], array_column($page['runs'], 'run_id'));
+        $this->assertSame('current', $page['runs'][0]['state']);
+        $this->assertSame('history_unavailable', $page['runs'][1]['unknown_reason']);
+    }
+
+    public function testValidMarkerEvidenceIsCompleteAcrossMarkerReadBatches(): void
+    {
+        $run = $this->createRun(1, null);
+        $events = [];
+        for ($sequence = 1; $sequence <= 251; ++$sequence) {
+            $events[] = [
+                'id' => (string) \Illuminate\Support\Str::ulid(),
+                'workflow_run_id' => $run->id,
+                'sequence' => $sequence + 1,
+                'event_type' => 'VersionMarkerRecorded',
+                'payload' => json_encode($this->marker(2, $sequence), JSON_THROW_ON_ERROR),
+                'recorded_at' => now(),
+            ];
+        }
+        DB::table((new WorkflowHistoryEvent())->getTable())->insert($events);
+        $run->update([
+            'last_history_sequence' => 252,
+        ]);
+        $page = (new VersionUsageQuery())->page('orders', 'shipment', 'shipping', 2);
+        $this->assertSame([
+            'total' => 1,
+            'legacy' => 0,
+            'current' => 1,
+            'unknown' => 0,
+        ], $page['counts']);
+    }
+
     public function testPagingHasAStableUpperBoundAndCannotCrossTenantOrFilterScope(): void
     {
         $one = $this->createRun(1, 1);
