@@ -81,7 +81,7 @@ final class V2NestedCompensationExampleTest extends TestCase
         $this->assertFalse((bool) DB::table('example_machine_bindings')->value('business_outcome_verified'));
         $stub->signal('finish');
         $this->drain();
-        $this->assertSame(RunStatus::Completed, $origin->refresh()->status);
+        $this->assertSame(RunStatus::Completed, $origin->refresh()->status, $this->nativeProgress());
         $this->assertTrue((bool) DB::table('example_machine_bindings')->value('business_outcome_verified'));
         $reservation = json_decode(
             DB::table('example_machine_bindings')->value('reservation'),
