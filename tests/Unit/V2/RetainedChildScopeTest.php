@@ -15,6 +15,7 @@ use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
 use Workflow\QueryMethod;
 use Workflow\V2\Attributes\Signal;
+use Workflow\V2\Compensation\Activities\ReserveChildScopeActivity;
 use Workflow\V2\Compensation\Definition\Obligation;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
 use Workflow\V2\Compensation\DurableScope;
@@ -119,6 +120,163 @@ final class RetainedChildScopeTest extends TestCase
         $this->expectException(LogicException::class);
         $this->store()
             ->reserve($reservation->identity, TestGreetingWorkflow::class, 'owner', $changed);
+    }
+
+    public function testJointAuthorizationCannotLeaveAnUncommittedNativeTransaction(): void
+    {
+        $parent = $this->parent();
+        $identity = $this->identity($parent);
+        $participation = $this->participation($parent);
+        $count = WorkflowInstance::query()->count();
+        $store = new ChildReservationStore(new class() implements ChildScopeBindingAuthorization {
+            public function assertAllowed(BindingIdentity $identity, string $principal, string $operation): string
+            {
+                return 'binding-v1';
+            }
+
+            public function assertParticipationAllowed(
+                BindingIdentity $identity,
+                ChildScopeParticipation $participation,
+                string $principal,
+                string $operation,
+                ?string $pinnedPolicyVersion = null,
+            ): string {
+                DB::beginTransaction();
+                return 'joint-v1';
+            }
+        });
+        try {
+            $store->reserve($identity, TestGreetingWorkflow::class, 'owner', $participation);
+            $this->fail('An authorization callback cannot hide the native reservation in its transaction.');
+        } catch (LogicException $error) {
+            $this->assertSame(
+                'Joint binding authorization must leave the native transaction closed.',
+                $error->getMessage()
+            );
+        } finally {
+            if (DB::connection()->transactionLevel() > 0) {
+                DB::rollBack();
+            }
+        }
+        $this->assertSame($count, WorkflowInstance::query()->count());
+    }
+
+    public function testScopeAuthorizationCannotLeaveAnUncommittedNativeTransaction(): void
+    {
+        $parent = $this->parent();
+        $identity = $this->identity($parent);
+        $participation = $this->participation($parent);
+        $count = WorkflowInstance::query()->count();
+        app()
+            ->instance(ScopeAuthorization::class, new class() implements ScopeAuthorization {
+                public function assertAllowed(ScopeIdentity $scope, string $principal, string $operation): string
+                {
+                    DB::beginTransaction();
+                    return 'scope-v1';
+                }
+            });
+        try {
+            $this->store()
+                ->reserve($identity, TestGreetingWorkflow::class, 'owner', $participation);
+            $this->fail('Scope authorization cannot keep a transaction open across native reservation.');
+        } catch (LogicException $error) {
+            $this->assertSame(
+                'Retained participation authorization must leave the native transaction closed.',
+                $error->getMessage()
+            );
+        } finally {
+            if (DB::connection()->transactionLevel() > 0) {
+                DB::rollBack();
+            }
+        }
+        $this->assertSame($count, WorkflowInstance::query()->count());
+    }
+
+    public static function reservedDescriptorRefusals(): array
+    {
+        return [
+            'foreign handler' => ['foreign', 'dw.child-scope', '1'],
+            'foreign version' => ['foreign', ChildScopes::RESERVED_TYPE, '2'],
+            'missing descriptor' => ['missing', ChildScopes::RESERVED_TYPE, '1'],
+            'untyped descriptor' => ['untyped', ChildScopes::RESERVED_TYPE, '1'],
+        ];
+    }
+
+    #[DataProvider('reservedDescriptorRefusals')]
+    public function testIncompatibleRecoveryDescriptorsRemainUnresolvedBeforeStorage(
+        string $kind,
+        string $handler,
+        string $version,
+    ): void {
+        $parent = $this->parent();
+        $reservation = $this->reserve($parent);
+        $input = $kind === 'missing' ? [] : [
+            'reservation' => $kind === 'untyped' ? 'latest' : $reservation->toArray(),
+        ];
+        $obligation = new Obligation('child', $handler, $version, $input);
+        $resolver = app(ReservedChildResolution::class);
+        $queries = [];
+        DB::listen(static function ($query) use (&$queries): void {
+            $queries[] = $query->sql;
+        });
+        $result = $resolver->resolve($reservation->participation->parent, $obligation, 'recovery-1');
+        $this->assertFalse($result->verified);
+        $this->assertFalse($result->forwardSettled);
+        $this->assertSame('reserved-child-descriptor-incompatible', $result->reason);
+        $this->assertSame([], $queries);
+    }
+
+    public function testAStoredReservationCannotResolveAnotherRetainedObligation(): void
+    {
+        $reservation = $this->reserve($this->parent());
+        $obligation = new Obligation('foreign-key', ChildScopes::RESERVED_TYPE, '1', [
+            'reservation' => $reservation->toArray(),
+        ]);
+        $resolver = app(ReservedChildResolution::class);
+        $queries = [];
+        DB::listen(static function ($query) use (&$queries): void {
+            $queries[] = $query->sql;
+        });
+        $result = $resolver->resolve($reservation->participation->parent, $obligation, 'recovery-1');
+        $this->assertFalse($result->verified);
+        $this->assertFalse($result->forwardSettled);
+        $this->assertSame('reserved-child-owner-mismatch', $result->reason);
+        $this->assertSame([], $queries);
+    }
+
+    public function testARecordedReservationActivityCannotUseAnotherNativeOwner(): void
+    {
+        $parent = $this->parent();
+        $identity = $this->identity($parent);
+        $participation = $this->participation($parent);
+        $activity = new ReserveChildScopeActivity();
+        $activity->run = $this->parent();
+        $this->expectExceptionMessage('scope_child_binding_owner_mismatch');
+        $activity->handle(
+            $participation->parent->toArray(),
+            'child',
+            $participation->child->toArray(),
+            $identity->toArray(),
+            'owner',
+        );
+    }
+
+    public function testPlainReservationsCannotBeRegisteredAsRetainedParticipants(): void
+    {
+        $identity = $this->identity($this->parent());
+        $plain = $this->store()
+            ->reserve($identity, TestGreetingWorkflow::class, 'owner');
+        $children = new ChildScopes();
+        $this->expectExceptionMessage('A reserved child participant needs its retained scope descriptor.');
+        $children->registerReserved($plain);
+    }
+
+    public function testRetainedAdmissionRequiresItsNativeTransaction(): void
+    {
+        $reservation = $this->reserve($this->parent());
+        $this->assertSame(0, DB::connection()->transactionLevel());
+        $this->expectExceptionMessage('Retained child admission requires its native transaction.');
+        ChildScopes::assertReservedAdmission($reservation);
     }
 
     public function testScopeAuthorizationRefusesBeforeAnyStorageOrDefinitionAutoload(): void
