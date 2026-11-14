@@ -2,9 +2,10 @@
 
 ## Unreleased
 
-- **Run migrations on MariaDB.** Timer status updates preserve the scheduled
-  deadline on older MariaDB schemas. The forward migration removes the implicit
-  timestamp update without rewriting retained rows. Condition occurrence
+- **Run migrations on MariaDB.** Timer status and service-dispatch metadata
+  updates preserve their scheduled timestamps on older MariaDB schemas. The
+  forward migrations remove implicit timestamp updates without rewriting
+  retained rows. Condition occurrence
   reopens use the original scheduled history deadline, including when an older
   cancelled timer row has already drifted (#1139).
 
