@@ -343,7 +343,7 @@ final class FailedRunRedrivePlan
                 $reusedSteps[] = [
                     'event_type' => $marker->event_type,
                     'payload' => $markerPayload,
-                    'recorded_at' => $marker->recorded_at?->toIso8601String(),
+                    'recorded_at' => RedriveReplayClock::formatRecordedAt($marker->recorded_at),
                 ];
 
                 continue;
@@ -462,7 +462,7 @@ final class FailedRunRedrivePlan
             $reusedSteps[] = [
                 'event_type' => HistoryEventType::ActivityCompleted,
                 'payload' => $payload,
-                'recorded_at' => $completion->recorded_at?->toIso8601String(),
+                'recorded_at' => RedriveReplayClock::formatRecordedAt($completion->recorded_at),
             ];
         }
 
@@ -914,7 +914,7 @@ final class FailedRunRedrivePlan
                 $bundleEvents[] = [
                     'event_type' => $event->event_type,
                     'payload' => $eventPayload,
-                    'recorded_at' => $event->recorded_at?->toIso8601String(),
+                    'recorded_at' => RedriveReplayClock::formatRecordedAt($event->recorded_at),
                 ];
             }
 
@@ -1031,7 +1031,7 @@ final class FailedRunRedrivePlan
         return [
             'event_type' => HistoryEventType::TimerFired,
             'payload' => $firedPayload,
-            'recorded_at' => $fired->recorded_at?->toIso8601String(),
+            'recorded_at' => RedriveReplayClock::formatRecordedAt($fired->recorded_at),
             'scheduled_payload' => $scheduledPayload,
         ];
     }
@@ -1182,7 +1182,7 @@ final class FailedRunRedrivePlan
                 $signalEvents[] = [
                     'event_type' => $event->event_type,
                     'payload' => $eventPayload,
-                    'recorded_at' => $event->recorded_at?->toIso8601String(),
+                    'recorded_at' => RedriveReplayClock::formatRecordedAt($event->recorded_at),
                 ];
             }
 
@@ -1325,7 +1325,7 @@ final class FailedRunRedrivePlan
             $childEvents[] = [
                 'event_type' => $event->event_type,
                 'payload' => $eventPayload,
-                'recorded_at' => $event->recorded_at?->toIso8601String(),
+                'recorded_at' => RedriveReplayClock::formatRecordedAt($event->recorded_at),
             ];
         }
 

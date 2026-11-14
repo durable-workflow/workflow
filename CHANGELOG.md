@@ -15,6 +15,9 @@
 - Require patched Laravel 12.72 or 13.41 minimums for the current Composer
   security advisories. Keep existing application audits enabled and update
   application lockfiles before upgrading Workflow (#1133).
+- Failed-run redrive preserves fractional seconds in replay clocks for the
+  original run start and reused steps. Repeated redrive keeps previously
+  recorded clock strings unchanged.
 
 - Experimental domain entity references for top-level arguments of embedded
   queued and local activities (#996). Register an entity class, deterministic

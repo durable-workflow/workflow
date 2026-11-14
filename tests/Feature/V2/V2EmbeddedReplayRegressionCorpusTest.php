@@ -23,6 +23,7 @@ use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestLocalActivityWorkflow;
 use Tests\Fixtures\V2\TestParallelGreetingChildrenWorkflow;
 use Tests\Fixtures\V2\TestQueryReplayGuardActivity;
+use Tests\Fixtures\V2\TestRedriveFractionalClockWorkflow;
 use Tests\Fixtures\V2\TestRepeatedPatchClockWorkflow;
 use Tests\Fixtures\V2\TestSinglePatchReplayWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
@@ -595,7 +596,10 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 ->firstOrFail();
             $this->assertSame($step['sequence'], $reused->payload['sequence']);
             $this->assertSame($sourceRunId, $reused->payload['reused_from_run_id'] ?? null);
-            $this->assertSame($sourceTimes[$step['sequence']], $reused->payload['reused_recorded_at'] ?? null);
+            $this->assertSame(
+                $sourceTimes[$step['sequence']],
+                Carbon::parse($reused->payload['reused_recorded_at'])->toIso8601String(),
+            );
         }
         $output = $successor->workflowOutput();
         $this->assertSame($scenario['version'], $output['version']);
@@ -656,7 +660,10 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 ->sole();
             $this->assertSame($step['sequence'], $reused->payload['sequence']);
             $this->assertSame($sourceRunId, $reused->payload['reused_from_run_id'] ?? null);
-            $this->assertSame($sourceTimes[$step['sequence']], $reused->payload['reused_recorded_at'] ?? null);
+            $this->assertSame(
+                $sourceTimes[$step['sequence']],
+                Carbon::parse($reused->payload['reused_recorded_at'])->toIso8601String(),
+            );
         }
         $this->assertEquals($scenario['memo'], $successor->typedMemos());
         $this->assertEquals($scenario['search_attributes'], $successor->typedSearchAttributes());
@@ -724,7 +731,10 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         );
         foreach ($reused as $event) {
             $this->assertSame($sourceRunId, $event->payload['reused_from_run_id'] ?? null);
-            $this->assertSame($sourceTimes[$event->event_type->value], $event->payload['reused_recorded_at'] ?? null);
+            $this->assertSame(
+                $sourceTimes[$event->event_type->value],
+                Carbon::parse($event->payload['reused_recorded_at'])->toIso8601String(),
+            );
         }
         $output = $successor->workflowOutput();
         $this->assertSame($scenario['signal_value'], $output['approved_by']);
@@ -1657,6 +1667,110 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             $this->assertSame($runNumber, $redrive[0]['run_number']);
             $this->assertSame($scenario['history_authority'], $redrive[0]['history_authority']);
             $this->assertSame($scenario['diagnostic_only'], $redrive[0]['diagnostic_only']);
+        }
+    }
+
+    public function testFractionalRedriveClocksSurviveRepeatedNativeAdmissionAndColdReplay(): void
+    {
+        $path = self::FIXTURE_DIR . '/redrive-reused-fractional-clock.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The fractional redrive clock evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['redrive_fractional_clock'];
+        self::stopWorkers();
+        config([
+            'queue.default' => 'sync',
+            'queue.connections.sync.driver' => 'sync',
+            'workflows.v2.testing.redrive_failures_before_success' => $scenario['redrives'],
+        ]);
+        Cache::forget('test:redrive:first-calls');
+        Cache::forget('test:redrive:second-calls');
+        $this->clearWorkflowState();
+        WorkflowStub::fake();
+        try {
+            Carbon::setTestNow(Carbon::parse($scenario['source_times']['started_at']));
+            $stub = WorkflowStub::make($fixture['workflow']['type'], 'regression-corpus-fractional-clock');
+            $stub->start(...$fixture['workflow']['arguments']);
+            Carbon::setTestNow(Carbon::parse($scenario['source_times']['timer_fired_at']));
+            $timer = WorkflowTask::query()
+                ->where('workflow_run_id', $stub->runId())
+                ->where('task_type', TaskType::Timer->value)
+                ->sole();
+            $this->app->call([new RunTimerTask($timer->id), 'handle']);
+            $source = WorkflowRun::query()->findOrFail($stub->runId());
+            $this->assertSame(RunStatus::Failed, $source->status);
+            // Give the consumed activity a distinct persisted instant. The real
+            // admission, timer and failure lifecycle ran before this clock mutation.
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $source->id)
+                ->where('event_type', HistoryEventType::ActivityCompleted)
+                ->sole()
+                ->forceFill([
+                    'recorded_at' => Carbon::parse($scenario['source_times']['activity_completed_at']),
+                ])->save();
+            $originalHistory = $source->historyEvents()
+                ->get()
+                ->toArray();
+            $predecessor = $source;
+            $firstSerializedClocks = null;
+            for ($attempt = 1; $attempt <= $scenario['redrives']; ++$attempt) {
+                Carbon::setTestNow(now()->addMinutes($scenario['redrive_after_minutes']));
+                $result = app(WorkflowControlPlane::class)->redrive($source->workflow_instance_id, $predecessor->id);
+                $this->assertTrue($result['accepted'], (string) $result['reason']);
+                $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+                $this->assertSame(
+                    $attempt === $scenario['redrives'] ? RunStatus::Completed : RunStatus::Failed,
+                    $successor->status,
+                );
+                if ($successor->status === RunStatus::Completed) {
+                    $this->assertSame(
+                        $scenario['expected_times'],
+                        (new QueryStateReplayer())->query($successor->fresh(), 'recordedTimes', []),
+                    );
+                    $replayed = (new WorkflowReplayer())->replay($successor->fresh())
+->workflow;
+                    $this->assertInstanceOf(TestRedriveFractionalClockWorkflow::class, $replayed);
+                    $this->assertSame($scenario['expected_times'], $replayed->recordedTimes());
+                }
+                $started = $successor->historyEvents()
+                    ->where('event_type', HistoryEventType::WorkflowStarted)
+                    ->sole();
+                $activity = $successor->historyEvents()
+                    ->where('event_type', HistoryEventType::ActivityCompleted)
+                    ->orderBy('sequence')
+                    ->firstOrFail();
+                $fired = $successor->historyEvents()
+                    ->where('event_type', HistoryEventType::TimerFired)
+                    ->sole();
+                $serializedClocks = [
+                    $started->payload['replayed_started_at'],
+                    $activity->payload['reused_recorded_at'],
+                    $fired->payload['reused_recorded_at'],
+                ];
+                $this->assertSame(array_values($scenario['expected_times']), array_map(
+                    static fn (string $clock): string => Carbon::parse($clock)->format('U.u'),
+                    $serializedClocks,
+                ));
+                if ($firstSerializedClocks !== null) {
+                    $this->assertSame($firstSerializedClocks, $serializedClocks);
+                }
+                $firstSerializedClocks ??= $serializedClocks;
+                $this->assertSame(0, WorkflowTimer::query() ->where('workflow_run_id', $successor->id) ->count());
+                $this->assertSame(0, WorkflowTask::query()
+                    ->where('workflow_run_id', $successor->id)
+                    ->where('task_type', TaskType::Timer->value)
+                    ->count());
+                $this->assertSame($originalHistory, $source->historyEvents()->get()->toArray());
+                $predecessor = $successor;
+            }
+            $output = $predecessor->workflowOutput();
+            unset($output['result']);
+            $this->assertSame($scenario['expected_times'], $output);
+            $this->assertSame(1, (int) Cache::get('test:redrive:first-calls'));
+            $this->assertSame(3, (int) Cache::get('test:redrive:second-calls'));
+        } finally {
+            Carbon::setTestNow();
         }
     }
 
