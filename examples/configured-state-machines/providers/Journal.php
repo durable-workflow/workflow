@@ -234,6 +234,10 @@ final readonly class Journal
 
     private function observation(Request $request, ?array $row): Observation
     {
+        if ($row !== null && $row['status'] === Status::Confirmed->value && AuthorizationLedger::handles($request)) {
+            $this->authorizationLedger()
+                ->assertCompletion($request);
+        }
         $effect = $this->query('SELECT effect_id FROM provider_effects WHERE operation_id = ?', [
             $request->identity->key(),
         ])->fetchColumn();

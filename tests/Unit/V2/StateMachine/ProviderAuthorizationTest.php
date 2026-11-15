@@ -288,6 +288,30 @@ final class ProviderAuthorizationTest extends TestCase
         $this->assertSame(['authorize', 'capture-authorized'], $this->actionsWithEffects());
     }
 
+    public function testCachedConfirmationCannotReconstructALostCaptureAdmission(): void
+    {
+        $this->confirm($this->request('authorize'));
+        $capture = $this->request('capture-authorized');
+        $this->confirm($capture);
+        $this->db->exec("DELETE FROM provider_authorization_links WHERE kind = 'capture'");
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('Completion requires the original persisted financial admission.');
+        $this->provider->lookup($capture);
+    }
+
+    public function testCachedConfirmationCannotReconstructALostCaptureEffect(): void
+    {
+        $this->confirm($this->request('authorize'));
+        $capture = $this->request('capture-authorized');
+        $this->confirm($capture);
+        $query = $this->db->prepare('DELETE FROM provider_effects WHERE operation_id = ?');
+        $query->execute([$capture->identity->key()]);
+        $result = $this->provider->lookup($capture);
+        $this->assertSame(Status::Confirmed, $result->status);
+        $this->assertNull($result->effectId);
+        $this->assertSame(['authorize'], $this->actionsWithEffects());
+    }
+
     public static function changedTerms(): array
     {
         return [
