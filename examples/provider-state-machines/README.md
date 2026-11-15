@@ -11,10 +11,24 @@ Published Workflow 2.28.1 does not contain these retained-scope or StateMachine 
 
 The authorization/capture source work adds immutable optional authorization
 terms, a common Payment definition with separate stock and recipient-delivery
-trigger profiles, and a recorded financial inspection boundary. The native
-Order assembly does not select those profiles yet. It refuses authorization
-assignments rather than falling back to immediate capture. The actual trigger
-producers and original parent/child milestone handoffs remain unfinished.
+trigger profiles, and a recorded financial inspection boundary. The new
+`AuthorizationCheckout` preparation path selects `authorization-after-stock`.
+It starts the original `AuthorizedPayment`, observes its protected authorization
+publication while the child remains open, confirms the original native stock
+reservation, and records a protected capture instruction for that same child.
+Signal payloads request an authenticated reread; they provide no financial or
+stock authority. Notification retries use a stable original publication or
+instruction key. The original expiry bounds lost-notification waits and is
+checked again before stock dispatch.
+
+This new source path currently stops at financial readiness and waits for
+`finish`; that signal permits technical closure and does not assert delivery or
+full fulfillment. The complete physical Shipment producer and the actual
+`authorization-after-delivery` path remain unfinished. Seeding that policy
+refuses instead of substituting booking completion. Authorization assignments
+also refuse the existing immediate-capture native recipes. These limitations
+keep this work in draft; neither complete PAY-02 nor the full consumer matrix is
+accepted from this preparation increment.
 
 `FinancialInspectionActivity` requires an explicitly bound
 `FinancialInspectionStore`. Its mandatory host callback must authorize the
@@ -26,6 +40,14 @@ expiry. A later inspection has a distinct recorded identity. Raw unknown,
 processing and refused observations remain available alongside confirmed facts.
 These observations grant no authority to execute a capture and do not replace
 the live protected business admission check.
+
+The authorization and capture obligations are registered before provider
+inspection. `RegisteredObligation::compensate()` invokes the existing native
+scope request and verified compensation activity, so a transition can resolve
+these predeclared owners before its `compensate()` returns. The original
+automatic Saga callbacks remain present and observe the same verified rows.
+Reverse ordering and unknown-result refusal still apply; the handle introduces
+no separate compensation executor.
 
 The first selected policy uses an original stock reservation, immediate full
 payment capture and carrier booking before handover. Payment is a distinct

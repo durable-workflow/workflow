@@ -37,14 +37,23 @@ final readonly class MachineStore
         $app->instance(self::class, $store);
         $app->instance(AssessmentStore::class, new AssessmentStore($authority, $provider));
         $financial = new FinancialAuthority($authority);
+        $handoff = new FinancialHandoffStore($authority, $provider, $financial);
+        $app->instance(FinancialHandoffStore::class, $handoff);
         $app->instance(FinancialInspectionStore::class, new FinancialInspectionStore(
             $authority->db,
             $provider,
-            $financial->inspect(...)
+            $financial->inspect(...),
+            $handoff->businessFacts(...)
         ));
         $app->instance(CancellationStore::class, new CancellationStore($authority));
         $app->instance(ChildReservationStore::class, new ChildReservationStore($authority));
         $app->instance(ChildDefinitionRegistry::class, new ChildDefinitionRegistry([
+            BindingPlan::AUTHORIZED_PAYMENT => [
+                FinancialCatalogue::profile(FinancialCatalogue::AFTER_STOCK)->fingerprint() => AuthorizedPayment::class,
+                FinancialCatalogue::profile(
+                    FinancialCatalogue::AFTER_DELIVERY
+                )->fingerprint() => AuthorizedPayment::class,
+            ],
             BindingPlan::PAYMENT => [
                 Catalogue::profile('payment')->fingerprint() => Payment::class,
             ],
@@ -94,7 +103,11 @@ final readonly class MachineStore
     {
         $key = $terms->subjectKey();
         $this->authority->authorize($key, $this->authority->principal);
-        if ($terms->authorization !== null) {
+        $recipe = $this->authority->recipe($key);
+        if ($recipe === FinancialCatalogue::AFTER_DELIVERY) {
+            throw new LogicException('The complete physical Shipment producer is not assembled yet.');
+        }
+        if (($terms->authorization !== null) !== FinancialCatalogue::selected($recipe)) {
             throw new LogicException('The selected native recipe does not implement authorization and capture.');
         }
         $payload = PortableDescriptor::encode($terms->toArray());
@@ -139,14 +152,18 @@ final readonly class MachineStore
             'nativeRun' => $actual->id,
             'principal' => $this->authority->principal,
             'scope' => $scope->toArray(),
-            'descriptor' => $terms->descriptor($role),
+            'descriptor' => $role === 'payment' && FinancialCatalogue::selected($this->authority->recipe($key))
+                ? $terms->financialDescriptor() : $terms->descriptor($role),
             'children' => $role === 'order' ? array_map(static fn (string $child): array => [
                 'binding' => $plan->binding($child)
                     ->toArray(),
                 'scope' => $plan->childScope($child)
                     ->toArray(),
                 'input' => $plan->childInput($child),
-            ], ['payment', 'shipment']) : [],
+            ], FinancialCatalogue::selected($this->authority->recipe($key)) ? ['payment'] : [
+                'payment',
+                'shipment',
+            ]) : [],
         ], $key);
     }
 

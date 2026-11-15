@@ -13,6 +13,7 @@ use Workflow\V2\Compensation\DurableScope;
 use Workflow\V2\StateMachine\Execution\ActivityTransitionRuntime;
 use Workflow\V2\StateMachine\Execution\TransitionResult;
 use Workflow\V2\StateMachine\Execution\TransitionStatus;
+use Workflow\V2\StateMachine\Transition\TransitionStep;
 use Workflow\V2\StateMachine\TransitionRunner;
 use Workflow\V2\Workflow;
 
@@ -46,14 +47,14 @@ final readonly class Machine
         }
     }
 
-    public function transition(string $key): TransitionResult
+    public function transition(string $key, ?TransitionStep $selectedStep = null): TransitionResult
     {
         $execution = Authority::reference(Workflow::activity(BoundaryActivity::class, 'execution', [
             'key' => $key,
         ]));
         $recipe = $this->initialization['recipe'] ?? Catalogue::RESERVE_FIRST;
         $profile = Catalogue::profile($this->initialization['role'], $recipe);
-        $step = new RetainedStep($this->scope, $this->identity, $this->initialization);
+        $step = $selectedStep ?? new RetainedStep($this->scope, $this->identity, $this->initialization);
         $handlers = [];
         foreach ($profile->transitions as $transition) {
             $handlers[$transition->handlerKey()] = $step;

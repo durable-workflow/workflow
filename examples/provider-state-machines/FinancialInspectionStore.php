@@ -19,12 +19,14 @@ final readonly class FinancialInspectionStore
 {
     /**
      * @param Closure(WorkflowRun, ScopeIdentity, FinancialDescriptor): void $authorize
+     * @param null|Closure(WorkflowRun, ScopeIdentity, FinancialDescriptor): array $businessFacts
      * The host must verify the original actor, business grant, graph and paired native obligations before any provider SQL.
      */
     public function __construct(
         private ConnectionInterface $db,
         private Journal $provider,
         private Closure $authorize,
+        private ?Closure $businessFacts = null,
     ) {
     }
 
@@ -54,6 +56,7 @@ final readonly class FinancialInspectionStore
         if ($existing !== null) {
             return $this->read($existing, $scope, $hash);
         }
+        $business = $this->businessFacts?->__invoke($actual, $scope, $descriptor);
         $snapshot = [
             'snapshotId' => $id,
             'originalRunId' => $actual->id,
@@ -63,6 +66,9 @@ final readonly class FinancialInspectionStore
             'financial' => $this->provider->inspectFinancial($descriptor)
                 ->toArray(),
         ];
+        if ($business !== null) {
+            $snapshot['business'] = $business;
+        }
         $payload = PortableDescriptor::encode($snapshot);
         return $this->db->transaction(function () use ($id, $scope, $hash, $payload): array {
             $existing = $this->db->table('provider_machine_assessments')

@@ -44,7 +44,7 @@ final readonly class AssessmentStore
             }
             return $this->read($existing);
         }
-        $facts = $this->facts($actor, $row, $plan, $transition->key, $id);
+        $facts = $this->facts($actual, $activityId, $actor, $row, $plan, $transition->key, $id);
         $profile = $this->authority->profile($actor->root_key, $actor->role);
         $registry = Catalogue::registry();
         $target = $registry->evaluateCondition($profile->condition($transition->key . '.target'), $facts);
@@ -253,6 +253,8 @@ final readonly class AssessmentStore
     }
 
     private function facts(
+        WorkflowRun $actual,
+        string $activityId,
         object $actor,
         object $row,
         BindingPlan $plan,
@@ -271,6 +273,14 @@ final readonly class AssessmentStore
             ),
         ];
         $evidence = array_fill_keys(array_keys($values), 'business-snapshot:' . $id);
+        if (FinancialCatalogue::selected($plan->recipe) && $actor->role === 'payment') {
+            return $this->financialFacts($actual, $activityId, $actor, $plan, $values, $evidence, $id);
+        }
+        if (FinancialCatalogue::selected($plan->recipe) && $transitionKey === 'prepare') {
+            $values['prepare_confirmed'] = app(FinancialHandoffStore::class)->prepared($actual);
+            $evidence['prepare_confirmed'] = 'original-financial-preparation:' . $plan->binding('payment')->key();
+            return new RecordedFacts($id, $values, $evidence);
+        }
         if ($actor->role === 'order' && $transitionKey === 'prepare') {
             [, $terms] = $this->authority->assignment($actor->root_key);
             $forward = Request::fromArray($terms->descriptor('order')['forward']);
@@ -296,6 +306,44 @@ final readonly class AssessmentStore
                 && $observation->effectId === 'effect-' . $forward->identity->key();
             $evidence[$transitionKey . '_confirmed'] = $observation->effectId
                 ?? 'provider-observation:' . $forward->identity->key() . ':' . $observation->status->value;
+        }
+        return new RecordedFacts($id, $values, $evidence);
+    }
+
+    private function financialFacts(
+        WorkflowRun $actual,
+        string $activityId,
+        object $actor,
+        BindingPlan $plan,
+        array $values,
+        array $evidence,
+        string $id
+    ): RecordedFacts {
+        [, $terms] = $this->authority->assignment($actor->root_key);
+        $snapshot = app(FinancialInspectionStore::class)->inspect(
+            $actual,
+            $activityId,
+            $plan->childScope('payment')
+                ->toArray(),
+            $terms->financialDescriptor()
+        );
+        foreach ($snapshot['financial']['facts'] as $key => $value) {
+            $values[$key] = $value;
+            $evidence[$key] = 'original-financial-snapshot:' . $snapshot['snapshotId'];
+        }
+        // A provider confirmation alone cannot skip establishing this original native effect owner.
+        $values['authorization_confirmed'] = $values['authorization_confirmed']
+            && $snapshot['business']['nativeForward']['authorize'] === 'observed';
+        $values['capture_confirmed'] = $values['capture_confirmed']
+            && $snapshot['business']['nativeForward']['capture'] === 'observed';
+        $values['model_consistent'] = $values['model_consistent'] && $values['financial_observation_consistent'];
+        $values['financial_observations'] = $snapshot['financial']['observations'];
+        $values['financial_observed_at'] = $snapshot['financial']['observedAt'];
+        $evidence['financial_observations'] = $evidence['financial_observed_at'] = 'original-financial-snapshot:' . $snapshot['snapshotId'];
+        if ($snapshot['business']['captureInstruction'] !== null) {
+            $values[FinancialCatalogue::captureTrigger($plan->recipe)] = true;
+            $evidence[FinancialCatalogue::captureTrigger($plan->recipe)] = 'original-policy-instruction:'
+                . $snapshot['business']['captureInstruction']['id'];
         }
         return new RecordedFacts($id, $values, $evidence);
     }

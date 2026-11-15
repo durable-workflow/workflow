@@ -1,0 +1,329 @@
+<?php
+
+declare(strict_types=1);
+
+namespace DurableWorkflow\Examples\ProviderStateMachines;
+
+use DurableWorkflow\Examples\BusinessStateMachines\SqlBusinessStore;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\FinancialDescriptor;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Journal;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Request;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Status;
+use Illuminate\Support\Carbon;
+use LogicException;
+use Workflow\V2\Compensation\Definition\Obligation;
+use Workflow\V2\Compensation\Definition\PortableDescriptor;
+use Workflow\V2\Compensation\Definition\ScopeIdentity;
+use Workflow\V2\Compensation\Persistence\ScopeRepository;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\StateMachine\Binding\ChildBinding;
+use Workflow\V2\StateMachine\Binding\ChildReservationStore;
+use Workflow\V2\StateMachine\Execution\ExecutionReference;
+use Workflow\V2\WorkflowStub;
+
+/** Original business publications and protected policy instructions, never facts supplied by a signal payload. */
+final readonly class FinancialHandoffStore
+{
+    public function __construct(
+        private Authority $authority,
+        private Journal $provider,
+        private FinancialAuthority $financial
+    ) {
+    }
+
+    public function milestone(WorkflowRun $parent, array $value, string $stage): array
+    {
+        [$actor, , $plan, $binding] = $this->parentBinding($parent, $value);
+        $publication = $this->publication($actor->root_key, $binding, $stage);
+        [, $terms] = $this->authority->assignment($actor->root_key);
+        if ($terms->authorization === null) {
+            throw new LogicException('The original authorization terms are unavailable.');
+        }
+        return [
+            'confirmed' => $publication !== null,
+            'publication' => $publication,
+            'originalRunId' => $binding->admission->childRunId,
+            'originOpen' => ! WorkflowRun::query()->findOrFail($binding->admission->childRunId)->status->isTerminal(),
+            'waitSeconds' => max(0, $terms->authorization->expiresAt - Carbon::now()->getTimestamp()),
+        ];
+    }
+
+    public function notify(WorkflowRun $actual, string $stage): array
+    {
+        [$actor, , $plan] = $this->payment($actual);
+        $binding = $this->admitted($plan);
+        if ($binding->admission->childRunId !== $actual->id) {
+            throw new LogicException('Only the original Payment can publish its business milestone.');
+        }
+        $publication = $this->publication($actor->root_key, $binding, $stage);
+        if ($publication === null) {
+            throw new LogicException('Notification requires the original protected business publication.');
+        }
+        $key = hash(
+            'sha256',
+            PortableDescriptor::encode(['financial-publication-v1', $publication['id'], $plan->rootRun])
+        );
+        $signal = WorkflowStub::loadRun($plan->rootRun, Catalogue::NAMESPACE)->withRequestId($key)
+            ->attemptSignal('financial-milestone', $publication['id']);
+        return [
+            'publicationId' => $publication['id'],
+            'notificationAccepted' => $signal->accepted(),
+        ];
+    }
+
+    public function requestCapture(WorkflowRun $parent, array $value): array
+    {
+        [$actor, $root, $plan, $binding] = $this->parentBinding($parent, $value);
+        if ($plan->recipe !== FinancialCatalogue::AFTER_STOCK) {
+            throw new LogicException('Capture needs the selected authoritative trigger producer.');
+        }
+        $id = $this->instructionId($binding);
+        $row = $this->authority->db->table('provider_machine_milestones')
+            ->where('id', $id)
+            ->first();
+        if ($row === null) {
+            $authorization = $this->publication($actor->root_key, $binding, 'authorize');
+            $stock = $this->originalStock($actor->root_key, $plan);
+            if ($authorization === null || $stock === null) {
+                throw new LogicException(
+                    'Capture requires original confirmed authorization and warehouse reservation.'
+                );
+            }
+            $payload = PortableDescriptor::encode([
+                'kind' => 'financial-capture-instruction-v1',
+                'binding' => $binding->toArray(),
+                'recipe' => $plan->recipe,
+                'authorizationPublication' => $authorization['id'],
+                'stockEffect' => $stock,
+            ]);
+            $this->authority->db->transaction(function () use ($parent, $actor, $root, $binding, $id, $payload): void {
+                $current = $this->authority->db->table('example_machine_subjects')
+                    ->where('id', $root->id)
+                    ->lockForUpdate()
+                    ->sole();
+                $this->authority->assertGrant($current, $actor->root_key, 'order');
+                $entry = $binding->identity->parentExecution;
+                if ((bool) $current->cancellation_requested || $current->state !== $entry->sourceState
+                    || (string) $current->revision !== $entry->sourceRevision || $entry->executionId !== $parent->id . '.prepare.1') {
+                    throw new LogicException('The original Order refused this financial policy instruction.');
+                }
+                $old = $this->authority->db->table('provider_machine_milestones')
+                    ->where('id', $id)
+                    ->first();
+                if ($old !== null) {
+                    if ($old->payload !== $payload || $old->actor_id !== $root->id || $old->child_run !== $binding->admission->childRunId) {
+                        throw new LogicException('The original capture instruction changed.');
+                    }
+                    return;
+                }
+                $this->authority->db->table('provider_machine_milestones')
+                    ->insert([
+                        'id' => $id,
+                        'actor_id' => $root->id,
+                        'child_run' => $binding->admission->childRunId,
+                        'payload' => $payload,
+                        'payload_sha256' => hash('sha256', $payload),
+                    ]);
+            });
+            $row = $this->authority->db->table('provider_machine_milestones')
+                ->where('id', $id)
+                ->sole();
+        }
+        $this->readInstruction($row, $actor->root_key, $binding);
+        $open = ! (bool) $this->authority->subject($actor->root_key, 'order')
+->cancellation_requested;
+        $signal = $open ? WorkflowStub::loadRun($binding->admission->childRunId, Catalogue::NAMESPACE)
+            ->withRequestId($id)
+            ->attemptSignal('capture-request', $id) : null;
+        return [
+            'instructionId' => $id,
+            'notificationAccepted' => $signal?->accepted() ?? false,
+        ];
+    }
+
+    public function businessFacts(WorkflowRun $actual, ScopeIdentity $scope, FinancialDescriptor $descriptor): array
+    {
+        [$actor, , $plan] = $this->payment($actual);
+        $forward = $this->financial->forwardStates($actual, $scope, $descriptor);
+        $binding = $this->admitted($plan);
+        $row = $this->authority->db->table('provider_machine_milestones')
+            ->where('id', $this->instructionId($binding))
+            ->first();
+        return [
+            'nativeForward' => $forward,
+            'captureInstruction' => $row === null ? null : $this->readInstruction($row, $actor->root_key, $binding),
+        ];
+    }
+
+    public function readCapture(WorkflowRun $actual, string $activityId): array
+    {
+        [$actor, , $plan] = $this->payment($actual);
+        [, $terms] = $this->authority->assignment($actor->root_key);
+        return app(FinancialInspectionStore::class)->inspect(
+            $actual,
+            $activityId,
+            $plan->childScope('payment')
+                ->toArray(),
+            $terms->financialDescriptor()
+        );
+    }
+
+    public function expire(WorkflowRun $actual): array
+    {
+        [$actor, , $plan] = $this->authority->actor($actual);
+        if (! FinancialCatalogue::selected($plan->recipe)) {
+            throw new LogicException('The original authorization policy is unavailable.');
+        }
+        return app(CancellationStore::class)->request($actor->root_key, $plan->rootRun, 'authorization-expired');
+    }
+
+    public function prepared(WorkflowRun $parent): bool
+    {
+        [$actor, , $plan] = $this->authority->actor($parent);
+        if ($actor->role !== 'order' || ! FinancialCatalogue::selected($plan->recipe)) {
+            throw new LogicException('Financial readiness belongs to the original Order.');
+        }
+        $child = $this->authority->db->table('provider_machine_actors')
+            ->where('id', Authority::subjectId($actor->root_key, 'payment'))->first();
+        if ($child === null || $this->originalStock($actor->root_key, $plan) === null) {
+            return false;
+        }
+        return $this->publication($actor->root_key, $this->admitted($plan), 'capture') !== null;
+    }
+
+    private function payment(WorkflowRun $actual): array
+    {
+        $value = $this->authority->actor($actual);
+        if ($value[0]->role !== 'payment' || ! FinancialCatalogue::selected($value[2]->recipe)) {
+            throw new LogicException('The financial handoff requires the original authorized Payment actor.');
+        }
+        return $value;
+    }
+
+    private function parentBinding(WorkflowRun $parent, array $value): array
+    {
+        [$actor, $row, $plan] = $this->authority->actor($parent);
+        $binding = ChildBinding::fromArray($value);
+        if ($actor->role !== 'order' || ! FinancialCatalogue::selected($plan->recipe)
+            || $binding->identity->parentRunId !== $parent->id
+            || $binding->toArray() !== $this->admitted($plan)
+                ->toArray()) {
+            throw new LogicException('The financial milestone belongs to another original Order or binding.');
+        }
+        return [$actor, $row, $plan, $binding];
+    }
+
+    private function admitted(BindingPlan $plan): ChildBinding
+    {
+        $store = app(ChildReservationStore::class);
+        $reservation = $store->load(
+            $plan->binding('payment'),
+            $this->authority->principal,
+            $plan->participation('payment')
+        );
+        $binding = $store->close($reservation, $this->authority->principal);
+        if (! $binding instanceof ChildBinding) {
+            throw new LogicException('A real original Payment admission is required for this business handoff.');
+        }
+        return $binding;
+    }
+
+    private function publication(string $key, ChildBinding $binding, string $stage): ?array
+    {
+        [$source, $revision] = match ($stage) {
+            'authorize' => ['received', '1'], 'capture' => ['authorized', '2'],
+            default => throw new LogicException('The financial business milestone is unavailable.'),
+        };
+        $recipe = $this->authority->recipe($key);
+        $transition = Catalogue::transition('payment', $stage, $recipe);
+        $execution = new ExecutionReference(
+            Catalogue::APPLICATION,
+            Authority::subjectName($key, 'payment'),
+            $binding->admission->childRunId . '.' . $stage . '.' . $revision,
+            Catalogue::profile('payment', $recipe)->fingerprint(),
+            $source,
+            $revision
+        );
+        $id = SqlBusinessStore::decisionId($execution, 'transition', $execution->executionId);
+        $row = $this->authority->db->table('example_machine_publications')
+            ->where('id', $id)
+            ->first();
+        if ($row === null) {
+            return null;
+        }
+        $this->authority->subject($key, 'payment');
+        $payload = json_decode($row->payload, true, flags: JSON_THROW_ON_ERROR);
+        $expected = [
+            'execution' => $execution->toArray(),
+            'transitionKey' => $stage,
+            'state' => $transition->to,
+            'revision' => (string) ((int) $revision + 1),
+        ];
+        if ($row->subject_id !== Authority::subjectId($key, 'payment')
+            || PortableDescriptor::encode($payload) !== PortableDescriptor::encode($expected)) {
+            throw new LogicException('The original financial publication or owning execution was substituted.');
+        }
+        return [
+            'id' => $id,
+            ...$expected,
+        ];
+    }
+
+    private function originalStock(string $key, BindingPlan $plan): ?string
+    {
+        [, $terms] = $this->authority->assignment($key);
+        $ledger = (new ScopeRepository())->inspect($plan->rootScope());
+        $expected = new Obligation('effect', 'provider.effect', '1', $terms->descriptor('order'));
+        $rows = array_values(array_filter($ledger['obligations'], static fn (array $row): bool =>
+            ($row['descriptor']['key'] ?? null) === 'effect'));
+        if ($rows === []) {
+            return null;
+        }
+        if (count($rows) !== 1 || $ledger['original_run_id'] !== $plan->rootRun
+            || $rows[0]['fingerprint'] !== $expected->fingerprint()
+            || Obligation::fromArray($rows[0]['descriptor'])->fingerprint() !== $expected->fingerprint()) {
+            throw new LogicException('The warehouse evidence is outside its original registered native owner.');
+        }
+        if ($rows[0]['forward_status'] !== 'observed') {
+            return null;
+        }
+        $request = Request::fromArray($terms->descriptor('order')['forward']);
+        $value = $this->provider->lookup($request);
+        return $value->status === Status::Confirmed && $value->effectId === 'effect-' . $request->identity->key()
+            ? $value->effectId : null;
+    }
+
+    private function instructionId(ChildBinding $binding): string
+    {
+        return hash('sha256', 'financial-capture-instruction-v1:' . $binding->identity->key());
+    }
+
+    private function readInstruction(object $row, string $key, ChildBinding $binding): array
+    {
+        if ($row->actor_id !== Authority::subjectId(
+            $key,
+            'order'
+        ) || $row->child_run !== $binding->admission->childRunId
+            || ! hash_equals($row->payload_sha256, hash('sha256', $row->payload))) {
+            throw new LogicException('The protected original capture instruction is corrupt.');
+        }
+        $value = json_decode($row->payload, true, flags: JSON_THROW_ON_ERROR);
+        $keys = array_keys($value);
+        sort($keys);
+        [, $terms] = $this->authority->assignment($key);
+        $stock = Request::fromArray($terms->descriptor('order')['forward']);
+        $authorization = $this->publication($key, $binding, 'authorize');
+        if ($keys !== ['authorizationPublication', 'binding', 'kind', 'recipe', 'stockEffect']
+            || ($value['kind'] ?? null) !== 'financial-capture-instruction-v1'
+            || ($value['recipe'] ?? null) !== $this->authority->recipe($key)
+            || PortableDescriptor::encode($value['binding'] ?? []) !== PortableDescriptor::encode($binding->toArray())
+            || ($value['stockEffect'] ?? null) !== 'effect-' . $stock->identity->key()
+            || $authorization === null || ($value['authorizationPublication'] ?? null) !== $authorization['id']) {
+            throw new LogicException('The capture instruction substituted its original financial policy evidence.');
+        }
+        return [
+            'id' => $row->id,
+            ...$value,
+        ];
+    }
+}

@@ -25,6 +25,15 @@ final readonly class FinancialAuthority
         $this->originalRows($actual, $scope, $descriptor);
     }
 
+    public function forwardStates(WorkflowRun $actual, ScopeIdentity $scope, FinancialDescriptor $descriptor): array
+    {
+        $rows = $this->originalRows($actual, $scope, $descriptor);
+        return [
+            'authorize' => $rows['payment.authorize']['forward_status'],
+            'capture' => $rows['payment.capture']['forward_status'],
+        ];
+    }
+
     public function operation(OperationContext $context, string $mode, string $stage): void
     {
         if (! in_array($mode, ['forward', 'compensate'], true) || ! in_array($stage, ['authorize', 'capture'], true)) {

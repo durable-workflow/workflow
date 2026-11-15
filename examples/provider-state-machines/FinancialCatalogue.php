@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DurableWorkflow\Examples\ProviderStateMachines;
 
 use LogicException;
+use Workflow\V2\StateMachine\Definition\ChildSlot;
 use Workflow\V2\StateMachine\Definition\ConditionDefinition;
 use Workflow\V2\StateMachine\Definition\MachineDefinition;
 use Workflow\V2\StateMachine\Definition\MachineState;
@@ -18,6 +19,41 @@ final class FinancialCatalogue
     public const AFTER_STOCK = 'authorization-after-stock';
 
     public const AFTER_DELIVERY = 'authorization-after-delivery';
+
+    public static function selected(string $recipe): bool
+    {
+        return in_array($recipe, [self::AFTER_STOCK, self::AFTER_DELIVERY], true);
+    }
+
+    public static function order(string $recipe): PolicyProfile
+    {
+        self::captureTrigger($recipe);
+        $definition = new MachineDefinition('provider.order', '3', [
+            new MachineState('received', 'Original purchase received; financial prerequisites are unresolved'),
+            new MachineState('ready', 'Original stock and the selected financial prerequisite permit fulfillment'),
+            new MachineState('fulfilled', 'Original recipient delivery and required financial settlement confirmed'),
+            new MachineState('cancelled', 'Original retained obligations verified and business cancellation committed'),
+        ], ['prepare', 'fulfill', 'cancel'], self::all(['model_consistent']), [
+            new ChildSlot('payment', ['received', 'ready', 'fulfilled'], 'provider.payment', '2', 'captured'),
+            new ChildSlot('shipment', ['ready', 'fulfilled'], 'provider.shipment', '2', 'delivered'),
+        ]);
+        return PolicyProfile::forDefinition($definition, $recipe, '1', [
+            new TransitionDefinition('prepare', 'prepare', ['received'], 'ready', 'financial-prepare', '1'),
+            new TransitionDefinition('fulfill', 'fulfill', ['ready'], 'fulfilled', 'financial-fulfill', '1'),
+            new TransitionDefinition('cancel', 'cancel', [
+                'received',
+                'ready',
+                'fulfilled',
+            ], 'cancelled', 'cancel', '1', false),
+        ], [
+            'prepare.target' => self::all(['forward_open', 'prepare_confirmed']),
+            'prepare.permission' => self::all(['forward_open']),
+            'fulfill.target' => self::all(['forward_open', 'fulfillment_confirmed']),
+            'fulfill.permission' => self::all(['forward_open', 'fulfillment_permitted']),
+            'cancel.target' => self::all(['cancellation_requested', 'cancel_confirmed']),
+            'cancel.permission' => self::all(['cancellation_requested']),
+        ]);
+    }
 
     public static function profile(string $recipe): PolicyProfile
     {

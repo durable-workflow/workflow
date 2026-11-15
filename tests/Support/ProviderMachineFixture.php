@@ -57,10 +57,10 @@ trait ProviderMachineFixture
             $schema = require __DIR__ . '/../../examples/' . $example . '/schema.php';
             $schema(DB::connection()->getSchemaBuilder());
         }
-        $this->terms = new OrderTerms('shop-a', 'purchase-1', 'business-generation-1', 1499, 'USD', 'sku-1', 2);
+        $this->terms = $this->orderTerms();
         $this->providerPath = tempnam(sys_get_temp_dir(), 'machine-provider-');
         $this->providerDb = new PDO('sqlite:' . $this->providerPath);
-        $this->provider = new Journal($this->providerDb, $this->terms->client);
+        $this->provider = new Journal($this->providerDb, $this->terms->client, $this->providerClock());
         $this->provider->install();
         $authority = new Authority(DB::connection(), 'provider-worker', [$this->terms->subjectKey()], [
             $this->terms->subjectKey() => $this->recipe(),
@@ -89,6 +89,16 @@ trait ProviderMachineFixture
     protected function recipe(): string
     {
         return Catalogue::RESERVE_FIRST;
+    }
+
+    protected function orderTerms(): OrderTerms
+    {
+        return new OrderTerms('shop-a', 'purchase-1', 'business-generation-1', 1499, 'USD', 'sku-1', 2);
+    }
+
+    protected function providerClock(): ?\Closure
+    {
+        return null;
     }
 
     protected function start(
