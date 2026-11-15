@@ -33,6 +33,8 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\WorkflowStub;
 
+require_once __DIR__ . '/../../../examples/configured-state-machines/providers/bootstrap.php';
+
 final class V2RetainedProviderOperationTest extends TestCase
 {
     private string $providerPath;
