@@ -9,11 +9,15 @@ use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Journal;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\LostAcknowledgement;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Request;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\ShipmentDescriptor;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\ShipmentOperation;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Status;
 use LogicException;
 use PDO;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use Workflow\V2\Compensation\Definition\Obligation;
+use Workflow\V2\Compensation\Definition\ScopeIdentity;
+use Workflow\V2\Compensation\Execution\OperationContext;
 
 require_once __DIR__ . '/../../../../examples/configured-state-machines/providers/bootstrap.php';
 
@@ -30,9 +34,11 @@ final class ProviderShipmentTest extends TestCase
         $this->db = new PDO('sqlite::memory:');
         $this->provider = new Journal($this->db, 'shop-a');
         $this->provider->install();
-        $this->provider->installShipmentSupport();
+        $this->provider->shipments()
+            ->install();
         $this->shipment = $this->descriptor();
-        $this->provider->registerShipment($this->shipment);
+        $this->provider->shipments()
+            ->register($this->shipment);
     }
 
     public function testBookingAndReturnRequestAreNotDeliveryReceiptInspectionOrRestocking(): void
@@ -53,7 +59,8 @@ final class ProviderShipmentTest extends TestCase
     public function testDeliveryRemainsHistoricalAfterAcceptedReturnAndSeparateRestocking(): void
     {
         $this->delivered();
-        $delivery = $this->provider->inspectShipment($this->shipment)
+        $delivery = $this->provider->shipments()
+            ->inspect($this->shipment)
 ->events['delivered'];
         $this->confirm($this->shipment->return);
         $this->fact('received');
@@ -65,7 +72,7 @@ final class ProviderShipmentTest extends TestCase
         $this->confirm($this->shipment->restock);
         $this->provider->attempt($this->shipment->restock);
         $this->assertTrue($this->facts()['original_recipient_delivered']);
-        $this->assertSame($delivery, $this->provider->inspectShipment($this->shipment)->events['delivered']);
+        $this->assertSame($delivery, $this->provider->shipments()->inspect($this->shipment)->events['delivered']);
         $this->assertSame(3, $this->facts()['restocked_quantity']);
         $this->assertSame(
             1,
@@ -162,13 +169,16 @@ final class ProviderShipmentTest extends TestCase
     public function testDuplicatePhysicalFactsResumeWithoutRevisingTheOriginalEvent(): void
     {
         $this->delivered();
-        $old = $this->provider->inspectShipment($this->shipment)
+        $old = $this->provider->shipments()
+            ->inspect($this->shipment)
 ->events['delivered'];
-        $duplicate = $this->provider->recordShipmentFact($this->shipment, 'duplicate-delivery-event', 'delivered', 3);
+        $duplicate = $this->provider->shipments()
+            ->record($this->shipment, 'duplicate-delivery-event', 'delivered', 3);
         $this->assertSame($old, $duplicate);
         $this->assertSame(2, (int) $this->db->query('SELECT COUNT(*) FROM provider_shipment_events')->fetchColumn());
         $this->expectException(LogicException::class);
-        $this->provider->recordShipmentFact($this->shipment, 'event-delivered', 'delivered', 2);
+        $this->provider->shipments()
+            ->record($this->shipment, 'event-delivered', 'delivered', 2);
     }
 
     public function testLostBookingAcknowledgementAndReplacementReaderKeepOneOriginalEffect(): void
@@ -197,14 +207,16 @@ final class ProviderShipmentTest extends TestCase
             $this->assertFalse($this->facts()['return_requested']);
         }
         $this->expectException(LogicException::class);
-        $this->provider->registerShipment($other);
+        $this->provider->shipments()
+            ->register($other);
     }
 
     public function testForeignClientRefusesBeforeCreatingAnyShipmentAdmission(): void
     {
         $foreign = new Journal($this->db, 'other-client');
         try {
-            $foreign->registerShipment($this->descriptor('foreign-return'));
+            $foreign->shipments()
+                ->register($this->descriptor('foreign-return'));
             $this->fail('A different client cannot inspect or register this shipment.');
         } catch (LogicException) {
             $this->assertSame(1, (int) $this->db->query('SELECT COUNT(*) FROM provider_shipments')->fetchColumn());
@@ -231,7 +243,8 @@ final class ProviderShipmentTest extends TestCase
     {
         $this->confirm($this->shipment->booking);
         $this->confirm($this->shipment->cancel);
-        $this->provider->registerShipment(ShipmentDescriptor::fromArray($this->shipment->toArray()));
+        $this->provider->shipments()
+            ->register(ShipmentDescriptor::fromArray($this->shipment->toArray()));
         $this->expectException(LogicException::class);
         $this->fact('handed-over');
     }
@@ -244,9 +257,120 @@ final class ProviderShipmentTest extends TestCase
                 $this->fact($kind, 3, $kind === 'inspected' ? 3 : 0);
                 $this->fail('A later physical milestone cannot invent its predecessor.');
             } catch (LogicException) {
-                $this->assertSame([], $this->provider->inspectShipment($this->shipment)->events);
+                $this->assertSame([], $this->provider->shipments()->inspect($this->shipment)->events);
             }
         }
+    }
+
+    public function testRetainedCancellationBeforeHandoverConfirmsOnlyTheOriginalBookingCancellation(): void
+    {
+        $this->provider->plan($this->shipment->booking, Status::Confirmed);
+        $this->provider->plan($this->shipment->cancel, Status::Confirmed);
+        $operation = $this->operation();
+        $this->assertTrue($operation->execute($this->context())->observed);
+        $this->assertTrue($operation->compensate($this->context())->verified);
+        $this->assertTrue($this->operation()->compensate($this->context())->forwardSettled);
+        $this->assertSame(2, (int) $this->db->query('SELECT COUNT(*) FROM provider_effects')->fetchColumn());
+        $this->assertFalse($this->facts()['return_requested']);
+        $this->assertSame(0, $this->facts()['restocked_quantity']);
+    }
+
+    public function testRetainedDeliveredShipmentWaitsForPhysicalAcceptanceAndConfirmedRestocking(): void
+    {
+        $this->delivered();
+        $this->provider->plan($this->shipment->return, Status::Confirmed);
+        $this->provider->plan($this->shipment->restock, Status::Confirmed);
+        $operation = $this->operation();
+        $this->assertFalse($operation->compensate($this->context())->verified);
+        $this->fact('received');
+        $this->assertFalse($operation->compensate($this->context())->verified);
+        $this->fact('inspected', 3, 3, 3);
+        $result = $this->operation()
+            ->compensate($this->context());
+        $this->assertTrue($result->verified);
+        $this->assertTrue($result->forwardSettled);
+        $this->assertContains('original-receipt:event-received', $result->evidence);
+        $this->assertContains('original-inspection:event-inspected', $result->evidence);
+        $this->assertTrue($this->facts()['original_recipient_delivered']);
+        $this->assertSame(3, $this->facts()['restocked_quantity']);
+        $this->assertSame(Status::Unknown, $this->provider->lookup($this->shipment->cancel)->status);
+    }
+
+    public function testLostRestockAcknowledgementKeepsOneEffectOnRetainedRecovery(): void
+    {
+        $this->delivered();
+        $this->provider->plan($this->shipment->return, Status::Confirmed);
+        $this->assertFalse($this->operation()->compensate($this->context())->verified);
+        $this->fact('received');
+        $this->fact('inspected', 3, 3, 3);
+        $this->provider->plan($this->shipment->restock, Status::Confirmed, true);
+        try {
+            $this->operation()
+                ->compensate($this->context());
+            $this->fail('An unacknowledged restock must not be reported as settled.');
+        } catch (LostAcknowledgement) {
+            $this->assertSame(3, (int) $this->db->query('SELECT COUNT(*) FROM provider_effects')->fetchColumn());
+        }
+        $this->assertTrue($this->operation()->compensate($this->context())->verified);
+        $this->assertSame(3, (int) $this->db->query('SELECT COUNT(*) FROM provider_effects')->fetchColumn());
+    }
+
+    public function testUnknownBookingCannotSettleUntilItsOriginalLateOutcomeConfirms(): void
+    {
+        $this->provider->plan($this->shipment->booking, Status::Unknown);
+        $this->assertFalse($this->operation()->execute($this->context())->observed);
+        $result = $this->operation()
+            ->compensate($this->context());
+        $this->assertFalse($result->verified);
+        $this->assertFalse($result->forwardSettled);
+        $this->assertSame(0, (int) $this->db->query('SELECT COUNT(*) FROM provider_effects')->fetchColumn());
+        $this->provider->resolve($this->shipment->booking, Status::Confirmed);
+        $this->provider->plan($this->shipment->cancel, Status::Confirmed);
+        $this->assertTrue($this->operation()->compensate($this->context())->verified);
+    }
+
+    public function testARevokedHostGrantRefusesBeforeAnyProviderCommandOrInspection(): void
+    {
+        $operation = new ShipmentOperation($this->provider, static function (): void {
+            throw new LogicException('Original shipment grant revoked.');
+        });
+        foreach (['execute', 'compensate'] as $method) {
+            try {
+                $operation->{$method}($this->context());
+                $this->fail('Revoked host authority cannot access the provider.');
+            } catch (LogicException $error) {
+                $this->assertSame('Original shipment grant revoked.', $error->getMessage());
+            }
+        }
+        $this->assertSame(0, (int) $this->db->query('SELECT COUNT(*) FROM provider_operations')->fetchColumn());
+        $this->assertSame(0, (int) $this->db->query('SELECT COUNT(*) FROM provider_requests')->fetchColumn());
+    }
+
+    private function operation(): ShipmentOperation
+    {
+        $original = $this->context();
+        return new ShipmentOperation($this->provider, static function (OperationContext $actual, string $mode) use (
+            $original
+        ): void {
+            if ($actual->scope->toArray() !== $original->scope->toArray() || $actual->originalRunId !== $original->originalRunId
+                || $actual->operationId !== $original->operationId || $actual->obligation->toArray() !== $original->obligation->toArray()
+                || ! in_array($mode, ['forward', 'compensate'], true)) {
+                throw new LogicException('The original shipment scope, native owner or descriptor changed.');
+            }
+        });
+    }
+
+    private function context(): OperationContext
+    {
+        return new OperationContext(
+            new ScopeIdentity('shop-a', 'provider-example', 'purchase-1.shipment', 'g1'),
+            new Obligation('shipment.fulfillment', 'example.physical-shipment', '1', $this->shipment->toArray()),
+            'original-shipment-operation',
+            'original-native-shipment',
+            'original-recorded-activity',
+            'attempt-1',
+            false
+        );
     }
 
     private function descriptor(string $returnId = 'return'): ShipmentDescriptor
@@ -280,7 +404,8 @@ final class ProviderShipmentTest extends TestCase
 
     private function fact(string $kind, int $quantity = 3, int $accepted = 0, int $saleable = 0): void
     {
-        $this->provider->recordShipmentFact($this->shipment, 'event-' . $kind, $kind, $quantity, $accepted, $saleable);
+        $this->provider->shipments()
+            ->record($this->shipment, 'event-' . $kind, $kind, $quantity, $accepted, $saleable);
     }
 
     private function delivered(): void
@@ -292,7 +417,8 @@ final class ProviderShipmentTest extends TestCase
 
     private function facts(): array
     {
-        return $this->provider->inspectShipment($this->shipment)
+        return $this->provider->shipments()
+            ->inspect($this->shipment)
             ->toArray()['facts'];
     }
 }

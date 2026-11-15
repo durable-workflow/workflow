@@ -162,6 +162,32 @@ final readonly class ShipmentLedger
         return $events;
     }
 
+    public function observe(Request $request): Observation
+    {
+        $row = $this->query('SELECT * FROM provider_operations WHERE id = ?', [$request->identity->key()])->fetch(
+            PDO::FETCH_ASSOC
+        );
+        if ($row !== false && ($row['fingerprint'] !== $request->fingerprint()
+            || ! hash_equals($row['fingerprint'], hash('sha256', $row['request'])))) {
+            throw new LogicException('The original physical command content was substituted.');
+        }
+        if ($row !== false && $row['status'] === Status::Confirmed->value) {
+            $this->assertCompletion($request);
+        }
+        $effect = $this->query(
+            'SELECT effect_id FROM provider_effects WHERE operation_id = ?',
+            [$request->identity->key()]
+        )->fetchColumn();
+        if ($effect !== false && $effect !== 'effect-' . $request->identity->key()) {
+            throw new LogicException('The physical evidence belongs to another original operation.');
+        }
+        return new Observation(
+            $row === false ? Status::Unknown : Status::from($row['status']),
+            $effect === false ? null : $effect,
+            $row !== false && (bool) $row['closed']
+        );
+    }
+
     private function recordAdmission(Request $request): void
     {
         $this->query(
