@@ -2,9 +2,9 @@
 
 Work in progress for [#1069](https://github.com/durable-workflow/workflow/issues/1069).
 The recorded SQL host, workflow composition and initial native tests are
-implemented. Ordinary and lost-acknowledgement pre-handover cancellation cases
-pass. Broader recovery tests exposed a failed-child-recovery routing gap; its
-correction and complete source/backend qualification are in progress. This
+implemented. The failed-child-recovery routing correction has focused source
+proof. Complete backend qualification exposed a test-clock scheduling failure;
+its correction and the complete backend cycle remain in progress. This
 directory remains experimental source, not an installed-package guide.
 Published Workflow 2.28.1 does not contain these retained-scope or StateMachine APIs.
 
@@ -78,6 +78,16 @@ finalizer. That workflow owns no provider effect or new compensation scope and
 cannot take over original forward work. Original Order and child histories and
 provider operation keys remain unchanged.
 
+Child recovery executes independently of its parent's compensation activity.
+If the child's ledger is still unresolved when that activity exhausts its
+finite attempts, the original native run can fail before the child finishes.
+The parent scope stays requested and earlier compensation remains blocked.
+After inspecting the child's verified ledger or a confirmed late provider
+result, submit a fresh authorized cancellation request key to resume the
+original retained scope. Reusing the failed request key does not select a new
+recovery route. The finalizer still requires the original parent scope to be
+verified; a completed child recovery alone cannot settle the Order.
+
 If the native root closes before genuine recorded owner registration, a missing
 scope stays unresolved. A host lookup, cancellation flag or terminal technical
 status never manufactures an empty scope or proves non-execution.
@@ -86,7 +96,11 @@ The source fixture is `tests/Feature/V2/V2ProviderStateMachineExampleTest.php`.
 Run it through the repository's documented `composer feature` command in a
 disposable source test environment. The provider's committed-effect journal
 proves ordering and duplicate-effect counts independently of DW history; replay
-must perform no provider I/O. These are synthetic source tests, not elapsed-time,
+must perform no provider I/O. The fixture controls native time explicitly so
+database latency does not change the ordinary-ordering scenarios. A separate
+case deliberately leaves child recovery queued until the parent's finite
+attempts expire, then verifies blocked earlier work and fresh retained recovery.
+These are synthetic source tests, not elapsed-time,
 installed-package, real financial or physical-inventory qualification.
 
 This first full-refund, pre-handover policy does not implement the remaining

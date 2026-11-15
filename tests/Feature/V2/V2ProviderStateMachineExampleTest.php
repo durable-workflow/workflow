@@ -52,11 +52,15 @@ final class V2ProviderStateMachineExampleTest extends TestCase
 
     private ?Journal $provider = null;
 
+    private array $taskTrace = [];
+
     protected function setUp(): void
     {
         parent::setUp();
         self::stopWorkers();
         Queue::fake();
+        // drain() advances native time explicitly; SQL latency must not also advance that test clock.
+        Carbon::setTestNow('2026-01-01T00:00:00Z');
         config([
             'workflows.v2.namespaces' => [Catalogue::NAMESPACE],
             'workflows.v2.task_dispatch_mode' => 'queue',
@@ -202,6 +206,40 @@ final class V2ProviderStateMachineExampleTest extends TestCase
         }
     }
 
+    public function testDelayedChildRecoveryCannotAdvanceItsParentAndAFreshRequestUsesTheVerifiedLedger(): void
+    {
+        $stub = $this->start();
+        $key = $this->terms->subjectKey();
+        $plan = $this->store->authority->plan($key);
+        $cancellation = app(CancellationStore::class);
+        $cancellation->request($key, $stub->runId(), 'booking-worker-delayed');
+        // Deliberately leave this child's work queued while the original parent's finite attempts run.
+        $this->drain($plan->childScope('shipment')->recoveryInstanceId());
+        $this->assertSame(RunStatus::Failed, WorkflowRun::query()->findOrFail($stub->runId())->status);
+        $this->assertSame('requested', (new ScopeRepository())->metadata($plan->rootScope())['status']);
+        $this->assertSame(['reserve', 'capture', 'book'], $this->effects());
+        $this->assertSame('booked', $this->store->authority->subject($key, 'order')->state);
+        $this->assertSame('pending', $cancellation->finish($key, $stub->runId(), 'booking-worker-delayed')['status']);
+        $history = $this->history($stub->runId());
+
+        $this->drain();
+        $this->assertSame('verified', (new ScopeRepository())->metadata($plan->childScope('shipment'))['status']);
+        $this->assertSame('requested', (new ScopeRepository())->metadata($plan->rootScope())['status']);
+        $this->assertSame(['reserve', 'capture', 'book', 'cancel-booking'], $this->effects());
+        $cancellation->request($key, $stub->runId(), 'booking-now-confirmed');
+        $this->drain();
+        $this->assertSame(
+            'verified',
+            (new ScopeRepository())->metadata($plan->rootScope())['status'],
+            $this->progress()
+        );
+        $this->assertSame(['reserve', 'capture', 'book', 'cancel-booking', 'refund', 'release'], $this->effects());
+        $this->assertSame($history, $this->history($stub->runId()));
+        $this->assertSame('started', $cancellation->finish($key, $stub->runId(), 'booking-now-confirmed')['status']);
+        $this->drain();
+        $this->assertSame('cancelled', $this->store->authority->subject($key, 'order')->state, $this->progress());
+    }
+
     public function testProcessingRefundBlocksOriginalReleaseUntilAConfirmedLateResultAndFreshRecovery(): void
     {
         $stub = $this->start(refund: Status::Processing);
@@ -215,11 +253,13 @@ final class V2ProviderStateMachineExampleTest extends TestCase
         $this->assertSame('booked', $this->store->authority->subject($key, 'order')->state);
         $this->assertSame('pending', $cancellation->finish($key, $stub->runId(), 'processing-refund')['status']);
         $history = $this->history($stub->runId());
-        $failedChild = WorkflowRun::query()->where(
+        $failedChildren = WorkflowRun::query()->where(
             'workflow_instance_id',
             $plan->childScope('payment')
                 ->recoveryInstanceId()
-        )->sole();
+        )->get();
+        $this->assertCount(1, $failedChildren, $this->progress());
+        $failedChild = $failedChildren->sole();
         $this->assertSame(RunStatus::Failed, $failedChild->status);
         $failedChildHistory = $this->history($failedChild->id);
         $this->provider->resolve(
@@ -340,21 +380,55 @@ final class V2ProviderStateMachineExampleTest extends TestCase
             )->get()
                 ->toArray(),
             'scopes' => DB::table('workflow_compensation_scopes')->get(['id', 'original_run_id', 'status'])->all(),
+            'obligations' => DB::table('workflow_compensation_obligations')->orderBy('scope_id')->orderBy('position')
+                ->limit(32)
+                ->get(['scope_id', 'id', 'forward_status', 'compensation_status', 'evidence'])->map(
+                    static function (object $row): array {
+                        $evidence = json_decode($row->evidence ?? '{}', true, flags: JSON_THROW_ON_ERROR);
+                        return [
+                            'scope' => $row->scope_id,
+                            'id' => $row->id,
+                            'forward' => $row->forward_status,
+                            'compensation' => $row->compensation_status,
+                            'reason' => $evidence['reason'] ?? null,
+                        ];
+                    }
+                )->all(),
+            'activities' => DB::table('activity_executions')->orderByDesc('created_at')->limit(32)
+                ->get(['id', 'workflow_run_id', 'activity_class', 'status', 'attempt_count', 'started_at', 'closed_at'])
+                ->all(),
+            'taskTrace' => $this->taskTrace,
         ], JSON_THROW_ON_ERROR);
     }
 
-    private function drain(): void
+    private function drain(?string $pausedInstance = null): void
     {
         for ($i = 0; $i < 800; ++$i) {
-            $task = WorkflowTask::query()->whereRelation('run', 'namespace', Catalogue::NAMESPACE)
-                ->where('status', TaskStatus::Ready)->orderBy('available_at')->orderBy('created_at')->orderBy(
-                    'id'
-                )->first();
+            $tasks = WorkflowTask::query()->whereRelation('run', 'namespace', Catalogue::NAMESPACE)
+                ->where('status', TaskStatus::Ready);
+            if ($pausedInstance !== null) {
+                $tasks->whereRelation('run', 'workflow_instance_id', '<>', $pausedInstance);
+            }
+            $task = $tasks->orderBy('available_at')
+                ->orderBy('created_at')
+                ->orderBy('id')
+                ->first();
             if ($task === null) {
                 return;
             }
             if ($task->available_at !== null && $task->available_at->isFuture()) {
                 Carbon::setTestNow($task->available_at->copy()->addSecond());
+            }
+            $this->taskTrace[] = [
+                'id' => $task->id,
+                'run' => $task->workflow_run_id,
+                'type' => $task->task_type->value,
+                'available' => $task->available_at?->toISOString(),
+                'clock' => now()
+                    ->toISOString(),
+            ];
+            if (count($this->taskTrace) > 64) {
+                array_shift($this->taskTrace);
             }
             $job = match ($task->task_type) {
                 TaskType::Workflow => new RunWorkflowTask($task->id),
