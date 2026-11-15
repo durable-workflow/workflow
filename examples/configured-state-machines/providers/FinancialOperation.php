@@ -56,9 +56,11 @@ final readonly class FinancialOperation implements ScopedOperation
     {
         $requests = $this->requests($context->obligation->input);
         ($this->authorize)($context, 'compensate');
-        if ($this->stage === 'capture') {
-            return $this->settleCapture($requests);
-        }
+        return $this->stage === 'capture' ? $this->settleCapture($requests) : $this->settleAuthorization($requests);
+    }
+
+    private function settleAuthorization(array $requests): Resolution
+    {
         // Also fence the exact future capture when permission was granted but the trigger never arrived.
         $authorization = $this->provider->closeAdmission($requests['authorize']);
         $capture = $this->provider->closeAdmission($requests['capture']);
@@ -71,6 +73,11 @@ final readonly class FinancialOperation implements ScopedOperation
         if (! $this->absent($capture)) {
             return Resolution::unknown('financial-capture-' . $capture->status->value);
         }
+        return $this->settleUnusedAuthorization($requests, $authorization);
+    }
+
+    private function settleUnusedAuthorization(array $requests, Observation $authorization): Resolution
+    {
         if ($this->absent($authorization)) {
             return Resolution::verified([
                 'provider-fenced:' . $requests['authorize']->identity->key(),
