@@ -13,6 +13,8 @@ use Workflow\V2\Compensation\DurableScope;
 use Workflow\V2\StateMachine\Execution\ActivityTransitionRuntime;
 use Workflow\V2\StateMachine\Execution\TransitionResult;
 use Workflow\V2\StateMachine\Execution\TransitionStatus;
+use Workflow\V2\StateMachine\Transition\FactSnapshot;
+use Workflow\V2\StateMachine\Transition\SnapshotPhase;
 use Workflow\V2\StateMachine\Transition\TransitionStep;
 use Workflow\V2\StateMachine\TransitionRunner;
 use Workflow\V2\Workflow;
@@ -79,6 +81,10 @@ final readonly class Machine
         $role = $this->initialization['role'];
         $confirmed = $result->status === TransitionStatus::Committed;
         $outcome = $role === 'payment' ? 'captured' : 'booked';
+        if ($role === 'shipment' && FinancialCatalogue::selected($this->initialization['recipe'] ?? '')
+            && $result->execution->sourceState === 'in-transit') {
+            $outcome = 'delivered';
+        }
         return [
             'originalRunId' => $this->workflow->runId(),
             'businessOutcome' => $confirmed ? $outcome : 'unsettled',
@@ -89,5 +95,24 @@ final readonly class Machine
             ) : null,
             'transition' => $result->toArray(),
         ];
+    }
+
+    public function observe(string $key): FactSnapshot
+    {
+        $recipe = $this->initialization['recipe'] ?? Catalogue::RESERVE_FIRST;
+        $profile = Catalogue::profile($this->initialization['role'], $recipe);
+        $execution = Authority::reference(Workflow::activity(BoundaryActivity::class, 'execution', [
+            'key' => $key,
+        ]));
+        return (new ActivityTransitionRuntime(
+            SnapshotActivity::class,
+            AdmissionActivity::class,
+            CommitActivity::class,
+            $profile->definition
+        ))->snapshot(
+            $execution,
+            Catalogue::transition($this->initialization['role'], $key, $recipe),
+            SnapshotPhase::Before
+        );
     }
 }

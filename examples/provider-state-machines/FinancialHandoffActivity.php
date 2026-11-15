@@ -17,7 +17,7 @@ final class FinancialHandoffActivity extends Activity
         sort($keys);
         $expected = match ($operation) {
             'milestone' => ['binding', 'stage'], 'notify' => ['stage'], 'request-capture' => ['binding'],
-            'read-capture', 'expire', 'stock', 'refuse-stock' => [],
+            'read-capture', 'expire', 'stock', 'refuse-stock', 'binding' => [],
             default => throw new LogicException('The financial handoff operation is unavailable.'),
         };
         if ($keys !== $expected) {
@@ -32,6 +32,7 @@ final class FinancialHandoffActivity extends Activity
             'expire' => $store->expire($this->run),
             'stock' => $store->stock($this->run),
             'refuse-stock' => $store->refuseStock($this->run),
+            'binding' => $store->binding($this->run),
         };
     }
 }

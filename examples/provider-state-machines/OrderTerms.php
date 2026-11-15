@@ -7,6 +7,7 @@ namespace DurableWorkflow\Examples\ProviderStateMachines;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\AuthorizationTerms;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Identity;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Request;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\ShipmentDescriptor;
 use InvalidArgumentException;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 
@@ -22,6 +23,7 @@ final readonly class OrderTerms
         public string $sku,
         public int $quantity,
         public ?AuthorizationTerms $authorization = null,
+        public ?int $fulfillmentDeadline = null,
     ) {
         foreach (['client', 'subject', 'generation', 'sku'] as $key) {
             PortableDescriptor::identifier($this->{$key}, $key);
@@ -37,11 +39,17 @@ final readonly class OrderTerms
                 'The authorization must preserve the original order amount and currency.'
             );
         }
+        if ($fulfillmentDeadline !== null && $fulfillmentDeadline <= 0) {
+            throw new InvalidArgumentException('The original fulfillment deadline must be a positive Unix timestamp.');
+        }
     }
 
     public function toArray(): array
     {
         $value = get_object_vars($this);
+        if ($this->fulfillmentDeadline === null) {
+            unset($value['fulfillmentDeadline']);
+        }
         if ($this->authorization === null) {
             unset($value['authorization']);
         } else {
@@ -60,6 +68,13 @@ final readonly class OrderTerms
         $keys = array_keys($value);
         sort($keys);
         $expected = ['amountMinor', 'client', 'currency', 'generation', 'quantity', 'sku', 'subject'];
+        if (array_key_exists('fulfillmentDeadline', $value)) {
+            if (! is_int($value['fulfillmentDeadline'])) {
+                throw new InvalidArgumentException('The original fulfillment deadline must be an integer.');
+            }
+            $expected[] = 'fulfillmentDeadline';
+            sort($expected);
+        }
         if (array_key_exists('authorization', $value)) {
             if (! is_array($value['authorization'])) {
                 throw new InvalidArgumentException('The original authorization must contain its immutable terms.');
@@ -154,5 +169,29 @@ final readonly class OrderTerms
                 $capture
             ))->toArray(),
         ];
+    }
+
+    public function physicalDescriptor(): array
+    {
+        $identity = fn (string $action): Identity => new Identity(
+            $this->client,
+            $this->subject,
+            $this->generation,
+            'shipment.full.' . $action
+        );
+        $terms = [
+            'sku' => $this->sku,
+            'quantity' => $this->quantity,
+            'carrier' => 'synthetic-carrier',
+        ];
+        $booking = $identity('book');
+        $return = $identity('return');
+        return (new ShipmentDescriptor(
+            new Request($booking, 'ship-book', $terms),
+            new Request($identity('cancel'), 'ship-cancel-booking', $terms, $booking),
+            new Request($return, 'request-return', $terms, $booking),
+            new Request($identity('restock'), 'restock', $terms, $return),
+            new Request($identity('deduct'), 'deduct-stock', $terms, $booking)
+        ))->toArray();
     }
 }

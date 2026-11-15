@@ -18,7 +18,11 @@ final readonly class ShipmentLedger
 
     public static function handles(Request $request): bool
     {
-        return in_array($request->action, ['ship-book', 'ship-cancel-booking', 'request-return', 'restock'], true);
+        return in_array(
+            $request->action,
+            ['ship-book', 'ship-cancel-booking', 'request-return', 'restock', 'deduct-stock'],
+            true
+        );
     }
 
     public function install(): void
@@ -238,8 +242,9 @@ final readonly class ShipmentLedger
         return match ($request->action) {
             'ship-cancel-booking' => ! isset($events['handed-over']),
             'request-return' => isset($events['handed-over']) && ! isset($events['lost']),
-            'restock' => $this->confirmedTarget($request) && isset($events['inspected'])
-                && $events['inspected']['saleable'] === $booking->terms['quantity'],
+            'deduct-stock' => isset($events['handed-over']) && ! isset($events['received']),
+            'restock' => $this->confirmed($this->originalTarget($request)) && isset($events['inspected'])
+                && $events['inspected']['saleable'] === $booking->terms['quantity'] && $this->deducted($booking),
             default => false,
         };
     }
@@ -261,6 +266,13 @@ final readonly class ShipmentLedger
         return $target;
     }
 
+    private function deducted(Request $booking): bool
+    {
+        $root = $this->root($booking);
+        $descriptor = ShipmentDescriptor::fromArray(json_decode($root['descriptor'], true, flags: JSON_THROW_ON_ERROR));
+        return $descriptor->deduction === null || $this->confirmed($descriptor->deduction);
+    }
+
     private function originalTarget(Request $request): Request
     {
         $row = $this->query('SELECT * FROM provider_operations WHERE id = ?', [$request->target?->key()])->fetch(
@@ -274,11 +286,6 @@ final readonly class ShipmentLedger
             throw new LogicException('The physical predecessor identity was substituted.');
         }
         return $target;
-    }
-
-    private function confirmedTarget(Request $request): bool
-    {
-        return $this->confirmed($this->originalTarget($request));
     }
 
     private function confirmed(Request $request): bool

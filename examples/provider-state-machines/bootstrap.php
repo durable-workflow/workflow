@@ -8,6 +8,7 @@ require_once __DIR__ . '/../business-state-machines/SqlBusinessStore.php';
 require_once __DIR__ . '/../business-state-machines/BusinessCancellationRequested.php';
 require_once __DIR__ . '/Catalogue.php';
 require_once __DIR__ . '/FinancialCatalogue.php';
+require_once __DIR__ . '/PhysicalCatalogue.php';
 require_once __DIR__ . '/OrderTerms.php';
 require_once __DIR__ . '/BindingPlan.php';
 foreach ([
@@ -17,6 +18,7 @@ foreach ([
     'BoundaryActivity', 'SnapshotActivity', 'AdmissionActivity', 'CommitActivity',
     'RetainedStep', 'Machine', 'Order', 'CheckoutOrder', 'Payment', 'Booking', 'Cancellation',
     'AuthorizedPayment', 'AuthorizationCheckout',
+    'ShipmentAuthority', 'ShipmentBoundaryStore', 'ShipmentBoundaryActivity', 'ShipmentStep', 'FullShipment', 'FulfillmentStep',
 ] as $class) {
     require_once __DIR__ . '/' . $class . '.php';
 }

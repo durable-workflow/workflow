@@ -52,10 +52,13 @@ final readonly class ShipmentOperation implements ScopedOperation
     {
         $descriptor = ShipmentDescriptor::fromArray($context->obligation->input);
         ($this->authorize)($context, 'compensate');
+        $deduction = $descriptor->deduction === null ? null : $this->provider->closeAdmission($descriptor->deduction);
         $booking = $this->provider->closeAdmission($descriptor->booking);
         if ($booking->admissionClosed && $booking->effectId === null
             && in_array($booking->status, [Status::NotExecuted, Status::Refused], true)) {
-            return Resolution::verified(['provider-fenced:' . $descriptor->booking->identity->key()], true);
+            return $deduction === null || $this->absent($deduction)
+                ? Resolution::verified(['provider-fenced:' . $descriptor->booking->identity->key()], true)
+                : Resolution::unknown('shipment-inventory-without-booking');
         }
         if ($booking->status !== Status::Confirmed || $booking->effectId === null) {
             return Resolution::unknown('shipment-booking-' . $booking->status->value);
@@ -68,11 +71,14 @@ final readonly class ShipmentOperation implements ScopedOperation
             return $this->settled($cancel) ? Resolution::verified([$booking->effectId, $cancel->effectId], true)
                 : Resolution::unknown('shipment-cancellation-' . $cancel->status->value);
         }
-        return $this->settleReturn($descriptor, $booking);
+        return $this->settleReturn($descriptor, $booking, $deduction);
     }
 
-    private function settleReturn(ShipmentDescriptor $descriptor, Observation $booking): Resolution
-    {
+    private function settleReturn(
+        ShipmentDescriptor $descriptor,
+        Observation $booking,
+        ?Observation $deduction
+    ): Resolution {
         $return = $this->provider->attempt($descriptor->return);
         if (! $this->settled($return)) {
             return Resolution::unknown('shipment-return-' . $return->status->value);
@@ -85,17 +91,36 @@ final readonly class ShipmentOperation implements ScopedOperation
             // Partial, damaged, lost or unreceived goods need their own explicit settlement policy.
             return Resolution::unknown('shipment-physical-return-unsettled');
         }
+        if ($deduction !== null && $this->absent($deduction)) {
+            return Resolution::verified([$booking->effectId, $return->effectId,
+                'provider-fenced:' . $descriptor->deduction->identity->key(),
+                'original-receipt:' . $snapshot['events']['received']['id'],
+                'original-inspection:' . $snapshot['events']['inspected']['id']], true);
+        }
+        if ($deduction !== null && ! $this->settled($deduction)) {
+            return Resolution::unknown('shipment-deduction-evidence-unsettled');
+        }
         $restock = $this->provider->attempt($descriptor->restock);
         if (! $this->settled($restock)) {
             return Resolution::unknown('shipment-restock-' . $restock->status->value);
         }
         $events = $snapshot['events'];
-        return Resolution::verified([$booking->effectId, $return->effectId, $restock->effectId,
-            'original-receipt:' . $events['received']['id'], 'original-inspection:' . $events['inspected']['id']], true);
+        $evidence = [$booking->effectId, $return->effectId, $restock->effectId,
+            'original-receipt:' . $events['received']['id'], 'original-inspection:' . $events['inspected']['id']];
+        if ($deduction !== null) {
+            $evidence[] = $deduction->effectId;
+        }
+        return Resolution::verified($evidence, true);
     }
 
     private function settled(Observation $value): bool
     {
         return $value->status === Status::Confirmed && $value->effectId !== null;
+    }
+
+    private function absent(Observation $value): bool
+    {
+        return $value->admissionClosed && $value->effectId === null
+            && in_array($value->status, [Status::NotExecuted, Status::Refused], true);
     }
 }

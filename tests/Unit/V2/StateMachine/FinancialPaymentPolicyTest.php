@@ -74,6 +74,40 @@ final class FinancialPaymentPolicyTest extends TestCase
         $legacy->financialDescriptor();
     }
 
+    public function testPhysicalDeadlineAndStockMovementRetainTheirOriginalTermsAcrossSerialization(): void
+    {
+        $terms = new OrderTerms(
+            'shop-a',
+            'purchase-1',
+            'g1',
+            1499,
+            'USD',
+            'sku-1',
+            2,
+            new AuthorizationTerms(1499, 'USD', 1001),
+            2001
+        );
+        $copy = OrderTerms::fromArray($terms->toArray());
+        $this->assertSame(2001, $copy->fulfillmentDeadline);
+        $this->assertSame($terms->physicalDescriptor(), $copy->physicalDescriptor());
+        $graph = array_map(Request::fromArray(...), $copy->physicalDescriptor());
+        $this->assertCount(5, $graph);
+        $this->assertSame('deduct-stock', $graph['deduction']->action);
+        $this->assertSame($graph['booking']->identity->toArray(), $graph['deduction']->target->toArray());
+        $this->assertSame($graph['booking']->terms, $graph['deduction']->terms);
+        $this->assertNotSame($graph['deduction']->identity->key(), $graph['restock']->identity->key());
+        $this->assertSame('book', $copy->descriptor('shipment')['forward']['action']);
+    }
+
+    public function testExplicitNullCannotBecomeAnotherRepresentationOfAnAbsentPhysicalDeadline(): void
+    {
+        $value = $this->terms()
+            ->toArray();
+        $value['fulfillmentDeadline'] = null;
+        $this->expectException(InvalidArgumentException::class);
+        OrderTerms::fromArray($value);
+    }
+
     public static function otherMoney(): array
     {
         return [[1500, 'USD'], [1499, 'EUR']];

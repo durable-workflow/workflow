@@ -11,11 +11,12 @@ use Workflow\V2\Exceptions\WorkflowCancellationRequestedException;
 use Workflow\V2\StateMachine\Execution\TransitionStatus;
 use Workflow\V2\Workflow;
 
-/** Financial preparation only so far. Ready does not assert recipient delivery or full fulfillment. */
+/** Common authorization Order route. Ready is a prerequisite milestone, never recipient delivery. */
 #[Type('example.provider.order.authorized.v1')]
 #[Signal('financial-milestone')]
 #[Signal('reconcile-stock')]
-#[Signal('finish')]
+#[Signal('fulfill')]
+#[Signal('physical-milestone')]
 final class AuthorizationCheckout extends Workflow
 {
     public function handle(string $key): array
@@ -32,10 +33,17 @@ final class AuthorizationCheckout extends Workflow
                     'transition' => $prepared->toArray(),
                 ];
             }
-            self::await('finish');
+            $deadline = $machine->initialization['fulfillmentDeadline'] ?? null;
+            self::await('fulfill', $deadline === null ? null : max(0, $deadline - self::now()->getTimestamp()));
+            if ($deadline !== null && self::now()->getTimestamp() >= $deadline) {
+                self::activity(ShipmentBoundaryActivity::class, 'expire');
+                throw new BusinessCancellationRequested('The original fulfillment request deadline expired.');
+            }
+            $fulfilled = $machine->transition('fulfill', new FulfillmentStep($machine));
             return [
-                'businessOutcome' => 'ready',
+                'businessOutcome' => $fulfilled->status === TransitionStatus::Committed ? 'fulfilled' : 'unsettled',
                 'originalRunId' => $this->runId(),
+                'transition' => $fulfilled->toArray(),
             ];
         } catch (WorkflowCancellationRequestedException|BusinessCancellationRequested $error) {
             self::cancellationShield(fn () => $this->compensate());

@@ -33,6 +33,10 @@ final readonly class ShipmentSnapshot
             'events' => $this->events,
             'facts' => [
                 'booking_confirmed' => $this->confirmed('booking'),
+                'inventory_accounted' => $this->descriptor->deduction !== null,
+                'deducted_quantity' => $this->descriptor->deduction !== null && $this->confirmed(
+                    'deduction'
+                ) ? $original : 0,
                 'original_carrier_handover' => isset($this->events['handed-over']),
                 'original_recipient_delivered' => isset($this->events['delivered']),
                 'return_requested' => $this->confirmed('return'),

@@ -8,6 +8,7 @@ use DurableWorkflow\Examples\BusinessStateMachines\SqlBusinessStore;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Journal;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Request;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Status;
+use Illuminate\Support\Carbon;
 use LogicException;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 use Workflow\V2\Compensation\Persistence\ScopeRepository;
@@ -276,6 +277,24 @@ final readonly class AssessmentStore
         if (FinancialCatalogue::selected($plan->recipe) && $actor->role === 'payment') {
             return $this->financialFacts($actual, $activityId, $actor, $plan, $values, $evidence, $id);
         }
+        if (FinancialCatalogue::selected($plan->recipe) && $actor->role === 'shipment') {
+            $physical = app(ShipmentBoundaryStore::class)->facts($actual);
+            foreach ($physical['values'] as $key => $value) {
+                $values[$key] = $value;
+                $evidence[$key] = 'original-physical-assessment:' . $id;
+            }
+            $values['physical_observations'] = $physical['snapshot'];
+            $evidence['physical_observations'] = 'original-physical-assessment:' . $id;
+            return new RecordedFacts($id, $values, $evidence);
+        }
+        if (FinancialCatalogue::selected($plan->recipe) && $actor->role === 'order' && $transitionKey === 'fulfill') {
+            [, $terms] = $this->authority->assignment($actor->root_key);
+            $values['fulfillment_permitted'] = $terms->fulfillmentDeadline !== null
+                && Carbon::now()->getTimestamp() < $terms->fulfillmentDeadline;
+            $values['fulfillment_confirmed'] = app(ShipmentBoundaryStore::class)->fulfilled($actual);
+            $evidence['fulfillment_permitted'] = $evidence['fulfillment_confirmed'] = 'original-fulfillment:' . $id;
+            return new RecordedFacts($id, $values, $evidence);
+        }
         if ($actor->role === 'order' && $transitionKey === 'prepare') {
             return $this->preparationFacts($actual, $actor, $row, $plan, $values, $evidence, $id);
         }
@@ -433,6 +452,9 @@ final readonly class AssessmentStore
     {
         $execution = Authority::reference($request['execution'] ?? []);
         [$actor, $row, $plan] = $this->authority->actor($actual, $execution);
+        if ($actor->role === 'shipment' && FinancialCatalogue::selected($plan->recipe)) {
+            app(ShipmentBoundaryStore::class)->authorize($actual);
+        }
         $keys = $protected ? [
             'execution',
             'transition',

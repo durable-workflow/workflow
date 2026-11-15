@@ -9,36 +9,47 @@ source increment. This directory remains experimental
 source, not an installed-package guide.
 Published Workflow 2.28.1 does not contain these retained-scope or StateMachine APIs.
 
-The authorization/capture source work adds immutable optional authorization
-terms, a common Payment definition with separate stock and recipient-delivery
-trigger profiles, and a recorded financial inspection boundary. The new
-`AuthorizationCheckout` preparation path selects `authorization-after-stock`.
-It starts the original `AuthorizedPayment`, observes its protected authorization
-publication while the child remains open, confirms the original native stock
-reservation, and records a protected capture instruction for that same child.
-Signal payloads request an authenticated reread; they provide no financial or
-stock authority. Notification retries use a stable original publication or
-instruction key. The original expiry bounds lost-notification waits and is
-checked again before stock dispatch.
+The authorization recipes use one Order route (`received -> ready -> fulfilled`),
+one Payment route (`received -> authorized -> captured`) and one full Shipment
+route (`received -> booked -> in-transit -> delivered`). They are experimental
+source and require complete qualification before publication. The original
+immediate-capture profiles and booking-only child remain available.
 
-A processing reservation waits for a recorded inspection of the original
-provider operation. A `reconcile-stock` signal only wakes that inspection;
-it cannot authorize capture or dispatch another reservation. Definitive refusal
-closes the original reservation admission and cancels through the retained
-owners, voiding unused permission. Capture instructions also recheck the
-original authorization expiry under the Order's protected row lock. After
-capture, an unknown refund blocks reservation release, including recovery of
-a technically closed Payment. Only confirmed original refund evidence permits
-the earlier reservation to be released.
+For `authorization-after-stock`, the original reservation permits capture before
+Order becomes ready. For `authorization-after-delivery`, ready requires the
+original reservation and valid authorization; it does not imply captured money.
+The trusted application requests fulfillment with the Order's `fulfill` signal.
+That request provides no stock, financial or delivery evidence.
 
-This new source path currently stops at financial readiness and waits for
-`finish`; that signal permits technical closure and does not assert delivery or
-full fulfillment. The complete physical Shipment producer and the actual
-`authorization-after-delivery` path remain unfinished. Seeding that policy
-refuses instead of substituting booking completion. Authorization assignments
-also refuse the existing immediate-capture native recipes. These limitations
-keep this work in draft; neither complete PAY-02 nor the full consumer matrix is
-accepted from this preparation increment.
+Full Shipment registers its original owner and whole physical obligation before
+provider access. It confirms booking, observes actual carrier handover, records
+the separate original stock-deduction effect, then observes recipient delivery.
+Booking and technical child completion cannot substitute for those facts. Order
+can observe the protected delivery publication while Shipment is still open.
+The delivery-capture policy then records a protected instruction to the same
+original Payment and waits for its captured business publication. Neither child
+waits for the other's technical completion.
+
+The complete runnable assignment supplies an absolute `fulfillmentDeadline`
+independently of authorization expiry. The original deadline bounds fulfillment
+requests and physical waits; replay and worker replacement do not restart it.
+An older financial-preparation assignment without that field cannot dispatch
+full fulfillment. Notifications use stable original publication/target keys and
+request authenticated rereads. Signal payloads provide no authority.
+
+After handover, cancellation or a permitted full return keeps the original
+Shipment responsibility outstanding until actual warehouse receipt, suitable
+acceptance and required original restocking confirm. Only then may the parent
+settle the original captured Payment and release its original reservation.
+Historical delivery remains visible. Unknown outcomes and missing original
+reservation receipts never establish successful settlement or permission to
+create another stock deduction.
+
+The source cases are `V2AuthorizedPaymentMachineTest`,
+`V2PhysicalShipmentMachineTest` and `V2DeliveryCaptureMachineTest`. They are
+synthetic recorded-task fixtures, not installed-package, real-provider or full
+33-scenario acceptance. The remaining payment, subscription, partial-stock,
+return/replacement, crash/race and installed/publication criteria remain open.
 
 `FinancialInspectionActivity` requires an explicitly bound
 `FinancialInspectionStore`. Its mandatory host callback must authorize the

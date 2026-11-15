@@ -128,7 +128,7 @@ final class V2AuthorizedPaymentMachineTest extends TestCase
         $this->assertNotSame('cancelled', $this->rootState());
     }
 
-    public function testDeliveryCaptureCannotUseTheBookingOnlyAssembly(): void
+    public function testDeliveryCaptureCannotOmitItsOriginalPhysicalDeadline(): void
     {
         $terms = OrderTerms::fromArray([
             ...$this->terms->toArray(),
@@ -140,9 +140,12 @@ final class V2AuthorizedPaymentMachineTest extends TestCase
         ]));
         try {
             $store->seed($terms);
-            $this->fail('Delivery capture requires the actual full Shipment producer.');
+            $this->fail('Delivery capture requires an original physical fulfillment deadline.');
         } catch (LogicException $error) {
-            $this->assertSame('The complete physical Shipment producer is not assembled yet.', $error->getMessage());
+            $this->assertSame(
+                'The selected delivery policy requires its original physical fulfillment deadline.',
+                $error->getMessage()
+            );
         }
         $this->assertFalse(DB::table('provider_machine_assignments')->where('id', $key)->exists());
     }

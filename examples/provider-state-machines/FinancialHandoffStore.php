@@ -75,9 +75,6 @@ final readonly class FinancialHandoffStore
     public function requestCapture(WorkflowRun $parent, array $value): array
     {
         [$actor, , $plan, $binding] = $this->parentBinding($parent, $value);
-        if ($plan->recipe !== FinancialCatalogue::AFTER_STOCK) {
-            throw new LogicException('Capture needs the selected authoritative trigger producer.');
-        }
         $id = $this->instructionId($binding);
         $row = $this->authority->db->table('provider_machine_milestones')
             ->where('id', $id)
@@ -94,13 +91,22 @@ final readonly class FinancialHandoffStore
                     'Capture requires original confirmed authorization and warehouse reservation.'
                 );
             }
-            $payload = PortableDescriptor::encode([
+            $instruction = [
                 'kind' => 'financial-capture-instruction-v1',
                 'binding' => $binding->toArray(),
                 'recipe' => $plan->recipe,
                 'authorizationPublication' => $authorization['id'],
                 'stockEffect' => $stock,
-            ]);
+            ];
+            if ($plan->recipe === FinancialCatalogue::AFTER_DELIVERY) {
+                $delivery = app(ShipmentBoundaryStore::class)->delivery($parent);
+                if ($delivery === null) {
+                    throw new LogicException('Capture requires the original committed recipient-delivery publication.');
+                }
+                $instruction['kind'] = 'financial-capture-instruction-v2';
+                $instruction['deliveryPublication'] = $delivery['id'];
+            }
+            $payload = PortableDescriptor::encode($instruction);
             $this->recordInstruction($parent, $actor->root_key, $binding, $id, $payload, $authorizationTerms);
             $row = $this->authority->db->table('provider_machine_milestones')
                 ->where('id', $id)
@@ -197,7 +203,20 @@ final readonly class FinancialHandoffStore
         if ($child === null || $this->originalStock($actor->root_key, $plan) === null) {
             return false;
         }
-        return $this->publication($actor->root_key, $this->admitted($plan), 'capture') !== null;
+        $stage = $plan->recipe === FinancialCatalogue::AFTER_STOCK ? 'capture' : 'authorize';
+        [, $terms] = $this->authority->assignment($actor->root_key);
+        return $this->publication($actor->root_key, $this->admitted($plan), $stage) !== null
+            && ($stage === 'capture' || $terms->authorization->canAdmitCaptureAt(Carbon::now()->getTimestamp()));
+    }
+
+    public function binding(WorkflowRun $parent): array
+    {
+        [$actor, , $plan] = $this->authority->actor($parent);
+        if ($actor->role !== 'order' || ! FinancialCatalogue::selected($plan->recipe)) {
+            throw new LogicException('The financial admission belongs to its original Order.');
+        }
+        return $this->admitted($plan)
+            ->toArray();
     }
 
     private function recordInstruction(
@@ -224,8 +243,11 @@ final readonly class FinancialHandoffStore
                 ->sole();
             $this->authority->assertGrant($current, $key, 'order');
             $entry = $binding->identity->parentExecution;
+            $delivery = $this->authority->recipe($key) === FinancialCatalogue::AFTER_DELIVERY;
+            $state = $delivery ? 'ready' : $entry->sourceState;
+            $revision = $delivery ? '2' : $entry->sourceRevision;
             if ((bool) $current->cancellation_requested || ! $terms->canAdmitCaptureAt(Carbon::now()->getTimestamp())
-                || $current->state !== $entry->sourceState || (string) $current->revision !== $entry->sourceRevision
+                || $current->state !== $state || (string) $current->revision !== $revision
                 || $entry->executionId !== $parent->id . '.prepare.1') {
                 throw new LogicException('The original Order refused this financial policy instruction.');
             }
@@ -379,8 +401,23 @@ final readonly class FinancialHandoffStore
         [, $terms] = $this->authority->assignment($key);
         $stock = Request::fromArray($terms->descriptor('order')['forward']);
         $authorization = $this->publication($key, $binding, 'authorize');
-        if ($keys !== ['authorizationPublication', 'binding', 'kind', 'recipe', 'stockEffect']
-            || ($value['kind'] ?? null) !== 'financial-capture-instruction-v1'
+        $expected = ['authorizationPublication', 'binding', 'kind', 'recipe', 'stockEffect'];
+        $kind = 'financial-capture-instruction-v1';
+        if ($this->authority->recipe($key) === FinancialCatalogue::AFTER_DELIVERY) {
+            $expected[] = 'deliveryPublication';
+            sort($expected);
+            $kind = 'financial-capture-instruction-v2';
+            $delivery = app(ShipmentBoundaryStore::class)->delivery(
+                WorkflowRun::query()->findOrFail($this->authority->plan($key)->rootRun)
+            );
+            if ($delivery === null || ($value['deliveryPublication'] ?? null) !== $delivery['id']) {
+                throw new LogicException(
+                    'The capture instruction substituted its original recipient-delivery publication.'
+                );
+            }
+        }
+        if ($keys !== $expected
+            || ($value['kind'] ?? null) !== $kind
             || ($value['recipe'] ?? null) !== $this->authority->recipe($key)
             || PortableDescriptor::encode($value['binding'] ?? []) !== PortableDescriptor::encode($binding->toArray())
             || ($value['stockEffect'] ?? null) !== 'effect-' . $stock->identity->key()

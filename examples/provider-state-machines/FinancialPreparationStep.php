@@ -26,7 +26,7 @@ final class FinancialPreparationStep extends AssessedTransitionStep
     public function execute(TransitionContext $context): ExecutionReceipt
     {
         if ($context->transition->key !== 'prepare') {
-            throw new LogicException('The full physical Shipment action is not assembled yet.');
+            throw new LogicException('Financial preparation cannot execute a fulfillment transition.');
         }
         $init = $this->machine->initialization;
         $stock = $this->machine->scope->register(new Obligation('effect', 'provider.effect', '1', $init['descriptor']));
@@ -45,11 +45,12 @@ final class FinancialPreparationStep extends AssessedTransitionStep
         $this->awaitMilestone($binding, 'authorize');
         $reserved = $stock->execute();
         $this->awaitStock();
-        // Only the original native reservation's confirmed provider result can authorize capture.
-        Workflow::activity(FinancialHandoffActivity::class, 'request-capture', [
-            'binding' => $binding->toArray(),
-        ]);
-        $this->awaitMilestone($binding, 'capture');
+        if ($init['recipe'] === FinancialCatalogue::AFTER_STOCK) {
+            Workflow::activity(FinancialHandoffActivity::class, 'request-capture', [
+                'binding' => $binding->toArray(),
+            ]);
+            $this->awaitMilestone($binding, 'capture');
+        }
         return new ExecutionReceipt($context->execution(), ['original-provider:' . $reserved['operation'],
             'original-child:' . $started->childRunId]);
     }

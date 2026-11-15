@@ -15,6 +15,7 @@ final readonly class ShipmentDescriptor
         public Request $cancel,
         public Request $return,
         public Request $restock,
+        public ?Request $deduction = null,
     ) {
         $expected = [
             'booking' => 'ship-book',
@@ -35,16 +36,21 @@ final readonly class ShipmentDescriptor
                 throw new InvalidArgumentException('The physical shipment target is not its original predecessor.');
             }
         }
+        if ($deduction !== null && ($deduction->action !== 'deduct-stock'
+            || ! $booking->identity->sameOwner($deduction->identity) || $booking->terms !== $deduction->terms
+            || $deduction->target?->toArray() !== $booking->identity->toArray())) {
+            throw new InvalidArgumentException('Physical stock deduction must belong to the original shipment.');
+        }
         if (count(
             array_unique(array_map(static fn (Request $r): string => $r->identity->key(), $this->requests()))
-        ) !== 4) {
+        ) !== count($this->requests())) {
             throw new InvalidArgumentException('Physical shipment operations need distinct original identities.');
         }
     }
 
     public function requests(): array
     {
-        return get_object_vars($this);
+        return array_filter(get_object_vars($this), static fn ($request): bool => $request !== null);
     }
 
     public function toArray(): array
@@ -61,7 +67,12 @@ final readonly class ShipmentDescriptor
     {
         $keys = array_keys($value);
         sort($keys);
-        if ($keys !== ['booking', 'cancel', 'restock', 'return']) {
+        $expected = ['booking', 'cancel', 'restock', 'return'];
+        if (array_key_exists('deduction', $value)) {
+            $expected[] = 'deduction';
+            sort($expected);
+        }
+        if ($keys !== $expected) {
             throw new InvalidArgumentException('The physical shipment graph fields are malformed.');
         }
         foreach ($value as $request) {

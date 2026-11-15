@@ -174,9 +174,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
         }
         $plan = $this->plan($key);
         $scopes = [$plan->rootScope(), $plan->childScope('payment')];
-        if (! FinancialCatalogue::selected($this->recipe($key))) {
-            $scopes[] = $plan->childScope('shipment');
-        }
+        $scopes[] = $plan->childScope('shipment');
         foreach ($scopes as $expected) {
             if ($scope->toArray() === $expected->toArray()) {
                 $this->subject($key, 'order');
@@ -243,7 +241,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
         return match ($class) {
             Order::class, CheckoutOrder::class, AuthorizationCheckout::class, Cancellation::class => 'order',
             Payment::class, AuthorizedPayment::class => 'payment',
-            Booking::class => 'shipment',
+            Booking::class, FullShipment::class => 'shipment',
             default => throw new LogicException('The native workflow is outside this example.'),
         };
     }

@@ -25,6 +25,8 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
 
     public const AUTHORIZED_PAYMENT = 'example.provider.payment.authorized.v1';
 
+    public const FULL_SHIPMENT = 'example.provider.shipment.full.v1';
+
     /**
      * @param Closure(BindingIdentity, string): void $authorizeOriginalOwner
      */
@@ -70,12 +72,13 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
     public function execution(string $role): ExecutionReference
     {
         $checkout = $this->recipe !== Catalogue::RESERVE_FIRST;
-        if (FinancialCatalogue::selected($this->recipe) && $role === 'shipment') {
-            throw new LogicException('The complete physical Shipment producer is not assembled yet.');
+        $shipment = $checkout ? ['book', 'ready', '2'] : ['book', 'paid', '3'];
+        if (FinancialCatalogue::selected($this->recipe)) {
+            $shipment = ['fulfill', 'ready', '2'];
         }
         [$key, $state, $revision] = match ($role) {
             'payment' => $checkout ? ['prepare', 'received', '1'] : ['pay', 'reserved', '2'],
-            'shipment' => $checkout ? ['book', 'ready', '2'] : ['book', 'paid', '3'],
+            'shipment' => $shipment,
             default => throw new LogicException('Only the original Payment and booking children are selected.'),
         };
         return new ExecutionReference(
@@ -117,6 +120,9 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
         if ($role === 'payment' && FinancialCatalogue::selected($this->recipe)) {
             $workflowType = self::AUTHORIZED_PAYMENT;
         }
+        if ($role === 'shipment' && FinancialCatalogue::selected($this->recipe)) {
+            $workflowType = self::FULL_SHIPMENT;
+        }
         $parentStates = $this->recipe === Catalogue::RESERVE_FIRST
             ? [
                 'payment' => 'paid',
@@ -126,6 +132,11 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
                 'payment' => 'ready',
                 'shipment' => 'booked',
             ];
+        $outcome = $role === 'payment' ? 'captured' : 'booked';
+        if ($role === 'shipment' && FinancialCatalogue::selected($this->recipe)) {
+            $parentStates['shipment'] = 'fulfilled';
+            $outcome = 'delivered';
+        }
         $binding = new BindingIdentity(
             $this->execution($role),
             Catalogue::NAMESPACE,
@@ -137,7 +148,7 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
             $parentStates[$role],
             $workflowType,
             Catalogue::profile($role, $this->recipe)->fingerprint(),
-            $role === 'payment' ? 'captured' : 'booked',
+            $outcome,
             ChildReservation::inputFingerprint($this->childInput($role)),
         );
         $parent = Catalogue::profile('order', $this->recipe);

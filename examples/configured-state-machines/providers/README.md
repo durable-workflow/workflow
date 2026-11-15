@@ -9,54 +9,6 @@ Order/Shipment profiles remain unchanged. The
 for immediate capture and booking-only cancellation; the remaining consumer
 variants still need their recorded native integration.
 
-## Original physical Shipment evidence
-
-The optional `$provider->shipments()->install()` extension keeps the original four-table
-installation and six actions unchanged. Register a closed `ShipmentDescriptor`
-before admitting its separate `ship-book`, `ship-cancel-booking`, `request-return`
-and `restock` operations. The graph pins the original client, business generation,
-SKU, quantity, carrier and all four operation identities. Registration cannot
-replace a return or reopen a cancelled booking's handover fence.
-
-Only the synthetic carrier/warehouse fixture calls `$provider->shipments()->record()`.
-It records original handover, recipient delivery, loss, transport damage,
-non-collection, warehouse receipt and inspection events. Application commands
-and workflow signals cannot supply these facts. Duplicate equivalent events
-retain the first event; conflicting quantities or reused identities refuse.
-An admitted uncertain booking cancellation fences later handover. After actual
-handover, cancellation of a booking refuses and return remains separate work.
-
-`$provider->shipments()->inspect()` supplies raw operation outcomes and the physical evidence.
-It must be called inside a recorded, original-owner-authorized host activity.
-Booking does not establish delivery. An accepted return request does not establish
-receipt, inspection, acceptance or restocking. Inspection separately records
-received, accepted and saleable quantities; it does not itself restock goods.
-This first full-parcel restock operation requires the complete original quantity
-to be inspected as saleable. Partial or unsuitable goods cannot silently become
-a full restock. Historical delivery and accepted requests survive later return
-or loss; cached effects require their original persisted admissions.
-
-These are synthetic provider source controls. The complete native Shipment
-child, protected host inspection, physical stock deduction/accounting, partial
-restocking, both capture-trigger integrations and the full consumer matrix remain
-unfinished. No real carrier or warehouse behavior is qualified by these methods.
-
-`ShipmentOperation` supplies an optional retained handler for the first
-full-suitable-return policy. A mandatory host callback checks the original
-native owner, scope, child admission and complete descriptor before provider
-access. Before handover it requires confirmed original booking cancellation.
-After handover it requires the original return, complete warehouse acceptance
-as saleable goods and confirmed original restocking. A lost acknowledgement
-reconciles those same operation keys. Unknown booking, return or restock outcomes
-remain outstanding. Partial, unsuitable and lost goods require their separately
-selected settlement policies; this handler does not settle those variants or
-perform a refund. Its adapter tests do not constitute native host authorization
-or complete Shipment-child qualification.
-
-```shell
-vendor/bin/phpunit tests/Unit/V2/StateMachine/ProviderShipmentTest.php
-```
-
 Create a new, separate SQLite file and connection, load `bootstrap.php`, construct
 `Journal($pdo, $trustedClient)`, and call `install()` once. Never pass the DW or
 business database connection. No provider operation reads DW history, task IDs,
@@ -234,3 +186,58 @@ complete Order/Shipment/Payment cancellation fixture. The application must use
 the shared transition protocol, genuine child reservation/participation and
 protected business commits; verified provider compensation alone does not set
 the parent business state to Cancelled.
+
+## Original physical Shipment evidence
+
+The optional `$provider->shipments()->install()` extension keeps the original four-table
+installation and six actions unchanged. Register a closed `ShipmentDescriptor`
+before admitting its separate `ship-book`, `ship-cancel-booking`, `request-return`
+and `restock` operations. The graph pins the original client, business generation,
+SKU, quantity, carrier and all four operation identities. Registration cannot
+replace a return or reopen a cancelled booking's handover fence.
+
+Only the synthetic carrier/warehouse fixture calls `$provider->shipments()->record()`.
+It records original handover, recipient delivery, loss, transport damage,
+non-collection, warehouse receipt and inspection events. Application commands
+and workflow signals cannot supply these facts. Duplicate equivalent events
+retain the first event; conflicting quantities or reused identities refuse.
+An admitted uncertain booking cancellation fences later handover. After actual
+handover, cancellation of a booking refuses and return remains separate work.
+
+`$provider->shipments()->inspect()` supplies raw operation outcomes and the physical evidence.
+It must be called inside a recorded, original-owner-authorized host activity.
+Booking does not establish delivery. An accepted return request does not establish
+receipt, inspection, acceptance or restocking. Inspection separately records
+received, accepted and saleable quantities; it does not itself restock goods.
+This first full-parcel restock operation requires the complete original quantity
+to be inspected as saleable. Partial or unsuitable goods cannot silently become
+a full restock. Historical delivery and accepted requests survive later return
+or loss; cached effects require their original persisted admissions. The native
+full-Shipment graph additionally pins a distinct `deduct-stock` request. Carrier
+handover does not itself deduct inventory. That original request must confirm
+before its graph can restock the same quantity. Compensation fences a missing
+future deduction, waits for an admitted uncertain deduction, and never creates
+restocking for stock that was definitively not deducted.
+
+These are synthetic provider source controls. The complete native Shipment
+consumer policies, global warehouse balances, partial restocking and the full
+consumer matrix remain unfinished. The experimental native host in
+`../../provider-state-machines` supplies recorded physical inspection, explicit
+deduction and both capture-trigger paths; its installed qualification remains open.
+No real carrier or warehouse behavior is qualified by these methods.
+
+`ShipmentOperation` supplies an optional retained handler for the first
+full-suitable-return policy. A mandatory host callback checks the original
+native owner, scope, child admission and complete descriptor before provider
+access. Before handover it requires confirmed original booking cancellation.
+After handover it requires the original return, complete warehouse acceptance
+as saleable goods and confirmed original restocking. A lost acknowledgement
+reconciles those same operation keys. Unknown booking, return or restock outcomes
+remain outstanding. Partial, unsuitable and lost goods require their separately
+selected settlement policies; this handler does not settle those variants or
+perform a refund. Its adapter tests do not constitute native host authorization
+or complete Shipment-child qualification.
+
+```shell
+vendor/bin/phpunit tests/Unit/V2/StateMachine/ProviderShipmentTest.php
+```

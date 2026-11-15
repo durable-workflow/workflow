@@ -64,7 +64,8 @@ final class Catalogue
             return match ($role) {
                 'order' => FinancialCatalogue::order($recipe),
                 'payment' => FinancialCatalogue::profile($recipe),
-                default => throw new LogicException('The complete physical Shipment producer is not assembled yet.'),
+                'shipment' => PhysicalCatalogue::profile($recipe),
+                default => throw new LogicException('The selected financial machine role is unavailable.'),
             };
         }
         $checkout = $role === 'order' && $recipe !== self::RESERVE_FIRST;

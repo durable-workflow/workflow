@@ -21,13 +21,13 @@ final readonly class Request
         if (! in_array($action, [
             'capture', 'refund', 'book', 'cancel-booking', 'reserve', 'release',
             'authorize', 'capture-authorized', 'void-authorization', 'refund-authorized',
-            'ship-book', 'ship-cancel-booking', 'request-return', 'restock',
+            'ship-book', 'ship-cancel-booking', 'request-return', 'restock', 'deduct-stock',
         ], true)) {
             throw new InvalidArgumentException('The synthetic provider action is unavailable.');
         }
         $targeted = in_array($action, [
             'refund', 'cancel-booking', 'release', 'capture-authorized', 'void-authorization', 'refund-authorized',
-            'ship-cancel-booking', 'request-return', 'restock',
+            'ship-cancel-booking', 'request-return', 'restock', 'deduct-stock',
         ], true);
         if ($targeted !== ($target !== null) || ($target !== null && (! $identity->sameOwner($target)
             || $identity->key() === $target->key()))) {
@@ -36,7 +36,11 @@ final readonly class Request
         if (in_array($action, ['authorize', 'capture-authorized', 'void-authorization'], true)) {
             AuthorizationTerms::fromArray($terms);
         }
-        if (in_array($action, ['ship-book', 'ship-cancel-booking', 'request-return', 'restock'], true)) {
+        if (in_array(
+            $action,
+            ['ship-book', 'ship-cancel-booking', 'request-return', 'restock', 'deduct-stock'],
+            true
+        )) {
             ShipmentTerms::fromArray($terms);
         }
         $this->terms = PortableDescriptor::snapshot($terms);
