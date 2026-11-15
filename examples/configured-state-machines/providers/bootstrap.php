@@ -12,6 +12,7 @@ foreach ([
     'AuthorizationLedger',
     'Journal',
     'RetainedOperation',
+    'FinancialOperation',
 ] as $class) {
     require_once __DIR__ . '/' . $class . '.php';
 }

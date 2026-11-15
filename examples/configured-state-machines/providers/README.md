@@ -93,14 +93,62 @@ idempotency contract separates repeated command requests from committed effects.
 
 All financial calls must still occur through recorded activities with the complete
 host authorization described below. The existing `RetainedOperation` handler
-continues to select only its original three forward/undo pairs. A versioned
-financial handler, common native Payment lifecycle, both stock- and actual
-recipient-delivery capture policies, and complete crash/race/installed qualification
-remain required before PAY-02 is accepted. Booking or technical child completion
-must never stand in for recipient delivery.
+continues to select only its original three forward/undo pairs. The optional
+financial handler below needs separate registration. A common native Payment
+lifecycle, both stock- and actual-recipient-delivery capture policies, and complete
+crash/race/installed qualification remain required before PAY-02 is accepted.
+Booking or technical child completion must never stand in for recipient delivery.
 
 ```shell
 vendor/bin/phpunit tests/Unit/V2/StateMachine/ProviderAuthorizationTest.php
+```
+
+### Separate permission and captured-money obligations
+
+`FinancialOperation` is a new optional `ScopedOperation` implementation. The host
+registers distinct, versioned handler types with the trusted constructor stage
+`authorize` or `capture`. Workflow input cannot choose that stage. Both use a closed
+descriptor containing the four original `authorize`, `capture`, `void` and `refund`
+requests. Validation checks their exact ownership, targets, original money/expiry
+and four distinct idempotency identities before provider access.
+
+The native Payment assembly must register the original authorization obligation
+first, then the capture obligation, **before executing either forward operation**.
+The mandatory host callback checks that actual paired registration, original
+scope/run, complete descriptor, policy and worker authority before any provider
+SQL. Descriptor validation and a callback supplied by an untrusted caller do not
+provide that authority. Keep both handler versions available to replacement
+workers and retained recovery.
+
+Native LIFO then settles the captured-money obligation before the earlier
+authorization obligation. Capture compensation fences the original capture;
+unknown/processing stays outstanding, and confirmed capture requires the exact
+original full refund. Authorization compensation also fences the exact future
+capture. If the permission was unused, it requires the original void. If full
+capture consumed it, the authorization obligation records that consumption while
+the distinct capture obligation continues to own the required refund. Verifying
+permission consumption alone does not verify the money obligation or business
+cancellation.
+
+An uncertain native forward attempt performs lookup only. Confirmed processing,
+refusal and non-execution remain observed facts, never successful financial
+milestones. Provider I/O belongs inside the recorded retained activities; neither
+workflow replay nor pure conditions may call these methods directly.
+
+The adapter tests exercise these contracts with synthetic host authorization.
+`V2FinancialRetainedScopeTest` also executes recorded native tasks, checks both
+original obligation rows before provider access, and recovers closed or failed
+origins through the retained ledger. It covers voiding unused permission, refund
+acknowledgement loss, original late capture, unknown refund, missing paired
+registration and expiry between admission steps. Original terminal history stays
+unchanged, and replay performs no provider I/O. Its capture-selection boolean is
+only a scope-fixture control; neither stock nor recipient delivery is inferred.
+Actual Order/Payment/Shipment composition, both capture-trigger policies and full
+business-cancellation qualification remain required integration work.
+
+```shell
+vendor/bin/phpunit tests/Unit/V2/StateMachine/RetainedFinancialOperationTest.php
+vendor/bin/phpunit tests/Feature/V2/V2FinancialRetainedScopeTest.php
 ```
 
 ## Native retained-operation boundary
