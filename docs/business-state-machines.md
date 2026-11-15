@@ -279,8 +279,9 @@ $executionLimits = new ExecutionLimits(
 );
 ```
 
-Pass `limits: $definitionLimits` when constructing the shared definition and
-`limits: $executionLimits` when constructing its `PolicyProfile` or calling
+Pass `limits: $definitionLimits` when constructing the shared definition. Create
+a bounded profile with `$profile->withLimits($executionLimits)`, which returns a
+new immutable profile, or pass `limits: $executionLimits` to
 `PolicyProfile::forDefinition()`. Both limits enter their respective pinned
 fingerprints. Omitting them preserves the previous serialized definition and
 profile fingerprints; attaching or changing a budget requires an explicitly

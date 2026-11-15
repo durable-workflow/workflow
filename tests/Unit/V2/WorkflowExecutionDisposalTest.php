@@ -6,6 +6,7 @@ namespace Tests\Unit\V2;
 
 use Fiber;
 use FiberError;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
 use WeakReference;
@@ -14,11 +15,34 @@ use Workflow\V2\Support\ActivityCall;
 use Workflow\V2\Support\TimerCall;
 
 use Workflow\V2\Support\WorkflowExecution;
+use Workflow\V2\Support\WorkflowFiberContext;
 use function Workflow\V2\timer;
 use function Workflow\V2\upsertMemo;
 
 final class WorkflowExecutionDisposalTest extends TestCase
 {
+    public static function guardScopes(): array
+    {
+        return [['forward'], ['compensation'], ['shield']];
+    }
+
+    #[DataProvider('guardScopes')]
+    public function testGuardScopesReleaseFiberReferencesBeforeSuspension(string $scope): void
+    {
+        $execution = WorkflowExecution::startCallback(static function () use ($scope): void {
+            $callback = static fn () => timer(1);
+            match ($scope) {
+                'forward' => WorkflowFiberContext::withForwardBudget(static fn () => null, $callback),
+                'compensation' => WorkflowFiberContext::withoutForwardBudgets($callback),
+                'shield' => WorkflowFiberContext::cancellationShield($callback),
+            };
+        });
+        $reference = WeakReference::create($execution->fiber());
+        $this->assertInstanceOf(TimerCall::class, $execution->current());
+        unset($execution);
+        $this->assertNull($reference->get(), 'Discard must release the Fiber without waiting for a GC cycle.');
+    }
+
     public function testDisposalDoesNotEmitDurableCleanupOrRetainSuspendedFibers(): void
     {
         foreach (['activity', 'timer', 'memo'] as $kind) {

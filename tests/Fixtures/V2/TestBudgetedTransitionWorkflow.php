@@ -39,15 +39,14 @@ final class TestBudgetedTransitionWorkflow extends Workflow
         bool $retained = false
     ): array {
         $transition = new TransitionDefinition('prepare', 'begin', ['received'], 'prepared', 'prepare', '1');
-        $profile = new PolicyProfile(
+        $profile = (new PolicyProfile(
             'budget-example',
             '1',
             'bounded',
             '1',
             ['received', 'prepared'],
-            [$transition],
-            limits: new ExecutionLimits($commands, $events, $bytes)
-        );
+            [$transition]
+        ))->withLimits(new ExecutionLimits($commands, $events, $bytes));
         $execution = new ExecutionReference(
             'budget-example',
             'original-subject',

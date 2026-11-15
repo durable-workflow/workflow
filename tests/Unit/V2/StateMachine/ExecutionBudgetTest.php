@@ -197,7 +197,6 @@ final class ExecutionBudgetTest extends TestCase
         $first->start();
         $reference = WeakReference::create($first);
         unset($first);
-        gc_collect_cycles();
         $this->assertNull($reference->get());
         $second = $this->fiber($body);
         $this->assertSame('first', $second->start()->activity);

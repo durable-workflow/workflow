@@ -40,13 +40,14 @@ final class TransitionRunner
         TransitionRuntime $runtime,
         array $handlers,
     ): TransitionResult {
-        if ($profile->limits === null) {
+        $limits = $profile->limits();
+        if ($limits === null) {
             return $this->protocol($workflow, $profile, $execution, $event, $runtime, $handlers);
         }
         if (! WorkflowFiberContext::active() || $execution->policyFingerprint !== $profile->fingerprint()) {
             throw new LogicException('A transition budget requires its original active execution and pinned policy.');
         }
-        $budget = ExecutionBudget::forExecution($workflow, $execution, $profile->limits);
+        $budget = ExecutionBudget::forExecution($workflow, $execution, $limits);
         try {
             return WorkflowFiberContext::withForwardBudget($budget, fn (): TransitionResult =>
                 $this->protocol($workflow, $profile, $execution, $event, $runtime, $handlers));
@@ -96,68 +97,89 @@ final class TransitionRunner
             throw new LogicException('The pinned transition handler is not registered.');
         }
         $context = $this->context($runtime, $execution, $transition, SnapshotPhase::Before, $definition);
-        if (! $this->sourceMatches($context)) {
-            return new TransitionResult(
-                $execution,
+        $refusal = $this->snapshotRefusal($context);
+        return $refusal ?? $this->transitionWork($workflow, $runtime, $step, $context, $definition);
+    }
+
+    private function transitionWork(
+        Workflow $workflow,
+        TransitionRuntime $runtime,
+        TransitionStep $step,
+        TransitionContext $context,
+        ?MachineDefinition $definition,
+    ): TransitionResult {
+        if ($this->targetSatisfied($step, $context)) {
+            return $this->commit($runtime, $context);
+        }
+        $refusal = $this->workRefusal($step, $context);
+        return $refusal ?? $this->admitAndExecute($workflow, $runtime, $step, $context, $definition);
+    }
+
+    private function workRefusal(TransitionStep $step, TransitionContext $context): ?TransitionResult
+    {
+        if ($context->snapshot->target->verdict === Verdict::Unknown) {
+            return $this->decision($context, $context->snapshot->target, TransitionStatus::Unknown);
+        }
+        if (! $context->transition->hasWork) {
+            return $this->decision($context, $context->snapshot->target, TransitionStatus::Pending);
+        }
+        $permitted = $step->canExecute($context);
+        if ($permitted !== $context->snapshot->permission->satisfied()) {
+            throw new LogicException('The execution guard disagrees with its recorded assessment.');
+        }
+        return $permitted ? null : $this->decision($context, $context->snapshot->permission, TransitionStatus::Blocked);
+    }
+
+    private function admitAndExecute(
+        Workflow $workflow,
+        TransitionRuntime $runtime,
+        TransitionStep $step,
+        TransitionContext $context,
+        ?MachineDefinition $definition,
+    ): TransitionResult {
+        $admission = $runtime->admit($context);
+        if (! $admission->satisfied()) {
+            return $this->decision($context, $admission, TransitionStatus::Blocked);
+        }
+        $execution = $context->execution();
+        $transition = $context->transition;
+        $context = new TransitionContext($transition, $context->snapshot, $admission);
+        // Capture the original owner before work can suspend, fail or lose its receipt.
+        $workflow->addCompensation(function () use ($runtime, $execution, $transition, $step, $definition): void {
+            $current = $this->context($runtime, $execution, $transition, SnapshotPhase::Compensation, $definition);
+            $step->compensate($current, $execution);
+        });
+        $receipt = $step->execute($context);
+        if (! $execution->equals($receipt->execution)) {
+            throw new LogicException('The execution receipt belongs to another operation.');
+        }
+        $fresh = $this->context($runtime, $execution, $transition, SnapshotPhase::After, $definition);
+        if ($fresh->snapshot->snapshotId === $context->snapshot->snapshotId) {
+            throw new LogicException('Post-action evaluation requires a fresh recorded snapshot.');
+        }
+        $refusal = $this->snapshotRefusal($fresh);
+        if ($refusal !== null) {
+            return $refusal;
+        }
+        return $this->targetSatisfied($step, $fresh) ? $this->commit($runtime, $fresh)
+            : $this->decision($fresh, $fresh->snapshot->target, TransitionStatus::Pending);
+    }
+
+    private function snapshotRefusal(TransitionContext $context): ?TransitionResult
+    {
+        return $this->sourceMatches($context) ? $this->invariantRefusal($context)
+            : new TransitionResult(
+                $context->execution(),
                 TransitionStatus::Conflict,
                 'source_changed',
-                transitionKey: $transition->key
+                transitionKey: $context->transition->key
             );
-        }
-        $invariant = $this->invariantRefusal($context);
-        if ($invariant !== null) {
-            return $invariant;
-        }
-        if (! $this->targetSatisfied($step, $context)) {
-            if ($context->snapshot->target->verdict === Verdict::Unknown) {
-                return $this->decision($context, $context->snapshot->target, TransitionStatus::Unknown);
-            }
-            if (! $transition->hasWork) {
-                return $this->decision($context, $context->snapshot->target, TransitionStatus::Pending);
-            }
-            $permitted = $step->canExecute($context);
-            if ($permitted !== $context->snapshot->permission->satisfied()) {
-                throw new LogicException('The execution guard disagrees with its recorded assessment.');
-            }
-            if (! $permitted) {
-                return $this->decision($context, $context->snapshot->permission, TransitionStatus::Blocked);
-            }
-            $admission = $runtime->admit($context);
-            if (! $admission->satisfied()) {
-                return $this->decision($context, $admission, TransitionStatus::Blocked);
-            }
-            $context = new TransitionContext($transition, $context->snapshot, $admission);
-            // Capture the original owner before work can suspend, fail or lose its receipt.
-            $workflow->addCompensation(function () use ($runtime, $execution, $transition, $step, $definition): void {
-                $current = $this->context($runtime, $execution, $transition, SnapshotPhase::Compensation, $definition);
-                $step->compensate($current, $execution);
-            });
-            $receipt = $step->execute($context);
-            if (! $execution->equals($receipt->execution)) {
-                throw new LogicException('The execution receipt belongs to another operation.');
-            }
-            $fresh = $this->context($runtime, $execution, $transition, SnapshotPhase::After, $definition);
-            if ($fresh->snapshot->snapshotId === $context->snapshot->snapshotId) {
-                throw new LogicException('Post-action evaluation requires a fresh recorded snapshot.');
-            }
-            $context = $fresh;
-            if (! $this->sourceMatches($context)) {
-                return new TransitionResult(
-                    $execution,
-                    TransitionStatus::Conflict,
-                    'source_changed',
-                    transitionKey: $transition->key
-                );
-            }
-            $invariant = $this->invariantRefusal($context);
-            if ($invariant !== null) {
-                return $invariant;
-            }
-            if (! $this->targetSatisfied($step, $context)) {
-                return $this->decision($context, $context->snapshot->target, TransitionStatus::Pending);
-            }
-        }
+    }
+
+    private function commit(TransitionRuntime $runtime, TransitionContext $context): TransitionResult
+    {
         $commit = $runtime->commit($context);
+        $execution = $context->execution();
         if (! $execution->equals($commit->execution)) {
             throw new LogicException('The commit acknowledgement belongs to another execution.');
         }
@@ -166,7 +188,7 @@ final class TransitionRunner
             $commit->status,
             $commit->reason,
             $context->snapshot->target,
-            $transition->key
+            $context->transition->key
         );
     }
 

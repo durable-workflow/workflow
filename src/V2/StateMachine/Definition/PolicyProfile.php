@@ -36,7 +36,7 @@ final readonly class PolicyProfile
 
     public ?MachineDefinition $definition;
 
-    public ?ExecutionLimits $limits;
+    private ?ExecutionLimits $executionLimits;
 
     /**
      * @param non-empty-list<string> $states
@@ -100,7 +100,7 @@ final readonly class PolicyProfile
         $this->conditions = array_map(static fn (ConditionDefinition $condition): ConditionDefinition =>
             $condition, $conditions);
         $this->definition = $definition;
-        $this->limits = $limits;
+        $this->executionLimits = $limits;
     }
 
     /**
@@ -123,6 +123,28 @@ final readonly class PolicyProfile
             $definition->stateIds(),
             $transitions,
             $conditions,
+            $limits
+        );
+    }
+
+    public function limits(): ?ExecutionLimits
+    {
+        return $this->executionLimits;
+    }
+
+    /**
+     * Return a new pinned profile; the original assignment remains unchanged.
+     */
+    public function withLimits(ExecutionLimits $limits): self
+    {
+        return new self(
+            $this->definition ?? $this->machine,
+            $this->definitionVersion,
+            $this->profile,
+            $this->profileVersion,
+            $this->states,
+            $this->transitions,
+            $this->conditions,
             $limits
         );
     }
@@ -150,9 +172,10 @@ final readonly class PolicyProfile
                 'machine_definition_fingerprint' => $this->definition->fingerprint(),
             ];
         }
-        if ($this->limits !== null) {
+        $limits = $this->limits();
+        if ($limits !== null) {
             $material[] = [
-                'execution_limits' => $this->limits->toArray(),
+                'execution_limits' => $limits->toArray(),
             ];
         }
         return hash('sha256', json_encode($material, JSON_THROW_ON_ERROR));

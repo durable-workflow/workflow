@@ -92,6 +92,7 @@ final class WorkflowFiberContext
         }
 
         $fiberId = spl_object_id($fiber);
+        unset($fiber);
         self::$cancellationShields[$fiberId] = (self::$cancellationShields[$fiberId] ?? 0) + 1;
 
         try {
@@ -211,6 +212,8 @@ final class WorkflowFiberContext
                 $guard($call);
             }
         }
+        // A suspended stack must not keep a strong reference to its own Fiber.
+        unset($fiber);
 
         try {
             return Fiber::suspend($call);
@@ -242,6 +245,7 @@ final class WorkflowFiberContext
             throw new LogicException('Forward budgets require an active workflow Fiber.');
         }
         $key = spl_object_id($fiber);
+        unset($fiber);
         self::$forwardBudgets[$key][] = $guard;
         try {
             return $callback();
@@ -265,6 +269,7 @@ final class WorkflowFiberContext
             return $callback();
         }
         $key = spl_object_id($fiber);
+        unset($fiber);
         $guards = self::$forwardBudgets[$key] ?? [];
         unset(self::$forwardBudgets[$key]);
         try {

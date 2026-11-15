@@ -43,6 +43,10 @@ final class ResourceLimitsTest extends TestCase
         $this->assertArrayNotHasKey('limits', $old->toArray());
         $this->assertSame($profile->fingerprint(), TestDefinedMachineWorkflow::profile()->fingerprint());
         $this->assertNotSame($profile->fingerprint(), $limited->fingerprint());
+        $copied = $profile->withLimits(new ExecutionLimits(8));
+        $this->assertNull($profile->limits());
+        $this->assertSame(8, $copied->limits()->commands);
+        $this->assertNotSame($profile->fingerprint(), $copied->fingerprint());
         $changed = PolicyProfile::forDefinition(
             $definition,
             'prepare',
