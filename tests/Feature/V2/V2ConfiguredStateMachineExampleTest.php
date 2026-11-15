@@ -368,14 +368,175 @@ final class V2ConfiguredStateMachineExampleTest extends TestCase
         );
     }
 
+    #[DataProvider('integrations')]
+    public function testSharedVersionTwoDefinitionsDriveBothProfilesAndVerifiedCancellation(
+        string $integration,
+        array $actions,
+        string $hosting
+    ): void {
+        $stub = $this->start($integration, '2');
+        $this->assertSame('2', $this->root()->profile_version);
+        $this->assertSame($hosting, $this->root()->state);
+        $stub->signal('finish');
+        $this->drain();
+        $origin = WorkflowRun::query()->findOrFail($stub->runId());
+        $this->assertSame(RunStatus::Completed, $origin->status, $this->progress());
+        $this->assertSame('completed', $this->root()->state);
+        $history = $this->history($origin->id);
+        $this->store->requestCancellation(self::SUBJECT, $origin->id, 'defined-late-cancel');
+        $this->drain();
+        $finalizer = $this->store->finishCancellation(self::SUBJECT, $origin->id, 'defined-late-cancel');
+        $this->drain();
+        $this->assertSame('cancelled', $this->root()->state, $this->progress());
+        $this->assertSame(RunStatus::Completed, WorkflowRun::query()->findOrFail($finalizer['runId'])->status);
+        $this->assertSame(['deliver', ...array_reverse($actions)], DB::table('example_machine_compensation_log')
+            ->orderBy('sequence')
+            ->pluck('action')
+            ->all());
+        $this->assertSame($history, $this->history($origin->id));
+        foreach (DB::table('configured_machine_assessments')->get() as $record) {
+            $snapshot = json_decode($record->snapshot, true, flags: JSON_THROW_ON_ERROR);
+            $facts = json_decode($record->facts, true, flags: JSON_THROW_ON_ERROR);
+            $explanation = json_decode($record->explanation, true, flags: JSON_THROW_ON_ERROR);
+            $this->assertSame('satisfied', $snapshot['machineAssessment']['decision']['verdict']);
+            $this->assertSame($snapshot['snapshotId'], $snapshot['machineAssessment']['snapshotId']);
+            $this->assertTrue($facts['values']['model_consistent']);
+            $this->assertSame(
+                $explanation['machine']['configurationFingerprint'],
+                $snapshot['machineAssessment']['invariantFingerprint']
+            );
+            if ($snapshot['transitionKey'] === 'cancel') {
+                $this->assertFalse($facts['values']['forward_open']);
+                $this->assertSame(
+                    Catalogue::order($integration, '2')->definition->fingerprint(),
+                    $snapshot['machineAssessment']['definitionFingerprint']
+                );
+            }
+        }
+        $queries = [];
+        $listening = true;
+        DB::listen(static function (QueryExecuted $query) use (&$queries, &$listening): void {
+            if ($listening && (str_contains($query->sql, 'example_machine_') || str_contains(
+                $query->sql,
+                'configured_machine_'
+            ))) {
+                $queries[] = $query->sql;
+            }
+        });
+        try {
+            foreach (WorkflowRun::query()->whereIn('workflow_class', [Order::class,
+                \DurableWorkflow\Examples\ConfiguredStateMachines\Shipment::class,
+                \DurableWorkflow\Examples\ConfiguredStateMachines\Cancellation::class])->get() as $run) {
+                app(WorkflowReplayer::class)->replay($run);
+            }
+        } finally {
+            $listening = false;
+        }
+        $this->assertSame([], $queries, 'Original, child and cancellation replay must consume recorded assessments.');
+    }
+
+    public function testAnAlreadySatisfiedTargetCannotCommitARevisionOutsideTheSharedModel(): void
+    {
+        $this->store->seed(self::SUBJECT, 'imported', prevalidated: true, version: '2');
+        DB::table('example_machine_subjects')->whereNull('parent_subject_id')->update([
+            'revision' => 0,
+        ]);
+        $stub = $this->admit('reconcile');
+        $this->drain();
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $this->assertSame(RunStatus::Completed, $run->status, $this->progress());
+        $this->assertSame('blocked', $run->workflowOutput()['status']);
+        $this->assertSame('received', $this->root()->state);
+        $this->assertSame(0, DB::table('example_machine_effects')->count());
+        $this->assertSame(0, DB::table('example_machine_decisions')->count());
+        $this->assertSame(0, DB::table('example_machine_publications')->count());
+        $snapshot = json_decode(
+            DB::table('configured_machine_assessments')->sole()->snapshot,
+            true,
+            flags: JSON_THROW_ON_ERROR
+        );
+        $this->assertSame('satisfied', $snapshot['target']['verdict']);
+        $this->assertSame('unsatisfied', $snapshot['machineAssessment']['decision']['verdict']);
+    }
+
+    public function testTheProtectedBoundaryRejectsASubstitutedMachineAssessment(): void
+    {
+        $stub = $this->start('prepare', '2');
+        $origin = WorkflowRun::query()->findOrFail($stub->runId());
+        $snapshot = DB::table('configured_machine_assessments')->get()->map(static fn (object $row): array =>
+            json_decode($row->snapshot, true, flags: JSON_THROW_ON_ERROR))->first(static fn (array $row): bool =>
+                $row['transitionKey'] === 'begin' && $row['phase'] === 'after');
+        $proof = $snapshot['machineAssessment'];
+        $proof['decision']['reason'] = 'foreign-proof';
+        $before = DB::table('example_machine_decisions')->count();
+        try {
+            app(AssessmentStore::class)->commit($origin, [
+                'execution' => $snapshot['execution'],
+                'transition' => get_object_vars(Catalogue::transition(Catalogue::order('prepare', '2'), 'begin')),
+                'snapshotId' => $snapshot['snapshotId'],
+                'phase' => $snapshot['phase'],
+                'expectedState' => $snapshot['state'],
+                'expectedRevision' => $snapshot['revision'],
+                'machineAssessment' => $proof,
+            ]);
+            $this->fail('A changed invariant proof cannot reuse a recorded transition decision.');
+        } catch (LogicException $error) {
+            $this->assertStringContainsString('substituted its shared machine assessment', $error->getMessage());
+        }
+        $this->assertSame($before, DB::table('example_machine_decisions')->count());
+    }
+
+    public function testAnUnapprovedProfileRewriteRefusesAndOriginalVersionOneCompensationStillRecovers(): void
+    {
+        $stub = $this->start('prepare');
+        $original = $this->root();
+        DB::table('example_machine_subjects')->where('id', $original->id)->update([
+            'profile_version' => '2',
+            'authority_version' => \DurableWorkflow\Examples\ConfiguredStateMachines\MachineAuthority::grant(
+                Catalogue::order('prepare', '2')
+            ),
+        ]);
+        $stub->signal('finish');
+        $this->drain();
+        $this->assertSame(
+            RunStatus::Failed,
+            WorkflowRun::query()->findOrFail($stub->runId())->status,
+            $this->progress()
+        );
+        $this->assertContains(
+            'The pinned policy does not match this execution.',
+            WorkflowFailure::query()->where('workflow_run_id', $stub->runId())->pluck('message')->all()
+        );
+        $this->assertSame('working', $this->root()->state);
+        $this->assertSame(3, DB::table('example_machine_effects')->count());
+        DB::table('example_machine_subjects')->where('id', $original->id)->update([
+            'profile_version' => '1',
+            'authority_version' => $original->authority_version,
+        ]);
+        $history = $this->history($stub->runId());
+        $this->store->requestCancellation(self::SUBJECT, $stub->runId(), 'old-profile-recovery');
+        $this->drain();
+        $this->assertSame(
+            'verified',
+            (new ScopeRepository())->metadata(Ownership::scope(self::SUBJECT, $stub->runId()))['status'],
+            $this->progress()
+        );
+        $this->assertSame(
+            ['deliver', 'prepare', 'reserve'],
+            DB::table('example_machine_compensation_log')->orderBy('sequence')->pluck('action')->all()
+        );
+        $this->assertSame(0, DB::table('example_machine_effects')->where('status', 'active')->count());
+        $this->assertSame($history, $this->history($stub->runId()));
+    }
+
     private function root(): object
     {
         return DB::table('example_machine_subjects')->whereNull('parent_subject_id')->sole();
     }
 
-    private function start(string $integration): WorkflowStub
+    private function start(string $integration, string $version = '1'): WorkflowStub
     {
-        $this->store->seed(self::SUBJECT, $integration);
+        $this->store->seed(self::SUBJECT, $integration, version: $version);
         $stub = $this->admit();
         $this->drain();
         $this->assertSame(

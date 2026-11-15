@@ -54,8 +54,8 @@ final class MachineStore
         ));
         $app->instance(ChildReservationStore::class, new ChildReservationStore($store->ownership));
         $children = [];
-        foreach (['prepare', 'imported'] as $integration) {
-            $children[Catalogue::shipment($integration)->fingerprint()] = Shipment::class;
+        foreach (Catalogue::profiles() as [$integration, $version]) {
+            $children[Catalogue::shipment($integration, $version)->fingerprint()] = Shipment::class;
         }
         $app->instance(ChildDefinitionRegistry::class, new ChildDefinitionRegistry([
             Ownership::CHILD_TYPE => $children,
@@ -79,11 +79,16 @@ final class MachineStore
         return $store;
     }
 
-    public function seed(string $subject, string $integration, bool $enabled = true, bool $prevalidated = false): void
-    {
+    public function seed(
+        string $subject,
+        string $integration,
+        bool $enabled = true,
+        bool $prevalidated = false,
+        string $version = '1'
+    ): void {
         $this->authority->unlocked();
         $this->ownership->authorize($subject, $this->ownership->principal);
-        $profile = Catalogue::order($integration);
+        $profile = Catalogue::order($integration, $version);
         $execution = new ExecutionReference(
             Ownership::APPLICATION,
             $subject,
@@ -104,7 +109,7 @@ final class MachineStore
                 'cancellation_requested' => false,
                 'parent_subject_id' => null,
                 'profile' => $integration,
-                'profile_version' => '1',
+                'profile_version' => $version,
                 'native_instance_id' => Ownership::instance($subject),
                 'original_native_run_id' => null,
                 'enabled' => $enabled,
@@ -377,7 +382,7 @@ final class MachineStore
     private function initializeChild(WorkflowRun $actual, object $root, string $rootRun, array $begin): array
     {
         $execution = MachineAuthority::reference($begin);
-        $binding = Ownership::binding($execution, $rootRun, $root->profile);
+        $binding = Ownership::binding($execution, $rootRun, $root->profile, $root->profile_version);
         $scope = Ownership::childScope($execution);
         if ($actual->workflow_class !== Shipment::class || $actual->workflow_instance_id !== 'dw-bound-child-' . $binding->key()
             || $root->original_native_run_id !== $rootRun

@@ -59,9 +59,12 @@ final readonly class Ownership implements ChildScopeBindingAuthorization
         if (! in_array($operation, ['reserve', 'load', 'close'], true)) {
             throw new LogicException('The binding operation is unavailable.');
         }
-        foreach (['prepare', 'imported'] as $integration) {
-            if (Catalogue::order($integration)->fingerprint() === $identity->parentExecution->policyFingerprint) {
-                $expected = self::binding($identity->parentExecution, $identity->parentRunId, $integration);
+        foreach (Catalogue::profiles() as [$integration, $version]) {
+            if (Catalogue::order(
+                $integration,
+                $version
+            )->fingerprint() === $identity->parentExecution->policyFingerprint) {
+                $expected = self::binding($identity->parentExecution, $identity->parentRunId, $integration, $version);
                 if (PortableDescriptor::encode($expected->toArray()) === PortableDescriptor::encode(
                     $identity->toArray()
                 )) {
@@ -156,11 +159,15 @@ final readonly class Ownership implements ChildScopeBindingAuthorization
         );
     }
 
-    public static function binding(ExecutionReference $begin, string $rootRun, string $integration): BindingIdentity
-    {
+    public static function binding(
+        ExecutionReference $begin,
+        string $rootRun,
+        string $integration,
+        string $version = '1'
+    ): BindingIdentity {
         if ($begin->scope !== self::APPLICATION || $begin->sourceState !== 'received'
             || $begin->executionId !== $rootRun . '.begin.' . $begin->sourceRevision
-            || $begin->policyFingerprint !== Catalogue::order($integration)->fingerprint()) {
+            || $begin->policyFingerprint !== Catalogue::order($integration, $version)->fingerprint()) {
             throw new LogicException('The child does not belong to this original transition execution.');
         }
         $scope = self::childScope($begin);
@@ -173,7 +180,7 @@ final readonly class Ownership implements ChildScopeBindingAuthorization
             $begin->executionId,
             Catalogue::hosting($integration),
             self::CHILD_TYPE,
-            Catalogue::shipment($integration)->fingerprint(),
+            Catalogue::shipment($integration, $version)->fingerprint(),
             'completed',
             ChildReservation::inputFingerprint([$begin->subject, $rootRun, $begin->toArray(), $scope->toArray()])
         );

@@ -5,13 +5,16 @@ declare(strict_types=1);
 namespace DurableWorkflow\Examples\ConfiguredStateMachines;
 
 use LogicException;
+use Workflow\V2\StateMachine\Definition\ChildSlot;
 use Workflow\V2\StateMachine\Definition\ConditionDefinition;
+use Workflow\V2\StateMachine\Definition\MachineDefinition;
+use Workflow\V2\StateMachine\Definition\MachineState;
 use Workflow\V2\StateMachine\Definition\PolicyProfile;
 use Workflow\V2\StateMachine\Definition\RuleReference;
 use Workflow\V2\StateMachine\Definition\TransitionDefinition;
 use Workflow\V2\StateMachine\Rules\RuleRegistry;
 
-/** Closed application definitions. Keep version 1 available when deploying another version. */
+/** Closed application definitions. Version 1 stays available for original runs and compensation. */
 final class Catalogue
 {
     public const STATES = ['received', 'working', 'completed', 'cancelled'];
@@ -56,19 +59,43 @@ final class Catalogue
             $conditions['reconcile.target'] = ConditionDefinition::all([$common, self::fact('prevalidated')]);
             $conditions['reconcile.permission'] = $common;
         }
-        return new PolicyProfile('orders', '1', $integration, $version, self::STATES, $transitions, $conditions);
+        return $version === '1'
+            ? new PolicyProfile('orders', '1', $integration, $version, self::STATES, $transitions, $conditions)
+            : PolicyProfile::forDefinition(
+                self::definition('orders'),
+                $integration,
+                $version,
+                $transitions,
+                $conditions
+            );
     }
 
     public static function shipment(string $integration, string $version = '1'): PolicyProfile
     {
         self::assertVersion($integration, $version);
         $common = self::all(['enabled', 'forward_open']);
-        return new PolicyProfile('shipments', '1', $integration, $version, self::STATES, [
-            new TransitionDefinition('deliver', 'deliver', ['received'], 'completed', 'deliver', '1'),
-        ], [
+        $transitions = [new TransitionDefinition('deliver', 'deliver', ['received'], 'completed', 'deliver', '1')];
+        $conditions = [
             'deliver.target' => ConditionDefinition::all([$common, self::fact('deliver_active')]),
             'deliver.permission' => $common,
-        ]);
+        ];
+        return $version === '1'
+            ? new PolicyProfile('shipments', '1', $integration, $version, self::STATES, $transitions, $conditions)
+            : PolicyProfile::forDefinition(
+                self::definition('shipments'),
+                $integration,
+                $version,
+                $transitions,
+                $conditions
+            );
+    }
+
+    /**
+     * @return list<array{string, string}>
+     */
+    public static function profiles(): array
+    {
+        return [['prepare', '1'], ['imported', '1'], ['prepare', '2'], ['imported', '2']];
     }
 
     public static function registry(): RuleRegistry
@@ -105,6 +132,25 @@ final class Catalogue
         return $integration === 'prepare' ? 'working' : 'received';
     }
 
+    private static function definition(string $machine): MachineDefinition
+    {
+        return new MachineDefinition(
+            $machine,
+            '2',
+            [
+                new MachineState('received', 'Business input accepted; completion has not been committed.'),
+                new MachineState('working', 'Original work admitted; business completion remains pending.'),
+                new MachineState('completed', 'The original execution has verified its required business outcome.'),
+                new MachineState('cancelled', 'Original compensation verified and business cancellation committed.'),
+            ],
+            $machine === 'orders' ? ['begin', 'finish', 'cancel', 'reconcile'] : ['deliver'],
+            self::fact('model_consistent'),
+            $machine === 'orders' ? [
+                new ChildSlot('shipment', ['received', 'working'], 'shipments', '2', 'completed'),
+            ] : []
+        );
+    }
+
     private static function fact(string $name): ConditionDefinition
     {
         return ConditionDefinition::rule(new RuleReference('example.boolean', '1', [
@@ -123,7 +169,7 @@ final class Catalogue
 
     private static function assertVersion(string $integration, string $version): void
     {
-        if ($version !== '1' || ! in_array($integration, ['prepare', 'imported'], true)) {
+        if (! in_array($version, ['1', '2'], true) || ! in_array($integration, ['prepare', 'imported'], true)) {
             throw new LogicException('The original configured machine profile is unavailable.');
         }
     }

@@ -12,6 +12,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+import xml.etree.ElementTree as ET
 from unittest.mock import patch
 from pathlib import Path
 
@@ -410,6 +411,21 @@ class BuildWorkflowTrustTest(unittest.TestCase):
         unit = self.job_source("coverage-unit")
         self.assertIn("--coverage-clover=coverage.xml --testsuite unit", unit)
         self.assertIn("if-no-files-found: error", unit)
+
+    def test_partial_coverage_does_not_add_unexecuted_file_line_maps(self) -> None:
+        # The complete unit report owns the source inventory. A shard must not
+        # merge static fallback lines into another report's PCOV line map.
+        full = ET.parse(ROOT / "phpunit.xml").getroot()
+        partial = ET.parse(ROOT / "phpunit.feature-coverage.xml").getroot()
+        self.assertEqual("true", full.find("coverage").get("includeUncoveredFiles"))
+        self.assertEqual("false", partial.find("coverage").get("includeUncoveredFiles"))
+        partial.find("coverage").set("includeUncoveredFiles", "true")
+        self.assertEqual(ET.tostring(full), ET.tostring(partial))
+        mysql = self.job_source("feature-mysql")
+        self.assertIn("--configuration phpunit.feature-coverage.xml", mysql)
+        unit = self.job_source("coverage-unit")
+        self.assertNotIn("--configuration", unit)
+        self.assertIn("--contract=resources/v2-unit-coverage-contract.json", unit)
 
     def test_pull_request_tracing_is_independent_and_required(self) -> None:
         self.assertEqual({"preflight"}, workflow_job_ancestors(self.build, "pr-tracing"))

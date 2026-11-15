@@ -68,7 +68,12 @@ final readonly class MachineExecution
             $this->profile,
             $execution,
             Catalogue::transition($this->profile, $key)->event,
-            new ActivityTransitionRuntime(SnapshotActivity::class, AdmissionActivity::class, CommitActivity::class),
+            new ActivityTransitionRuntime(
+                SnapshotActivity::class,
+                AdmissionActivity::class,
+                CommitActivity::class,
+                $this->profile->definition
+            ),
             $handlers
         );
     }
