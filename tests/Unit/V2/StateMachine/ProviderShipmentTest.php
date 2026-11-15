@@ -275,6 +275,38 @@ final class ProviderShipmentTest extends TestCase
         $this->assertSame(0, $this->facts()['restocked_quantity']);
     }
 
+    public function testDeductionCannotBeReversedByBookingCancellationWhenHandoverEvidenceIsMissing(): void
+    {
+        $id = static fn (string $operation): Identity => new Identity(
+            'shop-a',
+            'purchase-1',
+            'g1',
+            'accounted.' . $operation
+        );
+        $terms = $this->shipment->booking->terms;
+        $booking = $id('book');
+        $return = $id('return');
+        $this->shipment = new ShipmentDescriptor(
+            new Request($booking, 'ship-book', $terms),
+            new Request($id('cancel'), 'ship-cancel-booking', $terms, $booking),
+            new Request($return, 'request-return', $terms, $booking),
+            new Request($id('restock'), 'restock', $terms, $return),
+            new Request($id('deduct'), 'deduct-stock', $terms, $booking)
+        );
+        $this->provider->shipments()
+            ->register($this->shipment);
+        $this->confirm($this->shipment->booking);
+        $this->fact('handed-over');
+        $this->confirm($this->shipment->deduction);
+        $this->db->exec("DELETE FROM provider_shipment_events WHERE kind = 'handed-over'");
+        $this->provider->plan($this->shipment->cancel, Status::Confirmed);
+        $result = $this->operation()
+            ->compensate($this->context());
+        $this->assertFalse($result->verified);
+        $this->assertSame('shipment-deduction-without-handover-evidence', $result->reason);
+        $this->assertSame(2, (int) $this->db->query('SELECT COUNT(*) FROM provider_effects')->fetchColumn());
+    }
+
     public function testRetainedDeliveredShipmentWaitsForPhysicalAcceptanceAndConfirmedRestocking(): void
     {
         $this->delivered();

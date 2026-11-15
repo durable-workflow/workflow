@@ -63,9 +63,20 @@ final readonly class ShipmentOperation implements ScopedOperation
         if ($booking->status !== Status::Confirmed || $booking->effectId === null) {
             return Resolution::unknown('shipment-booking-' . $booking->status->value);
         }
+        return $this->settleConfirmed($descriptor, $booking, $deduction);
+    }
+
+    private function settleConfirmed(
+        ShipmentDescriptor $descriptor,
+        Observation $booking,
+        ?Observation $deduction
+    ): Resolution {
         $snapshot = $this->provider->shipments()
             ->inspect($descriptor);
         if (! isset($snapshot->events['handed-over'])) {
+            if ($deduction !== null && ! $this->absent($deduction)) {
+                return Resolution::unknown('shipment-deduction-without-handover-evidence');
+            }
             // The provider serializes actual handover against this cancellation's admission.
             $cancel = $this->provider->attempt($descriptor->cancel);
             return $this->settled($cancel) ? Resolution::verified([$booking->effectId, $cancel->effectId], true)
@@ -91,6 +102,16 @@ final readonly class ShipmentOperation implements ScopedOperation
             // Partial, damaged, lost or unreceived goods need their own explicit settlement policy.
             return Resolution::unknown('shipment-physical-return-unsettled');
         }
+        return $this->settleInventory($descriptor, $booking, $deduction, $return, $snapshot);
+    }
+
+    private function settleInventory(
+        ShipmentDescriptor $descriptor,
+        Observation $booking,
+        ?Observation $deduction,
+        Observation $return,
+        array $snapshot
+    ): Resolution {
         if ($deduction !== null && $this->absent($deduction)) {
             return Resolution::verified([$booking->effectId, $return->effectId,
                 'provider-fenced:' . $descriptor->deduction->identity->key(),
@@ -100,6 +121,16 @@ final readonly class ShipmentOperation implements ScopedOperation
         if ($deduction !== null && ! $this->settled($deduction)) {
             return Resolution::unknown('shipment-deduction-evidence-unsettled');
         }
+        return $this->restock($descriptor, $booking, $deduction, $return, $snapshot);
+    }
+
+    private function restock(
+        ShipmentDescriptor $descriptor,
+        Observation $booking,
+        ?Observation $deduction,
+        Observation $return,
+        array $snapshot
+    ): Resolution {
         $restock = $this->provider->attempt($descriptor->restock);
         if (! $this->settled($restock)) {
             return Resolution::unknown('shipment-restock-' . $restock->status->value);

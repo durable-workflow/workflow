@@ -274,26 +274,10 @@ final readonly class AssessmentStore
             ),
         ];
         $evidence = array_fill_keys(array_keys($values), 'business-snapshot:' . $id);
-        if (FinancialCatalogue::selected($plan->recipe) && $actor->role === 'payment') {
-            return $this->financialFacts($actual, $activityId, $actor, $plan, $values, $evidence, $id);
-        }
-        if (FinancialCatalogue::selected($plan->recipe) && $actor->role === 'shipment') {
-            $physical = app(ShipmentBoundaryStore::class)->facts($actual);
-            foreach ($physical['values'] as $key => $value) {
-                $values[$key] = $value;
-                $evidence[$key] = 'original-physical-assessment:' . $id;
-            }
-            $values['physical_observations'] = $physical['snapshot'];
-            $evidence['physical_observations'] = 'original-physical-assessment:' . $id;
-            return new RecordedFacts($id, $values, $evidence);
-        }
-        if (FinancialCatalogue::selected($plan->recipe) && $actor->role === 'order' && $transitionKey === 'fulfill') {
-            [, $terms] = $this->authority->assignment($actor->root_key);
-            $values['fulfillment_permitted'] = $terms->fulfillmentDeadline !== null
-                && Carbon::now()->getTimestamp() < $terms->fulfillmentDeadline;
-            $values['fulfillment_confirmed'] = app(ShipmentBoundaryStore::class)->fulfilled($actual);
-            $evidence['fulfillment_permitted'] = $evidence['fulfillment_confirmed'] = 'original-fulfillment:' . $id;
-            return new RecordedFacts($id, $values, $evidence);
+        $selected = FinancialCatalogue::selected($plan->recipe)
+            ? $this->selectedFacts($actual, $activityId, $actor, $plan, $transitionKey, $values, $evidence, $id) : null;
+        if ($selected !== null) {
+            return $selected;
         }
         if ($actor->role === 'order' && $transitionKey === 'prepare') {
             return $this->preparationFacts($actual, $actor, $row, $plan, $values, $evidence, $id);
@@ -316,6 +300,57 @@ final readonly class AssessmentStore
             $evidence[$transitionKey . '_confirmed'] = $observation->effectId
                 ?? 'provider-observation:' . $forward->identity->key() . ':' . $observation->status->value;
         }
+        return new RecordedFacts($id, $values, $evidence);
+    }
+
+    private function selectedFacts(
+        WorkflowRun $actual,
+        string $activityId,
+        object $actor,
+        BindingPlan $plan,
+        string $transitionKey,
+        array $values,
+        array $evidence,
+        string $id
+    ): ?RecordedFacts {
+        return match ($actor->role) {
+            'payment' => $this->financialFacts($actual, $activityId, $actor, $plan, $values, $evidence, $id),
+            'shipment' => $this->physicalFacts($actual, $values, $evidence, $id),
+            'order' => $transitionKey === 'fulfill' ? $this->fulfillmentFacts(
+                $actual,
+                $actor,
+                $values,
+                $evidence,
+                $id
+            ) : null,
+            default => null,
+        };
+    }
+
+    private function physicalFacts(WorkflowRun $actual, array $values, array $evidence, string $id): RecordedFacts
+    {
+        $physical = app(ShipmentBoundaryStore::class)->facts($actual);
+        foreach ($physical['values'] as $key => $value) {
+            $values[$key] = $value;
+            $evidence[$key] = 'original-physical-assessment:' . $id;
+        }
+        $values['physical_observations'] = $physical['snapshot'];
+        $evidence['physical_observations'] = 'original-physical-assessment:' . $id;
+        return new RecordedFacts($id, $values, $evidence);
+    }
+
+    private function fulfillmentFacts(
+        WorkflowRun $actual,
+        object $actor,
+        array $values,
+        array $evidence,
+        string $id
+    ): RecordedFacts {
+        [, $terms] = $this->authority->assignment($actor->root_key);
+        $values['fulfillment_permitted'] = $terms->fulfillmentDeadline !== null
+            && Carbon::now()->getTimestamp() < $terms->fulfillmentDeadline;
+        $values['fulfillment_confirmed'] = app(ShipmentBoundaryStore::class)->fulfilled($actual);
+        $evidence['fulfillment_permitted'] = $evidence['fulfillment_confirmed'] = 'original-fulfillment:' . $id;
         return new RecordedFacts($id, $values, $evidence);
     }
 

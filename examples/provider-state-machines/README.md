@@ -1,4 +1,4 @@
-# Provider-backed Order, Payment and booking machines
+# Provider-backed Order, Payment and Shipment machines
 
 Work in progress for [#1069](https://github.com/durable-workflow/workflow/issues/1069).
 The recorded SQL host, workflow composition and initial native tests are

@@ -11,18 +11,11 @@ use Workflow\V2\Compensation\Definition\PortableDescriptor;
 /** Called inside the provider's own transaction, never the application or DW transaction. */
 final readonly class ShipmentLedger
 {
+    public const ACTIONS = ['ship-book', 'ship-cancel-booking', 'request-return', 'restock', 'deduct-stock'];
+
     public function __construct(
         private PDO $db
     ) {
-    }
-
-    public static function handles(Request $request): bool
-    {
-        return in_array(
-            $request->action,
-            ['ship-book', 'ship-cancel-booking', 'request-return', 'restock', 'deduct-stock'],
-            true
-        );
     }
 
     public function install(): void

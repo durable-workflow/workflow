@@ -90,7 +90,7 @@ final readonly class Journal
             if (AuthorizationLedger::handles($request)) {
                 $status = $this->authorizationLedger()
                     ->admit($request, $status);
-            } elseif (ShipmentLedger::handles($request)) {
+            } elseif (in_array($request->action, ShipmentLedger::ACTIONS, true)) {
                 $status = (new ShipmentLedger($this->db))
                     ->admit($request, $status);
             } elseif (! $this->targetConfirmed($request)) {
@@ -188,7 +188,7 @@ final readonly class Journal
                 if (AuthorizationLedger::handles($request)) {
                     $this->authorizationLedger()
                         ->assertCompletion($request);
-                } elseif (ShipmentLedger::handles($request)) {
+                } elseif (in_array($request->action, ShipmentLedger::ACTIONS, true)) {
                     (new ShipmentLedger($this->db))
                         ->assertCompletion($request);
                 } elseif (! $this->targetConfirmed($request)) {
@@ -283,7 +283,11 @@ final readonly class Journal
             $this->authorizationLedger()
                 ->assertCompletion($request);
         }
-        if ($row !== null && $row['status'] === Status::Confirmed->value && ShipmentLedger::handles($request)) {
+        if ($row !== null && $row['status'] === Status::Confirmed->value && in_array(
+            $request->action,
+            ShipmentLedger::ACTIONS,
+            true
+        )) {
             (new ShipmentLedger($this->db))
                 ->assertCompletion($request);
         }
