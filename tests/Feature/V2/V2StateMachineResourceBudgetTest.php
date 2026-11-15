@@ -9,8 +9,14 @@ use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Fixtures\V2\BudgetRetainedOperation;
 use Tests\Fixtures\V2\TestBudgetedTransitionWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Compensation\Definition\ScopeIdentity;
+use Workflow\V2\Compensation\Execution\HandlerRegistry;
+use Workflow\V2\Compensation\Persistence\ScopeRepository;
+use Workflow\V2\Compensation\Recovery\ScopeRecovery;
+use Workflow\V2\Compensation\Security\ScopeAuthorization;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -78,6 +84,52 @@ final class V2StateMachineResourceBudgetTest extends TestCase
         ];
     }
 
+    public function testBudgetExhaustionPreservesTheOriginalLedgerForRecoveryAfterClosure(): void
+    {
+        class_exists(TestBudgetedTransitionWorkflow::class);
+        $this->app->instance(HandlerRegistry::class, new HandlerRegistry([
+            'budget.sql' => [
+                '1' => new BudgetRetainedOperation(),
+            ],
+        ]));
+        $this->app->instance(ScopeAuthorization::class, new class() implements ScopeAuthorization {
+            public function assertAllowed(ScopeIdentity $scope, string $principal, string $operation): string
+            {
+                if ($scope->toArray() !== TestBudgetedTransitionWorkflow::scope()->toArray() || $principal !== 'budget-worker') {
+                    throw new \LogicException('The synthetic host refuses another original scope.');
+                }
+                return 'budget-fixture-policy-1';
+            }
+        });
+        $stub = WorkflowStub::make(TestBudgetedTransitionWorkflow::class, 'retained-budget-origin');
+        $stub->start(4, null, null, false, true);
+        $this->drain();
+        $origin = WorkflowRun::query()->findOrFail($stub->runId());
+        $this->assertSame(RunStatus::Completed, $origin->status);
+        $this->assertSame('state_machine_commands_limit_exceeded', $origin->workflowOutput()['reason']);
+        $scope = TestBudgetedTransitionWorkflow::scope();
+        $this->assertSame('open', (new ScopeRepository())->metadata($scope)['status']);
+        $this->assertSame(['first'], DB::table('budget_effect_journal')->pluck('action')->all());
+        $this->assertSame(['active'], DB::table('budget_effect_journal')->pluck('status')->all());
+        $history = WorkflowHistoryEvent::query()->where('workflow_run_id', $origin->id)->orderBy('sequence')->get()
+            ->toArray();
+        $request = app(ScopeRecovery::class)->request(
+            $scope,
+            'budget-cancel-original',
+            'budget-worker',
+            'cancel-original'
+        );
+        $this->assertSame('recovery', $request['route']);
+        $this->drain();
+        $this->assertSame('verified', (new ScopeRepository())->metadata($scope)['status']);
+        $this->assertSame(['compensated'], DB::table('budget_effect_journal')->pluck('status')->all());
+        $this->assertSame($history, WorkflowHistoryEvent::query()->where('workflow_run_id', $origin->id)
+            ->orderBy('sequence')
+            ->get()
+            ->toArray());
+        $this->assertColdReplay($origin);
+    }
+
     #[DataProvider('historyLimits')]
     public function testActualNativeHistoryAdmissionReplaysTheSameBlockedDecision(
         ?int $events,
@@ -105,12 +157,20 @@ final class V2StateMachineResourceBudgetTest extends TestCase
     ): WorkflowRun {
         $stub = WorkflowStub::make(TestBudgetedTransitionWorkflow::class, 'state-machine-resource-budget');
         $stub->start($commands, $events, $bytes, $compensate);
+        $this->drain();
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $this->assertSame(RunStatus::Completed, $run->status);
+        return $run;
+    }
+
+    private function drain(): void
+    {
         for ($i = 0; $i < 40; ++$i) {
             $task = WorkflowTask::query()->where('status', TaskStatus::Ready)->orderBy('created_at')->orderBy(
                 'id'
             )->first();
             if ($task === null) {
-                break;
+                return;
             }
             $job = match ($task->task_type) {
                 TaskType::Workflow => new RunWorkflowTask($task->id),
@@ -119,9 +179,7 @@ final class V2StateMachineResourceBudgetTest extends TestCase
             };
             $this->app->call([$job, 'handle']);
         }
-        $run = WorkflowRun::query()->findOrFail($stub->runId());
-        $this->assertSame(RunStatus::Completed, $run->status);
-        return $run;
+        $this->fail('The bounded native task drain did not settle.');
     }
 
     private function scheduled(WorkflowRun $run): int

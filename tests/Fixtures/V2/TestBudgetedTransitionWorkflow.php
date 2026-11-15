@@ -7,6 +7,13 @@ namespace Tests\Fixtures\V2;
 use Illuminate\Support\Facades\DB;
 use LogicException;
 use Workflow\V2\Activity;
+use Workflow\V2\Compensation\Definition\Obligation;
+use Workflow\V2\Compensation\Definition\ScopeIdentity;
+use Workflow\V2\Compensation\DurableScope;
+use Workflow\V2\Compensation\Execution\ForwardResult;
+use Workflow\V2\Compensation\Execution\OperationContext;
+use Workflow\V2\Compensation\Execution\Resolution;
+use Workflow\V2\Compensation\Execution\ScopedOperation;
 use Workflow\V2\StateMachine\Definition\ExecutionLimits;
 use Workflow\V2\StateMachine\Definition\PolicyProfile;
 use Workflow\V2\StateMachine\Definition\TransitionDefinition;
@@ -24,8 +31,13 @@ final class TestBudgetedTransitionWorkflow extends Workflow
 {
     public array $decision = [];
 
-    public function handle(int $commands, ?int $events = null, ?int $bytes = null, bool $compensate = false): array
-    {
+    public function handle(
+        int $commands,
+        ?int $events = null,
+        ?int $bytes = null,
+        bool $compensate = false,
+        bool $retained = false
+    ): array {
         $transition = new TransitionDefinition('prepare', 'begin', ['received'], 'prepared', 'prepare', '1');
         $profile = new PolicyProfile(
             'budget-example',
@@ -44,26 +56,45 @@ final class TestBudgetedTransitionWorkflow extends Workflow
             'received',
             '1'
         );
+        $scope = $retained ? new DurableScope($this, self::scope(), 'budget-worker') : null;
         $result = (new TransitionRunner())->run($this, $profile, $execution, 'begin', new ActivityTransitionRuntime(
             BudgetSnapshotActivity::class,
             BudgetAdmissionActivity::class,
             BudgetCommitActivity::class
         ), [
-            $transition->handlerKey() => new BudgetTransitionStep(),
+            $transition->handlerKey() => new BudgetTransitionStep($scope),
         ]);
         if ($compensate && $result->status === TransitionStatus::Blocked) {
             $this->compensate();
         }
         return $this->decision = $result->toArray();
     }
+
+    public static function scope(): ScopeIdentity
+    {
+        return new ScopeIdentity('budget-example', null, 'original-subject', 'original-generation');
+    }
 }
 
 final class BudgetTransitionStep extends AssessedTransitionStep
 {
+    public function __construct(
+        private readonly ?DurableScope $scope = null
+    ) {
+    }
+
     public function execute(TransitionContext $context): ExecutionReceipt
     {
         foreach (['first', 'second'] as $action) {
-            Workflow::activity(BudgetEffectActivity::class, $context->execution()->toArray(), $action);
+            if ($this->scope !== null) {
+                $this->scope->execute(new Obligation($action, 'budget.sql', '1', [
+                    'execution' => $context->execution()
+                        ->toArray(),
+                    'action' => $action,
+                ]));
+            } else {
+                Workflow::activity(BudgetEffectActivity::class, $context->execution()->toArray(), $action);
+            }
         }
         return new ExecutionReceipt($context->execution(), ['first', 'second']);
     }
@@ -71,6 +102,60 @@ final class BudgetTransitionStep extends AssessedTransitionStep
     public function compensate(TransitionContext $context, ExecutionReference $originalExecution): void
     {
         Workflow::activity(BudgetUndoActivity::class, $originalExecution->toArray());
+    }
+}
+
+/** Permanent SQL receipts reject late forward execution after compensation. */
+final class BudgetRetainedOperation implements ScopedOperation
+{
+    public function assertInput(array $input): void
+    {
+        if (! is_array($input['execution'] ?? null) || ! in_array(
+            $input['action'] ?? null,
+            ['first', 'second'],
+            true
+        )) {
+            throw new LogicException('The synthetic retained operation input is invalid.');
+        }
+    }
+
+    public function execute(OperationContext $context): ForwardResult
+    {
+        $input = $context->obligation->input;
+        DB::transaction(static function () use ($input): void {
+            $row = DB::table('budget_effect_journal')->where('action', $input['action'])->lockForUpdate()->first();
+            if ($row === null) {
+                (new BudgetEffectActivity())->handle($input['execution'], $input['action']);
+            } elseif (json_decode($row->execution, true, flags: JSON_THROW_ON_ERROR) !== $input['execution']
+                || $row->status !== 'active') {
+                throw new LogicException('The original operation is foreign or permanently compensated.');
+            }
+        });
+        return ForwardResult::observed([
+            'operation' => $context->operationId,
+        ], ['sql:' . $context->operationId]);
+    }
+
+    public function compensate(OperationContext $context): Resolution
+    {
+        $input = $context->obligation->input;
+        DB::transaction(static function () use ($input): void {
+            $row = DB::table('budget_effect_journal')->where('action', $input['action'])->lockForUpdate()->first();
+            if ($row !== null && json_decode(
+                $row->execution,
+                true,
+                flags: JSON_THROW_ON_ERROR
+            ) !== $input['execution']) {
+                throw new LogicException('Compensation cannot target another original operation.');
+            }
+            DB::table('budget_effect_journal')->updateOrInsert([
+                'action' => $input['action'],
+            ], [
+                'execution' => json_encode($input['execution'], JSON_THROW_ON_ERROR),
+                'status' => 'compensated',
+            ]);
+        });
+        return Resolution::verified(['sql-compensated:' . $context->operationId], true);
     }
 }
 

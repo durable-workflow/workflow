@@ -309,7 +309,7 @@ Invalid definitions raise `ResourceLimitExceeded` with the observed dimension,
 count and configured limit before invoking a handler. Neither outcome means
 business cancellation succeeded or an earlier external effect did not happen.
 
-Native Saga retains its registered callbacks. `Workflow::compensate()` runs
+Existing Saga registrations remain intact. `Workflow::compensate()` runs
 outside these forward budgets, while existing cleanup deadlines, technical
 cancellation rules and global runtime limits remain in force. The application
 must explicitly select compensation or retained recovery and preserve unresolved
@@ -321,7 +321,11 @@ the existing DW facilities and application integration contract.
 
 The [native budget fixture](../tests/Feature/V2/V2StateMachineResourceBudgetTest.php)
 checks recorded activities, partial-work compensation and cold replay with a
-synthetic SQL effect journal. It does not qualify a remote provider or the full
+synthetic SQL effect journal. It also closes a budget-blocked origin with an open
+retained scope, then verifies recovery of that exact ledger without modifying
+the original terminal history. Retention across closure requires those
+`DurableScope` obligations; an in-memory Saga callback alone does not supply it.
+The fixture does not qualify a remote provider or the full
 [consumer scenario matrix](https://github.com/durable-workflow/workflow/issues/1069#issuecomment-6889952106).
 
 ## Follow-up implementation sequence
