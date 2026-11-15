@@ -52,6 +52,68 @@ final readonly class Journal
         $this->transaction(fn () => $this->authorizationLedger()->install());
     }
 
+    public function installShipmentSupport(): void
+    {
+        $this->transaction(fn () => $this->shipmentLedger()->install());
+    }
+
+    /**
+     * Pin the synthetic provider's original graph before any physical operation is admitted.
+     */
+    public function registerShipment(ShipmentDescriptor $descriptor): void
+    {
+        foreach ($descriptor->requests() as $request) {
+            $this->authorize($request);
+        }
+        $this->transaction(fn () => $this->shipmentLedger()->register($descriptor));
+    }
+
+    /**
+     * Synthetic carrier/warehouse fixture input, not an application command or a workflow signal.
+     */
+    public function recordShipmentFact(
+        ShipmentDescriptor $descriptor,
+        string $eventId,
+        string $kind,
+        int $quantity,
+        int $accepted = 0,
+        int $saleable = 0
+    ): array {
+        foreach ($descriptor->requests() as $request) {
+            $this->authorize($request);
+        }
+        return $this->transaction(fn (): array => $this->shipmentLedger()->record(
+            $descriptor,
+            $eventId,
+            $kind,
+            $quantity,
+            $accepted,
+            $saleable
+        ));
+    }
+
+    /**
+     * Invoke through a recorded, original-owner-authorized host activity before exposing these facts to workflow code.
+     */
+    public function inspectShipment(ShipmentDescriptor $descriptor): ShipmentSnapshot
+    {
+        foreach ($descriptor->requests() as $request) {
+            $this->authorize($request);
+        }
+        return $this->transaction(function () use ($descriptor): ShipmentSnapshot {
+            $this->shipmentLedger()
+                ->assertDescriptor($descriptor);
+            $observations = [];
+            foreach ($descriptor->requests() as $key => $request) {
+                $observations[$key] = $this->observation($request, $this->operation($request));
+            }
+            $events = $this->shipmentLedger()
+                ->events($descriptor->booking);
+            $this->recordRequest($descriptor->booking, 'shipment-inspection');
+            return new ShipmentSnapshot($descriptor, $observations, $events);
+        });
+    }
+
     /**
      * Select the next attempt's result. This never dispatches an operation or creates an effect.
      */
@@ -84,6 +146,9 @@ final readonly class Journal
             $status = Status::from($plan['status']);
             if (AuthorizationLedger::handles($request)) {
                 $status = $this->authorizationLedger()
+                    ->admit($request, $status);
+            } elseif (ShipmentLedger::handles($request)) {
+                $status = $this->shipmentLedger()
                     ->admit($request, $status);
             } elseif (! $this->targetConfirmed($request)) {
                 $status = Status::Unknown;
@@ -180,6 +245,9 @@ final readonly class Journal
                 if (AuthorizationLedger::handles($request)) {
                     $this->authorizationLedger()
                         ->assertCompletion($request);
+                } elseif (ShipmentLedger::handles($request)) {
+                    $this->shipmentLedger()
+                        ->assertCompletion($request);
                 } elseif (! $this->targetConfirmed($request)) {
                     throw new LogicException(
                         'Compensation cannot confirm against an unknown or different original effect.'
@@ -201,6 +269,11 @@ final readonly class Journal
     private function authorizationLedger(): AuthorizationLedger
     {
         return new AuthorizationLedger($this->db, $this->clock ?? static fn (): int => time());
+    }
+
+    private function shipmentLedger(): ShipmentLedger
+    {
+        return new ShipmentLedger($this->db);
     }
 
     private function operation(Request $request): ?array
@@ -270,6 +343,10 @@ final readonly class Journal
     {
         if ($row !== null && $row['status'] === Status::Confirmed->value && AuthorizationLedger::handles($request)) {
             $this->authorizationLedger()
+                ->assertCompletion($request);
+        }
+        if ($row !== null && $row['status'] === Status::Confirmed->value && ShipmentLedger::handles($request)) {
+            $this->shipmentLedger()
                 ->assertCompletion($request);
         }
         $effect = $this->query('SELECT effect_id FROM provider_effects WHERE operation_id = ?', [

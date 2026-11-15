@@ -9,6 +9,42 @@ Order/Shipment profiles remain unchanged. The
 for immediate capture and booking-only cancellation; the remaining consumer
 variants still need their recorded native integration.
 
+## Original physical Shipment evidence
+
+The optional `installShipmentSupport()` extension keeps the original four-table
+installation and six actions unchanged. Register a closed `ShipmentDescriptor`
+before admitting its separate `ship-book`, `ship-cancel-booking`, `request-return`
+and `restock` operations. The graph pins the original client, business generation,
+SKU, quantity, carrier and all four operation identities. Registration cannot
+replace a return or reopen a cancelled booking's handover fence.
+
+Only the synthetic carrier/warehouse fixture calls `recordShipmentFact()`.
+It records original handover, recipient delivery, loss, transport damage,
+non-collection, warehouse receipt and inspection events. Application commands
+and workflow signals cannot supply these facts. Duplicate equivalent events
+retain the first event; conflicting quantities or reused identities refuse.
+An admitted uncertain booking cancellation fences later handover. After actual
+handover, cancellation of a booking refuses and return remains separate work.
+
+`inspectShipment()` supplies raw operation outcomes and the physical evidence.
+It must be called inside a recorded, original-owner-authorized host activity.
+Booking does not establish delivery. An accepted return request does not establish
+receipt, inspection, acceptance or restocking. Inspection separately records
+received, accepted and saleable quantities; it does not itself restock goods.
+This first full-parcel restock operation requires the complete original quantity
+to be inspected as saleable. Partial or unsuitable goods cannot silently become
+a full restock. Historical delivery and accepted requests survive later return
+or loss; cached effects require their original persisted admissions.
+
+These are synthetic provider source controls. The complete native Shipment
+child, protected host inspection, physical stock deduction/accounting, partial
+restocking, both capture-trigger integrations and the full consumer matrix remain
+unfinished. No real carrier or warehouse behavior is qualified by these methods.
+
+```shell
+vendor/bin/phpunit tests/Unit/V2/StateMachine/ProviderShipmentTest.php
+```
+
 Create a new, separate SQLite file and connection, load `bootstrap.php`, construct
 `Journal($pdo, $trustedClient)`, and call `install()` once. Never pass the DW or
 business database connection. No provider operation reads DW history, task IDs,
