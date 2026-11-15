@@ -1,14 +1,16 @@
 # Business state-machine transitions
 
-This is the first implementation slice of the composable business state-machine proposal. It provides an optional embedded V2 transition protocol with a four-method step contract, recorded assessments, versioned profiles and active-run native Saga integration. Existing workflows and `Workflow\States\StateMachine` are unchanged. Symfony Workflow is not a dependency.
+The optional embedded V2 transition protocol provides a four-method step contract, recorded assessments, shared machine definitions and versioned integration profiles. It uses existing native activities, children and Saga. Existing workflows and `Workflow\States\StateMachine` are unchanged. Symfony Workflow is not a dependency.
 
-**Experimental.** The `Workflow\V2\StateMachine` API is under review and may change in a minor release until the nested slices land; it carries no backward-compatibility promise yet. The complete state-bound binding runtime, retained compensation adapter, business-state database schema and application persistence integration remain unfinished. This does not complete the proposal.
+**Experimental.** The `Workflow\V2\StateMachine` API is under review and may change in a minor release; it carries no backward-compatibility promise yet. The [recorded Order/Shipment example](../examples/configured-state-machines/README.md) connects two integration profiles to retained compensation and protected SQL decisions. General policy migration, resource budgets and published-package recovery qualification remain unfinished. These APIs are not present in the published 2.28.1 package. This does not complete the proposal.
 
 ## Responsibilities and flow
 
 | Type | Responsibility and position in the flow |
 | --- | --- |
-| `Definition\PolicyProfile` | Pinned machine/catalogue and integration profile, including allowed edges and handler versions. Its fingerprint detects changed configuration under an old execution reference. |
+| `Definition\MachineDefinition` / `MachineState` | Shared state identities and meanings, transition identities, mandatory invariant condition and named child slots. |
+| `Definition\PolicyProfile` | Integration-specific edges and handler versions within its optional shared definition. Its fingerprint detects changed configuration under an old execution reference. |
+| `Rules\MachineAssessment` | Recorded invariant decision bound to the definition, condition and exact fact snapshot. |
 | `Definition\TransitionDefinition` | Event/source eligibility, target state, registered handler type/version and whether work exists. |
 | `Execution\ExecutionReference` | Original application scope, business subject, execution identity, policy fingerprint and expected source state/revision. Independent of a DW run or activity attempt. |
 | `Transition\FactSnapshot` | Recorded target and permission assessments, evidence references and snapshot identity. Bound to the exact execution, transition and phase. |
@@ -29,7 +31,9 @@ Event + trusted original execution + pinned profile
   -> select a unique event/source edge
      no candidate: Unavailable
      multiple candidates: Ambiguous
-  -> recorded snapshot and pure target guard [1]
+  -> recorded snapshot and shared invariant gate
+     unsatisfied/unknown: Blocked/Unknown, no work or commit
+  -> pure target guard [1]
      Satisfied -> skip work -> protected commit [4]
      Unknown -> Unknown, no effects
      Unsatisfied
@@ -40,7 +44,7 @@ Event + trusted original execution + pinned profile
           refused/unknown: Blocked/Unknown
        -> register original compensation with native Saga
        -> execute prescribed work [2]
-       -> new recorded snapshot and target guard [3]
+       -> new recorded snapshot, shared invariant gate and target guard [3]
           stale source/revision: Conflict
           unsatisfied/unknown: Pending/Unknown
           satisfied: protected commit [4]
@@ -75,7 +79,32 @@ interface TransitionStep
 
 Existing application contracts can be bridged by a step/runtime adapter. Keep application domain objects behind that adapter rather than serializing them into workflow history. Reuse the same adapter and runner across integration profiles.
 
-Guards perform no I/O. Their boolean result must agree with the corresponding recorded assessment. The application supplies the shared state catalogue and enforces machine-wide invariants in its evaluator and protected commit across every profile. Registered condition rules can evaluate recorded facts and retain their pinned versions, provenance and complete explanation as described below.
+Guards perform no I/O. Their boolean result must agree with the corresponding recorded assessment. A definition-bound runner enforces its shared invariant before either work or commit, including when the initial target is already satisfied. The application evaluates the condition from recorded facts and enforces current authority and concurrency at its protected boundaries.
+
+## Shared definitions and invariants
+
+Use one `MachineDefinition` for the machine's state meanings and common constraints. Profiles may choose different edges, actions and handlers, but cannot add an undeclared state or transition identity. The definition's fingerprint covers the state meanings, invariant condition fingerprint and slot declarations. Changing any of them changes every attached profile fingerprint.
+
+```php
+$definition = new MachineDefinition(
+    'orders', '1',
+    [new MachineState('Received', 'The original order input was accepted.'),
+     new MachineState('Processing', 'The original shipment admission was confirmed.')],
+    ['process'],
+    ConditionDefinition::rule(new RuleReference('order.owner-current', '1')),
+    [new ChildSlot('shipment', ['Processing'], 'shipments', '1', 'delivered')],
+);
+```
+
+The rule above is application-provided and registered through `RuleRegistry`. In the recorded snapshot activity, collect `RecordedFacts`, evaluate `$definition->assess($registry, $facts)`, retain the complete `ConditionEvaluation`, and return `MachineAssessment::fromEvaluation($definition, $evaluation)->toArray()` as `machineAssessment`. Every assessment must use that snapshot's exact ID. A missing assessment, changed definition or changed condition refuses before work. An unsatisfied invariant returns `Blocked`; unknown remains `Unknown`. Neither result automatically compensates effects already performed.
+
+Named profile conditions cannot replace the shared invariant. A fresh post-work snapshot must assess it again before commit. Compensation still receives a correlated snapshot even when the forward invariant is no longer satisfied, so revoking forward permission does not prevent reconciliation of the original effects.
+
+The assessment is recorded host evidence, not a signature or a proof that external facts are true. Authorize fact collection, retain its provenance and immutable explanation, and validate current authority, revision and cancellation under the application's authoritative commit fence. A satisfied recorded assessment cannot replace those live checks.
+
+`$definition->assertBinding($parentProfile, $binding, $childProfile)` checks declared slot, hosting state, child machine/version, pinned profiles and required outcome. It performs no native lookup, authorization, admission, outcome verification or compensation. The binding's original owner/generation and joint scope authorization remain required.
+
+Selecting a definition is explicit. Existing profiles and activity runtimes without one retain their original fingerprints and payloads. Attaching a definition creates a new profile fingerprint; it does not migrate an existing run. Retain the original profile, rules and handlers for that run.
 
 Inside a V2 workflow's `handle()` method:
 
@@ -85,7 +114,7 @@ $transition = new TransitionDefinition(
 );
 $profile = new PolicyProfile(
     'orders', '1', 'integration-a', '1',
-    ['Received', 'Processing'], [$transition],
+    $definition->stateIds(), [$transition], definition: $definition,
 );
 $execution = new ExecutionReference(
     $authorizedScope, $subjectId, $decisionId, $pinnedFingerprint,
@@ -98,7 +127,7 @@ $result = (new TransitionRunner())->run(
     $execution,
     'received',
     new ActivityTransitionRuntime(
-        CollectSnapshot::class, AdmitWork::class, CommitBusinessState::class,
+        CollectSnapshot::class, AdmitWork::class, CommitBusinessState::class, $definition,
     ),
     [$transition->handlerKey() => new PrepareStep()],
 );
@@ -168,7 +197,7 @@ target: {verdict, reason, evidence: [immutable references]}
 permission: {verdict, reason, evidence: [immutable references]}
 ```
 
-Snapshots carry assessments and references, not mutable business entities. The application retains the referenced facts, rule versions and evaluated condition structure. An `after` snapshot must use a different identity and freshly collected facts. A new ID alone does not prove the underlying evidence is current.
+Snapshots carry assessments and references, not mutable business entities. The application retains the referenced facts, rule versions and evaluated condition structure. An `after` snapshot must use a different identity and freshly collected facts. A new ID alone does not prove the underlying evidence is current. When the runtime selects a definition, its snapshot request also includes `machineDefinitionFingerprint` and requires the corresponding `machineAssessment` response. Admission and commit requests carry that same assessment; a legacy runtime refuses this unselected channel.
 
 Admission and commit requests include the execution, transition, snapshot ID, phase, expected state and expected revision. Admission returns `execution` plus `decision: {verdict, reason, evidence}`. The permission evidence can carry a protected admission/capability reference. Each external action must validate its current authority and enforce provider idempotency/fencing where supported.
 
@@ -200,13 +229,13 @@ This uses the existing active-run Saga. Use sequential compensation and keep err
 
 The durable Saga compensation-scope work owns registration durability, recovery ownership and retained obligations after originating runs close. A run-local callback is not such a registry. This slice must not be used to claim closed-child/closed-parent compensation recovery or retained evidence after pruning.
 
-The next nested slice must preserve the same four methods and add:
+The nested binding and retained-scope APIs below preserve the same four methods and provide:
 
 - A binding of authorized scope, parent instance and original owner, named slot, immutable generation, host state, child identity, pinned policies and required business outcome.
 - Separate start/adopt and observe/await operations. Starting must confirm the durable child identity before the parent commits the hosting state. Observation cannot create a second compensation owner.
 - Original-generation routing after state changes/re-entry. Old requests never redirect to the newest child.
 - Verified child compensation before earlier parent compensation. Technical child completion, accepted signals and timeouts are insufficient evidence.
-- Acyclic bounded binding graphs, resource limits and explicit adoption ownership.
+- Explicit ownership of an admitted child. General graph/depth/resource budgets and adoption of arbitrary pre-existing external effects remain application design work.
 
 Existing `child()` can be called from a step and durably await a child result. The separate native admission primitive below supplies a confirmed start milestone; it does not itself implement the state-bound binding protocol. Both paths use the existing child scheduler and history.
 
@@ -231,10 +260,10 @@ This primitive is experimental and embedded-only. Worker-protocol execution refu
 
 ## Follow-up implementation sequence
 
-1. Qualify this transition slice against the upstream quality gates and review its public names and persistence boundary before expanding the API.
-2. Add state-bound machine definitions and a binding port with separate start/adopt and observe/await operations. Preserve scope, original parent owner, slot and generation. First prove duplicate-start and lost-acknowledgement recovery, stale-generation rejection and reuse across parent states with persisted worker tests.
-3. Integrate the accepted durable compensation-scope implementation. Register the original owner before dispatch; route cancellation to the exact bound child and wait for verified child resolution before earlier parent Saga obligations. Do not replace this dependency with a private registry or compensation executor.
-4. Complete the two-integration application example and persistence crash/race matrix: cancelled-before-dispatch, cancellation-versus-commit, partial effects, lost commit acknowledgement, worker restart, closed-run recovery, failed compensation and resource limits. Only then claim end-to-end nested business-machine support.
+1. Retain the original machine definition, profiles, rule versions and handlers across deployments; define an explicit migration policy before moving existing instances.
+2. Use the recorded two-profile example to integrate application authorization, provider reconciliation and retained child-first recovery. Its SQL effect model does not qualify a real carrier or payment provider.
+3. Define and enforce application graph/depth, action and history budgets. Keep unresolved effects durable when a budget or technical deadline is exhausted.
+4. Qualify the package candidate through installed upgrade, worker-loss and recovery scenarios, then publish versioned guides and an immutable package before claiming release delivery.
 
 Each slice must preserve the four-method contract and existing DW workflow APIs. Supporting a child call inside `execute()` does not satisfy the binding and retained-recovery milestones by itself.
 
@@ -246,20 +275,20 @@ The [workflow fixture](../tests/Fixtures/V2/TestBusinessStateMachineWorkflow.php
 vendor/bin/phpunit tests/Unit/V2/StateMachine
 ```
 
-Tests exercise refusal/unknown outcomes, source and scope substitution, changed profile fingerprints, unavailable handlers, stale snapshots, protected-commit outcomes, compensation without a receipt, ordering and unresolved compensation. Cold replay reconstructs the original Saga after a recorded activity failure and reuses completed transition activities without scheduling new effects.
+Tests exercise refusal/unknown outcomes, source and scope substitution, changed profile fingerprints, unavailable handlers, stale snapshots, protected-commit outcomes, compensation without a receipt, ordering and unresolved compensation. Cold replay reconstructs the original Saga after a recorded activity failure and reuses completed transition activities without scheduling new effects. `V2MachineDefinitionTest` additionally drives actual native activities through shared-invariant refusal, post-work revocation and replay without live fact collection. The recorded Order/Shipment example tests both profiles against application SQL and retained recovery.
 
-| Proposal acceptance item | Evidence in this slice | Remaining work |
+| Proposal acceptance item | Source and test evidence | Remaining work |
 | --- | --- | --- |
-| 1–3 | Same generic contract, different profile actions, compensation, edges and fingerprints | Full nested example, rule/action configuration registry and policy migration |
-| 4–7 | Skip work, refuse execution, fresh recheck, typed decisions, explicit ambiguity | Application rule evaluator integration |
-| 8 | Two actions, partial failure and active-run compensation without receipt | Authoritative retained operation evidence through durable compensation scopes |
-| 9–13 | Contract permits existing child calls | State-bound bindings, start/adopt/observe protocol and durable compensation-scope integration |
-| 14–16 | Unknown/refused results do not manufacture success; commit rejection is preserved | Provider reconciliation and real persistence cancellation/commit race tests |
-| 17 | Cold V2 replay consumes recorded activity results | Full nested and retained-recovery replay cases |
-| 18 | Snapshot/admission/commit scope substitution rejects | Live authorization, binding generation and adversarial persistence tests |
-| 19 | Invalid definitions and missing pinned handlers reject | Nested cycle/depth/budget limits and handler migration policy |
-| 20 | Structured decision status, reason and evidence references | Binding and retained-compensation inspection |
-| 21–22 | Runnable V2 regression example, existing APIs unchanged | Full integration example, persistence crash tests and upstream qualification |
+| 1–3 | Shared definitions and invariants; two-profile recorded Order/Shipment example with different actions, edges and fingerprints | Explicit policy/handler migration |
+| 4–7 | Skip work, refuse execution, fresh shared-invariant recheck, typed decisions and registered rules | Application-specific rule and provider integrations |
+| 8 | Retained original operation evidence, partial failure and recovery after worker loss | Installed package/provider qualification |
+| 9–13 | Original-generation bindings, confirmed admission/await, reserved retained child participation | General graph/depth/resource policy |
+| 14–16 | SQL cancellation/commit fencing, lost acknowledgement and verified child-first recovery | Provider-specific reconciliation and publication delivery |
+| 17 | Cold replay of transitions, child admission and retained recovery | Installed upgrade/recovery journey |
+| 18 | Joint binding/scope authorization, generation and protected SQL substitution controls | Application authentication and authorization deployment |
+| 19 | Invalid definitions and unavailable pinned handlers refuse | Budgets and explicit migration policy |
+| 20 | Structured decisions, complete condition explanations and retained ledger inspection | Application-facing operational tooling |
+| 21–22 | Recorded two-profile example, native persistence/crash tests, existing APIs preserved | Final package, installed qualification and versioned publication |
 
 This table reports scope, not completion of the issue's unchecked acceptance criteria.
 
@@ -299,4 +328,4 @@ The recorded reservation activity authorizes the requested relationship before i
 
 Admission commits the genuine child scope with its actual original native run, receipt and parent history in one transaction. Parent compensation first closes the native reservation. A committed never-admitted closure permanently fences late starts and can settle that participant without inventing a child ledger. If admission won, only that original child's verified retained scope can settle it. Missing, foreign or unresolved child scopes remain unresolved, and technical child completion is insufficient. The new `dw.reserved-child-scope` participant does not change the older `dw.child-scope` contract.
 
-Protected business cancellation/commit integration, real database race qualification, closed-run recovery scenarios and the runnable two-integration example remain required before the full business-state-machine contract is delivered.
+The recorded Order/Shipment example connects this primitive to protected business cancellation and verified child-first recovery, including active and closed original runs. Its tests do not qualify arbitrary providers, automatic policy migration or the package's installed release path. Those remaining boundaries keep the full business-state-machine contract unfinished.

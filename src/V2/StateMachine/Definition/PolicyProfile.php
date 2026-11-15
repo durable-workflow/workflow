@@ -34,6 +34,8 @@ final readonly class PolicyProfile
      */
     public array $conditions;
 
+    public ?MachineDefinition $definition;
+
     /**
      * @param non-empty-list<string> $states
      * @param list<TransitionDefinition> $transitions
@@ -47,6 +49,7 @@ final readonly class PolicyProfile
         array $states,
         array $transitions,
         array $conditions = [],
+        ?MachineDefinition $definition = null,
     ) {
         foreach ([$machine, $definitionVersion, $profile, $profileVersion] as $value) {
             if (trim($value) === '') {
@@ -82,6 +85,7 @@ final readonly class PolicyProfile
             }
             PortableDescriptor::identifier($name, 'policy condition');
         }
+        $definition?->assertProfile($machine, $definitionVersion, $states, $transitions);
         $this->machine = $machine;
         $this->definitionVersion = $definitionVersion;
         $this->profile = $profile;
@@ -91,6 +95,7 @@ final readonly class PolicyProfile
             $transition, $transitions);
         $this->conditions = array_map(static fn (ConditionDefinition $condition): ConditionDefinition =>
             $condition, $conditions);
+        $this->definition = $definition;
     }
 
     public function fingerprint(): string
@@ -109,6 +114,11 @@ final readonly class PolicyProfile
             ksort($conditions, SORT_STRING);
             $material[] = [
                 'condition_fingerprints' => $conditions,
+            ];
+        }
+        if ($this->definition !== null) {
+            $material[] = [
+                'machine_definition_fingerprint' => $this->definition->fingerprint(),
             ];
         }
         return hash('sha256', json_encode($material, JSON_THROW_ON_ERROR));

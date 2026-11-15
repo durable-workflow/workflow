@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\StateMachine;
 
 use LogicException;
+use Workflow\V2\StateMachine\Definition\MachineDefinition;
 use Workflow\V2\StateMachine\Definition\PolicyProfile;
 use Workflow\V2\StateMachine\Definition\TransitionDefinition;
 use Workflow\V2\StateMachine\Execution\ExecutionReference;
@@ -52,11 +53,12 @@ final class TransitionRunner
             );
         }
         $transition = $candidates[0];
+        $definition = $profile->definition;
         $step = $handlers[$transition->handlerKey()] ?? null;
         if (! $step instanceof TransitionStep) {
             throw new LogicException('The pinned transition handler is not registered.');
         }
-        $context = $this->context($runtime, $execution, $transition, SnapshotPhase::Before);
+        $context = $this->context($runtime, $execution, $transition, SnapshotPhase::Before, $definition);
         if (! $this->sourceMatches($context)) {
             return new TransitionResult(
                 $execution,
@@ -64,6 +66,10 @@ final class TransitionRunner
                 'source_changed',
                 transitionKey: $transition->key
             );
+        }
+        $invariant = $this->invariantRefusal($context);
+        if ($invariant !== null) {
+            return $invariant;
         }
         if (! $this->targetSatisfied($step, $context)) {
             if ($context->snapshot->target->verdict === Verdict::Unknown) {
@@ -85,15 +91,15 @@ final class TransitionRunner
             }
             $context = new TransitionContext($transition, $context->snapshot, $admission);
             // Capture the original owner before work can suspend, fail or lose its receipt.
-            $workflow->addCompensation(function () use ($runtime, $execution, $transition, $step): void {
-                $current = $this->context($runtime, $execution, $transition, SnapshotPhase::Compensation);
+            $workflow->addCompensation(function () use ($runtime, $execution, $transition, $step, $definition): void {
+                $current = $this->context($runtime, $execution, $transition, SnapshotPhase::Compensation, $definition);
                 $step->compensate($current, $execution);
             });
             $receipt = $step->execute($context);
             if (! $execution->equals($receipt->execution)) {
                 throw new LogicException('The execution receipt belongs to another operation.');
             }
-            $fresh = $this->context($runtime, $execution, $transition, SnapshotPhase::After);
+            $fresh = $this->context($runtime, $execution, $transition, SnapshotPhase::After, $definition);
             if ($fresh->snapshot->snapshotId === $context->snapshot->snapshotId) {
                 throw new LogicException('Post-action evaluation requires a fresh recorded snapshot.');
             }
@@ -105,6 +111,10 @@ final class TransitionRunner
                     'source_changed',
                     transitionKey: $transition->key
                 );
+            }
+            $invariant = $this->invariantRefusal($context);
+            if ($invariant !== null) {
+                return $invariant;
             }
             if (! $this->targetSatisfied($step, $context)) {
                 return $this->decision($context, $context->snapshot->target, TransitionStatus::Pending);
@@ -127,7 +137,8 @@ final class TransitionRunner
         TransitionRuntime $runtime,
         ExecutionReference $execution,
         TransitionDefinition $transition,
-        SnapshotPhase $phase
+        SnapshotPhase $phase,
+        ?MachineDefinition $definition,
     ): TransitionContext {
         $snapshot = $runtime->snapshot($execution, $transition, $phase);
         if (! $execution->equals(
@@ -135,7 +146,21 @@ final class TransitionRunner
         ) || $snapshot->transitionKey !== $transition->key || $snapshot->phase !== $phase) {
             throw new LogicException('The recorded snapshot does not match the requested execution and phase.');
         }
+        if (($definition === null && $snapshot->machineAssessment !== null)
+            || ($definition !== null && ! ($snapshot->machineAssessment?->matches(
+                $definition,
+                $snapshot->snapshotId
+            ) ?? false))) {
+            throw new LogicException('The recorded snapshot lacks its exact pinned machine invariant assessment.');
+        }
         return new TransitionContext($transition, $snapshot);
+    }
+
+    private function invariantRefusal(TransitionContext $context): ?TransitionResult
+    {
+        $assessment = $context->snapshot->machineAssessment;
+        return $assessment === null || $assessment->decision->satisfied() ? null
+            : $this->decision($context, $assessment->decision, TransitionStatus::Blocked);
     }
 
     private function sourceMatches(TransitionContext $context): bool

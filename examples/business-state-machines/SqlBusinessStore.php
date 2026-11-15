@@ -42,6 +42,7 @@ final readonly class SqlBusinessStore
             || ! in_array($execution->sourceState, $context->transition->from, true)
             || $context->snapshot->state !== $execution->sourceState
             || $context->snapshot->revision !== $execution->sourceRevision
+            || ($context->snapshot->machineAssessment !== null && ! $context->snapshot->machineAssessment->decision->satisfied())
             || ! $context->snapshot->target->satisfied()) {
             throw new LogicException('The protected commit requires the matching satisfied assessment.');
         }
@@ -55,6 +56,9 @@ final readonly class SqlBusinessStore
                 'permission' => $context->snapshot->permission->toArray(),
             ],
         ];
+        if ($context->snapshot->machineAssessment !== null) {
+            $request['machineAssessment'] = $context->snapshot->machineAssessment->toArray();
+        }
         $id = self::decisionId($execution, 'transition', $execution->executionId);
         return $this->decide($execution, $principal, $authority, $id, $request, false);
     }

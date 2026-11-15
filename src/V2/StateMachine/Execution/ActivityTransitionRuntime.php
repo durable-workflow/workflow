@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace Workflow\V2\StateMachine\Execution;
 
 use LogicException;
+use Workflow\V2\StateMachine\Definition\MachineDefinition;
 use Workflow\V2\StateMachine\Definition\TransitionDefinition;
 use Workflow\V2\StateMachine\Persistence\CommitResult;
 use Workflow\V2\StateMachine\Rules\Decision;
+use Workflow\V2\StateMachine\Rules\MachineAssessment;
 use Workflow\V2\StateMachine\Rules\Verdict;
 use Workflow\V2\StateMachine\Transition\FactSnapshot;
 use Workflow\V2\StateMachine\Transition\SnapshotPhase;
@@ -21,6 +23,7 @@ final readonly class ActivityTransitionRuntime implements TransitionRuntime
         private string $snapshotActivity,
         private string $admissionActivity,
         private string $commitActivity,
+        private ?MachineDefinition $definition = null,
     ) {
         foreach ([$snapshotActivity, $admissionActivity, $commitActivity] as $activity) {
             if (trim($activity) === '') {
@@ -38,6 +41,9 @@ final readonly class ActivityTransitionRuntime implements TransitionRuntime
             'execution' => $execution->toArray(),
             'transition' => get_object_vars($transition),
             'phase' => $phase->value,
+            ...($this->definition === null ? [] : [
+                'machineDefinitionFingerprint' => $this->definition->fingerprint(),
+            ]),
         ]), [
             'execution',
             'transitionKey',
@@ -57,6 +63,7 @@ final readonly class ActivityTransitionRuntime implements TransitionRuntime
             $result['revision'],
             $this->decision($result['target']),
             $this->decision($result['permission']),
+            $this->machineAssessment($result),
         );
     }
 
@@ -98,7 +105,24 @@ final readonly class ActivityTransitionRuntime implements TransitionRuntime
             'phase' => $context->snapshot->phase->value,
             'expectedState' => $context->snapshot->state,
             'expectedRevision' => $context->snapshot->revision,
+            ...($context->snapshot->machineAssessment === null ? [] : [
+                'machineAssessment' => $context->snapshot->machineAssessment->toArray(),
+            ]),
         ];
+    }
+
+    private function machineAssessment(array $result): ?MachineAssessment
+    {
+        if ($this->definition === null) {
+            if (array_key_exists('machineAssessment', $result)) {
+                throw new LogicException('The activity returned an unselected machine invariant assessment.');
+            }
+            return null;
+        }
+        if (! is_array($result['machineAssessment'] ?? null)) {
+            throw new LogicException('The activity omitted its required machine invariant assessment.');
+        }
+        return MachineAssessment::fromArray($result['machineAssessment'], $this->definition);
     }
 
     /**

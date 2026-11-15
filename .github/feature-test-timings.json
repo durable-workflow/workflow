@@ -156,7 +156,8 @@
     "tests/Feature/V2/V2WorkflowStubContractTest.php": 0.520922,
     "tests/Feature/V2/WaterlineEngineSourceMysqlReadinessTest.php": 0.111111,
     "tests/Feature/V2/V2NestedCompensationExampleTest.php": 30.0,
-    "tests/Feature/V2/V2ConfiguredStateMachineExampleTest.php": 200.0
+    "tests/Feature/V2/V2ConfiguredStateMachineExampleTest.php": 200.0,
+    "tests/Feature/V2/V2MachineDefinitionTest.php": 30.0
   },
   "postgresql": {
     "tests/Feature/ActivityCompletionWakeTest.php": 2.529449,
@@ -317,6 +318,7 @@
     "tests/Feature/WorkflowPollingTest.php": 18.190797,
     "tests/Feature/WorkflowTest.php": 9.056121,
     "tests/Feature/V2/V2NestedCompensationExampleTest.php": 30.0,
-    "tests/Feature/V2/V2ConfiguredStateMachineExampleTest.php": 200.0
+    "tests/Feature/V2/V2ConfiguredStateMachineExampleTest.php": 200.0,
+    "tests/Feature/V2/V2MachineDefinitionTest.php": 30.0
   }
 }
