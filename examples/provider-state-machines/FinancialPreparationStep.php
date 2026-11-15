@@ -44,6 +44,7 @@ final class FinancialPreparationStep extends AssessedTransitionStep
         $binding = new ChildBinding($identity, $started);
         $this->awaitMilestone($binding, 'authorize');
         $reserved = $stock->execute();
+        $this->awaitStock();
         // Only the original native reservation's confirmed provider result can authorize capture.
         Workflow::activity(FinancialHandoffActivity::class, 'request-capture', [
             'binding' => $binding->toArray(),
@@ -79,5 +80,25 @@ final class FinancialPreparationStep extends AssessedTransitionStep
             Workflow::await('financial-milestone', $value['waitSeconds']);
         }
         throw new LogicException('The bounded original financial milestone wait remains unresolved.');
+    }
+
+    private function awaitStock(): void
+    {
+        for ($wake = 0; $wake < 32; ++$wake) {
+            $value = Workflow::activity(FinancialHandoffActivity::class, 'stock', []);
+            if ($value['refused']) {
+                Workflow::activity(FinancialHandoffActivity::class, 'refuse-stock', []);
+                throw new BusinessCancellationRequested('The original stock reservation was definitively refused.');
+            }
+            if ($value['waitSeconds'] === 0) {
+                Workflow::activity(FinancialHandoffActivity::class, 'expire', []);
+                throw new BusinessCancellationRequested('The original authorization expired while stock reconciled.');
+            }
+            if ($value['confirmed']) {
+                return;
+            }
+            Workflow::await('reconcile-stock', $value['waitSeconds']);
+        }
+        throw new LogicException('The bounded original reservation wait remains unresolved.');
     }
 }

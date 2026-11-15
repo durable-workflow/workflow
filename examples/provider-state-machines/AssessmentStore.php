@@ -276,20 +276,10 @@ final readonly class AssessmentStore
         if (FinancialCatalogue::selected($plan->recipe) && $actor->role === 'payment') {
             return $this->financialFacts($actual, $activityId, $actor, $plan, $values, $evidence, $id);
         }
-        if (FinancialCatalogue::selected($plan->recipe) && $transitionKey === 'prepare') {
-            $values['prepare_confirmed'] = app(FinancialHandoffStore::class)->prepared($actual);
-            $evidence['prepare_confirmed'] = 'original-financial-preparation:' . $plan->binding('payment')->key();
-            return new RecordedFacts($id, $values, $evidence);
-        }
         if ($actor->role === 'order' && $transitionKey === 'prepare') {
-            [, $terms] = $this->authority->assignment($actor->root_key);
-            $forward = Request::fromArray($terms->descriptor('order')['forward']);
-            $stock = $this->provider->lookup($forward);
-            $values['prepare_confirmed'] = $this->childConfirmed($row, $plan, 'payment')
-                && $stock->status === Status::Confirmed && $stock->effectId === 'effect-' . $forward->identity->key();
-            $evidence['prepare_confirmed'] = 'original-checkout:' . $plan->binding('payment')->key() . ':'
-                . $forward->identity->key();
-        } elseif ($actor->role === 'order' && in_array($transitionKey, ['pay', 'book'], true)) {
+            return $this->preparationFacts($actual, $actor, $row, $plan, $values, $evidence, $id);
+        }
+        if ($actor->role === 'order' && in_array($transitionKey, ['pay', 'book'], true)) {
             $role = $transitionKey === 'pay' ? 'payment' : 'shipment';
             $values[$transitionKey . '_confirmed'] = $this->childConfirmed($row, $plan, $role);
             $evidence[$transitionKey . '_confirmed'] = 'original-child-publication:' . $plan->binding($role)->key();
@@ -306,6 +296,31 @@ final readonly class AssessmentStore
                 && $observation->effectId === 'effect-' . $forward->identity->key();
             $evidence[$transitionKey . '_confirmed'] = $observation->effectId
                 ?? 'provider-observation:' . $forward->identity->key() . ':' . $observation->status->value;
+        }
+        return new RecordedFacts($id, $values, $evidence);
+    }
+
+    private function preparationFacts(
+        WorkflowRun $actual,
+        object $actor,
+        object $row,
+        BindingPlan $plan,
+        array $values,
+        array $evidence,
+        string $id
+    ): RecordedFacts {
+        if (FinancialCatalogue::selected($plan->recipe)) {
+            $values['prepare_confirmed'] = app(FinancialHandoffStore::class)->prepared($actual);
+            $evidence['prepare_confirmed'] = 'original-financial-preparation:' . $plan->binding('payment')->key();
+        } else {
+            [, $terms] = $this->authority->assignment($actor->root_key);
+            $forward = Request::fromArray($terms->descriptor('order')['forward']);
+            $stock = $this->provider->lookup($forward);
+            $values['prepare_confirmed'] = $this->childConfirmed($row, $plan, 'payment')
+                && $stock->status === Status::Confirmed && $stock->effectId === 'effect-' . $forward->identity->key();
+            $evidence['prepare_confirmed'] = 'original-checkout:' . $plan->binding(
+                'payment'
+            )->key() . ':' . $forward->identity->key();
         }
         return new RecordedFacts($id, $values, $evidence);
     }

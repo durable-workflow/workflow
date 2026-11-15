@@ -20,8 +20,10 @@ use LogicException;
 use Tests\Support\ProviderMachineFixture;
 use Tests\TestCase;
 use Workflow\V2\Compensation\Persistence\ScopeRepository;
+use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSignal;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\WorkflowStub;
 
@@ -101,7 +103,7 @@ final class V2AuthorizedPaymentMachineTest extends TestCase
 
     public function testLostAuthorizationNotificationAtTheOriginalDeadlineCannotDispatchStock(): void
     {
-        $origin = $this->startAuthorized(fn (): bool => $this->publicationExists('authorized'));
+        $this->startAuthorized(fn (): bool => $this->publicationExists('authorized'));
         $key = $this->terms->subjectKey();
         $actor = DB::table('provider_machine_actors')->where('id', Authority::subjectId($key, 'payment'))->sole();
         $payment = WorkflowRun::query()->findOrFail($actor->native_run);
@@ -174,6 +176,80 @@ final class V2AuthorizedPaymentMachineTest extends TestCase
         $this->assertFalse($this->publicationExists('captured'));
     }
 
+    public function testProcessingStockUsesOneOriginalCommandAndASignalCannotAuthorizeCapture(): void
+    {
+        $stock = Request::fromArray($this->terms->descriptor('order')['forward']);
+        $origin = $this->startAuthorized(function () use ($stock): bool {
+            $q = $this->providerDb->prepare('SELECT COUNT(*) FROM provider_operations WHERE id = ? AND status = ?');
+            $q->execute([$stock->identity->key(), Status::Processing->value]);
+            return (int) $q->fetchColumn() === 1;
+        }, reservation: Status::Processing);
+        $this->drainCurrent();
+        $this->assertSame(['authorize'], $this->effects());
+        $this->assertSame('received', $this->rootState());
+        $origin->withRequestId('unproven-stock-hint')
+            ->signal('reconcile-stock', true);
+        $this->drainCurrent();
+        $this->assertSame(['authorize'], $this->effects());
+        $this->assertSame(0, DB::table('provider_machine_milestones')->count());
+        $this->provider->resolve($stock, Status::Confirmed);
+        $origin->withRequestId('original-stock-confirmed')
+            ->signal('reconcile-stock');
+        $this->drainCurrent();
+        $this->assertSame('ready', $this->rootState(), $this->progress());
+        $this->assertSame(['authorize', 'reserve', 'capture-authorized'], $this->effects());
+        $q = $this->providerDb->prepare('SELECT COUNT(*) FROM provider_requests WHERE operation_id = ? AND kind = ?');
+        $q->execute([$stock->identity->key(), 'command']);
+        $this->assertSame(1, (int) $q->fetchColumn());
+    }
+
+    public function testDefinitiveStockRefusalVoidsPermissionWithoutCaptureRefundOrFictitiousRelease(): void
+    {
+        $this->startAuthorized(reservation: Status::Refused);
+        $this->assertSame('cancelled', $this->rootState(), $this->progress());
+        $this->assertSame(['authorize', 'void-authorization'], $this->effects());
+        $this->assertSame('verified', (new ScopeRepository())->inspect(
+            $this->store->authority->plan($this->terms->subjectKey())
+                ->rootScope()
+        )['status']);
+    }
+
+    public function testClosedCapturedPaymentMustConfirmRefundBeforeReservationRelease(): void
+    {
+        $origin = $this->startAuthorized(refund: Status::Unknown);
+        $key = $this->terms->subjectKey();
+        $plan = $this->store->authority->plan($key);
+        $this->assertSame('ready', $this->rootState(), $this->progress());
+        $actor = DB::table('provider_machine_actors')->where('id', Authority::subjectId($key, 'payment'))->sole();
+        $this->assertTrue(WorkflowRun::query()->findOrFail($actor->native_run)->status->isTerminal());
+        $cancellation = app(CancellationStore::class);
+        $cancellation->request($key, $origin->runId(), 'original-refund-unknown');
+        $this->drain();
+        $this->assertSame('requested', (new ScopeRepository())->metadata($plan->rootScope())['status']);
+        $this->assertSame(['authorize', 'reserve', 'capture-authorized'], $this->effects());
+        $this->assertNotSame('cancelled', $this->rootState());
+        $history = $this->history($origin->runId());
+        $this->provider->resolve(Request::fromArray($this->terms->financialDescriptor()['refund']), Status::Confirmed);
+        $cancellation->request($key, $origin->runId(), 'original-refund-now-confirmed');
+        $this->drain();
+        $this->assertSame(
+            'verified',
+            (new ScopeRepository())->metadata($plan->rootScope())['status'],
+            $this->progress()
+        );
+        $this->assertSame(
+            ['authorize', 'reserve', 'capture-authorized', 'refund-authorized', 'release'],
+            $this->effects()
+        );
+        $this->assertSame($history, $this->history($origin->runId()));
+        $this->assertSame(
+            'started',
+            $cancellation->finish($key, $origin->runId(), 'original-refund-now-confirmed')['status']
+        );
+        $this->drain();
+        $this->assertSame('cancelled', $this->rootState(), $this->progress());
+    }
+
     protected function recipe(): string
     {
         return FinancialCatalogue::AFTER_STOCK;
@@ -198,13 +274,29 @@ final class V2AuthorizedPaymentMachineTest extends TestCase
         return static fn (): int => Carbon::now()->getTimestamp();
     }
 
-    private function startAuthorized(?\Closure $stop = null): WorkflowStub
+    private function drainCurrent(): void
     {
-        foreach ($this->terms->descriptor('order') as $request) {
-            $this->provider->plan(Request::fromArray($request), Status::Confirmed);
+        // Advance ordinary short task scheduling, while keeping the original one-hour business timers pending.
+        $through = Carbon::now()->copy()->addSeconds(30);
+        $this->drain(static fn (): bool => ! WorkflowTask::query()
+            ->whereRelation('run', 'namespace', Catalogue::NAMESPACE)->where('status', TaskStatus::Ready)
+            ->where(static fn ($q) => $q->whereNull('available_at')->orWhere('available_at', '<=', $through))
+            ->exists());
+    }
+
+    private function startAuthorized(
+        ?\Closure $stop = null,
+        Status $reservation = Status::Confirmed,
+        Status $refund = Status::Confirmed
+    ): WorkflowStub {
+        foreach ($this->terms->descriptor('order') as $stage => $request) {
+            $this->provider->plan(
+                Request::fromArray($request),
+                $stage === 'forward' ? $reservation : Status::Confirmed
+            );
         }
-        foreach ($this->terms->financialDescriptor() as $request) {
-            $this->provider->plan(Request::fromArray($request), Status::Confirmed);
+        foreach ($this->terms->financialDescriptor() as $stage => $request) {
+            $this->provider->plan(Request::fromArray($request), $stage === 'refund' ? $refund : Status::Confirmed);
         }
         $origin = WorkflowStub::make(
             AuthorizationCheckout::class,

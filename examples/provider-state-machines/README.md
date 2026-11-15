@@ -21,6 +21,16 @@ stock authority. Notification retries use a stable original publication or
 instruction key. The original expiry bounds lost-notification waits and is
 checked again before stock dispatch.
 
+A processing reservation waits for a recorded inspection of the original
+provider operation. A `reconcile-stock` signal only wakes that inspection;
+it cannot authorize capture or dispatch another reservation. Definitive refusal
+closes the original reservation admission and cancels through the retained
+owners, voiding unused permission. Capture instructions also recheck the
+original authorization expiry under the Order's protected row lock. After
+capture, an unknown refund blocks reservation release, including recovery of
+a technically closed Payment. Only confirmed original refund evidence permits
+the earlier reservation to be released.
+
 This new source path currently stops at financial readiness and waits for
 `finish`; that signal permits technical closure and does not assert delivery or
 full fulfillment. The complete physical Shipment producer and the actual

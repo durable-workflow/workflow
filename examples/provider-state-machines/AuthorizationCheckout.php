@@ -14,6 +14,7 @@ use Workflow\V2\Workflow;
 /** Financial preparation only so far. Ready does not assert recipient delivery or full fulfillment. */
 #[Type('example.provider.order.authorized.v1')]
 #[Signal('financial-milestone')]
+#[Signal('reconcile-stock')]
 #[Signal('finish')]
 final class AuthorizationCheckout extends Workflow
 {

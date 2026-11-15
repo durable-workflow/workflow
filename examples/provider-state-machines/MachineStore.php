@@ -145,6 +145,20 @@ final readonly class MachineStore
         $scope = $role === 'order' ? $plan->rootScope() : $plan->childScope($role);
         $this->persistActor($root, $key, $role, $actual, $scope);
         $this->authority->actor($actual);
+        $children = [];
+        if ($role === 'order') {
+            $roles = FinancialCatalogue::selected($this->authority->recipe($key)) ? ['payment'] : [
+                'payment',
+                'shipment',
+            ];
+            $children = array_map(static fn (string $child): array => [
+                'binding' => $plan->binding($child)
+                    ->toArray(),
+                'scope' => $plan->childScope($child)
+                    ->toArray(),
+                'input' => $plan->childInput($child),
+            ], $roles);
+        }
         return $this->withRecipe([
             'key' => $key,
             'role' => $role,
@@ -154,16 +168,7 @@ final readonly class MachineStore
             'scope' => $scope->toArray(),
             'descriptor' => $role === 'payment' && FinancialCatalogue::selected($this->authority->recipe($key))
                 ? $terms->financialDescriptor() : $terms->descriptor($role),
-            'children' => $role === 'order' ? array_map(static fn (string $child): array => [
-                'binding' => $plan->binding($child)
-                    ->toArray(),
-                'scope' => $plan->childScope($child)
-                    ->toArray(),
-                'input' => $plan->childInput($child),
-            ], FinancialCatalogue::selected($this->authority->recipe($key)) ? ['payment'] : [
-                'payment',
-                'shipment',
-            ]) : [],
+            'children' => $children,
         ], $key);
     }
 
