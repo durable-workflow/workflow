@@ -4,8 +4,10 @@ This disposable SQLite simulator supplies an external-effect journal for the
 [consumer scenario specifications](https://github.com/durable-workflow/workflow/issues/1069#issuecomment-6889952106).
 It is application example code, not a production payment/carrier SDK, a DW storage
 adapter, or a claim that those scenarios pass. The existing version-one/two
-Order/Shipment profiles remain unchanged. Payment-child orchestration and the
-full consumer matrix still need their recorded native integration.
+Order/Shipment profiles remain unchanged. The
+[provider-backed native example](../../provider-state-machines) uses this journal
+for immediate capture and booking-only cancellation; the remaining consumer
+variants still need their recorded native integration.
 
 Create a new, separate SQLite file and connection, load `bootstrap.php`, construct
 `Journal($pdo, $trustedClient)`, and call `install()` once. Never pass the DW or
@@ -42,19 +44,63 @@ The provider-side `provider_requests`, `provider_operations` and `provider_effec
 tables expose attempts, outcomes and actual committed effects independently of
 DW's recorded results.
 
-The simulator deliberately does not infer monetary settlement from a command
-name. Applications must validate currency, amounts, quantities, partial-refund
-totals, physical receipt/inspection, policy, authority and exact provider evidence.
-It does not implement real provider credentials, asynchronous networking, payment
-authorization/expiry, stock management or carrier return semantics. In particular,
-these source controls do not qualify the Payment child, the agreed booking-cancel
-→ refund → reservation-release ordering, or the complete 33-scenario matrix.
+The original six-action fixture deliberately does not infer monetary settlement
+from a command name. Applications must validate currency, amounts, quantities,
+partial-refund totals, physical receipt/inspection, policy, authority and exact
+provider evidence. The optional authorization extension below adds explicit
+full-amount financial rules. Neither fixture implements real provider credentials,
+asynchronous networking, stock management or carrier return semantics. These
+provider controls alone do not qualify the native Payment child or the complete
+33-scenario matrix.
 
 Run its connection-isolation, restart, acknowledgement-loss, late-result and
 identity controls with the repository dependencies:
 
 ```shell
 vendor/bin/phpunit tests/Unit/V2/StateMachine/ProviderJournalTest.php
+```
+
+## Original authorization, capture, void and refund
+
+For a new disposable provider fixture, call `installAuthorizationSupport()` after
+`install()`. It adds a financial admission table; existing six-action callers and
+the original four-table installation stay unchanged. This is synthetic provider
+support for PAY-02, not the completed native authorization/capture workflow.
+
+`AuthorizationTerms` pins a positive integer amount in minor units, a three-letter
+uppercase currency and an absolute Unix `expiresAt`. `authorize` creates permission
+to capture, not captured money. `capture-authorized` and `void-authorization` target
+that exact original authorization and repeat its complete terms. A full
+`refund-authorized` targets the exact confirmed capture and pins the same amount
+and currency. The client, business subject, generation and operation identities
+remain fixed. This version permits one capture and one full refund for an
+authorization; it does not implement partial capture or partial refunds.
+
+The provider clock is read only during a new provider admission, inside its own
+transaction. An injected clock supports deterministic source tests. Capture
+admission must precede the original expiry strictly; retry and replacement do not
+extend it. A capture admitted before expiry can complete afterward using its
+persisted admission and original identity. A cached confirmed capture remains a
+historical fact after expiry, void attempts or refund. Expired permission cannot
+create a new capture or fabricate an earlier admission.
+
+A void request atomically fences future capture admission. If a capture is already
+processing or unknown, the void remains unresolved until that original capture's
+outcome is known. Confirmed capture requires a refund, while definitive capture
+non-execution permits the original void. Void and refund are independent effects;
+neither deletes the authorization or capture record. The provider's same-key
+idempotency contract separates repeated command requests from committed effects.
+
+All financial calls must still occur through recorded activities with the complete
+host authorization described below. The existing `RetainedOperation` handler
+continues to select only its original three forward/undo pairs. A versioned
+financial handler, common native Payment lifecycle, both stock- and actual
+recipient-delivery capture policies, and complete crash/race/installed qualification
+remain required before PAY-02 is accepted. Booking or technical child completion
+must never stand in for recipient delivery.
+
+```shell
+vendor/bin/phpunit tests/Unit/V2/StateMachine/ProviderAuthorizationTest.php
 ```
 
 ## Native retained-operation boundary

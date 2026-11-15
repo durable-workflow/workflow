@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 foreach ([
     'Identity',
+    'AuthorizationTerms',
     'Request',
     'Status',
     'Observation',
     'LostAcknowledgement',
+    'AuthorizationLedger',
     'Journal',
     'RetainedOperation',
 ] as $class) {

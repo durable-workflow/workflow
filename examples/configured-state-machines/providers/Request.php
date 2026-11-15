@@ -18,13 +18,21 @@ final readonly class Request
         array $terms,
         public ?Identity $target = null,
     ) {
-        if (! in_array($action, ['capture', 'refund', 'book', 'cancel-booking', 'reserve', 'release'], true)) {
+        if (! in_array($action, [
+            'capture', 'refund', 'book', 'cancel-booking', 'reserve', 'release',
+            'authorize', 'capture-authorized', 'void-authorization', 'refund-authorized',
+        ], true)) {
             throw new InvalidArgumentException('The synthetic provider action is unavailable.');
         }
-        $undo = in_array($action, ['refund', 'cancel-booking', 'release'], true);
-        if ($undo !== ($target !== null) || ($target !== null && (! $identity->sameOwner($target)
+        $targeted = in_array($action, [
+            'refund', 'cancel-booking', 'release', 'capture-authorized', 'void-authorization', 'refund-authorized',
+        ], true);
+        if ($targeted !== ($target !== null) || ($target !== null && (! $identity->sameOwner($target)
             || $identity->key() === $target->key()))) {
             throw new InvalidArgumentException('Compensation must name another original operation of the same owner.');
+        }
+        if (in_array($action, ['authorize', 'capture-authorized', 'void-authorization'], true)) {
+            AuthorizationTerms::fromArray($terms);
         }
         $this->terms = PortableDescriptor::snapshot($terms);
         PortableDescriptor::encode($this->toArray());
