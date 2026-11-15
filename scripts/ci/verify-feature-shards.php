@@ -2,7 +2,10 @@
 
 declare(strict_types=1);
 
-const FEATURE_SHARDS = 6;
+const FEATURE_SHARDS = [
+    'mysql' => 8,
+    'postgresql' => 6,
+];
 const PULL_REQUEST_CONDITION = "github.event_name == 'pull_request'";
 
 $root = dirname(__DIR__, 2);
@@ -29,10 +32,10 @@ foreach ($profiles as $profile => $job) {
 }
 
 printf(
-    "Feature shard verification passed: %d files represented exactly once across %d shards for %s.\n",
+    "Feature shard verification passed: %d files represented exactly once across mysql=%d and postgresql=%d shards.\n",
     count($expectedFiles),
-    FEATURE_SHARDS,
-    implode(' and ', array_keys($profiles)),
+    FEATURE_SHARDS['mysql'],
+    FEATURE_SHARDS['postgresql'],
 );
 
 /**
@@ -91,11 +94,11 @@ function read_file(string $path): string
 function verify_workflow_job(string $workflow, string $job, string $profile): void
 {
     $jobDefinition = workflow_job_definition($workflow, $job);
-    $expectedMatrix = implode(', ', range(0, FEATURE_SHARDS - 1));
+    $expectedMatrix = implode(', ', range(0, FEATURE_SHARDS[$profile] - 1));
     $requirements = [
         'repository preflight dependency' => 'needs: preflight',
         'complete shard matrix' => "shard: [{$expectedMatrix}]",
-        'splitter shard count' => '--shards=' . FEATURE_SHARDS,
+        'splitter shard count' => '--shards=' . FEATURE_SHARDS[$profile],
         'weight profile' => "--weight-profile={$profile}",
     ];
     // MySQL collects coverage on main only. PostgreSQL also runs on pull
@@ -158,12 +161,16 @@ function verify_gate_wiring(string $workflow, string $publicBoundaryWorkflow): v
         [
             'feature-shard dependency' => "    - feature-mysql\n",
             'feature report download' => 'pattern: feature-timing-mysql-*',
-            'first feature report merge input' => '--clover=build/feature-coverage/mysql-shard-0-coverage.xml',
-            'last feature report merge input' => '--clover=build/feature-coverage/mysql-shard-5-coverage.xml',
         ] as $description => $needle
     ) {
         if (! str_contains($coverage, $needle)) {
             fail("Coverage job is missing {$description} [{$needle}].");
+        }
+    }
+    for ($shard = 0; $shard < FEATURE_SHARDS['mysql']; $shard++) {
+        $needle = "--clover=build/feature-coverage/mysql-shard-{$shard}-coverage.xml";
+        if (! str_contains($coverage, $needle)) {
+            fail("Coverage job is missing feature report merge input [{$needle}].");
         }
     }
 
@@ -251,13 +258,13 @@ function verify_split_inventory(
 ): void {
     $represented = [];
 
-    for ($shard = 0; $shard < FEATURE_SHARDS; $shard++) {
+    for ($shard = 0; $shard < FEATURE_SHARDS[$profile]; $shard++) {
         $command = [
             PHP_BINARY,
             $splitter,
             '--dir=' . relative_path($featureDirectory, $root),
             '--shard=' . $shard,
-            '--shards=' . FEATURE_SHARDS,
+            '--shards=' . FEATURE_SHARDS[$profile],
             '--weights=' . $weightsFile,
             '--weight-profile=' . $profile,
         ];
