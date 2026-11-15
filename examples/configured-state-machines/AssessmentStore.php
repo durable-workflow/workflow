@@ -15,6 +15,7 @@ use Workflow\V2\StateMachine\Definition\TransitionDefinition;
 use Workflow\V2\StateMachine\Execution\ExecutionReference;
 use Workflow\V2\StateMachine\Execution\TransitionStatus;
 use Workflow\V2\StateMachine\Rules\Decision;
+use Workflow\V2\StateMachine\Rules\MachineAssessment;
 use Workflow\V2\StateMachine\Rules\RecordedFacts;
 use Workflow\V2\StateMachine\Rules\Verdict;
 use Workflow\V2\StateMachine\Transition\FactSnapshot;
@@ -52,6 +53,10 @@ final class AssessmentStore
             return $this->assessment($existing);
         }
         $values = $this->facts($execution, $transition, $row);
+        if ($profile->definition !== null) {
+            $values['model_consistent'] = (int) $row->revision > 0
+                && in_array($row->state, $profile->definition->stateIds(), true);
+        }
         $facts = new RecordedFacts($id, $values, array_combine(array_keys($values), array_map(
             static fn (string $name): string => 'recorded-fact:' . $id . ':' . $name,
             array_keys($values)
@@ -69,11 +74,20 @@ final class AssessmentStore
             'target' => $target->decision->toArray(),
             'permission' => $permission->decision->toArray(),
         ];
-        $factsJson = PortableDescriptor::encode($facts->toArray());
-        $explanationJson = PortableDescriptor::encode([
+        $explanation = [
             'target' => $target->toArray(),
             'permission' => $permission->toArray(),
-        ]);
+        ];
+        if ($profile->definition !== null) {
+            $machine = $profile->definition->assess($registry, $facts);
+            $snapshot['machineAssessment'] = MachineAssessment::fromEvaluation(
+                $profile->definition,
+                $machine
+            )->toArray();
+            $explanation['machine'] = $machine->toArray();
+        }
+        $factsJson = PortableDescriptor::encode($facts->toArray());
+        $explanationJson = PortableDescriptor::encode($explanation);
         $snapshotJson = PortableDescriptor::encode($snapshot);
         $this->db->table('configured_machine_assessments')
             ->insert([
@@ -94,6 +108,7 @@ final class AssessmentStore
     public function admit(WorkflowRun $actual, array $request): array
     {
         [$context, $row] = $this->context($actual, $request);
+        $this->assertInvariant($context);
         $execution = $context->execution();
         $id = hash('sha256', PortableDescriptor::encode($execution->toArray()));
         $hash = hash('sha256', PortableDescriptor::encode($request));
@@ -148,6 +163,7 @@ final class AssessmentStore
     public function commit(WorkflowRun $actual, array $request): array
     {
         [$context, $row] = $this->context($actual, $request);
+        $this->assertInvariant($context);
         if ($context->transition->key === 'cancel') {
             return app(CancellationStore::class)->commit($context, $row);
         }
@@ -217,7 +233,7 @@ final class AssessmentStore
 
     private function context(WorkflowRun $actual, array $request): array
     {
-        [$execution, $transition, $row] = $this->request(
+        [$execution, $transition, $row, $profile] = $this->request(
             $actual,
             $request,
             ['execution', 'transition', 'snapshotId', 'phase', 'expectedState', 'expectedRevision']
@@ -233,6 +249,15 @@ final class AssessmentStore
             || $snapshot['state'] !== $request['expectedState'] || $snapshot['revision'] !== $request['expectedRevision']) {
             throw new LogicException('The protected boundary does not match its recorded assessment.');
         }
+        $machine = null;
+        if ($profile->definition !== null) {
+            if (PortableDescriptor::encode($request['machineAssessment']) !== PortableDescriptor::encode(
+                $snapshot['machineAssessment']
+            )) {
+                throw new LogicException('The protected boundary substituted its shared machine assessment.');
+            }
+            $machine = MachineAssessment::fromArray($snapshot['machineAssessment'], $profile->definition);
+        }
         $decision = static fn (array $v): Decision => new Decision(Verdict::from(
             $v['verdict']
         ), $v['reason'], $v['evidence']);
@@ -244,7 +269,8 @@ final class AssessmentStore
             $snapshot['state'],
             $snapshot['revision'],
             $decision($snapshot['target']),
-            $decision($snapshot['permission'])
+            $decision($snapshot['permission']),
+            $machine
         )), $row];
     }
 
@@ -252,6 +278,19 @@ final class AssessmentStore
     {
         $execution = MachineAuthority::reference($request['execution'] ?? []);
         [$row, $profile] = $this->authority->actor($actual, $execution);
+        if ($profile->definition !== null) {
+            if (in_array('snapshotId', $keys, true)) {
+                $keys[] = 'machineAssessment';
+                if (! is_array($request['machineAssessment'] ?? null)) {
+                    throw new LogicException('The shared machine assessment is missing or malformed.');
+                }
+            } else {
+                $keys[] = 'machineDefinitionFingerprint';
+                if (($request['machineDefinitionFingerprint'] ?? null) !== $profile->definition->fingerprint()) {
+                    throw new LogicException('The snapshot selected another shared machine definition.');
+                }
+            }
+        }
         $actualKeys = array_keys($request);
         sort($actualKeys);
         sort($keys);
@@ -279,5 +318,12 @@ final class AssessmentStore
             throw new LogicException('The immutable recorded assessment was corrupted.');
         }
         return json_decode($row->snapshot, true, flags: JSON_THROW_ON_ERROR);
+    }
+
+    private function assertInvariant(TransitionContext $context): void
+    {
+        if ($context->snapshot->machineAssessment !== null && ! $context->snapshot->machineAssessment->decision->satisfied()) {
+            throw new LogicException('The protected transition requires its satisfied shared machine invariant.');
+        }
     }
 }

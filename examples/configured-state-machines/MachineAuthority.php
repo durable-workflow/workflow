@@ -104,6 +104,12 @@ final class MachineAuthority
                 || (string) $row->revision !== $binding->parentExecution->sourceRevision))) {
             throw new LogicException('The live business owner refused this child binding.');
         }
+        $profile = $this->profile($row);
+        $profile->definition?->assertBinding(
+            $profile,
+            $binding,
+            Catalogue::shipment($row->profile, $row->profile_version)
+        );
     }
 
     public function authorizeScope(ScopeIdentity $scope, string $principal, string $operation): void
@@ -240,7 +246,7 @@ final class MachineAuthority
     private function shipmentActor(WorkflowRun $actual, object $root, array $args): object
     {
         $begin = self::reference($args[2] ?? []);
-        $binding = Ownership::binding($begin, $args[1] ?? '', $root->profile);
+        $binding = Ownership::binding($begin, $args[1] ?? '', $root->profile, $root->profile_version);
         if ($actual->workflow_instance_id !== 'dw-bound-child-' . $binding->key() || $root->original_native_run_id !== $binding->parentRunId) {
             throw new LogicException('This is not the original Shipment state entry.');
         }

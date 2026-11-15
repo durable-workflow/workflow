@@ -8,11 +8,43 @@ remains unfinished. The retained-scope additions are absent from published 2.28.
 
 The application assigns each Order a pinned `prepare` or `imported` profile before
 starting its native workflow. Both profiles share the same state catalogue and
-mandatory enabled/cancellation guards. Preparation performs reservation and
+forward enabled/cancellation guards. Preparation performs reservation and
 preparation actions and hosts Shipment in `working`; import performs one action
 and hosts Shipment in `received`. Shipment uses the same four-operation transition
 contract and runner for delivery. A prevalidated imported order also has a
 proof-only reconciliation edge: satisfied facts skip work entirely.
+
+## Explicit profile versions
+
+Version one retains its original fingerprints, snapshot payloads and handler
+selection. The bootstrap registers both versions' original child policies so a
+new deployment can still recover version-one reservations and compensation.
+The default assignment remains version one. Select version two explicitly when
+seeding a new authorized subject:
+
+```php
+$store->seed('case-aaaaaaaaaaaaaaaa-g1', 'prepare', version: '2');
+```
+
+Version two attaches both integration profiles to the same `MachineDefinition`
+for Order and another shared definition for Shipment. These definitions pin
+state meanings, transition identities and the Shipment slot. Its invariant
+requires a declared business state and a positive business revision, including
+when target evidence already exists. The snapshot stores the definition-bound
+`MachineAssessment` and its complete rule explanation. Admission and commit must
+use that exact immutable assessment; a substituted proof refuses.
+
+Forward permission remains a transition condition. Closing forward admission
+does not falsify the shared model invariant or prevent the separately verified
+cancellation transition. Protected commits still compare live authority,
+revision and cancellation under the business lock; the recorded proof is not a
+concurrency fence.
+
+Do not rewrite a running subject's `profile_version` or grant to migrate it.
+That changes its fingerprint and refuses the original execution. Keep its
+original assignment available through recovery. This example offers selection
+for new instances and explicit refusal of an unapproved rewrite; it does not
+implement an authorized in-flight migration protocol.
 
 ## Recorded execution
 
@@ -28,8 +60,9 @@ then follows the existing protocol:
    and expected source revision. Native Saga captures the original step before
    its `execute()` can suspend or fail. Every SQL effect has its portable retained
    obligation registered before dispatch.
-4. Work is followed by a different recorded snapshot. Only a satisfied target
-   assessment can reach the protected business commit, which atomically writes
+4. Work is followed by a different recorded snapshot. A version-two machine
+   invariant and the target assessment must both be satisfied before protected
+   business commit, which atomically writes
    business state, decision and publication intent in the example database.
 
 `MachineAuthority` owns native/business authorization, `AssessmentStore` owns
@@ -107,6 +140,6 @@ to continue-as-new/redrive successors. Retention release remains explicit.
 
 The example does not add profile migration, arbitrary executable configuration,
 recursive/shared children, an event router, budget or circuit-breaker policy, or
-a publication dispatcher. Its version-one assignments and `enabled` invariant are
-immutable; authority changes must use the shared business lock and cancellation
-fence. No release date or full StateMachine completion follows from this example.
+a publication dispatcher. Profile assignments stay pinned to original runs;
+authority changes must use the shared business lock and cancellation fence.
+No release date or full StateMachine completion follows from this example.

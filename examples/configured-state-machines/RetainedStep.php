@@ -59,7 +59,12 @@ final class RetainedStep extends AssessedTransitionStep
             $reservation = $this->scope->reserveChild(
                 $execution->executionId . '.shipment',
                 $childScope,
-                Ownership::binding($execution, $this->initialization['rootRun'], $this->initialization['integration'])
+                Ownership::binding(
+                    $execution,
+                    $this->initialization['rootRun'],
+                    $this->initialization['integration'],
+                    $this->initialization['version']
+                )
             );
             $existing = Workflow::activity(BoundaryActivity::class, 'binding', [
                 'reservation' => $reservation->toArray(),
