@@ -7,6 +7,7 @@ namespace Tests\Feature\V2;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Journal;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Request;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Status;
+use DurableWorkflow\Examples\ProviderStateMachines\AssessmentStore;
 use DurableWorkflow\Examples\ProviderStateMachines\Authority;
 use DurableWorkflow\Examples\ProviderStateMachines\Booking;
 use DurableWorkflow\Examples\ProviderStateMachines\CancellationStore;
@@ -164,6 +165,132 @@ final class V2ProviderStateMachineExampleTest extends TestCase
                 ->fetchColumn()
         );
         $this->assertSame(6, count($this->effects()));
+        $commands = (int) $this->providerDb->query("SELECT COUNT(*) FROM provider_requests WHERE kind = 'command'")
+            ->fetchColumn();
+        $lost ? $this->assertGreaterThan(6, $commands) : $this->assertSame(6, $commands);
+    }
+
+    public function testClosedOriginalOrderAndChildrenKeepTheirHistoriesDuringRecoveryAndProofOnlyFinalization(): void
+    {
+        $stub = $this->start();
+        $stub->signal('finish');
+        $this->drain();
+        $this->assertSame(RunStatus::Completed, WorkflowRun::query()->findOrFail($stub->runId())->status);
+        $original = [];
+        foreach (WorkflowRun::query()->whereIn(
+            'workflow_class',
+            [Order::class, Payment::class, Booking::class]
+        )->get() as $run) {
+            $original[$run->id] = $this->history($run->id);
+        }
+        $cancellation = app(CancellationStore::class);
+        $request = $cancellation->request($this->terms->subjectKey(), $stub->runId(), 'after-booking-completion');
+        $this->assertSame('recovery', $request['route']['route']);
+        $this->drain();
+        $finalizer = $cancellation->finish($this->terms->subjectKey(), $stub->runId(), 'after-booking-completion');
+        $this->assertSame('started', $finalizer['status'], $this->progress());
+        $this->drain();
+        $this->assertSame(
+            'cancelled',
+            $this->store->authority->subject($this->terms->subjectKey(), 'order')->state,
+            $this->progress()
+        );
+        $this->assertSame(['reserve', 'capture', 'book', 'cancel-booking', 'refund', 'release'], $this->effects());
+        foreach ($original as $id => $history) {
+            $this->assertSame($history, $this->history($id));
+        }
+    }
+
+    public function testProcessingRefundBlocksOriginalReleaseUntilAConfirmedLateResultAndFreshRecovery(): void
+    {
+        $stub = $this->start(refund: Status::Processing);
+        $key = $this->terms->subjectKey();
+        $cancellation = app(CancellationStore::class);
+        $cancellation->request($key, $stub->runId(), 'processing-refund');
+        $this->drain();
+        $plan = $this->store->authority->plan($key);
+        $this->assertSame('requested', (new ScopeRepository())->metadata($plan->rootScope())['status']);
+        $this->assertSame(['reserve', 'capture', 'book', 'cancel-booking'], $this->effects());
+        $this->assertSame('booked', $this->store->authority->subject($key, 'order')->state);
+        $this->assertSame('pending', $cancellation->finish($key, $stub->runId(), 'processing-refund')['status']);
+        $history = $this->history($stub->runId());
+        $this->provider->resolve(
+            Request::fromArray($this->terms->descriptor('payment')['compensation']),
+            Status::Confirmed
+        );
+        $cancellation->request($key, $stub->runId(), 'confirmed-late-refund');
+        $this->drain();
+        $this->assertSame(
+            'verified',
+            (new ScopeRepository())->metadata($plan->rootScope())['status'],
+            $this->progress()
+        );
+        $this->assertSame(['reserve', 'capture', 'book', 'cancel-booking', 'refund', 'release'], $this->effects());
+        $this->assertSame($history, $this->history($stub->runId()));
+        $this->assertSame('started', $cancellation->finish($key, $stub->runId(), 'confirmed-late-refund')['status']);
+        $this->drain();
+        $this->assertSame('cancelled', $this->store->authority->subject($key, 'order')->state, $this->progress());
+    }
+
+    public function testCancellationBeforeRecordedOwnerInitializationNeverFabricatesAMissingScope(): void
+    {
+        $key = $this->terms->subjectKey();
+        $stub = WorkflowStub::make(Order::class, 'provider-order-' . $key, Catalogue::NAMESPACE);
+        $stub->start($key);
+        $this->assertTrue($stub->terminate('before-recorded-owner')->accepted());
+        $request = app(CancellationStore::class)->request($key, $stub->runId(), 'cancel-before-owner');
+        $this->assertSame('unresolved', $request['status']);
+        $this->assertSame('original_scope_not_initialized', $request['reason']);
+        $this->assertSame(0, DB::table('workflow_compensation_scopes')->count());
+        $this->assertSame([], $this->effects());
+        $this->assertTrue((bool) $this->store->authority->subject($key, 'order')->cancellation_requested);
+    }
+
+    public function testForeignAssessmentIsRefusedBeforeItsInvalidProtectedPayloadIsDecoded(): void
+    {
+        $stub = $this->start();
+        $key = $this->terms->subjectKey();
+        $foreign = DB::table('provider_machine_assessments')->where(
+            'actor_id',
+            Authority::subjectId($key, 'payment')
+        )->first();
+        $payload = json_decode($foreign->payload, true, flags: JSON_THROW_ON_ERROR)['snapshot'];
+        DB::table('provider_machine_assessments')->where('id', $foreign->id)->update([
+            'payload' => '{invalid protected JSON',
+        ]);
+        $actual = WorkflowRun::query()->findOrFail($stub->runId());
+        $execution = $this->store->execution($actual, 'cancel');
+        $this->expectException(\Illuminate\Database\RecordsNotFoundException::class);
+        app(AssessmentStore::class)->commit($actual, [
+            'execution' => $execution,
+            'transition' => get_object_vars(Catalogue::transition('order', 'cancel')),
+            'snapshotId' => $foreign->id,
+            'phase' => 'before',
+            'expectedState' => 'booked',
+            'expectedRevision' => '4',
+            'machineAssessment' => $payload['machineAssessment'],
+        ]);
+    }
+
+    private function start(Status $refund = Status::Confirmed, bool $lost = false): WorkflowStub
+    {
+        foreach (['order', 'payment', 'shipment'] as $role) {
+            $descriptor = $this->terms->descriptor($role);
+            $this->provider->plan(
+                Request::fromArray($descriptor['forward']),
+                Status::Confirmed,
+                $lost && $role !== 'order'
+            );
+            $this->provider->plan(
+                Request::fromArray($descriptor['compensation']),
+                $role === 'payment' ? $refund : Status::Confirmed,
+                $lost && $role === 'payment'
+            );
+        }
+        $stub = WorkflowStub::make(Order::class, 'provider-order-' . $this->terms->subjectKey(), Catalogue::NAMESPACE);
+        $stub->start($this->terms->subjectKey());
+        $this->drain();
+        return $stub;
     }
 
     private function effects(): array

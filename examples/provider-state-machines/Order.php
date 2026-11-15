@@ -17,7 +17,7 @@ final class Order extends Workflow
 {
     public function handle(string $key): array
     {
-        $machine = new Machine($this, self::activity(BoundaryActivity::class, 'initialize', []));
+        $machine = new Machine($this, self::activity(BoundaryActivity::class, 'initialize', ['arguments' => [$key]]));
         try {
             $machine->registerOwner();
             foreach (['reserve', 'pay', 'book'] as $transition) {

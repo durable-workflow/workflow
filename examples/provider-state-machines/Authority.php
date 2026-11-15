@@ -113,7 +113,15 @@ final readonly class Authority implements ChildScopeBindingAuthorization
         }
         $this->authorize($key, $this->principal);
         $plan = $this->plan($key);
-        if (($role === 'order' && ($actual->id !== $plan->rootRun || $args !== [$key]
+        $finalizer = $actual->workflow_class === Cancellation::class;
+        if ($finalizer) {
+            if (count($args) !== 3 || ! is_string($args[1]) || ! is_string($args[2])
+                || $args[1] !== $plan->rootRun
+                || $actual->workflow_instance_id !== CancellationStore::instance($key, $plan->rootRun, $args[2])) {
+                throw new LogicException('The proof-only finalizer belongs to another original cancellation.');
+            }
+            app(CancellationStore::class)->intent($key, $plan->rootRun, $args[2]);
+        } elseif (($role === 'order' && ($actual->id !== $plan->rootRun || $args !== [$key]
                 || $actual->workflow_instance_id !== 'provider-order-' . $key))
             || ($role !== 'order' && (PortableDescriptor::encode($args) !== PortableDescriptor::encode(
                 $plan->childInput($role)
@@ -123,7 +131,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
         $actor = $this->db->table('provider_machine_actors')
             ->where('id', self::subjectId($key, $role))->sole();
         $scope = $role === 'order' ? $plan->rootScope() : $plan->childScope($role);
-        if ($actor->root_key !== $key || $actor->role !== $role || $actor->native_run !== $actual->id
+        if ($actor->root_key !== $key || $actor->role !== $role || $actor->native_run !== ($finalizer ? $plan->rootRun : $actual->id)
             || $actor->scope !== PortableDescriptor::encode($scope->toArray())) {
             throw new LogicException('The recorded original native owner or scope changed.');
         }
@@ -207,7 +215,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
     public static function role(string $class): string
     {
         return match ($class) {
-            Order::class => 'order',
+            Order::class, Cancellation::class => 'order',
             Payment::class => 'payment',
             Booking::class => 'shipment',
             default => throw new LogicException('The native workflow is outside this example.'),

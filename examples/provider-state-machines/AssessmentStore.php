@@ -271,6 +271,9 @@ final readonly class AssessmentStore
         }
         SnapshotPhase::from($request['phase']);
         $transition = Catalogue::transition($actor->role, $request['transition']['key'] ?? '');
+        if ($actual->workflow_class === Cancellation::class && $transition->key !== 'cancel') {
+            throw new LogicException('The proof-only finalizer cannot admit or assess forward work.');
+        }
         $profile = Catalogue::profile($actor->role);
         if (PortableDescriptor::encode($request['transition']) !== PortableDescriptor::encode(
             get_object_vars($transition)

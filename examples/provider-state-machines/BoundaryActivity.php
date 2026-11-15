@@ -14,7 +14,7 @@ final class BoundaryActivity extends Activity
     public function handle(string $operation, array $input): array
     {
         $expected = match ($operation) {
-            'initialize' => [],
+            'initialize', 'initialize-finalizer' => ['arguments'],
             'execution' => ['key'],
             'observe' => ['binding', 'outcome'],
             'verify-step' => ['execution', 'key'],
@@ -28,7 +28,8 @@ final class BoundaryActivity extends Activity
         }
         $store = app(MachineStore::class);
         return match ($operation) {
-            'initialize' => $store->initialize($this->run),
+            'initialize' => $store->initialize($this->run, $input['arguments']),
+            'initialize-finalizer' => $store->initializeFinalizer($this->run, $input['arguments']),
             'execution' => $store->execution($this->run, $input['key']),
             'observe' => $store->observe($this->run, $input['binding'], $input['outcome']),
             'verify-step' => $store->verifyStep($this->run, $input['execution'], $input['key']),

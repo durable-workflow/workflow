@@ -77,7 +77,7 @@ final readonly class MachineStore
         $key = $terms->subjectKey();
         $this->authority->authorize($key, $this->authority->principal);
         $payload = PortableDescriptor::encode($terms->toArray());
-        $this->authority->db->transaction(function () use ($terms, $key, $payload): void {
+        $this->authority->db->transaction(function () use ($key, $payload): void {
             $this->authority->db->table('provider_machine_assignments')
                 ->insert([
                     'id' => $key,
@@ -89,13 +89,16 @@ final readonly class MachineStore
         });
     }
 
-    public function initialize(WorkflowRun $actual): array
+    public function initialize(WorkflowRun $actual, array $arguments): array
     {
         if ($actual->namespace !== Catalogue::NAMESPACE) {
             throw new LogicException('The native initialization is outside this business namespace.');
         }
         $role = Authority::role($actual->workflow_class);
         $args = $actual->workflowArguments();
+        if (PortableDescriptor::encode($args) !== PortableDescriptor::encode($arguments)) {
+            throw new LogicException('The recorded workflow arguments differ from original native admission.');
+        }
         $key = $args[0] ?? '';
         if (! is_string($key) || $actual->namespace !== Catalogue::NAMESPACE) {
             throw new LogicException('The native initialization has no authorized business subject.');
@@ -175,7 +178,7 @@ final readonly class MachineStore
                     'scope' => PortableDescriptor::encode($scope->toArray()),
                 ]);
         });
-        [$actor] = $this->authority->actor($actual);
+        $this->authority->actor($actual);
         return [
             'key' => $key,
             'role' => $role,
@@ -197,6 +200,9 @@ final readonly class MachineStore
     public function execution(WorkflowRun $actual, string $key): array
     {
         [$actor, $row] = $this->authority->actor($actual);
+        if ($actual->workflow_class === Cancellation::class && $key !== 'cancel') {
+            throw new LogicException('A proof-only finalizer cannot take over original forward work.');
+        }
         Catalogue::transition($actor->role, $key);
         return (new ExecutionReference(
             $row->scope,
@@ -206,6 +212,25 @@ final readonly class MachineStore
             $row->state,
             (string) $row->revision,
         ))->toArray();
+    }
+
+    public function initializeFinalizer(WorkflowRun $actual, array $arguments): array
+    {
+        [$actor, , $plan] = $this->authority->actor($actual);
+        if ($actual->workflow_class !== Cancellation::class || PortableDescriptor::encode($arguments) !== PortableDescriptor::encode($actual->workflowArguments())) {
+            throw new LogicException('Only the exact original cancellation finalizer may initialize here.');
+        }
+        return [
+            'key' => $actor->root_key,
+            'role' => 'order',
+            'rootRun' => $plan->rootRun,
+            'nativeRun' => $actual->id,
+            'principal' => $this->authority->principal,
+            'scope' => $plan->rootScope()
+                ->toArray(),
+            'descriptor' => [],
+            'children' => [],
+        ];
     }
 
     /**

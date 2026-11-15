@@ -76,9 +76,10 @@ final readonly class Machine
     {
         $role = $this->initialization['role'];
         $confirmed = $result->status === TransitionStatus::Committed;
+        $outcome = $role === 'payment' ? 'captured' : 'booked';
         return [
             'originalRunId' => $this->workflow->runId(),
-            'businessOutcome' => $confirmed ? ($role === 'payment' ? 'captured' : 'booked') : 'unsettled',
+            'businessOutcome' => $confirmed ? $outcome : 'unsettled',
             'publicationId' => $confirmed ? SqlBusinessStore::decisionId(
                 $result->execution,
                 'transition',

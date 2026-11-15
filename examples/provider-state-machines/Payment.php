@@ -13,7 +13,7 @@ final class Payment extends Workflow
 {
     public function handle(string $key, string $rootRun, array $entry, array $scope): array
     {
-        $machine = new Machine($this, self::activity(BoundaryActivity::class, 'initialize', []));
+        $machine = new Machine($this, self::activity(BoundaryActivity::class, 'initialize', ['arguments' => [$key, $rootRun, $entry, $scope]]));
         $machine->registerOwner();
         return $machine->outcome($machine->transition('capture'));
     }

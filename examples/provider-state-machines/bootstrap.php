@@ -12,7 +12,7 @@ require_once __DIR__ . '/BindingPlan.php';
 foreach ([
     'Authority', 'OwnerOperation', 'MachineStore', 'AssessmentStore', 'CancellationStore',
     'BoundaryActivity', 'SnapshotActivity', 'AdmissionActivity', 'CommitActivity',
-    'RetainedStep', 'Machine', 'Order', 'Payment', 'Booking',
+    'RetainedStep', 'Machine', 'Order', 'Payment', 'Booking', 'Cancellation',
 ] as $class) {
     require_once __DIR__ . '/' . $class . '.php';
 }

@@ -11,9 +11,12 @@ use Workflow\V2\Compensation\Persistence\ScopeRepository;
 use Workflow\V2\Compensation\Recovery\ScopeRecovery;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\StartOptions;
 use Workflow\V2\StateMachine\Execution\TransitionStatus;
 use Workflow\V2\StateMachine\Transition\SnapshotPhase;
 use Workflow\V2\StateMachine\Transition\TransitionContext;
+use Workflow\V2\Support\CurrentRunResolver;
+use Workflow\V2\WorkflowStub;
 
 /** A business intent fences every protected writer before native recovery is requested. */
 final readonly class CancellationStore
@@ -201,5 +204,60 @@ final readonly class CancellationStore
                 'reason' => 'verified_business_cancellation_committed',
             ];
         });
+    }
+
+    /**
+     * A closed original run keeps ownership of recovery; this new workflow can only publish its verified result.
+     */
+    public function finish(string $key, string $rootRun, string $requestKey): array
+    {
+        $this->intent($key, $rootRun, $requestKey);
+        $proof = (new ScopeRepository())->metadata($this->authority->plan($key)->rootScope());
+        if ($proof['original_run_id'] !== $rootRun || $proof['status'] !== 'verified') {
+            return [
+                'status' => 'pending',
+                'reason' => 'original-compensation-unverified',
+            ];
+        }
+        $instanceId = self::instance($key, $rootRun, $requestKey);
+        $instance = WorkflowInstance::query()->where('namespace', Catalogue::NAMESPACE)->find($instanceId);
+        $run = $instance === null ? null : CurrentRunResolver::forInstance($instance);
+        if ($run === null) {
+            $stub = WorkflowStub::make(Cancellation::class, $instanceId, Catalogue::NAMESPACE);
+            $stub->start(StartOptions::returnExistingActive(), $key, $rootRun, $requestKey);
+            return [
+                'status' => 'started',
+                'runId' => $stub->runId(),
+            ];
+        }
+        $this->authority->actor($run);
+        return [
+            'status' => $run->status->value,
+            'runId' => $run->id,
+        ];
+    }
+
+    public function intent(string $key, string $rootRun, string $requestKey): object
+    {
+        $this->authority->authorize($key, $this->authority->principal);
+        PortableDescriptor::identifier($requestKey, 'original cancellation request');
+        [$assignment] = $this->authority->assignment($key);
+        $root = $this->authority->subject($key, 'order');
+        $id = hash('sha256', PortableDescriptor::encode([$key, $rootRun, $requestKey]));
+        $hash = hash('sha256', PortableDescriptor::encode([$key, $rootRun, $requestKey, $this->authority->principal]));
+        $intent = $this->authority->db->table('provider_machine_cancellations')
+            ->where('root_key', $key)
+            ->where('id', $id)
+            ->sole();
+        if ($assignment->root_run !== $rootRun || ! (bool) $root->cancellation_requested
+            || $intent->root_run !== $rootRun || $intent->request_sha256 !== $hash) {
+            throw new LogicException('The original business cancellation is not authorized.');
+        }
+        return $intent;
+    }
+
+    public static function instance(string $key, string $rootRun, string $requestKey): string
+    {
+        return 'provider-cancel-' . hash('sha256', PortableDescriptor::encode([$key, $rootRun, $requestKey]));
     }
 }
