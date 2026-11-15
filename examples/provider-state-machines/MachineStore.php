@@ -261,12 +261,17 @@ final readonly class MachineStore
         )) {
             throw new LogicException('The original forward gate must be permanently closed.');
         }
-        $obligation = $actor->role === 'order' ? match ($key) {
-            'reserve' => 'effect', 'pay' => 'payment', 'book' => 'shipment',
+        $obligations = $actor->role === 'order' ? match ($key) {
+            'reserve' => ['effect'], 'pay' => ['payment'], 'book' => ['shipment'],
+            'prepare' => ['payment', 'effect'],
             default => throw new LogicException('The proof-only transition cannot own provider work.'),
-        } : 'effect';
+        } : ['effect'];
         foreach ($metadata['obligations'] as $item) {
-            if ($item['descriptor']['key'] === $obligation && $item['compensation_status'] !== 'verified') {
+            if (in_array(
+                $item['descriptor']['key'],
+                $obligations,
+                true
+            ) && $item['compensation_status'] !== 'verified') {
                 throw new LogicException('An original transition obligation remains unresolved.');
             }
         }

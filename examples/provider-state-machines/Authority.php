@@ -230,7 +230,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
     public static function role(string $class): string
     {
         return match ($class) {
-            Order::class, PaymentFirstOrder::class, Cancellation::class => 'order',
+            Order::class, CheckoutOrder::class, Cancellation::class => 'order',
             Payment::class => 'payment',
             Booking::class => 'shipment',
             default => throw new LogicException('The native workflow is outside this example.'),

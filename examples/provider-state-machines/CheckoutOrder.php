@@ -11,11 +11,11 @@ use Workflow\V2\Exceptions\WorkflowCancellationRequestedException;
 use Workflow\V2\StateMachine\Execution\TransitionStatus;
 use Workflow\V2\Workflow;
 
-/** A separately selected original policy, never a migration of an existing reserve-first Order. */
-#[Type('example.provider.order.payment-first.v1')]
+/** One lifecycle for both new policies. Legacy Orders retain their original definition and history. */
+#[Type('example.provider.order.checkout.v1')]
 #[Signal('finish')]
 #[Signal('reconcile-stock')]
-final class PaymentFirstOrder extends Workflow
+final class CheckoutOrder extends Workflow
 {
     public function handle(string $key): array
     {
@@ -24,21 +24,12 @@ final class PaymentFirstOrder extends Workflow
         ]));
         try {
             $machine->registerOwner();
-            $paid = $machine->transition('pay');
-            if ($paid->status !== TransitionStatus::Committed) {
+            $prepared = $machine->transition('prepare');
+            if ($prepared->status !== TransitionStatus::Committed) {
                 return [
                     'businessOutcome' => 'unsettled',
-                    'transition' => $paid->toArray(),
+                    'transition' => $prepared->toArray(),
                 ];
-            }
-            while ($machine->transition('reserve')->status !== TransitionStatus::Committed) {
-                $refusal = self::activity(BoundaryActivity::class, 'stock-refusal', []);
-                if ($refusal['refused']) {
-                    self::activity(BoundaryActivity::class, 'cancel-stock-refusal', []);
-                    throw new BusinessCancellationRequested('The original reservation was definitively refused.');
-                }
-                // Reconcile the original operation after an external observation; never create a new payment.
-                self::await('reconcile-stock');
             }
             $booked = $machine->transition('book');
             if ($booked->status !== TransitionStatus::Committed) {

@@ -46,7 +46,11 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
     public static function versionFor(string $recipe): string
     {
         Catalogue::assertRecipe($recipe);
-        return $recipe === Catalogue::RESERVE_FIRST ? self::VERSION : 'provider-order-pair-payment-first-v1';
+        return match ($recipe) {
+            Catalogue::RESERVE_FIRST => self::VERSION,
+            Catalogue::PAYMENT_FIRST => 'provider-order-pair-checkout-payment-v1',
+            Catalogue::COMMON_RESERVE_FIRST => 'provider-order-pair-checkout-reserve-v1',
+        };
     }
 
     public function rootScope(): ScopeIdentity
@@ -61,13 +65,10 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
 
     public function execution(string $role): ExecutionReference
     {
+        $checkout = $this->recipe !== Catalogue::RESERVE_FIRST;
         [$key, $state, $revision] = match ($role) {
-            'payment' => [
-                'pay',
-                $this->recipe === Catalogue::PAYMENT_FIRST ? 'received' : 'reserved',
-                $this->recipe === Catalogue::PAYMENT_FIRST ? '1' : '2',
-            ],
-            'shipment' => ['book', $this->recipe === Catalogue::PAYMENT_FIRST ? 'reserved' : 'paid', '3'],
+            'payment' => $checkout ? ['prepare', 'received', '1'] : ['pay', 'reserved', '2'],
+            'shipment' => $checkout ? ['book', 'ready', '2'] : ['book', 'paid', '3'],
             default => throw new LogicException('Only the original Payment and booking children are selected.'),
         };
         return new ExecutionReference(
@@ -113,7 +114,7 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
             $role,
             $this->execution($role)
 ->executionId,
-            $role === 'payment' ? 'paid' : 'booked',
+            $role === 'payment' ? ($this->recipe === Catalogue::RESERVE_FIRST ? 'paid' : 'ready') : 'booked',
             $role === 'payment' ? self::PAYMENT : self::SHIPMENT,
             Catalogue::profile($role)->fingerprint(),
             $role === 'payment' ? 'captured' : 'booked',

@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Workflow\V2\Compensation;
 
 use Workflow\V2\Compensation\Activities\CompensateObligationActivity;
-use Workflow\V2\Compensation\Activities\ForwardOperationActivity;
 use Workflow\V2\Compensation\Activities\RegisterChildScopeActivity;
 use Workflow\V2\Compensation\Activities\RegisterObligationActivity;
 use Workflow\V2\Compensation\Activities\RequestScopeActivity;
@@ -40,6 +39,15 @@ final readonly class DurableScope
 
     public function execute(Obligation $obligation, ?ActivityOptions $options = null): array
     {
+        return $this->register($obligation)
+            ->execute($options);
+    }
+
+    /**
+     * Record the obligation and compensation before policy work decides when to dispatch its forward operation.
+     */
+    public function register(Obligation $obligation): RegisteredObligation
+    {
         $scope = $this->identity->toArray();
         $principal = $this->principal;
         $id = Workflow::activity(RegisterObligationActivity::class, $scope, $obligation->toArray(), $principal);
@@ -48,13 +56,7 @@ final readonly class DurableScope
             Workflow::activity(RequestScopeActivity::class, $scope, $principal);
             Workflow::activity(CompensateObligationActivity::class, $scope, $id);
         });
-        return Workflow::activity(
-            ForwardOperationActivity::class,
-            $options ?? new ActivityOptions(),
-            $scope,
-            $id,
-            $principal
-        );
+        return new RegisteredObligation($this->identity, $id, $principal);
     }
 
     public function participate(string $key, ScopeIdentity $child): void

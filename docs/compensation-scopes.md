@@ -211,6 +211,21 @@ all effects through this helper. On cleanup, call the existing
 `$this->compensate()` and then `$scope->verifyCompensation()`. The helper does not
 catch the application's business failures or decide its business state.
 
+When business compensation order differs from forward dispatch order, use
+`$registered = $scope->register($obligation)` and call `$registered->execute($options)`
+later inside the same native workflow. Registration runs the existing recorded
+register activity and installs the Saga callback; it does not invoke the
+handler's forward operation. This lets an application register stock before
+Payment, dispatch capture first, and still require refund before stock release.
+The existing `execute()` shorthand records the same registration and forward
+commands together.
+
+The returned `RegisteredObligation` is a workflow-only reference reconstructed
+during replay, not a portable client credential. Execution still passes through
+the original engine-owned forward activity, native attempt authority and scope
+admission fence. It cannot reopen a requested scope or authorize another owner.
+Registration does not prove absence of an effect that was already dispatched.
+
 `participate($key, $childIdentity)` registers a compensation participant. It does
 not start a child, await its business result or establish a state-machine binding.
 Register that participant before dispatching new child work. Each child registers

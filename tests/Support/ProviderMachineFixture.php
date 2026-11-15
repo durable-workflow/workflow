@@ -94,13 +94,16 @@ trait ProviderMachineFixture
     protected function start(
         Status $refund = Status::Confirmed,
         bool $lost = false,
-        Status $reservation = Status::Confirmed
+        Status $reservation = Status::Confirmed,
+        Status $capture = Status::Confirmed,
     ): WorkflowStub {
         foreach (['order', 'payment', 'shipment'] as $role) {
             $descriptor = $this->terms->descriptor($role);
             $this->provider->plan(
                 Request::fromArray($descriptor['forward']),
-                $role === 'order' ? $reservation : Status::Confirmed,
+                match ($role) {
+                    'order' => $reservation, 'payment' => $capture, default => Status::Confirmed
+                },
                 $lost && $role !== 'order'
             );
             $this->provider->plan(

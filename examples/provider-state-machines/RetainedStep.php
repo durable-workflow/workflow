@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Examples\ProviderStateMachines;
 
+use DurableWorkflow\Examples\BusinessStateMachines\BusinessCancellationRequested;
 use LogicException;
 use Workflow\V2\Compensation\Activities\RequestScopeActivity;
 use Workflow\V2\Compensation\Definition\Obligation;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
 use Workflow\V2\Compensation\DurableScope;
+use Workflow\V2\Compensation\RegisteredObligation;
 use Workflow\V2\StateMachine\Binding\BindingIdentity;
 use Workflow\V2\StateMachine\Binding\ChildBinding;
 use Workflow\V2\StateMachine\Execution\ExecutionReceipt;
@@ -30,6 +32,9 @@ final class RetainedStep extends AssessedTransitionStep
     public function execute(TransitionContext $context): ExecutionReceipt
     {
         $execution = $context->execution();
+        if ($this->initialization['role'] === 'order' && $context->transition->key === 'prepare') {
+            return $this->prepare($context);
+        }
         if ($this->initialization['role'] === 'order' && in_array($context->transition->key, ['pay', 'book'], true)) {
             $role = $context->transition->key === 'pay' ? 'payment' : 'shipment';
             return $this->executeChild($context, $role);
@@ -51,6 +56,48 @@ final class RetainedStep extends AssessedTransitionStep
             'execution' => $originalExecution->toArray(),
             'key' => $context->transition->key,
         ]);
+    }
+
+    private function prepare(TransitionContext $context): ExecutionReceipt
+    {
+        if ($context->transition->handler !== 'prepare.' . $this->initialization['recipe']
+            || $context->transition->handlerVersion !== '1') {
+            throw new LogicException('The original checkout policy action changed.');
+        }
+        // Register stock before Payment in both policies. Forward dispatch may happen later,
+        // while native reverse compensation still requires refund before reservation release.
+        $reservation = $this->scope->register(
+            new Obligation('effect', 'provider.effect', '1', $this->initialization['descriptor'])
+        );
+        $operations = [];
+        foreach (Catalogue::preparation($this->initialization['recipe']) as $action) {
+            $next = match ($action) {
+                'payment' => $this->executeChild($context, 'payment')
+->operations,
+                'reserve' => [$this->reserveOriginal($reservation)],
+                default => throw new LogicException('The pinned checkout action is unavailable.'),
+            };
+            $operations = [...$operations, ...$next];
+        }
+        return new ExecutionReceipt($context->execution(), $operations);
+    }
+
+    private function reserveOriginal(RegisteredObligation $reservation): string
+    {
+        $result = $reservation->execute();
+        // A known pending reservation stays inside this one admitted native execution.
+        // Each observation is recorded; a signal never re-admits or repeats the command.
+        while (true) {
+            $stock = Workflow::activity(BoundaryActivity::class, 'stock-refusal', []);
+            if ($stock['confirmed']) {
+                return 'original-provider:' . $result['operation'];
+            }
+            if ($stock['refused']) {
+                Workflow::activity(BoundaryActivity::class, 'cancel-stock-refusal', []);
+                throw new BusinessCancellationRequested('The original reservation was definitively refused.');
+            }
+            Workflow::await('reconcile-stock');
+        }
     }
 
     private function executeChild(TransitionContext $context, string $role): ExecutionReceipt

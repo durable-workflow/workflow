@@ -15,6 +15,8 @@ use PHPUnit\Framework\TestCase;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
 use Workflow\V2\StateMachine\Binding\BindingIdentity;
 use Workflow\V2\StateMachine\Binding\ChildScopeParticipation;
+use Workflow\V2\StateMachine\Definition\PolicyProfile;
+use Workflow\V2\StateMachine\Definition\TransitionDefinition;
 use Workflow\V2\StateMachine\Rules\RecordedFacts;
 use Workflow\V2\StateMachine\Rules\Verdict;
 
@@ -22,29 +24,19 @@ require_once __DIR__ . '/../../../../examples/provider-state-machines/bootstrap.
 
 final class ProviderMachinePolicyTest extends TestCase
 {
-    public function testReservationReconciliationCannotDispatchAnAlreadyRegisteredOperation(): void
+    public function testNewPoliciesShareDefinitionAndRouteWhilePinningDifferentPreparationActions(): void
     {
-        $condition = Catalogue::profile('order', Catalogue::PAYMENT_FIRST)->condition('reserve.permission');
-        foreach ([
-            false => Verdict::Unsatisfied,
-            true => Verdict::Satisfied,
-        ] as $open => $expected) {
-            $facts = new RecordedFacts(
-                'reservation-snapshot',
-                [
-                    'forward_open' => true,
-                    'reservation_dispatch_open' => (bool) $open,
-                ],
-                [
-                    'forward_open' => 'original-owner',
-                    'reservation_dispatch_open' => 'original-reservation-admission',
-                ]
-            );
-            $this->assertSame(
-                $expected,
-                Catalogue::registry()->evaluateCondition($condition, $facts)->decision->verdict
-            );
-        }
+        $reserve = Catalogue::profile('order', Catalogue::COMMON_RESERVE_FIRST);
+        $pay = Catalogue::profile('order', Catalogue::PAYMENT_FIRST);
+        $this->assertSame($reserve->definition->toArray(), $pay->definition->toArray());
+        $route = static fn (PolicyProfile $profile): array => array_map(static fn (TransitionDefinition $t): array =>
+            [$t->key, $t->event, $t->from, $t->to, $t->hasWork], $profile->transitions);
+        $this->assertSame($route($reserve), $route($pay));
+        $this->assertSame(['received', 'ready', 'booked', 'cancelled'], $reserve->states);
+        $this->assertNotSame($reserve->fingerprint(), $pay->fingerprint());
+        $this->assertNotSame($reserve->transitions[0]->handler, $pay->transitions[0]->handler);
+        $this->assertSame(['reserve', 'payment'], Catalogue::preparation(Catalogue::COMMON_RESERVE_FIRST));
+        $this->assertSame(['payment', 'reserve'], Catalogue::preparation(Catalogue::PAYMENT_FIRST));
     }
 
     public function testExistingProviderProfilesKeepTheirAcceptedFingerprints(): void
@@ -74,11 +66,11 @@ final class ProviderMachinePolicyTest extends TestCase
         }, Catalogue::PAYMENT_FIRST);
         $this->assertSame('received', $plan->execution('payment')->sourceState);
         $this->assertSame('1', $plan->execution('payment')->sourceRevision);
-        $this->assertSame('reserved', $plan->execution('shipment')->sourceState);
-        $this->assertSame('3', $plan->execution('shipment')->sourceRevision);
+        $this->assertSame('ready', $plan->execution('shipment')->sourceState);
+        $this->assertSame('2', $plan->execution('shipment')->sourceRevision);
         $this->assertSame($selected->fingerprint(), $plan->binding('payment')->parentExecution->policyFingerprint);
         $this->assertNotSame(BindingPlan::VERSION, $plan->version());
-        $this->assertSame(['paid'], Catalogue::transition('order', 'reserve', Catalogue::PAYMENT_FIRST)->from);
+        $this->assertSame(['received'], Catalogue::transition('order', 'prepare', Catalogue::PAYMENT_FIRST)->from);
     }
 
     public function testForeignRecipeBindingIsRefusedBeforeCallingOriginalOwner(): void

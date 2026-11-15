@@ -176,6 +176,8 @@ final readonly class AssessmentStore
         $refused = $observed->status === Status::Refused && $observed->effectId === null && $observed->admissionClosed;
         $result = [
             'refused' => $refused,
+            'confirmed' => $observed->status === Status::Confirmed
+                && $observed->effectId === 'effect-' . $forward->identity->key(),
             'status' => $observed->status->value,
             'operation' => $forward->identity->key(),
         ];
@@ -196,9 +198,13 @@ final readonly class AssessmentStore
     private function reservationForRefusal(WorkflowRun $actual): array
     {
         [$actor, $row, $plan] = $this->authority->actor($actual);
-        if ($actual->workflow_class !== PaymentFirstOrder::class || $actor->role !== 'order'
-            || $plan->recipe !== Catalogue::PAYMENT_FIRST || $row->state !== 'paid' || (string) $row->revision !== '2') {
-            throw new LogicException('Stock refusal requires the original paid payment-first Order.');
+        if ($actual->workflow_class !== CheckoutOrder::class || $actor->role !== 'order'
+            || $plan->recipe === Catalogue::RESERVE_FIRST || $row->state !== 'received'
+            || (string) $row->revision !== '1'
+            || ($plan->recipe === Catalogue::PAYMENT_FIRST && ! $this->childConfirmed($row, $plan, 'payment'))) {
+            throw new LogicException(
+                'Stock refusal requires the original checkout and its policy payment prerequisite.'
+            );
         }
         [, $terms] = $this->authority->assignment($actor->root_key);
         $descriptor = $terms->descriptor('order');
@@ -234,7 +240,7 @@ final readonly class AssessmentStore
             $assignment = $this->authority->db->table('provider_machine_assignments')
                 ->where('id', $actor->root_key)
                 ->sole();
-            if ($assignment->root_run !== $actual->id || $current->state !== 'paid' || (string) $current->revision !== '2'
+            if ($assignment->root_run !== $actual->id || $current->state !== 'received' || (string) $current->revision !== '1'
                 || ($assignment->stock_refusal !== null && $assignment->stock_refusal !== $receipt)) {
                 throw new LogicException('The original stock refusal or paid Order changed.');
             }
@@ -265,16 +271,15 @@ final readonly class AssessmentStore
             ),
         ];
         $evidence = array_fill_keys(array_keys($values), 'business-snapshot:' . $id);
-        if ($actor->role === 'order' && $plan->recipe === Catalogue::PAYMENT_FIRST && $transitionKey === 'reserve') {
-            $scope = (new ScopeRepository())->inspect($plan->rootScope());
-            $registered = array_filter(
-                $scope['obligations'],
-                static fn (array $item): bool => ($item['descriptor']['key'] ?? null) === 'effect'
-            );
-            $values['reservation_dispatch_open'] = $scope['original_run_id'] === $plan->rootRun && $scope['status'] === 'open' && $registered === [];
-            $evidence['reservation_dispatch_open'] = 'original-reservation-admission:' . $plan->rootScope()->id();
-        }
-        if ($actor->role === 'order' && in_array($transitionKey, ['pay', 'book'], true)) {
+        if ($actor->role === 'order' && $transitionKey === 'prepare') {
+            [, $terms] = $this->authority->assignment($actor->root_key);
+            $forward = Request::fromArray($terms->descriptor('order')['forward']);
+            $stock = $this->provider->lookup($forward);
+            $values['prepare_confirmed'] = $this->childConfirmed($row, $plan, 'payment')
+                && $stock->status === Status::Confirmed && $stock->effectId === 'effect-' . $forward->identity->key();
+            $evidence['prepare_confirmed'] = 'original-checkout:' . $plan->binding('payment')->key() . ':'
+                . $forward->identity->key();
+        } elseif ($actor->role === 'order' && in_array($transitionKey, ['pay', 'book'], true)) {
             $role = $transitionKey === 'pay' ? 'payment' : 'shipment';
             $values[$transitionKey . '_confirmed'] = $this->childConfirmed($row, $plan, $role);
             $evidence[$transitionKey . '_confirmed'] = 'original-child-publication:' . $plan->binding($role)->key();

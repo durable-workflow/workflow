@@ -256,7 +256,7 @@ final readonly class CancellationStore
             'scope' => $plan->rootScope()
                 ->toArray(),
         ];
-        if ($plan->recipe === Catalogue::PAYMENT_FIRST) {
+        if ($plan->recipe !== Catalogue::RESERVE_FIRST) {
             $assignment = $this->authority->db->table('provider_machine_assignments')
                 ->where('id', $plan->terms->subjectKey())
                 ->sole();
