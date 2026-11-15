@@ -31,7 +31,7 @@ final class Catalogue
                     ['reserve', 'received', 'reserved', true],
                     ['pay', 'reserved', 'paid', true],
                     ['book', 'paid', 'booked', true],
-                    ['cancel', 'booked', 'cancelled', false],
+                    ['cancel', ['received', 'reserved', 'paid', 'booked'], 'cancelled', false],
                 ],
             ],
             'payment' => [['received', 'captured'], [['capture', 'received', 'captured', true]]],
@@ -42,7 +42,9 @@ final class Catalogue
         $transitions = [];
         $conditions = [];
         foreach ($edges as [$key, $from, $to, $work]) {
-            $transitions[] = new TransitionDefinition($key, $key, [$from], $to, $key, '1', $work);
+            $transitions[] = new TransitionDefinition($key, $key, is_array($from) ? $from : [
+                $from,
+            ], $to, $key, '1', $work);
             $conditions[$key . '.target'] = self::all([
                 $key === 'cancel' ? 'cancellation_requested' : 'forward_open',
                 $key . '_confirmed',

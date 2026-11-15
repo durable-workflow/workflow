@@ -1,0 +1,254 @@
+<?php
+
+declare(strict_types=1);
+
+namespace DurableWorkflow\Examples\ProviderStateMachines;
+
+use DurableWorkflow\Examples\BusinessStateMachines\SqlBusinessStore;
+use Illuminate\Database\ConnectionInterface;
+use LogicException;
+use Workflow\V2\Compensation\Definition\PortableDescriptor;
+use Workflow\V2\Compensation\Definition\ScopeIdentity;
+use Workflow\V2\Compensation\Execution\OperationContext;
+use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\StateMachine\Binding\BindingIdentity;
+use Workflow\V2\StateMachine\Binding\ChildScopeBindingAuthorization;
+use Workflow\V2\StateMachine\Binding\ChildScopeParticipation;
+use Workflow\V2\StateMachine\Execution\ExecutionReference;
+
+/** Trusted bootstrap owns the principal and business grants; workflow arguments never grant access. */
+final readonly class Authority implements ChildScopeBindingAuthorization
+{
+    /**
+     * @param list<string> $subjects Canonical OrderTerms::subjectKey() grants.
+     */
+    public function __construct(
+        public ConnectionInterface $db,
+        public string $principal,
+        private array $subjects,
+    ) {
+        PortableDescriptor::identifier($principal, 'authenticated principal');
+        if (! array_is_list($subjects)) {
+            throw new LogicException('The worker needs an explicit business subject grant list.');
+        }
+        foreach ($subjects as $subject) {
+            if (! is_string($subject) || preg_match('/\A[0-9a-f]{64}\z/D', $subject) !== 1) {
+                throw new LogicException('Business grants must use canonical client/subject/generation identities.');
+            }
+        }
+    }
+
+    public function authorize(string $key, string $principal): void
+    {
+        if ($this->db->transactionLevel() !== 0 || $principal !== $this->principal
+            || ! in_array($key, $this->subjects, true)) {
+            throw new LogicException('The original business generation is outside this authenticated host grant.');
+        }
+    }
+
+    public function assignment(string $key): array
+    {
+        $this->authorize($key, $this->principal);
+        $row = $this->db->table('provider_machine_assignments')
+            ->where('id', $key)
+            ->sole();
+        if (! hash_equals($row->terms_sha256, hash('sha256', $row->terms))) {
+            throw new LogicException('The pinned original business terms changed.');
+        }
+        $terms = OrderTerms::fromArray(json_decode($row->terms, true, flags: JSON_THROW_ON_ERROR));
+        if ($terms->subjectKey() !== $key) {
+            throw new LogicException('The original client, subject or generation was substituted.');
+        }
+        return [$row, $terms];
+    }
+
+    public function plan(string $key): BindingPlan
+    {
+        [$row, $terms] = $this->assignment($key);
+        if (! is_string($row->root_run) || $row->root_run === '') {
+            throw new LogicException('The original root owner has not initialized.');
+        }
+        return new BindingPlan($terms, $row->root_run, $this->principal, function (
+            BindingIdentity $identity,
+            string $operation,
+        ) use ($key): void {
+            [$current] = $this->assignment($key);
+            $root = $this->subject($key, 'order');
+            if ($current->root_run !== $identity->parentRunId || ($operation === 'reserve'
+                && ((bool) $root->cancellation_requested || $root->state !== $identity->parentExecution->sourceState
+                    || (string) $root->revision !== $identity->parentExecution->sourceRevision))) {
+                throw new LogicException('The live original owner refused this child admission.');
+            }
+        });
+    }
+
+    public function subject(string $key, string $role): object
+    {
+        $this->authorize($key, $this->principal);
+        $row = $this->db->table('example_machine_subjects')
+            ->where('id', self::subjectId($key, $role))->sole();
+        $this->assertGrant($row, $key, $role);
+        return $row;
+    }
+
+    public function assertGrant(object $row, string $key, string $role): void
+    {
+        if ($row->id !== self::subjectId($key, $role) || $row->scope !== Catalogue::APPLICATION
+            || $row->subject !== self::subjectName($key, $role) || $row->principal !== $this->principal
+            || $row->authority_version !== self::grant($role)) {
+            throw new LogicException('The original subject authority or selected policy is unavailable.');
+        }
+    }
+
+    public function actor(WorkflowRun $actual, ?ExecutionReference $execution = null): array
+    {
+        if ($actual->namespace !== Catalogue::NAMESPACE) {
+            throw new LogicException('The native actor is outside the configured business namespace.');
+        }
+        $role = self::role($actual->workflow_class);
+        $args = $actual->workflowArguments();
+        $key = $args[0] ?? '';
+        if (! is_string($key) || $actual->namespace !== Catalogue::NAMESPACE) {
+            throw new LogicException('The native actor has no authorized business namespace.');
+        }
+        $this->authorize($key, $this->principal);
+        $plan = $this->plan($key);
+        if (($role === 'order' && ($actual->id !== $plan->rootRun || $args !== [$key]
+                || $actual->workflow_instance_id !== 'provider-order-' . $key))
+            || ($role !== 'order' && (PortableDescriptor::encode($args) !== PortableDescriptor::encode(
+                $plan->childInput($role)
+            ) || $actual->workflow_instance_id !== 'dw-bound-child-' . $plan->binding($role)->key()))) {
+            throw new LogicException('The native actor differs from the pinned original admission.');
+        }
+        $actor = $this->db->table('provider_machine_actors')
+            ->where('id', self::subjectId($key, $role))->sole();
+        $scope = $role === 'order' ? $plan->rootScope() : $plan->childScope($role);
+        if ($actor->root_key !== $key || $actor->role !== $role || $actor->native_run !== $actual->id
+            || $actor->scope !== PortableDescriptor::encode($scope->toArray())) {
+            throw new LogicException('The recorded original native owner or scope changed.');
+        }
+        $row = $this->subject($key, $role);
+        if ($execution !== null && ($execution->scope !== $row->scope || $execution->subject !== $row->subject
+            || $execution->policyFingerprint !== Catalogue::profile($role)->fingerprint()
+            || ! str_starts_with($execution->executionId, $actual->id . '.'))) {
+            throw new LogicException('The transition belongs to another original native or business owner.');
+        }
+        return [$actor, $row, $plan];
+    }
+
+    public function authorizeScope(ScopeIdentity $scope, string $principal, string $operation): string
+    {
+        $key = explode('.', $scope->key)[0];
+        $this->authorize($key, $principal);
+        if ($scope->application !== Catalogue::APPLICATION || $scope->namespace !== Catalogue::NAMESPACE
+            || ! in_array(
+                $operation,
+                ['register', 'participate', 'forward', 'compensate', 'request', 'inspect'],
+                true
+            )) {
+            throw new LogicException('The retained scope is outside the selected host boundary.');
+        }
+        $plan = $this->plan($key);
+        foreach ([$plan->rootScope(), $plan->childScope('payment'), $plan->childScope('shipment')] as $expected) {
+            if ($scope->toArray() === $expected->toArray()) {
+                $this->subject($key, 'order');
+                return BindingPlan::VERSION;
+            }
+        }
+        throw new LogicException('The original retained scope generation was substituted.');
+    }
+
+    public function authorizeOperation(OperationContext $context, string $operation, bool $owner = false): array
+    {
+        $this->authorizeScope($context->scope, $this->principal, $operation);
+        $key = explode('.', $context->scope->key)[0];
+        [, $terms] = $this->assignment($key);
+        $plan = $this->plan($key);
+        $role = $context->scope->key === $key ? 'order' : substr($context->scope->key, strlen($key) + 1);
+        $actor = $this->db->table('provider_machine_actors')
+            ->where('id', self::subjectId($key, $role))->sole();
+        $expected = $owner ? [
+            'key' => $key,
+            'rootRun' => $plan->rootRun,
+            'nativeRun' => $actor->native_run,
+            'role' => $role,
+        ] : $terms->descriptor($role);
+        if ($actor->root_key !== $key || $actor->role !== $role || $actor->native_run !== $context->originalRunId
+            || $actor->scope !== PortableDescriptor::encode($context->scope->toArray())
+            || $context->obligation->handlerType !== ($owner ? 'provider.owner' : 'provider.effect')
+            || $context->obligation->handlerVersion !== '1'
+            || $context->obligation->key !== ($owner ? 'owner' : 'effect')
+            || PortableDescriptor::encode($context->obligation->input) !== PortableDescriptor::encode($expected)) {
+            throw new LogicException('The provider descriptor does not belong to this original native/business owner.');
+        }
+        $this->subject($key, $role);
+        return [$this->subject($key, 'order'), $terms];
+    }
+
+    public function assertAllowed(BindingIdentity $identity, string $principal, string $operation): string
+    {
+        $this->authorize($identity->parentExecution->subject, $principal);
+        return $this->plan($identity->parentExecution->subject)
+            ->assertAllowed($identity, $principal, $operation);
+    }
+
+    public function assertParticipationAllowed(
+        BindingIdentity $identity,
+        ChildScopeParticipation $participation,
+        string $principal,
+        string $operation,
+        ?string $pinnedPolicyVersion = null,
+    ): string {
+        $this->authorize($identity->parentExecution->subject, $principal);
+        return $this->plan($identity->parentExecution->subject)
+            ->assertParticipationAllowed($identity, $participation, $principal, $operation, $pinnedPolicyVersion);
+    }
+
+    public static function role(string $class): string
+    {
+        return match ($class) {
+            Order::class => 'order',
+            Payment::class => 'payment',
+            Booking::class => 'shipment',
+            default => throw new LogicException('The native workflow is outside this example.'),
+        };
+    }
+
+    public static function subjectName(string $key, string $role): string
+    {
+        Catalogue::profile($role);
+        return $key . ($role === 'order' ? '' : '.' . $role);
+    }
+
+    public static function subjectId(string $key, string $role): string
+    {
+        return SqlBusinessStore::subjectId(new ExecutionReference(
+            Catalogue::APPLICATION,
+            self::subjectName($key, $role),
+            'identity',
+            Catalogue::profile($role)->fingerprint(),
+            'received',
+            '1'
+        ));
+    }
+
+    public static function grant(string $role): string
+    {
+        return hash('sha256', BindingPlan::VERSION . ':' . Catalogue::profile($role)->fingerprint());
+    }
+
+    public static function reference(array $value): ExecutionReference
+    {
+        $keys = array_keys($value);
+        sort($keys);
+        if ($keys !== ['executionId', 'policyFingerprint', 'scope', 'sourceRevision', 'sourceState', 'subject']) {
+            throw new LogicException('The recorded execution reference is malformed.');
+        }
+        foreach ($value as $part) {
+            if (! is_string($part)) {
+                throw new LogicException('Execution reference fields must be strings.');
+            }
+        }
+        return new ExecutionReference(...$value);
+    }
+}
