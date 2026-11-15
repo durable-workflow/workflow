@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2\StateMachine;
 
-use Fiber;
 use LogicException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -15,6 +14,7 @@ use Workflow\V2\StateMachine\Execution\ExecutionReference;
 use Workflow\V2\StateMachine\Execution\ResourceLimitExceeded;
 use Workflow\V2\Support\ActivityCall;
 use Workflow\V2\Support\AllCall;
+use Workflow\V2\Support\WorkflowExecution;
 use Workflow\V2\Support\WorkflowFiberContext;
 use Workflow\V2\Workflow;
 
@@ -30,20 +30,19 @@ final class ExecutionBudgetTest extends TestCase
     public function testTheSameOriginalExecutionCannotSelectALargerAllowance(): void
     {
         $workflow = new BudgetWorkflow();
-        $fiber = $this->fiber(function () use ($workflow): void {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('replace its pinned resource budget');
+        $this->runner(function () use ($workflow): void {
             ExecutionBudget::forExecution($workflow, $this->execution(), new ExecutionLimits(1));
             ExecutionBudget::forExecution($workflow, $this->execution(), new ExecutionLimits(2));
         });
-        $this->expectException(LogicException::class);
-        $this->expectExceptionMessage('replace its pinned resource budget');
-        $fiber->start();
     }
 
     public function testRepeatingTheSameOriginalExecutionDoesNotRenewItsCommandBudget(): void
     {
         $workflow = new BudgetWorkflow();
         $execution = $this->execution();
-        $fiber = $this->fiber(function () use ($workflow, $execution): string {
+        $fiber = $this->runner(function () use ($workflow, $execution): string {
             $budget = ExecutionBudget::forExecution($workflow, $execution, new ExecutionLimits(1));
             WorkflowFiberContext::withForwardBudget($budget, static fn () =>
                 WorkflowFiberContext::suspend(new ActivityCall('first', [])));
@@ -59,9 +58,9 @@ final class ExecutionBudgetTest extends TestCase
             }
             return 'incorrectly-dispatched';
         });
-        $this->assertSame('first', $fiber->start()->activity);
-        $this->assertNull($fiber->resume('recorded'));
-        $this->assertTrue($fiber->isTerminated());
+        $this->assertSame('first', $fiber->current()->activity);
+        $this->assertNull($fiber->send('recorded'));
+        $this->assertFalse($fiber->valid());
         $this->assertSame('state_machine_commands_limit_exceeded', $fiber->getReturn());
     }
 
@@ -69,7 +68,7 @@ final class ExecutionBudgetTest extends TestCase
     {
         $workflow = new BudgetWorkflow();
         $group = new AllCall([new ActivityCall('first', []), new AllCall([new ActivityCall('second', [])])]);
-        $fiber = $this->fiber(function () use ($workflow, $group): array {
+        $fiber = $this->runner(function () use ($workflow, $group): array {
             $budget = ExecutionBudget::forExecution($workflow, $this->execution(), new ExecutionLimits(3));
             try {
                 WorkflowFiberContext::withForwardBudget($budget, static fn () => WorkflowFiberContext::suspend($group));
@@ -78,7 +77,7 @@ final class ExecutionBudgetTest extends TestCase
             }
             return [];
         });
-        $this->assertNull($fiber->start());
+        $this->assertNull($fiber->current());
         $this->assertSame(['commands', 4, 3], $fiber->getReturn());
     }
 
@@ -86,7 +85,7 @@ final class ExecutionBudgetTest extends TestCase
     {
         $workflow = new BudgetWorkflow();
         $group = new AllCall([new AllCall([new ActivityCall('first', [])])]);
-        $fiber = $this->fiber(function () use ($workflow, $group): string {
+        $fiber = $this->runner(function () use ($workflow, $group): string {
             $budget = ExecutionBudget::forExecution(
                 $workflow,
                 $this->execution(),
@@ -99,7 +98,7 @@ final class ExecutionBudgetTest extends TestCase
             }
             return 'incorrectly-dispatched';
         });
-        $this->assertNull($fiber->start());
+        $this->assertNull($fiber->current());
         $this->assertSame('state_machine_command_depth_limit_exceeded', $fiber->getReturn());
     }
 
@@ -121,7 +120,7 @@ final class ExecutionBudgetTest extends TestCase
             'history_event_count' => $events,
             'history_size_bytes' => $bytes,
         ];
-        $fiber = $this->fiber(function () use ($workflow, $limits): string {
+        $fiber = $this->runner(function () use ($workflow, $limits): string {
             $budget = ExecutionBudget::forExecution($workflow, $this->execution(), $limits);
             try {
                 WorkflowFiberContext::withForwardBudget($budget, static fn () =>
@@ -131,7 +130,7 @@ final class ExecutionBudgetTest extends TestCase
             }
             return 'incorrectly-dispatched';
         });
-        $this->assertNull($fiber->start());
+        $this->assertNull($fiber->current());
         $this->assertSame('state_machine_' . $dimension . '_limit_exceeded', $fiber->getReturn());
     }
 
@@ -141,7 +140,7 @@ final class ExecutionBudgetTest extends TestCase
         $workflow->addCompensation(
             static fn () => WorkflowFiberContext::suspend(new ActivityCall('undo-original', []))
         );
-        $fiber = $this->fiber(function () use ($workflow): string {
+        $fiber = $this->runner(function () use ($workflow): string {
             $budget = ExecutionBudget::forExecution($workflow, $this->execution(), new ExecutionLimits(1));
             return WorkflowFiberContext::withForwardBudget($budget, function () use ($workflow): string {
                 WorkflowFiberContext::suspend(new ActivityCall('first', []));
@@ -161,9 +160,9 @@ final class ExecutionBudgetTest extends TestCase
                 return 'incorrectly-dispatched';
             });
         });
-        $this->assertSame('first', $fiber->start()->activity);
-        $this->assertSame('undo-original', $fiber->resume('created')->activity);
-        $fiber->resume('verified');
+        $this->assertSame('first', $fiber->current()->activity);
+        $this->assertSame('undo-original', $fiber->send('created')->activity);
+        $fiber->send('verified');
         $this->assertSame('state_machine_commands_limit_exceeded', $fiber->getReturn());
     }
 
@@ -175,14 +174,14 @@ final class ExecutionBudgetTest extends TestCase
             WorkflowFiberContext::withForwardBudget($budget, static fn () =>
                 WorkflowFiberContext::suspend(new ActivityCall('one-per-fiber', [])));
         };
-        $first = $this->fiber($body);
-        $second = $this->fiber($body);
-        $this->assertSame('one-per-fiber', $first->start()->activity);
-        $this->assertSame('one-per-fiber', $second->start()->activity);
-        $first->resume('recorded');
-        $second->resume('recorded');
-        $this->assertTrue($first->isTerminated());
-        $this->assertTrue($second->isTerminated());
+        $first = $this->runner($body);
+        $second = $this->runner($body);
+        $this->assertSame('one-per-fiber', $first->current()->activity);
+        $this->assertSame('one-per-fiber', $second->current()->activity);
+        $first->send('recorded');
+        $second->send('recorded');
+        $this->assertFalse($first->valid());
+        $this->assertFalse($second->valid());
     }
 
     public function testDiscardedFiberDoesNotLeaveAForwardGuardOrKeepItsMeterAlive(): void
@@ -193,22 +192,43 @@ final class ExecutionBudgetTest extends TestCase
             WorkflowFiberContext::withForwardBudget($budget, static fn () =>
                 WorkflowFiberContext::suspend(new ActivityCall('first', [])));
         };
-        $first = $this->fiber($body);
-        $first->start();
-        $reference = WeakReference::create($first);
+        $first = $this->runner($body);
+        $reference = WeakReference::create($first->fiber());
         unset($first);
         $this->assertNull($reference->get());
-        $second = $this->fiber($body);
-        $this->assertSame('first', $second->start()->activity);
-        $second->resume('recorded');
-        $this->assertTrue($second->isTerminated());
+        $second = $this->runner($body);
+        $this->assertSame('first', $second->current()->activity);
+        $second->send('recorded');
+        $this->assertFalse($second->valid());
+    }
+
+    public function testDiscardingBudgetedFinallyDoesNotRaiseANewBusinessFailure(): void
+    {
+        $workflow = new BudgetWorkflow();
+        $afterCleanup = false;
+        $execution = $this->runner(function () use ($workflow, &$afterCleanup): void {
+            $budget = ExecutionBudget::forExecution($workflow, $this->execution(), new ExecutionLimits(1));
+            WorkflowFiberContext::withForwardBudget($budget, static function () use (&$afterCleanup): void {
+                try {
+                    WorkflowFiberContext::suspend(new ActivityCall('first', []));
+                } finally {
+                    WorkflowFiberContext::suspend(new ActivityCall('must-not-emit', []));
+                    $afterCleanup = true;
+                }
+            });
+        });
+        $reference = WeakReference::create($execution->fiber());
+        $this->assertSame('first', $execution->current()->activity);
+        unset($execution);
+        $this->assertFalse($afterCleanup);
+        $this->assertNull($reference->get());
     }
 
     public function testUnavailableHistoryIsNotTreatedAsZeroAndCannotBeCaughtToAllowWork(): void
     {
         $workflow = new BudgetWorkflow();
         $workflow->observed = [];
-        $fiber = $this->fiber(function () use ($workflow): string {
+        $fiber = $this->runner(function () use ($workflow): string {
             $budget = ExecutionBudget::forExecution(
                 $workflow,
                 $this->execution(),
@@ -233,20 +253,13 @@ final class ExecutionBudgetTest extends TestCase
                 return 'incorrectly-dispatched';
             });
         });
-        $this->assertNull($fiber->start());
+        $this->assertNull($fiber->current());
         $this->assertStringContainsString('measurement is unavailable', $fiber->getReturn());
     }
 
-    private function fiber(callable $callback): Fiber
+    private function runner(callable $callback): WorkflowExecution
     {
-        return new Fiber(static function () use ($callback): mixed {
-            WorkflowFiberContext::enter();
-            try {
-                return $callback();
-            } finally {
-                WorkflowFiberContext::leave();
-            }
-        });
+        return WorkflowExecution::startCallback($callback);
     }
 
     private function execution(): ExecutionReference

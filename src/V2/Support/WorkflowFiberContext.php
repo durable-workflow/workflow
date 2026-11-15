@@ -206,15 +206,6 @@ final class WorkflowFiberContext
             return $call;
         }
 
-        $fiber = Fiber::getCurrent();
-        if ($fiber instanceof Fiber) {
-            foreach (self::$forwardBudgets[spl_object_id($fiber)] ?? [] as $guard) {
-                $guard($call);
-            }
-        }
-        // A suspended stack must not keep a strong reference to its own Fiber.
-        unset($fiber);
-
         try {
             return Fiber::suspend($call);
         } catch (FiberError $error) {
@@ -232,6 +223,16 @@ final class WorkflowFiberContext
             }
 
             throw new WorkflowFiberDiscardedException(previous: $error);
+        }
+    }
+
+    /**
+     * @internal The executor checks a yielded call before exposing it for dispatch.
+     */
+    public static function checkForwardBudgets(int $fiberId, mixed $call): void
+    {
+        foreach (self::$forwardBudgets[$fiberId] ?? [] as $guard) {
+            $guard($call);
         }
     }
 

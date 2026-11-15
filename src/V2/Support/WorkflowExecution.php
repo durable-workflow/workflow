@@ -6,7 +6,9 @@ namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
 use Fiber;
+use LogicException;
 use Throwable;
+use WeakReference;
 use Workflow\V2\Exceptions\StraightLineWorkflowRequiredException;
 use Workflow\V2\Exceptions\WorkflowCancellationRequestedException;
 use Workflow\V2\Exceptions\WorkflowFiberDiscardedException;
@@ -65,7 +67,7 @@ final class WorkflowExecution
 
         $sample = WorkflowExecutionProfile::begin('authoring_start');
         try {
-            $current = $fiber->start();
+            $current = self::checkedYield(WeakReference::create($fiber), $fiber->start());
         } finally {
             WorkflowExecutionProfile::finish($sample);
         }
@@ -119,7 +121,7 @@ final class WorkflowExecution
 
         $sample = WorkflowExecutionProfile::begin('authoring_resume');
         try {
-            $result = $this->fiber->resume($value);
+            $result = self::checkedYield(WeakReference::create($this->fiber), $this->fiber->resume($value));
         } finally {
             WorkflowExecutionProfile::finish($sample);
         }
@@ -158,7 +160,7 @@ final class WorkflowExecution
 
         $sample = WorkflowExecutionProfile::begin('authoring_throw');
         try {
-            $result = $this->fiber->throw($throwable);
+            $result = self::checkedYield(WeakReference::create($this->fiber), $this->fiber->throw($throwable));
         } finally {
             WorkflowExecutionProfile::finish($sample);
         }
@@ -178,5 +180,29 @@ final class WorkflowExecution
     public function getReturn(): mixed
     {
         return $this->return;
+    }
+
+    /**
+     * Refusals go back into the suspended call before the executor can emit it.
+     * Fiber destruction does not take this path: its finally blocks must still
+     * reach the native force-close refusal, rather than a new business error.
+     *
+     * @param WeakReference<Fiber> $reference A refusal trace must not retain its own Fiber argument.
+     */
+    private static function checkedYield(WeakReference $reference, mixed $call): mixed
+    {
+        $fiber = $reference->get();
+        if (! $fiber instanceof Fiber) {
+            throw new LogicException('The original workflow Fiber is unavailable.');
+        }
+        while ($fiber->isSuspended()) {
+            try {
+                WorkflowFiberContext::checkForwardBudgets(spl_object_id($fiber), $call);
+                return $call;
+            } catch (Throwable $error) {
+                $call = $fiber->throw($error);
+            }
+        }
+        return $call;
     }
 }
