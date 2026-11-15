@@ -44,4 +44,21 @@ final readonly class Request
     {
         return hash('sha256', PortableDescriptor::encode($this->toArray()));
     }
+
+    public static function fromArray(array $value): self
+    {
+        $keys = array_keys($value);
+        sort($keys);
+        if ($keys !== ['action', 'identity', 'target', 'terms'] || ! is_string($value['action'])
+            || ! is_array($value['identity']) || ! is_array($value['terms'])
+            || ($value['target'] !== null && ! is_array($value['target']))) {
+            throw new InvalidArgumentException('The provider request fields are malformed.');
+        }
+        return new self(
+            Identity::fromArray($value['identity']),
+            $value['action'],
+            $value['terms'],
+            $value['target'] === null ? null : Identity::fromArray($value['target']),
+        );
+    }
 }
