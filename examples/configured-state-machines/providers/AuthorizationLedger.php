@@ -87,6 +87,51 @@ final readonly class AuthorizationLedger
     }
 
     /**
+     * @return array{closed: bool, inFlight: bool}
+     */
+    public function inspectCapture(FinancialDescriptor $descriptor): array
+    {
+        $this->assertTransaction();
+        $slots = [];
+        foreach ([
+            'authorize' => 'authorize',
+            'capture' => 'capture',
+            'void' => 'void',
+            'refund' => 'refund',
+        ] as $key => $kind) {
+            $slot = $this->slot($descriptor->authorize, $kind);
+            $request = $descriptor->requests()[$key];
+            if ($slot !== null && ($slot['operation_id'] !== $request->identity->key()
+                || $slot['fingerprint'] !== $request->fingerprint())) {
+                throw new LogicException('Financial inspection cannot substitute another original operation.');
+            }
+            $slots[$key] = $slot;
+        }
+        $capture = $this->row($descriptor->capture->identity->key());
+        if ($slots['capture'] !== null && $capture === null) {
+            throw new LogicException('A financial admission lost its original provider outcome.');
+        }
+        $inFlight = $capture !== null && in_array(
+            $capture['status'],
+            [Status::Unknown->value, Status::Processing->value],
+            true
+        )
+            && $slots['capture'] !== null && $slots['capture']['admitted_at'] !== null;
+        if ($inFlight) {
+            $this->assertAdmission(
+                $descriptor->capture,
+                $descriptor->authorize,
+                AuthorizationTerms::fromArray($descriptor->authorize->terms),
+                'capture'
+            );
+        }
+        return [
+            'closed' => $slots['void'] !== null || ($capture !== null && (bool) $capture['closed']),
+            'inFlight' => $inFlight,
+        ];
+    }
+
+    /**
      * @return array{Request, AuthorizationTerms, string}
      */
     private function original(Request $request): array

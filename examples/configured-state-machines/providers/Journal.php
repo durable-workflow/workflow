@@ -114,6 +114,40 @@ final readonly class Journal
     }
 
     /**
+     * Invoke only from an authorized recorded host activity, never directly during workflow replay.
+     */
+    public function inspectFinancial(FinancialDescriptor $descriptor): FinancialSnapshot
+    {
+        foreach ($descriptor->requests() as $request) {
+            $this->authorize($request);
+        }
+        return $this->transaction(function () use ($descriptor): FinancialSnapshot {
+            $observations = [];
+            foreach ($descriptor->requests() as $key => $request) {
+                $observations[$key] = $this->observation($request, $this->operation($request));
+            }
+            $state = $this->authorizationLedger()
+                ->inspectCapture($descriptor);
+            $clock = $this->clock ?? static fn (): int => time();
+            $now = $clock();
+            if (! is_int($now) || $now < 0) {
+                throw new LogicException('The provider clock must return a nonnegative integer Unix timestamp.');
+            }
+            $this->recordRequest($descriptor->authorize, 'financial-inspection');
+            return new FinancialSnapshot(
+                $descriptor,
+                $now,
+                $observations['authorize'],
+                $observations['capture'],
+                $observations['void'],
+                $observations['refund'],
+                $state['closed'],
+                $state['inFlight']
+            );
+        });
+    }
+
+    /**
      * Close future admission atomically; an already admitted processing/unknown result remains unresolved.
      */
     public function closeAdmission(Request $request): Observation
