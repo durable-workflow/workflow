@@ -27,8 +27,12 @@ final readonly class ReservedChildResolution
     ) {
     }
 
-    public function resolve(ScopeIdentity $parent, Obligation $obligation, string $operationId): Resolution
-    {
+    public function resolve(
+        ScopeIdentity $parent,
+        Obligation $obligation,
+        string $operationId,
+        ?string $ownerRunId = null
+    ): Resolution {
         try {
             if ($obligation->handlerType !== ChildScopes::RESERVED_TYPE || $obligation->handlerVersion !== ChildScopes::VERSION
                 || array_keys($obligation->input) !== ['reservation'] || ! is_array(
@@ -58,7 +62,7 @@ final readonly class ReservedChildResolution
             if ($snapshot['status'] !== 'verified') {
                 $this->recovery->request(
                     $participation->child,
-                    'parent-' . $operationId,
+                    ChildRecoveryRequest::key($operationId, $ownerRunId),
                     $principal,
                     'parent-compensation'
                 );
