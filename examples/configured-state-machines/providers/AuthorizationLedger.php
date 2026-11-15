@@ -12,6 +12,8 @@ use Workflow\V2\Compensation\Definition\PortableDescriptor;
 /** Full-amount authorization policy inside the provider's own transaction, never a DW transaction. */
 final readonly class AuthorizationLedger
 {
+    private const MISSING_PROVIDER_OUTCOME = 'A financial admission lost its original provider outcome.';
+
     public function __construct(
         private PDO $db,
         private Closure $clock
@@ -109,7 +111,7 @@ final readonly class AuthorizationLedger
         }
         $capture = $this->row($descriptor->capture->identity->key());
         if ($slots['capture'] !== null && $capture === null) {
-            throw new LogicException('A financial admission lost its original provider outcome.');
+            throw new LogicException(self::MISSING_PROVIDER_OUTCOME);
         }
         $inFlight = $capture !== null && in_array(
             $capture['status'],
@@ -167,7 +169,7 @@ final readonly class AuthorizationLedger
         }
         $row = $this->row($capture['operation_id']);
         if ($row === null) {
-            throw new LogicException('A financial admission lost its original provider outcome.');
+            throw new LogicException(self::MISSING_PROVIDER_OUTCOME);
         }
         return match (Status::from($row['status'])) {
             Status::Confirmed => Status::Refused,
@@ -218,7 +220,7 @@ final readonly class AuthorizationLedger
         }
         $row = $this->row($slot['operation_id']);
         if ($row === null) {
-            throw new LogicException('A financial admission lost its original provider outcome.');
+            throw new LogicException(self::MISSING_PROVIDER_OUTCOME);
         }
         return $this->confirmed(Request::fromArray(json_decode($row['request'], true, flags: JSON_THROW_ON_ERROR)));
     }
