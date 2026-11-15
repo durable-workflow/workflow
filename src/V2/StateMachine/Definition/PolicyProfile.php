@@ -34,13 +34,15 @@ final readonly class PolicyProfile
      */
     public array $conditions;
 
+    public ?MachineDefinition $definition;
+
     /**
      * @param non-empty-list<string> $states
      * @param list<TransitionDefinition> $transitions
      * @param array<string, ConditionDefinition> $conditions
      */
     public function __construct(
-        string $machine,
+        string|MachineDefinition $machine,
         string $definitionVersion,
         string $profile,
         string $profileVersion,
@@ -48,6 +50,8 @@ final readonly class PolicyProfile
         array $transitions,
         array $conditions = [],
     ) {
+        $definition = $machine instanceof MachineDefinition ? $machine : null;
+        $machine = $definition?->machine ?? $machine;
         foreach ([$machine, $definitionVersion, $profile, $profileVersion] as $value) {
             if (trim($value) === '') {
                 throw new InvalidArgumentException('Definition and profile identifiers must not be empty.');
@@ -82,6 +86,7 @@ final readonly class PolicyProfile
             }
             PortableDescriptor::identifier($name, 'policy condition');
         }
+        $definition?->assertProfile($machine, $definitionVersion, $states, $transitions);
         $this->machine = $machine;
         $this->definitionVersion = $definitionVersion;
         $this->profile = $profile;
@@ -91,6 +96,29 @@ final readonly class PolicyProfile
             $transition, $transitions);
         $this->conditions = array_map(static fn (ConditionDefinition $condition): ConditionDefinition =>
             $condition, $conditions);
+        $this->definition = $definition;
+    }
+
+    /**
+     * @param list<TransitionDefinition> $transitions
+     * @param array<string, ConditionDefinition> $conditions
+     */
+    public static function forDefinition(
+        MachineDefinition $definition,
+        string $profile,
+        string $profileVersion,
+        array $transitions,
+        array $conditions = []
+    ): self {
+        return new self(
+            $definition,
+            $definition->version,
+            $profile,
+            $profileVersion,
+            $definition->stateIds(),
+            $transitions,
+            $conditions
+        );
     }
 
     public function fingerprint(): string
@@ -109,6 +137,11 @@ final readonly class PolicyProfile
             ksort($conditions, SORT_STRING);
             $material[] = [
                 'condition_fingerprints' => $conditions,
+            ];
+        }
+        if ($this->definition !== null) {
+            $material[] = [
+                'machine_definition_fingerprint' => $this->definition->fingerprint(),
             ];
         }
         return hash('sha256', json_encode($material, JSON_THROW_ON_ERROR));

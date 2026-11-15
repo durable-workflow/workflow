@@ -11,9 +11,11 @@ use Illuminate\Support\Facades\DB;
 use LogicException;
 use Orchestra\Testbench\TestCase;
 use Tests\Fixtures\V2\BusinessCommitFixture;
+use Tests\Fixtures\V2\TestDefinedMachineWorkflow;
 use Workflow\V2\StateMachine\Definition\TransitionDefinition;
 use Workflow\V2\StateMachine\Execution\ExecutionReference;
 use Workflow\V2\StateMachine\Execution\TransitionStatus;
+use Workflow\V2\StateMachine\Transition\FactSnapshot;
 use Workflow\V2\StateMachine\Transition\TransitionContext;
 
 final class BusinessCommitTest extends TestCase
@@ -46,6 +48,44 @@ final class BusinessCommitTest extends TestCase
         );
         $this->assertSame($context->execution()->toArray(), $publication['execution']);
         $this->assertSame('2', $publication['revision']);
+    }
+
+    public function testUnsatisfiedMachineInvariantCannotReachTheProtectedStateWrite(): void
+    {
+        $original = BusinessCommitFixture::context();
+        $s = $original->snapshot;
+        $context = new TransitionContext($original->transition, new FactSnapshot(
+            $s->execution,
+            $s->transitionKey,
+            $s->phase,
+            $s->snapshotId,
+            $s->state,
+            $s->revision,
+            $s->target,
+            $s->permission,
+            TestDefinedMachineWorkflow::assessment($s->snapshotId, 'unsatisfied')
+        ));
+        $store = new SqlBusinessStore(DB::connection(), static function (
+            ExecutionReference $execution,
+            string $principal,
+            string $operation,
+            ?TransitionContext $submitted
+        ) use ($context): string {
+            if (! $execution->equals($context->execution()) || $principal !== 'alice'
+                || $operation !== 'commit' || $submitted !== $context) {
+                throw new LogicException('This test grants only the exact original commit owner.');
+            }
+            return 'grant-v1';
+        });
+        try {
+            $store->commit($context, 'alice');
+            $this->fail('A satisfied target cannot bypass the shared machine invariant.');
+        } catch (LogicException $error) {
+            $this->assertStringContainsString('matching satisfied assessment', $error->getMessage());
+        }
+        $this->assertSame(['received', 1], $this->subjectState());
+        $this->assertSame(0, DB::table('example_machine_decisions')->count());
+        $this->assertSame(0, DB::table('example_machine_publications')->count());
     }
 
     public function testAcceptedCancellationFencesCompletionWithoutClaimingCompensation(): void
