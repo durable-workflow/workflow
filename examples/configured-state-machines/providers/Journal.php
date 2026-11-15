@@ -16,6 +16,13 @@ use Workflow\V2\Compensation\Definition\PortableDescriptor;
  */
 final readonly class Journal
 {
+    private const SCHEMA = [
+        'CREATE TABLE provider_plans (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, status TEXT NOT NULL, lose_ack INTEGER NOT NULL)',
+        'CREATE TABLE provider_operations (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, request TEXT NOT NULL, status TEXT NOT NULL, closed INTEGER NOT NULL)',
+        'CREATE TABLE provider_effects (sequence INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL UNIQUE, effect_id TEXT NOT NULL UNIQUE)',
+        'CREATE TABLE provider_requests (sequence INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL, kind TEXT NOT NULL)',
+    ];
+
     public function __construct(
         private PDO $db,
         private string $client,
@@ -30,7 +37,7 @@ final readonly class Journal
     public function install(): void
     {
         $this->transaction(function (): void {
-            foreach (require __DIR__ . '/schema.php' as $sql) {
+            foreach (self::SCHEMA as $sql) {
                 $this->db->exec($sql);
             }
         });

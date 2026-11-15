@@ -61,6 +61,16 @@ final class ProviderJournalTest extends TestCase
         }
     }
 
+    public function testSchemaInstallationIsIndependentForEveryProviderConnection(): void
+    {
+        $another = new PDO('sqlite::memory:');
+        (new Journal($another, 'shop-b'))->install();
+        $this->assertSame(4, (int) $another->query(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'provider_%'"
+        )->fetchColumn());
+        $this->assertSame(0, $this->rowCount('provider_operations'));
+    }
+
     public function testLostAcknowledgementSurvivesAnUnrelatedBusinessRollbackAndFreshProcess(): void
     {
         $request = $this->request();
