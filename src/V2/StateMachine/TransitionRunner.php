@@ -8,7 +8,9 @@ use LogicException;
 use Workflow\V2\StateMachine\Definition\MachineDefinition;
 use Workflow\V2\StateMachine\Definition\PolicyProfile;
 use Workflow\V2\StateMachine\Definition\TransitionDefinition;
+use Workflow\V2\StateMachine\Execution\ExecutionBudget;
 use Workflow\V2\StateMachine\Execution\ExecutionReference;
+use Workflow\V2\StateMachine\Execution\ResourceLimitExceeded;
 use Workflow\V2\StateMachine\Execution\TransitionResult;
 use Workflow\V2\StateMachine\Execution\TransitionRuntime;
 use Workflow\V2\StateMachine\Execution\TransitionStatus;
@@ -31,6 +33,41 @@ final class TransitionRunner
      * @param array<string, TransitionStep> $handlers Closed, application-configured type/version registry.
      */
     public function run(
+        Workflow $workflow,
+        PolicyProfile $profile,
+        ExecutionReference $execution,
+        string $event,
+        TransitionRuntime $runtime,
+        array $handlers,
+    ): TransitionResult {
+        if ($profile->limits === null) {
+            return $this->protocol($workflow, $profile, $execution, $event, $runtime, $handlers);
+        }
+        if (! WorkflowFiberContext::active() || $execution->policyFingerprint !== $profile->fingerprint()) {
+            throw new LogicException('A transition budget requires its original active execution and pinned policy.');
+        }
+        $budget = ExecutionBudget::forExecution($workflow, $execution, $profile->limits);
+        try {
+            return WorkflowFiberContext::withForwardBudget($budget, fn (): TransitionResult =>
+                $this->protocol($workflow, $profile, $execution, $event, $runtime, $handlers));
+        } catch (ResourceLimitExceeded $error) {
+            if (! $budget->caused($error)) {
+                throw $error;
+            }
+            $candidates = $profile->candidates($event, $execution->sourceState);
+            return new TransitionResult(
+                $execution,
+                TransitionStatus::Blocked,
+                $error->reason(),
+                transitionKey: count($candidates) === 1 ? $candidates[0]->key : null
+            );
+        }
+    }
+
+    /**
+     * @param array<string, TransitionStep> $handlers
+     */
+    private function protocol(
         Workflow $workflow,
         PolicyProfile $profile,
         ExecutionReference $execution,

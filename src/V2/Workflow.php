@@ -292,7 +292,9 @@ abstract class Workflow
     public function compensate(): void
     {
         if (WorkflowFiberContext::active()) {
-            WorkflowFiberContext::cancellationShield(fn () => $this->runCompensations());
+            WorkflowFiberContext::cancellationShield(fn () => WorkflowFiberContext::withoutForwardBudgets(
+                fn () => $this->runCompensations()
+            ));
 
             return;
         }

@@ -41,11 +41,16 @@ final readonly class MachineDefinition
         array $states,
         array $transitionKeys,
         public ConditionDefinition $invariants,
-        array $slots = []
+        array $slots = [],
+        public ?DefinitionLimits $limits = null,
     ) {
         if (trim($machine) === '' || trim($version) === '') {
             throw new InvalidArgumentException('Machine identity and definition version must not be empty.');
         }
+        $limits?->guard('states', count($states));
+        $limits?->guard('transitions', count($transitionKeys));
+        $limits?->guard('child_slots', count($slots));
+        $limits?->guardRules($invariants, []);
         $this->states = self::stateDefinitions($states);
         $this->transitionKeys = self::transitionIdentities($transitionKeys);
         $this->slots = self::childSlots($slots, $this->stateIds());
@@ -75,6 +80,9 @@ final readonly class MachineDefinition
             'transitions' => $this->transitionKeys,
             'invariantFingerprint' => $this->invariants->fingerprint(),
             'slots' => array_map(static fn (ChildSlot $slot): array => $slot->toArray(), $this->slots),
+            ...($this->limits === null ? [] : [
+                'limits' => $this->limits->toArray(),
+            ]),
         ];
     }
 
@@ -99,8 +107,13 @@ final readonly class MachineDefinition
     /**
      * @param list<string> $states @param list<TransitionDefinition> $transitions
      */
-    public function assertProfile(string $machine, string $version, array $states, array $transitions): void
-    {
+    public function assertProfile(
+        string $machine,
+        string $version,
+        array $states,
+        array $transitions,
+        array $conditions = []
+    ): void {
         if ($machine !== $this->machine || $version !== $this->version || $states !== $this->stateIds()) {
             throw new InvalidArgumentException('The policy cannot redefine its shared machine identity or states.');
         }
@@ -113,6 +126,8 @@ final readonly class MachineDefinition
                 throw new InvalidArgumentException('The policy transition is outside its shared machine definition.');
             }
         }
+        $this->limits?->guardRules($this->invariants, $conditions);
+        $this->limits?->guardEdges($transitions);
     }
 
     /**

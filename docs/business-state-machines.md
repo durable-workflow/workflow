@@ -2,7 +2,7 @@
 
 The optional embedded V2 transition protocol provides a four-method step contract, recorded assessments, shared machine definitions and versioned integration profiles. It uses existing native activities, children and Saga. Existing workflows and `Workflow\States\StateMachine` are unchanged. Symfony Workflow is not a dependency.
 
-**Experimental.** The `Workflow\V2\StateMachine` API is under review and may change in a minor release; it carries no backward-compatibility promise yet. The [recorded Order/Shipment example](../examples/configured-state-machines/README.md) connects two integration profiles to retained compensation and protected SQL decisions. General policy migration, resource budgets and published-package recovery qualification remain unfinished. These APIs are not present in the published 2.28.1 package. This does not complete the proposal.
+**Experimental.** The `Workflow\V2\StateMachine` API is under review and may change in a minor release; it carries no backward-compatibility promise yet. The [recorded Order/Shipment example](../examples/configured-state-machines/README.md) connects two integration profiles to retained compensation and protected SQL decisions. Optional definition and forward-execution budgets are described below. Provider integration and published-package recovery qualification remain unfinished. There is no in-flight profile migration API. These additions are not present in the published 2.28.1 package. This does not complete the proposal.
 
 ## Responsibilities and flow
 
@@ -257,11 +257,78 @@ Native retries and continue-as-new remain attached only through the recorded des
 
 This primitive is experimental and embedded-only. Worker-protocol execution refuses these calls. It preserves ordinary `child()` terminal-wait behavior and parent-close/cancellation policies. `RecordChildAdmission` still owns application authorization, expected state/revision checks and a protected idempotent business commit; a receipt does not implement those boundaries. The scope/slot/generation binding, policy pinning, adoption ownership, business-outcome verification and retained recovery in the next section remain required before claiming nested business-machine support.
 
+## Configured resource budgets
+
+Trusted application configuration can attach a `DefinitionLimits` to a shared
+`MachineDefinition`. The definition checks its state, transition-identity and
+child-slot counts before validating their contents. Each bound profile also
+checks its expanded source edges and total condition nodes, including the shared
+invariant. A transition allowing several source states consumes one edge per
+source. The existing per-condition and portable-data limits still apply.
+For example:
+
+```php
+use Workflow\V2\StateMachine\Definition\DefinitionLimits;
+use Workflow\V2\StateMachine\Definition\ExecutionLimits;
+
+$definitionLimits = new DefinitionLimits(
+    states: 8, transitions: 16, childSlots: 2, ruleNodes: 128,
+);
+$executionLimits = new ExecutionLimits(
+    commands: 64, historyEvents: 1_000, historyBytes: 1_048_576, groupDepth: 8,
+);
+```
+
+Pass `limits: $definitionLimits` when constructing the shared definition and
+`limits: $executionLimits` when constructing its `PolicyProfile` or calling
+`PolicyProfile::forDefinition()`. Both limits enter their respective pinned
+fingerprints. Omitting them preserves the previous serialized definition and
+profile fingerprints; attaching or changing a budget requires an explicitly
+selected compatible version for new executions. Rewriting an active assignment
+does not migrate it or replace its outstanding compensation version.
+
+The command budget covers every durable suspension inside `TransitionRunner`,
+including snapshots, admission, actions and commit. It counts groups and their
+leaves before emitting any member, so an oversized nested group dispatches no
+prefix. There are at most 4,096 commands and 64 group levels. Reentering the same
+original execution in the same workflow Fiber does not renew its allowance.
+Replay reconstructs the same count from the recorded command path.
+
+History values are **admission thresholds** measured with
+`Workflow::historyBudgetAtStep()` before each command. They compare the recorded
+run's event count and serialized history bytes at that replay-stable position.
+At or above either selected threshold, the next forward command is refused.
+They do not predict the size of the next result, impose an absolute post-write
+byte ceiling, or replace the runtime's transaction-level history limits.
+An unavailable measurement refuses rather than being treated as zero.
+
+A limit reached during execution returns `TransitionStatus::Blocked`, with a
+stable `state_machine_<dimension>_limit_exceeded` reason. Catching the original
+refusal inside an action cannot authorize another command under that budget.
+Invalid definitions raise `ResourceLimitExceeded` with the observed dimension,
+count and configured limit before invoking a handler. Neither outcome means
+business cancellation succeeded or an earlier external effect did not happen.
+
+Native Saga retains its registered callbacks. `Workflow::compensate()` runs
+outside these forward budgets, while existing cleanup deadlines, technical
+cancellation rules and global runtime limits remain in force. The application
+must explicitly select compensation or retained recovery and preserve unresolved
+obligations; a blocked transition does not automatically clear them or commit a
+business `Cancelled` state. The existing retained-scope graph bounds and explicit
+retention release remain separate from a definition's declared child-slot count.
+Provider retries, fixed business deadlines and reconciliation policy still use
+the existing DW facilities and application integration contract.
+
+The [native budget fixture](../tests/Feature/V2/V2StateMachineResourceBudgetTest.php)
+checks recorded activities, partial-work compensation and cold replay with a
+synthetic SQL effect journal. It does not qualify a remote provider or the full
+[consumer scenario matrix](https://github.com/durable-workflow/workflow/issues/1069#issuecomment-6889952106).
+
 ## Follow-up implementation sequence
 
 1. Retain the original machine definition, profiles, rule versions and handlers across deployments; define an explicit migration policy before moving existing instances.
 2. Use the recorded two-profile example to integrate application authorization, provider reconciliation and retained child-first recovery. Its SQL effect model does not qualify a real carrier or payment provider.
-3. Define and enforce application graph/depth, action and history budgets. Keep unresolved effects durable when a budget or technical deadline is exhausted.
+3. Select definition and execution budgets for the application's pinned profiles. Qualify provider attempts, fixed business deadlines and retained recovery when a forward budget or technical deadline is exhausted.
 4. Qualify the package candidate through installed upgrade, worker-loss and recovery scenarios, then publish versioned guides and an immutable package before claiming release delivery.
 
 Each slice must preserve the four-method contract and existing DW workflow APIs. Supporting a child call inside `execute()` does not satisfy the binding and retained-recovery milestones by itself.
