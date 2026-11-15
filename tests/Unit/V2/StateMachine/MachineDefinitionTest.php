@@ -129,9 +129,9 @@ final class MachineDefinitionTest extends TestCase
             ['処理'],
             TestDefinedMachineWorkflow::definition()->invariants
         );
-        $profile = new PolicyProfile('注文', '版一', '販売者', '版一', ['受付'], [
+        $profile = PolicyProfile::forDefinition($definition, '販売者', '版一', [
             new TransitionDefinition('処理', '受信', ['受付'], '受付', '処理ハンドラ', '1', false),
-        ], definition: $definition);
+        ]);
         $this->assertSame(['受付'], $profile->states);
         $this->assertSame('入力は受け付けられました。', $definition->states[0]->meaning);
     }
@@ -148,15 +148,7 @@ final class MachineDefinitionTest extends TestCase
             new MachineState('Processing', 'The original provider operation is confirmed.')], [
                 'process',
             ], $prepare->definition->invariants);
-        $profile = new PolicyProfile(
-            'example',
-            '1',
-            'prepare',
-            '1',
-            $changed->stateIds(),
-            $prepare->transitions,
-            definition: $changed
-        );
+        $profile = PolicyProfile::forDefinition($changed, 'prepare', '1', $prepare->transitions);
         $this->assertNotSame($prepare->fingerprint(), $profile->fingerprint());
     }
 
@@ -192,14 +184,11 @@ final class MachineDefinitionTest extends TestCase
         string $key,
     ): void {
         $this->expectException(InvalidArgumentException::class);
-        new PolicyProfile(
+        TestDefinedMachineWorkflow::definition()->assertProfile(
             $machine,
             $version,
-            'imported',
-            '1',
             $states,
-            [new TransitionDefinition($key, 'received', [$states[0]], $states[1], 'import', '1')],
-            definition: TestDefinedMachineWorkflow::definition()
+            [new TransitionDefinition($key, 'received', [$states[0]], $states[1], 'import', '1')]
         );
     }
 
@@ -351,14 +340,11 @@ final class MachineDefinitionTest extends TestCase
             $base->invariants,
             [new ChildSlot('shipment', ['Processing'], 'shipments', '1', 'delivered')]
         );
-        $parent = new PolicyProfile(
-            'example',
-            '1',
+        $parent = PolicyProfile::forDefinition(
+            $definition,
             'prepare',
             '1',
-            $definition->stateIds(),
             TestDefinedMachineWorkflow::profile()->transitions,
-            definition: $definition
         );
         $child = new PolicyProfile('shipments', '1', 'carrier', '1', ['Queued', 'Delivered'], []);
         $binding = new BindingIdentity(

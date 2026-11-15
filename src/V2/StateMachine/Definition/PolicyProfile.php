@@ -42,15 +42,16 @@ final readonly class PolicyProfile
      * @param array<string, ConditionDefinition> $conditions
      */
     public function __construct(
-        string $machine,
+        string|MachineDefinition $machine,
         string $definitionVersion,
         string $profile,
         string $profileVersion,
         array $states,
         array $transitions,
         array $conditions = [],
-        ?MachineDefinition $definition = null,
     ) {
+        $definition = $machine instanceof MachineDefinition ? $machine : null;
+        $machine = $definition?->machine ?? $machine;
         foreach ([$machine, $definitionVersion, $profile, $profileVersion] as $value) {
             if (trim($value) === '') {
                 throw new InvalidArgumentException('Definition and profile identifiers must not be empty.');
@@ -96,6 +97,28 @@ final readonly class PolicyProfile
         $this->conditions = array_map(static fn (ConditionDefinition $condition): ConditionDefinition =>
             $condition, $conditions);
         $this->definition = $definition;
+    }
+
+    /**
+     * @param list<TransitionDefinition> $transitions
+     * @param array<string, ConditionDefinition> $conditions
+     */
+    public static function forDefinition(
+        MachineDefinition $definition,
+        string $profile,
+        string $profileVersion,
+        array $transitions,
+        array $conditions = []
+    ): self {
+        return new self(
+            $definition,
+            $definition->version,
+            $profile,
+            $profileVersion,
+            $definition->stateIds(),
+            $transitions,
+            $conditions
+        );
     }
 
     public function fingerprint(): string

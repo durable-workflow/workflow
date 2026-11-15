@@ -37,13 +37,13 @@ final class TestDefinedMachineWorkflow extends Workflow
 
     public static function profile(string $name = 'prepare', bool $overrideInvariant = false): PolicyProfile
     {
-        return new PolicyProfile('example', '1', $name, '1', self::definition()->stateIds(), [
+        return PolicyProfile::forDefinition(self::definition(), $name, '1', [
             new TransitionDefinition('process', 'received', [
                 'Received',
             ], 'Processing', $name === 'imported' ? 'import' : 'prepare', '1'),
         ], conditions: $overrideInvariant ? [
             'machine.invariants' => ConditionDefinition::not(self::definition()->invariants),
-        ] : [], definition: self::definition());
+        ] : []);
     }
 
     /**

@@ -112,9 +112,8 @@ Inside a V2 workflow's `handle()` method:
 $transition = new TransitionDefinition(
     'process', 'received', ['Received'], 'Processing', 'prepare', '1',
 );
-$profile = new PolicyProfile(
-    'orders', '1', 'integration-a', '1',
-    $definition->stateIds(), [$transition], definition: $definition,
+$profile = PolicyProfile::forDefinition(
+    $definition, 'integration-a', '1', [$transition],
 );
 $execution = new ExecutionReference(
     $authorizedScope, $subjectId, $decisionId, $pinnedFingerprint,

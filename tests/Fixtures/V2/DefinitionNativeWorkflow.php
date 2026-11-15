@@ -48,9 +48,9 @@ final class DefinitionNativeWorkflow extends Workflow
 
     public static function profile(): PolicyProfile
     {
-        return new PolicyProfile('native-example', '1', 'prepare', '1', self::definition()->stateIds(), [
+        return PolicyProfile::forDefinition(self::definition(), 'prepare', '1', [
             new TransitionDefinition('process', 'received', ['Received'], 'Processing', 'work', '1'),
-        ], definition: self::definition());
+        ]);
     }
 
     public static function execution(string $run): ExecutionReference
