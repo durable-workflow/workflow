@@ -138,6 +138,40 @@ final class V2ProviderStateMachineExampleTest extends TestCase
         }
     }
 
+    public function testDelayedChildRecoveryCannotAdvanceItsParentAndAFreshRequestUsesTheVerifiedLedger(): void
+    {
+        $stub = $this->start();
+        $key = $this->terms->subjectKey();
+        $plan = $this->store->authority->plan($key);
+        $cancellation = app(CancellationStore::class);
+        $cancellation->request($key, $stub->runId(), 'booking-worker-delayed');
+        // Deliberately leave this child's work queued while the original parent's finite attempts run.
+        $this->drain(pausedInstance: $plan->childScope('shipment')->recoveryInstanceId());
+        $this->assertSame(RunStatus::Failed, WorkflowRun::query()->findOrFail($stub->runId())->status);
+        $this->assertSame('requested', (new ScopeRepository())->metadata($plan->rootScope())['status']);
+        $this->assertSame(['reserve', 'capture', 'book'], $this->effects());
+        $this->assertSame('booked', $this->store->authority->subject($key, 'order')->state);
+        $this->assertSame('pending', $cancellation->finish($key, $stub->runId(), 'booking-worker-delayed')['status']);
+        $history = $this->history($stub->runId());
+
+        $this->drain();
+        $this->assertSame('verified', (new ScopeRepository())->metadata($plan->childScope('shipment'))['status']);
+        $this->assertSame('requested', (new ScopeRepository())->metadata($plan->rootScope())['status']);
+        $this->assertSame(['reserve', 'capture', 'book', 'cancel-booking'], $this->effects());
+        $cancellation->request($key, $stub->runId(), 'booking-now-confirmed');
+        $this->drain();
+        $this->assertSame(
+            'verified',
+            (new ScopeRepository())->metadata($plan->rootScope())['status'],
+            $this->progress()
+        );
+        $this->assertSame(['reserve', 'capture', 'book', 'cancel-booking', 'refund', 'release'], $this->effects());
+        $this->assertSame($history, $this->history($stub->runId()));
+        $this->assertSame('started', $cancellation->finish($key, $stub->runId(), 'booking-now-confirmed')['status']);
+        $this->drain();
+        $this->assertSame('cancelled', $this->store->authority->subject($key, 'order')->state, $this->progress());
+    }
+
     public function testProcessingRefundBlocksOriginalReleaseUntilAConfirmedLateResultAndFreshRecovery(): void
     {
         $stub = $this->start(refund: Status::Processing);
@@ -151,11 +185,13 @@ final class V2ProviderStateMachineExampleTest extends TestCase
         $this->assertSame('booked', $this->store->authority->subject($key, 'order')->state);
         $this->assertSame('pending', $cancellation->finish($key, $stub->runId(), 'processing-refund')['status']);
         $history = $this->history($stub->runId());
-        $failedChild = WorkflowRun::query()->where(
+        $failedChildren = WorkflowRun::query()->where(
             'workflow_instance_id',
             $plan->childScope('payment')
                 ->recoveryInstanceId()
-        )->sole();
+        )->get();
+        $this->assertCount(1, $failedChildren, $this->progress());
+        $failedChild = $failedChildren->sole();
         $this->assertSame(RunStatus::Failed, $failedChild->status);
         $failedChildHistory = $this->history($failedChild->id);
         $this->provider->resolve(

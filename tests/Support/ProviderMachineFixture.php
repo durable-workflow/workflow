@@ -39,11 +39,15 @@ trait ProviderMachineFixture
 
     protected ?Journal $provider = null;
 
+    private array $taskTrace = [];
+
     protected function setUp(): void
     {
         parent::setUp();
         self::stopWorkers();
         Queue::fake();
+        // drain() advances native time explicitly; SQL latency must not also advance that test clock.
+        Carbon::setTestNow('2026-01-01T00:00:00Z');
         config([
             'workflows.v2.namespaces' => [Catalogue::NAMESPACE],
             'workflows.v2.task_dispatch_mode' => 'queue',
@@ -143,24 +147,58 @@ trait ProviderMachineFixture
             )->get()
                 ->toArray(),
             'scopes' => DB::table('workflow_compensation_scopes')->get(['id', 'original_run_id', 'status'])->all(),
+            'obligations' => DB::table('workflow_compensation_obligations')->orderBy('scope_id')->orderBy('position')
+                ->limit(32)
+                ->get(['scope_id', 'id', 'forward_status', 'compensation_status', 'evidence'])->map(
+                    static function (object $row): array {
+                        $evidence = json_decode($row->evidence ?? '{}', true, flags: JSON_THROW_ON_ERROR);
+                        return [
+                            'scope' => $row->scope_id,
+                            'id' => $row->id,
+                            'forward' => $row->forward_status,
+                            'compensation' => $row->compensation_status,
+                            'reason' => $evidence['reason'] ?? null,
+                        ];
+                    }
+                )->all(),
+            'activities' => DB::table('activity_executions')->orderByDesc('created_at')->limit(32)
+                ->get(['id', 'workflow_run_id', 'activity_class', 'status', 'attempt_count', 'started_at', 'closed_at'])
+                ->all(),
+            'taskTrace' => $this->taskTrace,
         ], JSON_THROW_ON_ERROR);
     }
 
-    protected function drain(?\Closure $stop = null): void
+    protected function drain(?\Closure $stop = null, ?string $pausedInstance = null): void
     {
         for ($i = 0; $i < 800; ++$i) {
             if ($stop !== null && $stop()) {
                 return;
             }
-            $task = WorkflowTask::query()->whereRelation('run', 'namespace', Catalogue::NAMESPACE)
-                ->where('status', TaskStatus::Ready)->orderBy('available_at')->orderBy('created_at')->orderBy(
-                    'id'
-                )->first();
+            $tasks = WorkflowTask::query()->whereRelation('run', 'namespace', Catalogue::NAMESPACE)
+                ->where('status', TaskStatus::Ready);
+            if ($pausedInstance !== null) {
+                $tasks->whereRelation('run', 'workflow_instance_id', '<>', $pausedInstance);
+            }
+            $task = $tasks->orderBy('available_at')
+                ->orderBy('created_at')
+                ->orderBy('id')
+                ->first();
             if ($task === null) {
                 return;
             }
             if ($task->available_at !== null && $task->available_at->isFuture()) {
                 Carbon::setTestNow($task->available_at->copy()->addSecond());
+            }
+            $this->taskTrace[] = [
+                'id' => $task->id,
+                'run' => $task->workflow_run_id,
+                'type' => $task->task_type->value,
+                'available' => $task->available_at?->toISOString(),
+                'clock' => now()
+                    ->toISOString(),
+            ];
+            if (count($this->taskTrace) > 64) {
+                array_shift($this->taskTrace);
             }
             $job = match ($task->task_type) {
                 TaskType::Workflow => new RunWorkflowTask($task->id),

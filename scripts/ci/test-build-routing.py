@@ -89,6 +89,8 @@ class FeatureShardRoutingTest(unittest.TestCase):
     filler_features = [
         "tests/Feature/FillerOneTest.php",
         "tests/Feature/FillerTwoTest.php",
+        "tests/Feature/FillerThreeTest.php",
+        "tests/Feature/FillerFourTest.php",
     ]
     unseen_feature = "tests/Feature/V2/UnprofiledFeatureTest.php"
 
@@ -197,18 +199,29 @@ class FeatureShardRoutingTest(unittest.TestCase):
     def shard_assignments(self, profile: str) -> list[list[str]]:
         assignments = []
 
-        for shard in range(6):
+        count = 8 if profile == "mysql" else 6
+        for shard in range(count):
             result = self.run_php(
                 "scripts/ci/split-feature-tests.php",
                 "--dir=tests/Feature",
                 f"--shard={shard}",
-                "--shards=6",
+                f"--shards={count}",
                 "--weights=.github/feature-test-timings.json",
                 f"--weight-profile={profile}",
             )
             assignments.append(result.stdout.splitlines())
 
         return assignments
+
+    def test_missing_middle_mysql_report_cannot_pass_the_coverage_gate(self) -> None:
+        workflow = self.root / ".github/workflows/php.yml"
+        source = workflow.read_text()
+        report = "        --clover=build/feature-coverage/mysql-shard-6-coverage.xml\n"
+        self.assertIn(report, source)
+        workflow.write_text(source.replace(report, "", 1))
+        verification = self.run_php("scripts/ci/verify-feature-shards.php", check=False)
+        self.assertNotEqual(0, verification.returncode)
+        self.assertIn("Coverage job is missing feature report merge input", verification.stderr)
 
     def test_unprofiled_feature_enters_pull_request_and_target_branch_suites(
         self,
@@ -473,13 +486,17 @@ class BuildWorkflowTrustTest(unittest.TestCase):
             set(workflow_job_needs(self.build, "coverage")),
         )
         aggregate = self.job_source("coverage")
+        sonar_upload = aggregate.split("    - name: Send Clover reports", 1)[1].split("    - name:", 1)[0]
+        codecov_upload = aggregate.split("    - name: Upload coverage to Codecov", 1)[1].split("    - name:", 1)[0]
         self.assertIn("artifact-ids: ${{ needs.coverage-unit.outputs.unit_artifact_id }}", aggregate)
         self.assertIn("digest-mismatch: error", aggregate)
         for report in ["coverage.xml"] + [
-            f"build/feature-coverage/mysql-shard-{shard}-coverage.xml" for shard in range(6)
+            f"build/feature-coverage/mysql-shard-{shard}-coverage.xml" for shard in range(8)
         ]:
             with self.subTest(report=report):
                 self.assertIn(f"--clover={report}", aggregate)
+                self.assertIn(report, sonar_upload)
+                self.assertIn(report, codecov_upload)
 
     def test_required_check_has_explicit_pull_request_and_target_contracts(self) -> None:
         build_job = self.job_source("build")
