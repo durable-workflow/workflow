@@ -36,6 +36,8 @@ final readonly class PolicyProfile
 
     public ?MachineDefinition $definition;
 
+    private ?ExecutionLimits $executionLimits;
+
     /**
      * @param non-empty-list<string> $states
      * @param list<TransitionDefinition> $transitions
@@ -49,6 +51,7 @@ final readonly class PolicyProfile
         array $states,
         array $transitions,
         array $conditions = [],
+        ?ExecutionLimits $limits = null,
     ) {
         $definition = $machine instanceof MachineDefinition ? $machine : null;
         $machine = $definition?->machine ?? $machine;
@@ -86,7 +89,7 @@ final readonly class PolicyProfile
             }
             PortableDescriptor::identifier($name, 'policy condition');
         }
-        $definition?->assertProfile($machine, $definitionVersion, $states, $transitions);
+        $definition?->assertProfile($machine, $definitionVersion, $states, $transitions, $conditions);
         $this->machine = $machine;
         $this->definitionVersion = $definitionVersion;
         $this->profile = $profile;
@@ -97,6 +100,7 @@ final readonly class PolicyProfile
         $this->conditions = array_map(static fn (ConditionDefinition $condition): ConditionDefinition =>
             $condition, $conditions);
         $this->definition = $definition;
+        $this->executionLimits = $limits;
     }
 
     /**
@@ -108,7 +112,8 @@ final readonly class PolicyProfile
         string $profile,
         string $profileVersion,
         array $transitions,
-        array $conditions = []
+        array $conditions = [],
+        ?ExecutionLimits $limits = null,
     ): self {
         return new self(
             $definition,
@@ -117,7 +122,30 @@ final readonly class PolicyProfile
             $profileVersion,
             $definition->stateIds(),
             $transitions,
-            $conditions
+            $conditions,
+            $limits
+        );
+    }
+
+    public function limits(): ?ExecutionLimits
+    {
+        return $this->executionLimits;
+    }
+
+    /**
+     * Return a new pinned profile; the original assignment remains unchanged.
+     */
+    public function withLimits(ExecutionLimits $limits): self
+    {
+        return new self(
+            $this->definition ?? $this->machine,
+            $this->definitionVersion,
+            $this->profile,
+            $this->profileVersion,
+            $this->states,
+            $this->transitions,
+            $this->conditions,
+            $limits
         );
     }
 
@@ -142,6 +170,12 @@ final readonly class PolicyProfile
         if ($this->definition !== null) {
             $material[] = [
                 'machine_definition_fingerprint' => $this->definition->fingerprint(),
+            ];
+        }
+        $limits = $this->limits();
+        if ($limits !== null) {
+            $material[] = [
+                'execution_limits' => $limits->toArray(),
             ];
         }
         return hash('sha256', json_encode($material, JSON_THROW_ON_ERROR));

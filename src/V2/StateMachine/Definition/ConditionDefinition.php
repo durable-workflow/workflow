@@ -62,6 +62,13 @@ final readonly class ConditionDefinition
         return hash('sha256', PortableDescriptor::encode($this->toArray()));
     }
 
+    public function nodeCount(): int
+    {
+        $count = 0;
+        self::count($this, $count);
+        return $count;
+    }
+
     /**
      * @return array<string, mixed>
      */

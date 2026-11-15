@@ -139,7 +139,10 @@ and 256 obligations per scope. Root and child forward ownership do not transfer
 to continue-as-new/redrive successors. Retention release remains explicit.
 
 The example does not add profile migration, arbitrary executable configuration,
-recursive/shared children, an event router, budget or circuit-breaker policy, or
-a publication dispatcher. Profile assignments stay pinned to original runs;
+recursive/shared children, an event router, circuit-breaker policy, or a
+publication dispatcher. Its original profiles leave the optional
+[resource budgets](../../docs/business-state-machines.md#configured-resource-budgets)
+unset; introducing them requires an explicitly selected compatible profile for
+new executions. Profile assignments stay pinned to original runs;
 authority changes must use the shared business lock and cancellation fence.
 No release date or full StateMachine completion follows from this example.

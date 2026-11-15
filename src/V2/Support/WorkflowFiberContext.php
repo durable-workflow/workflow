@@ -40,6 +40,11 @@ final class WorkflowFiberContext
      */
     private static array $cancellationShields = [];
 
+    /**
+     * @var array<int, list<callable(mixed): void>>
+     */
+    private static array $forwardBudgets = [];
+
     public static function enter(): void
     {
         $fiber = Fiber::getCurrent();
@@ -64,6 +69,7 @@ final class WorkflowFiberContext
         unset(self::$cancellationTime[spl_object_id($fiber)]);
         unset(self::$cancellationTimeAvailable[spl_object_id($fiber)]);
         unset(self::$cancellationShields[spl_object_id($fiber)]);
+        unset(self::$forwardBudgets[spl_object_id($fiber)]);
     }
 
     public static function active(): bool
@@ -86,6 +92,7 @@ final class WorkflowFiberContext
         }
 
         $fiberId = spl_object_id($fiber);
+        unset($fiber);
         self::$cancellationShields[$fiberId] = (self::$cancellationShields[$fiberId] ?? 0) + 1;
 
         try {
@@ -216,6 +223,62 @@ final class WorkflowFiberContext
             }
 
             throw new WorkflowFiberDiscardedException(previous: $error);
+        }
+    }
+
+    /**
+     * @internal The executor checks a yielded call before exposing it for dispatch.
+     */
+    public static function checkForwardBudgets(int $fiberId, mixed $call): void
+    {
+        foreach (self::$forwardBudgets[$fiberId] ?? [] as $guard) {
+            $guard($call);
+        }
+    }
+
+    /**
+     * @internal Forward resource checks are not authorization or cancellation shields.
+     */
+    public static function withForwardBudget(callable $guard, callable $callback): mixed
+    {
+        $fiber = Fiber::getCurrent();
+        if (! $fiber instanceof Fiber || ! self::active()) {
+            throw new LogicException('Forward budgets require an active workflow Fiber.');
+        }
+        $key = spl_object_id($fiber);
+        unset($fiber);
+        self::$forwardBudgets[$key][] = $guard;
+        try {
+            return $callback();
+        } finally {
+            if (isset(self::$forwardBudgets[$key])) {
+                array_pop(self::$forwardBudgets[$key]);
+                if (self::$forwardBudgets[$key] === []) {
+                    unset(self::$forwardBudgets[$key]);
+                }
+            }
+        }
+    }
+
+    /**
+     * @internal Exhausted forward work must not borrow from or block compensation.
+     */
+    public static function withoutForwardBudgets(callable $callback): mixed
+    {
+        $fiber = Fiber::getCurrent();
+        if (! $fiber instanceof Fiber) {
+            return $callback();
+        }
+        $key = spl_object_id($fiber);
+        unset($fiber);
+        $guards = self::$forwardBudgets[$key] ?? [];
+        unset(self::$forwardBudgets[$key]);
+        try {
+            return $callback();
+        } finally {
+            if ($guards !== [] && self::active()) {
+                self::$forwardBudgets[$key] = $guards;
+            }
         }
     }
 
