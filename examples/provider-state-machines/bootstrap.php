@@ -7,6 +7,7 @@ require_once __DIR__ . '/../configured-state-machines/BooleanFact.php';
 require_once __DIR__ . '/../business-state-machines/SqlBusinessStore.php';
 require_once __DIR__ . '/../business-state-machines/BusinessCancellationRequested.php';
 require_once __DIR__ . '/Catalogue.php';
+require_once __DIR__ . '/FinancialCatalogue.php';
 require_once __DIR__ . '/OrderTerms.php';
 require_once __DIR__ . '/BindingPlan.php';
 foreach ([

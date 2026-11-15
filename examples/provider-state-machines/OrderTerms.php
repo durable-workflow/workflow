@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Examples\ProviderStateMachines;
 
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\AuthorizationTerms;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Identity;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Request;
 use InvalidArgumentException;
@@ -20,6 +21,7 @@ final readonly class OrderTerms
         public string $currency,
         public string $sku,
         public int $quantity,
+        public ?AuthorizationTerms $authorization = null,
     ) {
         foreach (['client', 'subject', 'generation', 'sku'] as $key) {
             PortableDescriptor::identifier($this->{$key}, $key);
@@ -29,11 +31,23 @@ final readonly class OrderTerms
                 'The example needs positive integer amounts and quantities and a currency.'
             );
         }
+        if ($authorization !== null && ($authorization->amountMinor !== $amountMinor
+            || $authorization->currency !== $currency)) {
+            throw new InvalidArgumentException(
+                'The authorization must preserve the original order amount and currency.'
+            );
+        }
     }
 
     public function toArray(): array
     {
-        return get_object_vars($this);
+        $value = get_object_vars($this);
+        if ($this->authorization === null) {
+            unset($value['authorization']);
+        } else {
+            $value['authorization'] = $this->authorization->toArray();
+        }
+        return $value;
     }
 
     public function subjectKey(): string
@@ -45,7 +59,15 @@ final readonly class OrderTerms
     {
         $keys = array_keys($value);
         sort($keys);
-        if ($keys !== ['amountMinor', 'client', 'currency', 'generation', 'quantity', 'sku', 'subject']) {
+        $expected = ['amountMinor', 'client', 'currency', 'generation', 'quantity', 'sku', 'subject'];
+        if (array_key_exists('authorization', $value)) {
+            if (! is_array($value['authorization'])) {
+                throw new InvalidArgumentException('The original authorization must contain its immutable terms.');
+            }
+            $expected[] = 'authorization';
+            sort($expected);
+        }
+        if ($keys !== $expected) {
             throw new InvalidArgumentException('The original order terms have unexpected or missing fields.');
         }
         foreach (['client', 'subject', 'generation', 'currency', 'sku'] as $key) {
@@ -55,6 +77,9 @@ final readonly class OrderTerms
         }
         if (! is_int($value['amountMinor']) || ! is_int($value['quantity'])) {
             throw new InvalidArgumentException('The original amount and quantity must be integer values.');
+        }
+        if (array_key_exists('authorization', $value)) {
+            $value['authorization'] = AuthorizationTerms::fromArray($value['authorization']);
         }
         return new self(...$value);
     }
@@ -67,6 +92,9 @@ final readonly class OrderTerms
      */
     public function descriptor(string $role): array
     {
+        if ($role === 'payment' && $this->authorization !== null) {
+            throw new InvalidArgumentException('An authorized payment requires its explicit financial descriptor.');
+        }
         [$forward, $undo, $terms] = match ($role) {
             'order' => [
                 'reserve', 'release', [
@@ -94,6 +122,36 @@ final readonly class OrderTerms
                 $undo,
                 $terms,
                 $identity,
+            ))->toArray(),
+        ];
+    }
+
+    /**
+     * @return array{authorize: array, capture: array, void: array, refund: array}
+     */
+    public function financialDescriptor(): array
+    {
+        if ($this->authorization === null) {
+            throw new InvalidArgumentException('An original authorization assignment is required.');
+        }
+        $id = fn (string $action): Identity => new Identity(
+            $this->client,
+            $this->subject,
+            $this->generation,
+            'payment.' . $action
+        );
+        $authorization = $id('authorize');
+        $capture = $id('capture-authorized');
+        $terms = $this->authorization->toArray();
+        return [
+            'authorize' => (new Request($authorization, 'authorize', $terms))->toArray(),
+            'capture' => (new Request($capture, 'capture-authorized', $terms, $authorization))->toArray(),
+            'void' => (new Request($id('void-authorization'), 'void-authorization', $terms, $authorization))->toArray(),
+            'refund' => (new Request(
+                $id('refund-authorized'),
+                'refund-authorized',
+                $this->authorization->captureTerms(),
+                $capture
             ))->toArray(),
         ];
     }
