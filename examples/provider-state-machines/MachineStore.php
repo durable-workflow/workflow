@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DurableWorkflow\Examples\ProviderStateMachines;
 
 use DurableWorkflow\Examples\BusinessStateMachines\SqlBusinessStore;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\FinancialOperation;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Journal;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\RetainedOperation;
 use Illuminate\Contracts\Container\Container;
@@ -35,6 +36,12 @@ final readonly class MachineStore
         $store = new self($authority);
         $app->instance(self::class, $store);
         $app->instance(AssessmentStore::class, new AssessmentStore($authority, $provider));
+        $financial = new FinancialAuthority($authority);
+        $app->instance(FinancialInspectionStore::class, new FinancialInspectionStore(
+            $authority->db,
+            $provider,
+            $financial->inspect(...)
+        ));
         $app->instance(CancellationStore::class, new CancellationStore($authority));
         $app->instance(ChildReservationStore::class, new ChildReservationStore($authority));
         $app->instance(ChildDefinitionRegistry::class, new ChildDefinitionRegistry([
@@ -56,7 +63,7 @@ final readonly class MachineStore
                 return $this->authority->authorizeScope($scope, $principal, $operation);
             }
         });
-        $app->instance(HandlerRegistry::class, new HandlerRegistry([
+        $handlers = [
             'provider.owner' => [
                 '1' => new OwnerOperation($authority),
             ],
@@ -68,7 +75,18 @@ final readonly class MachineStore
                     $authority->authorizeOperation($context, $operation);
                 }),
             ],
-        ]));
+        ];
+        foreach (['authorize', 'capture'] as $stage) {
+            $handlers['provider.financial.' . $stage] = [
+                '1' => new FinancialOperation($provider, static function (
+                    OperationContext $context,
+                    string $mode
+                ) use ($financial, $stage): void {
+                    $financial->operation($context, $mode, $stage);
+                }, $stage),
+            ];
+        }
+        $app->instance(HandlerRegistry::class, new HandlerRegistry($handlers));
         return $store;
     }
 

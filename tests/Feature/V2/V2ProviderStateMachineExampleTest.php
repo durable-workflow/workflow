@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\FinancialDescriptor;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Request;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Status;
 use DurableWorkflow\Examples\ProviderStateMachines\AssessmentStore;
@@ -11,9 +12,12 @@ use DurableWorkflow\Examples\ProviderStateMachines\Authority;
 use DurableWorkflow\Examples\ProviderStateMachines\Booking;
 use DurableWorkflow\Examples\ProviderStateMachines\CancellationStore;
 use DurableWorkflow\Examples\ProviderStateMachines\Catalogue;
+use DurableWorkflow\Examples\ProviderStateMachines\FinancialInspectionStore;
 use DurableWorkflow\Examples\ProviderStateMachines\Order;
+use DurableWorkflow\Examples\ProviderStateMachines\OrderTerms;
 use DurableWorkflow\Examples\ProviderStateMachines\Payment;
 use Illuminate\Support\Facades\DB;
+use LogicException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 use Workflow\V2\Compensation\Persistence\ScopeRepository;
@@ -28,6 +32,46 @@ require_once __DIR__ . '/../../../examples/provider-state-machines/bootstrap.php
 final class V2ProviderStateMachineExampleTest extends TestCase
 {
     use \Tests\Support\ProviderMachineFixture;
+
+    public function testLegacyNativePaymentCannotAcquireFinancialAuthorityFromAnAuthorizationDescriptor(): void
+    {
+        $this->start();
+        $key = $this->terms->subjectKey();
+        $plan = $this->store->authority->plan($key);
+        $actor = DB::table('provider_machine_actors')->where('id', Authority::subjectId($key, 'payment'))->sole();
+        $actual = WorkflowRun::query()->findOrFail($actor->native_run);
+        $terms = OrderTerms::fromArray([
+            ...$this->terms->toArray(),
+            'authorization' => [
+                'amountMinor' => $this->terms->amountMinor,
+                'currency' => $this->terms->currency,
+                'expiresAt' => 1001,
+            ],
+        ]);
+        $before = (int) $this->providerDb->query('SELECT COUNT(*) FROM provider_requests')
+            ->fetchColumn();
+        try {
+            app(FinancialInspectionStore::class)->inspect(
+                $actual,
+                'legacy-financial-substitution',
+                $plan->childScope('payment')
+                    ->toArray(),
+                FinancialDescriptor::fromArray($terms->financialDescriptor())->toArray()
+            );
+            $this->fail('A financial graph must not upgrade the original native actor or business policy.');
+        } catch (LogicException $error) {
+            $this->assertSame(
+                'The original financial actor, binding or selected policy was substituted.',
+                $error->getMessage()
+            );
+        }
+        $this->assertSame(
+            $before,
+            (int) $this->providerDb->query('SELECT COUNT(*) FROM provider_requests')
+                ->fetchColumn()
+        );
+        $this->assertSame(['reserve', 'capture', 'book'], $this->effects());
+    }
 
     public static function acknowledgements(): array
     {
