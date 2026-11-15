@@ -28,8 +28,12 @@ final readonly class ChildResolution
     ) {
     }
 
-    public function resolve(ScopeIdentity $parent, Obligation $obligation, string $operationId): Resolution
-    {
+    public function resolve(
+        ScopeIdentity $parent,
+        Obligation $obligation,
+        string $operationId,
+        ?string $ownerRunId = null
+    ): Resolution {
         if ($obligation->handlerVersion !== ChildScopes::VERSION || array_keys($obligation->input) !== [
             'child',
         ] || ! is_array($obligation->input['child'])) {
@@ -42,7 +46,12 @@ final readonly class ChildResolution
         $principal = $this->repository->primaryRequest($parent)['principal'];
         try {
             $this->authorization->assertAllowed($child, $principal, 'compensate');
-            $this->recovery->request($child, 'parent-' . $operationId, $principal, 'parent-compensation');
+            $this->recovery->request(
+                $child,
+                ChildRecoveryRequest::key($operationId, $ownerRunId),
+                $principal,
+                'parent-compensation'
+            );
             $snapshot = $this->repository->inspect($child);
         } catch (Throwable) {
             return Resolution::unknown('child-unresolved');

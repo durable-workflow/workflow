@@ -60,9 +60,9 @@ final class CompensateObligationActivity extends Activity
         $unavailable = false;
         try {
             if ($obligation->handlerType === ChildScopes::TYPE) {
-                $result = app(ChildResolution::class)->resolve($scope, $obligation, $id);
+                $result = app(ChildResolution::class)->resolve($scope, $obligation, $id, $this->runId());
             } elseif ($obligation->handlerType === ChildScopes::RESERVED_TYPE) {
-                $result = app(ReservedChildResolution::class)->resolve($scope, $obligation, $id);
+                $result = app(ReservedChildResolution::class)->resolve($scope, $obligation, $id, $this->runId());
             } else {
                 $handler = app(HandlerRegistry::class)->resolve($obligation);
                 $result = $row['forward_status'] === 'registered'
