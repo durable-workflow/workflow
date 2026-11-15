@@ -5,7 +5,7 @@ The recorded SQL host, workflow composition and initial native tests are
 implemented. The original reservation-first policy, failed-child-recovery
 routing correction and controlled-clock fixture passed the complete source
 backend cycle in #1161. The common checkout policies below are a subsequent
-source increment under qualification. This directory remains experimental
+source increment. This directory remains experimental
 source, not an installed-package guide.
 Published Workflow 2.28.1 does not contain these retained-scope or StateMachine APIs.
 
@@ -112,8 +112,8 @@ installed upgrade, rollback, real provider operation or production readiness.
 
 ## One checkout route, two prerequisite policies
 
-This next source slice is being qualified. It is not installed-package or
-complete consumer-matrix acceptance. The original version-1 profile and Order
+These common checkout policies are experimental source, not installed-package
+or complete consumer-matrix acceptance. The original version-1 profile and Order
 class remain available with their original fingerprints and recorded commands.
 Select a new recipe only for a fresh original business generation.
 
@@ -176,3 +176,24 @@ The focused source cases are `V2PaymentFirstProviderMachineTest.php` and
 in `V2ProviderStateMachineExampleTest.php`. These use synthetic providers and
 controlled native time. All remaining customer policy variants and installed,
 upgrade, rollback and publication gates remain open.
+
+## Refund outcomes and retained recovery
+
+A confirmed refund is financial evidence; processing, Unknown and definitive
+refusal are distinct outstanding outcomes. They keep the original Payment
+obligation unresolved, block stock release and prevent cancellation publication.
+The original capture remains a historical fact.
+
+`V2ProviderRefundOutcomeTest.php` exercises Unknown and refused refunds in the
+payment-first checkout. An authoritative late confirmation can settle the
+original Unknown refund through fresh authorized recovery. A fresh recovery
+request cannot turn a definitive refusal into a successful refund. This
+example's refusal policy leaves the obligation outstanding for authorized
+handling; it does not select a different refund identity or silently replan the
+provider result.
+
+The simulator's same-key idempotency permits repeated request attempts while
+returning the original outcome. The cases count those requests separately from
+committed effects and preserve both closed Order and original Payment histories.
+They are synthetic source controls, not a claim about a real provider's retry
+contract or installed-package acceptance.
