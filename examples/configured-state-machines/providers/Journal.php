@@ -26,6 +26,7 @@ final readonly class Journal
     public function __construct(
         private PDO $db,
         private string $client,
+        private ?Closure $clock = null,
     ) {
         PortableDescriptor::identifier($client, 'provider client');
         if ($db->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'sqlite' || $db->inTransaction()) {
@@ -41,6 +42,14 @@ final readonly class Journal
                 $this->db->exec($sql);
             }
         });
+    }
+
+    /**
+     * Explicit optional provider support; install() keeps the original four-table fixtures unchanged.
+     */
+    public function installAuthorizationSupport(): void
+    {
+        $this->transaction(fn () => $this->authorizationLedger()->install());
     }
 
     /**
@@ -73,7 +82,10 @@ final readonly class Journal
             }
             $plan = $this->assertPlan($request);
             $status = Status::from($plan['status']);
-            if (! $this->targetConfirmed($request)) {
+            if (AuthorizationLedger::handles($request)) {
+                $status = $this->authorizationLedger()
+                    ->admit($request, $status);
+            } elseif (! $this->targetConfirmed($request)) {
                 $status = Status::Unknown;
             }
             $this->write($request, $status, false);
@@ -130,10 +142,15 @@ final readonly class Journal
                 || ! in_array($status, [Status::Confirmed, Status::NotExecuted, Status::Refused], true)) {
                 throw new LogicException('Only an admitted unresolved operation has a provider completion.');
             }
-            if ($status === Status::Confirmed && ! $this->targetConfirmed($request)) {
-                throw new LogicException(
-                    'Compensation cannot confirm against an unknown or different original effect.'
-                );
+            if ($status === Status::Confirmed) {
+                if (AuthorizationLedger::handles($request)) {
+                    $this->authorizationLedger()
+                        ->assertCompletion($request);
+                } elseif (! $this->targetConfirmed($request)) {
+                    throw new LogicException(
+                        'Compensation cannot confirm against an unknown or different original effect.'
+                    );
+                }
             }
             $this->write($request, $status, (bool) $row['closed']);
             return $this->observation($request, $this->operation($request));
@@ -145,6 +162,11 @@ final readonly class Journal
         if ($request->identity->client !== $this->client) {
             throw new LogicException('The provider credential belongs to another client.');
         }
+    }
+
+    private function authorizationLedger(): AuthorizationLedger
+    {
+        return new AuthorizationLedger($this->db, $this->clock ?? static fn (): int => time());
     }
 
     private function operation(Request $request): ?array
@@ -212,6 +234,10 @@ final readonly class Journal
 
     private function observation(Request $request, ?array $row): Observation
     {
+        if ($row !== null && $row['status'] === Status::Confirmed->value && AuthorizationLedger::handles($request)) {
+            $this->authorizationLedger()
+                ->assertCompletion($request);
+        }
         $effect = $this->query('SELECT effect_id FROM provider_effects WHERE operation_id = ?', [
             $request->identity->key(),
         ])->fetchColumn();
