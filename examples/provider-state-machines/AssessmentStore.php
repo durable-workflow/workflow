@@ -275,7 +275,14 @@ final readonly class AssessmentStore
         ];
         $evidence = array_fill_keys(array_keys($values), 'business-snapshot:' . $id);
         $selected = FinancialCatalogue::selected($plan->recipe)
-            ? $this->selectedFacts($actual, $activityId, $actor, $plan, $transitionKey, $values, $evidence, $id) : null;
+            ? $this->selectedFacts(
+                $actual,
+                $activityId,
+                $actor,
+                $plan,
+                $transitionKey,
+                new RecordedFacts($id, $values, $evidence)
+            ) : null;
         if ($selected !== null) {
             return $selected;
         }
@@ -309,10 +316,11 @@ final readonly class AssessmentStore
         object $actor,
         BindingPlan $plan,
         string $transitionKey,
-        array $values,
-        array $evidence,
-        string $id
+        RecordedFacts $facts
     ): ?RecordedFacts {
+        $values = $facts->values;
+        $evidence = $facts->evidence;
+        $id = $facts->snapshotId;
         return match ($actor->role) {
             'payment' => $this->financialFacts($actual, $activityId, $actor, $plan, $values, $evidence, $id),
             'shipment' => $this->physicalFacts($actual, $values, $evidence, $id),
