@@ -1,0 +1,145 @@
+<?php
+
+declare(strict_types=1);
+
+namespace DurableWorkflow\Examples\ProviderStateMachines;
+
+use Closure;
+use LogicException;
+use Workflow\V2\Compensation\Definition\PortableDescriptor;
+use Workflow\V2\Compensation\Definition\ScopeIdentity;
+use Workflow\V2\StateMachine\Binding\BindingIdentity;
+use Workflow\V2\StateMachine\Binding\ChildReservation;
+use Workflow\V2\StateMachine\Binding\ChildScopeBindingAuthorization;
+use Workflow\V2\StateMachine\Binding\ChildScopeParticipation;
+use Workflow\V2\StateMachine\Execution\ExecutionReference;
+
+/** Canonical relation for one trusted business generation; live host ownership must also be checked. */
+final readonly class BindingPlan implements ChildScopeBindingAuthorization
+{
+    public const VERSION = 'provider-order-pair-v1';
+
+    public const PAYMENT = 'example.provider.payment.v1';
+
+    public const SHIPMENT = 'example.provider.booking.v1';
+
+    /**
+     * @param Closure(BindingIdentity, string): void $authorizeOriginalOwner
+     */
+    public function __construct(
+        public OrderTerms $terms,
+        public string $rootRun,
+        private string $principal,
+        private Closure $authorizeOriginalOwner,
+    ) {
+        PortableDescriptor::identifier($rootRun, 'original root run');
+        PortableDescriptor::identifier($principal, 'authenticated principal');
+    }
+
+    public function rootScope(): ScopeIdentity
+    {
+        return new ScopeIdentity(
+            Catalogue::APPLICATION,
+            Catalogue::NAMESPACE,
+            $this->terms->subjectKey(),
+            $this->rootRun
+        );
+    }
+
+    public function execution(string $role): ExecutionReference
+    {
+        [$key, $state, $revision] = match ($role) {
+            'payment' => ['pay', 'reserved', '2'],
+            'shipment' => ['book', 'paid', '3'],
+            default => throw new LogicException('Only the original Payment and booking children are selected.'),
+        };
+        return new ExecutionReference(
+            Catalogue::APPLICATION,
+            $this->terms->subjectKey(),
+            $this->rootRun . '.' . $key . '.' . $revision,
+            Catalogue::profile('order')->fingerprint(),
+            $state,
+            $revision,
+        );
+    }
+
+    public function childScope(string $role): ScopeIdentity
+    {
+        return new ScopeIdentity(
+            Catalogue::APPLICATION,
+            Catalogue::NAMESPACE,
+            $this->terms->subjectKey() . '.' . $role,
+            $this->execution($role)
+->executionId,
+        );
+    }
+
+    public function childInput(string $role): array
+    {
+        return [
+            $this->terms->subjectKey(),
+            $this->rootRun,
+            $this->execution($role)
+                ->toArray(),
+            $this->childScope($role)
+                ->toArray(),
+        ];
+    }
+
+    public function binding(string $role): BindingIdentity
+    {
+        $binding = new BindingIdentity(
+            $this->execution($role),
+            Catalogue::NAMESPACE,
+            'provider-order-' . $this->terms->subjectKey(),
+            $this->rootRun,
+            $role,
+            $this->execution($role)
+->executionId,
+            $role === 'payment' ? 'paid' : 'booked',
+            $role === 'payment' ? self::PAYMENT : self::SHIPMENT,
+            Catalogue::profile($role)->fingerprint(),
+            $role === 'payment' ? 'captured' : 'booked',
+            ChildReservation::inputFingerprint($this->childInput($role)),
+        );
+        $parent = Catalogue::profile('order');
+        $parent->definition->assertBinding($parent, $binding, Catalogue::profile($role));
+        return $binding;
+    }
+
+    public function participation(string $role): ChildScopeParticipation
+    {
+        return new ChildScopeParticipation($this->rootScope(), $this->childScope($role), $role);
+    }
+
+    public function assertAllowed(BindingIdentity $identity, string $principal, string $operation): string
+    {
+        if ($principal !== $this->principal || ! in_array($operation, ['reserve', 'load', 'close'], true)
+            || ! in_array($identity->slot, ['payment', 'shipment'], true)
+            || PortableDescriptor::encode($identity->toArray()) !== PortableDescriptor::encode(
+                $this->binding($identity->slot)
+                    ->toArray()
+            )) {
+            throw new LogicException('The child binding does not belong to this original business generation.');
+        }
+        ($this->authorizeOriginalOwner)($identity, $operation);
+        return self::VERSION;
+    }
+
+    public function assertParticipationAllowed(
+        BindingIdentity $identity,
+        ChildScopeParticipation $participation,
+        string $principal,
+        string $operation,
+        ?string $pinnedPolicyVersion = null,
+    ): string {
+        // Refuse a substituted scope pair before even the live host ownership lookup.
+        if (! in_array($identity->slot, ['payment', 'shipment'], true)
+            || $participation->toArray() !== $this->participation($identity->slot)
+                ->toArray()
+            || ($pinnedPolicyVersion !== null && $pinnedPolicyVersion !== self::VERSION)) {
+            throw new LogicException('The child scope, binding and original business owner must agree.');
+        }
+        return $this->assertAllowed($identity, $principal, $operation);
+    }
+}
