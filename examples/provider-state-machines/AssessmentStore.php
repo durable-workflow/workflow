@@ -44,54 +44,8 @@ final readonly class AssessmentStore
             }
             return $this->read($existing);
         }
-        $root = $this->authority->subject($actor->root_key, 'order');
-        $values = [
-            'forward_open' => ! (bool) $root->cancellation_requested && ! (bool) $row->cancellation_requested,
-            'cancellation_requested' => (bool) $root->cancellation_requested,
-            'model_consistent' => (int) $row->revision > 0 && in_array(
-                $row->state,
-                Catalogue::profile($actor->role)->states,
-                true
-            ),
-        ];
-        $evidence = array_fill_keys(array_keys($values), 'business-snapshot:' . $id);
-        if ($actor->role === 'order' && in_array($transition->key, ['pay', 'book'], true)) {
-            $role = $transition->key === 'pay' ? 'payment' : 'shipment';
-            $binding = $plan->binding($role);
-            $milestone = $this->authority->db->table('provider_machine_milestones')
-                ->where('id', $binding->key())
-                ->first();
-            if ($milestone !== null) {
-                $payload = json_decode($milestone->payload, true, flags: JSON_THROW_ON_ERROR);
-                if ($milestone->actor_id !== $row->id || ! hash_equals(
-                    $milestone->payload_sha256,
-                    hash('sha256', $milestone->payload)
-                )
-                    || PortableDescriptor::encode($payload['binding']['identity'] ?? []) !== PortableDescriptor::encode(
-                        $binding->toArray()
-                    )
-                    || ($payload['binding']['admission']['childRunId'] ?? null) !== $milestone->child_run) {
-                    throw new LogicException('The recorded original child milestone is corrupt.');
-                }
-            }
-            $values[$transition->key . '_confirmed'] = $milestone !== null;
-            $evidence[$transition->key . '_confirmed'] = 'original-child-publication:' . $binding->key();
-        } elseif ($transition->key === 'cancel') {
-            $scope = (new ScopeRepository())->metadata($plan->rootScope());
-            $values['cancel_confirmed'] = $scope['original_run_id'] === $plan->rootRun && $scope['status'] === 'verified';
-            $evidence['cancel_confirmed'] = 'retained-scope:' . $plan->rootScope()->id() . ':' . $scope['status'];
-        } else {
-            [, $terms] = $this->authority->assignment($actor->root_key);
-            $forward = Request::fromArray($terms->descriptor($actor->role)['forward']);
-            $observation = $this->provider->lookup($forward);
-            // False means "not confirmed", never "the operation did not execute".
-            $values[$transition->key . '_confirmed'] = $observation->status === Status::Confirmed
-                && $observation->effectId === 'effect-' . $forward->identity->key();
-            $evidence[$transition->key . '_confirmed'] = $observation->effectId
-                ?? 'provider-observation:' . $forward->identity->key() . ':' . $observation->status->value;
-        }
+        $facts = $this->facts($actor, $row, $plan, $transition->key, $id);
         $profile = Catalogue::profile($actor->role);
-        $facts = new RecordedFacts($id, $values, $evidence);
         $registry = Catalogue::registry();
         $target = $registry->evaluateCondition($profile->condition($transition->key . '.target'), $facts);
         $permission = $registry->evaluateCondition($profile->condition($transition->key . '.permission'), $facts);
@@ -207,6 +161,70 @@ final readonly class AssessmentStore
             'status' => $result->status->value,
             'reason' => $result->reason,
         ];
+    }
+
+    private function facts(
+        object $actor,
+        object $row,
+        BindingPlan $plan,
+        string $transitionKey,
+        string $id
+    ): RecordedFacts {
+        $root = $this->authority->subject($actor->root_key, 'order');
+        $values = [
+            'forward_open' => ! (bool) $root->cancellation_requested && ! (bool) $row->cancellation_requested,
+            'cancellation_requested' => (bool) $root->cancellation_requested,
+            'model_consistent' => (int) $row->revision > 0 && in_array(
+                $row->state,
+                Catalogue::profile($actor->role)->states,
+                true
+            ),
+        ];
+        $evidence = array_fill_keys(array_keys($values), 'business-snapshot:' . $id);
+        if ($actor->role === 'order' && in_array($transitionKey, ['pay', 'book'], true)) {
+            $role = $transitionKey === 'pay' ? 'payment' : 'shipment';
+            $values[$transitionKey . '_confirmed'] = $this->childConfirmed($row, $plan, $role);
+            $evidence[$transitionKey . '_confirmed'] = 'original-child-publication:' . $plan->binding($role)->key();
+        } elseif ($transitionKey === 'cancel') {
+            $scope = (new ScopeRepository())->metadata($plan->rootScope());
+            $values['cancel_confirmed'] = $scope['original_run_id'] === $plan->rootRun && $scope['status'] === 'verified';
+            $evidence['cancel_confirmed'] = 'retained-scope:' . $plan->rootScope()->id() . ':' . $scope['status'];
+        } else {
+            [, $terms] = $this->authority->assignment($actor->root_key);
+            $forward = Request::fromArray($terms->descriptor($actor->role)['forward']);
+            $observation = $this->provider->lookup($forward);
+            // False means "not confirmed", never "the operation did not execute".
+            $values[$transitionKey . '_confirmed'] = $observation->status === Status::Confirmed
+                && $observation->effectId === 'effect-' . $forward->identity->key();
+            $evidence[$transitionKey . '_confirmed'] = $observation->effectId
+                ?? 'provider-observation:' . $forward->identity->key() . ':' . $observation->status->value;
+        }
+        return new RecordedFacts($id, $values, $evidence);
+    }
+
+    private function childConfirmed(object $row, BindingPlan $plan, string $role): bool
+    {
+        $binding = $plan->binding($role);
+        $milestone = $this->authority->db->table('provider_machine_milestones')
+            ->where('id', $binding->key())
+            ->first();
+        if ($milestone === null) {
+            return false;
+        }
+        if ($milestone->actor_id !== $row->id || ! hash_equals(
+            $milestone->payload_sha256,
+            hash('sha256', $milestone->payload)
+        )) {
+            throw new LogicException('The original child milestone belongs to another actor or is corrupt.');
+        }
+        $payload = json_decode($milestone->payload, true, flags: JSON_THROW_ON_ERROR);
+        if (PortableDescriptor::encode($payload['binding']['identity'] ?? []) !== PortableDescriptor::encode(
+            $binding->toArray()
+        )
+            || ($payload['binding']['admission']['childRunId'] ?? null) !== $milestone->child_run) {
+            throw new LogicException('The recorded original child milestone is corrupt.');
+        }
+        return true;
     }
 
     private function context(WorkflowRun $actual, array $request): array

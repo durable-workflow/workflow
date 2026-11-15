@@ -32,27 +32,7 @@ final class RetainedStep extends AssessedTransitionStep
         $execution = $context->execution();
         if ($this->initialization['role'] === 'order' && in_array($context->transition->key, ['pay', 'book'], true)) {
             $role = $context->transition->key === 'pay' ? 'payment' : 'shipment';
-            foreach ($this->initialization['children'] as $child) {
-                $binding = BindingIdentity::fromArray($child['binding']);
-                if ($binding->slot !== $role) {
-                    continue;
-                }
-                if (! $binding->parentExecution->equals($execution)) {
-                    throw new LogicException('The child belongs to a different original state-entry execution.');
-                }
-                $reservation = $this->scope->reserveChild($role, ScopeIdentity::fromArray($child['scope']), $binding);
-                $started = $reservation->start(...$child['input']);
-                $outcome = $started->await();
-                if (! is_array($outcome)) {
-                    throw new LogicException('The child did not return its original business publication.');
-                }
-                Workflow::activity(BoundaryActivity::class, 'observe', [
-                    'binding' => (new ChildBinding($binding, $started))->toArray(),
-                    'outcome' => $outcome,
-                ]);
-                return new ExecutionReceipt($execution, ['original-child:' . $started->childRunId]);
-            }
-            throw new LogicException('The pinned child slot is unavailable.');
+            return $this->executeChild($context, $role);
         }
         if ($context->transition->key === 'cancel') {
             throw new LogicException('The proof-only cancellation transition cannot dispatch work.');
@@ -71,5 +51,31 @@ final class RetainedStep extends AssessedTransitionStep
             'execution' => $originalExecution->toArray(),
             'key' => $context->transition->key,
         ]);
+    }
+
+    private function executeChild(TransitionContext $context, string $role): ExecutionReceipt
+    {
+        $execution = $context->execution();
+        foreach ($this->initialization['children'] as $child) {
+            $binding = BindingIdentity::fromArray($child['binding']);
+            if ($binding->slot !== $role) {
+                continue;
+            }
+            if (! $binding->parentExecution->equals($execution)) {
+                throw new LogicException('The child belongs to a different original state-entry execution.');
+            }
+            $reservation = $this->scope->reserveChild($role, ScopeIdentity::fromArray($child['scope']), $binding);
+            $started = $reservation->start(...$child['input']);
+            $outcome = $started->await();
+            if (! is_array($outcome)) {
+                throw new LogicException('The child did not return its original business publication.');
+            }
+            Workflow::activity(BoundaryActivity::class, 'observe', [
+                'binding' => (new ChildBinding($binding, $started))->toArray(),
+                'outcome' => $outcome,
+            ]);
+            return new ExecutionReceipt($execution, ['original-child:' . $started->childRunId]);
+        }
+        throw new LogicException('The pinned child slot is unavailable.');
     }
 }

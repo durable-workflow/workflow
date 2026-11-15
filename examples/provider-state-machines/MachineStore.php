@@ -106,78 +106,10 @@ final readonly class MachineStore
         $this->authority->authorize($key, $this->authority->principal);
         [$assignment, $terms] = $this->authority->assignment($key);
         $root = $this->authority->subject($key, 'order');
-        if ($role === 'order') {
-            $instance = WorkflowInstance::query()->findOrFail($actual->workflow_instance_id);
-            if ($args !== [$key] || $actual->workflow_instance_id !== 'provider-order-' . $key
-                || (int) $instance->run_count !== 1 || $instance->current_run_id !== $actual->id
-                || ($assignment->root_run !== null && $assignment->root_run !== $actual->id)) {
-                throw new LogicException('This example does not transfer its original Order to a successor.');
-            }
-            $plan = new BindingPlan($terms, $actual->id, $this->authority->principal, static function (): void {
-                throw new LogicException('Initialization does not authorize child admission.');
-            });
-            $scope = $plan->rootScope();
-        } else {
-            $plan = $this->authority->plan($key);
-            $scope = $plan->childScope($role);
-            if (PortableDescriptor::encode($args) !== PortableDescriptor::encode($plan->childInput($role))
-                || $actual->workflow_instance_id !== 'dw-bound-child-' . $plan->binding($role)->key()) {
-                throw new LogicException('Child initialization differs from its exact original input.');
-            }
-            $reservations = app(ChildReservationStore::class);
-            $reservation = $reservations->load(
-                $plan->binding($role),
-                $this->authority->principal,
-                $plan->participation($role)
-            );
-            $binding = $reservations->close($reservation, $this->authority->principal);
-            if (! $binding instanceof ChildBinding || $binding->admission->childRunId !== $actual->id
-                || (new ScopeRepository())->metadata($scope)['original_run_id'] !== $actual->id) {
-                throw new LogicException('A genuine original native admission and child scope are required.');
-            }
-        }
-        $this->authority->db->transaction(function () use ($root, $key, $role, $actual, $scope): void {
-            $current = $this->authority->db->table('example_machine_subjects')
-                ->where('id', $root->id)
-                ->lockForUpdate()
-                ->sole();
-            $this->authority->assertGrant($current, $key, 'order');
-            $assignment = $this->authority->db->table('provider_machine_assignments')
-                ->where('id', $key)
-                ->sole();
-            if ($role === 'order') {
-                if ($assignment->root_run !== null && $assignment->root_run !== $actual->id) {
-                    throw new LogicException('The original business generation has another native owner.');
-                }
-                $this->authority->db->table('provider_machine_assignments')
-                    ->where('id', $key)
-                    ->update([
-                        'root_run' => $actual->id,
-                    ]);
-            }
-            $id = Authority::subjectId($key, $role);
-            $existing = $this->authority->db->table('provider_machine_actors')
-                ->where('id', $id)
-                ->first();
-            if ($existing !== null) {
-                if ($existing->root_key !== $key || $existing->role !== $role || $existing->native_run !== $actual->id
-                    || $existing->scope !== PortableDescriptor::encode($scope->toArray())) {
-                    throw new LogicException('The immutable original machine actor changed.');
-                }
-                return;
-            }
-            if ($role !== 'order') {
-                $this->createSubject($key, $role, (bool) $current->cancellation_requested);
-            }
-            $this->authority->db->table('provider_machine_actors')
-                ->insert([
-                    'id' => $id,
-                    'root_key' => $key,
-                    'role' => $role,
-                    'native_run' => $actual->id,
-                    'scope' => PortableDescriptor::encode($scope->toArray()),
-                ]);
-        });
+        $plan = $role === 'order' ? $this->rootPlan($actual, $args, $key, $assignment, $terms)
+            : $this->childPlan($actual, $args, $key, $role);
+        $scope = $role === 'order' ? $plan->rootScope() : $plan->childScope($role);
+        $this->persistActor($root, $key, $role, $actual, $scope);
         $this->authority->actor($actual);
         return [
             'key' => $key,
@@ -217,7 +149,9 @@ final readonly class MachineStore
     public function initializeFinalizer(WorkflowRun $actual, array $arguments): array
     {
         [$actor, , $plan] = $this->authority->actor($actual);
-        if ($actual->workflow_class !== Cancellation::class || PortableDescriptor::encode($arguments) !== PortableDescriptor::encode($actual->workflowArguments())) {
+        if ($actual->workflow_class !== Cancellation::class || PortableDescriptor::encode(
+            $arguments
+        ) !== PortableDescriptor::encode($actual->workflowArguments())) {
             throw new LogicException('Only the exact original cancellation finalizer may initialize here.');
         }
         return [
@@ -339,6 +273,98 @@ final readonly class MachineStore
             'execution' => $execution->toArray(),
             'verified' => true,
         ];
+    }
+
+    private function rootPlan(
+        WorkflowRun $actual,
+        array $args,
+        string $key,
+        object $assignment,
+        OrderTerms $terms
+    ): BindingPlan {
+        $instance = WorkflowInstance::query()->findOrFail($actual->workflow_instance_id);
+        if ($args !== [$key] || $actual->workflow_instance_id !== 'provider-order-' . $key
+            || (int) $instance->run_count !== 1 || $instance->current_run_id !== $actual->id
+            || ($assignment->root_run !== null && $assignment->root_run !== $actual->id)) {
+            throw new LogicException('This example does not transfer its original Order to a successor.');
+        }
+        $plan = new BindingPlan($terms, $actual->id, $this->authority->principal, static function (): void {
+            throw new LogicException('Initialization does not authorize child admission.');
+        });
+        return $plan;
+    }
+
+    private function childPlan(WorkflowRun $actual, array $args, string $key, string $role): BindingPlan
+    {
+        $plan = $this->authority->plan($key);
+        $scope = $plan->childScope($role);
+        if (PortableDescriptor::encode($args) !== PortableDescriptor::encode($plan->childInput($role))
+            || $actual->workflow_instance_id !== 'dw-bound-child-' . $plan->binding($role)->key()) {
+            throw new LogicException('Child initialization differs from its exact original input.');
+        }
+        $reservations = app(ChildReservationStore::class);
+        $reservation = $reservations->load(
+            $plan->binding($role),
+            $this->authority->principal,
+            $plan->participation($role)
+        );
+        $binding = $reservations->close($reservation, $this->authority->principal);
+        if (! $binding instanceof ChildBinding || $binding->admission->childRunId !== $actual->id
+            || (new ScopeRepository())->metadata($scope)['original_run_id'] !== $actual->id) {
+            throw new LogicException('A genuine original native admission and child scope are required.');
+        }
+        return $plan;
+    }
+
+    private function persistActor(
+        object $root,
+        string $key,
+        string $role,
+        WorkflowRun $actual,
+        ScopeIdentity $scope
+    ): void {
+        $this->authority->db->transaction(function () use ($root, $key, $role, $actual, $scope): void {
+            $current = $this->authority->db->table('example_machine_subjects')
+                ->where('id', $root->id)
+                ->lockForUpdate()
+                ->sole();
+            $this->authority->assertGrant($current, $key, 'order');
+            $assignment = $this->authority->db->table('provider_machine_assignments')
+                ->where('id', $key)
+                ->sole();
+            if ($role === 'order') {
+                if ($assignment->root_run !== null && $assignment->root_run !== $actual->id) {
+                    throw new LogicException('The original business generation has another native owner.');
+                }
+                $this->authority->db->table('provider_machine_assignments')
+                    ->where('id', $key)
+                    ->update([
+                        'root_run' => $actual->id,
+                    ]);
+            }
+            $id = Authority::subjectId($key, $role);
+            $existing = $this->authority->db->table('provider_machine_actors')
+                ->where('id', $id)
+                ->first();
+            if ($existing !== null) {
+                if ($existing->root_key !== $key || $existing->role !== $role || $existing->native_run !== $actual->id
+                    || $existing->scope !== PortableDescriptor::encode($scope->toArray())) {
+                    throw new LogicException('The immutable original machine actor changed.');
+                }
+                return;
+            }
+            if ($role !== 'order') {
+                $this->createSubject($key, $role, (bool) $current->cancellation_requested);
+            }
+            $this->authority->db->table('provider_machine_actors')
+                ->insert([
+                    'id' => $id,
+                    'root_key' => $key,
+                    'role' => $role,
+                    'native_run' => $actual->id,
+                    'scope' => PortableDescriptor::encode($scope->toArray()),
+                ]);
+        });
     }
 
     private function createSubject(string $key, string $role, bool $cancelled): void

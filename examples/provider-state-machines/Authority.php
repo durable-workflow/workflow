@@ -113,21 +113,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
         }
         $this->authorize($key, $this->principal);
         $plan = $this->plan($key);
-        $finalizer = $actual->workflow_class === Cancellation::class;
-        if ($finalizer) {
-            if (count($args) !== 3 || ! is_string($args[1]) || ! is_string($args[2])
-                || $args[1] !== $plan->rootRun
-                || $actual->workflow_instance_id !== CancellationStore::instance($key, $plan->rootRun, $args[2])) {
-                throw new LogicException('The proof-only finalizer belongs to another original cancellation.');
-            }
-            app(CancellationStore::class)->intent($key, $plan->rootRun, $args[2]);
-        } elseif (($role === 'order' && ($actual->id !== $plan->rootRun || $args !== [$key]
-                || $actual->workflow_instance_id !== 'provider-order-' . $key))
-            || ($role !== 'order' && (PortableDescriptor::encode($args) !== PortableDescriptor::encode(
-                $plan->childInput($role)
-            ) || $actual->workflow_instance_id !== 'dw-bound-child-' . $plan->binding($role)->key()))) {
-            throw new LogicException('The native actor differs from the pinned original admission.');
-        }
+        $finalizer = $this->assertNativeOwner($actual, $args, $key, $role, $plan);
         $actor = $this->db->table('provider_machine_actors')
             ->where('id', self::subjectId($key, $role))->sole();
         $scope = $role === 'order' ? $plan->rootScope() : $plan->childScope($role);
@@ -258,5 +244,30 @@ final readonly class Authority implements ChildScopeBindingAuthorization
             }
         }
         return new ExecutionReference(...$value);
+    }
+
+    private function assertNativeOwner(
+        WorkflowRun $actual,
+        array $args,
+        string $key,
+        string $role,
+        BindingPlan $plan
+    ): bool {
+        if ($actual->workflow_class === Cancellation::class) {
+            if (count($args) !== 3 || ! is_string($args[1]) || ! is_string($args[2])
+                || $args[1] !== $plan->rootRun
+                || $actual->workflow_instance_id !== CancellationStore::instance($key, $plan->rootRun, $args[2])) {
+                throw new LogicException('The proof-only finalizer belongs to another original cancellation.');
+            }
+            app(CancellationStore::class)->intent($key, $plan->rootRun, $args[2]);
+            return true;
+        }
+        $input = $role === 'order' ? [$key] : $plan->childInput($role);
+        $instance = $role === 'order' ? 'provider-order-' . $key : 'dw-bound-child-' . $plan->binding($role)->key();
+        if (PortableDescriptor::encode($args) !== PortableDescriptor::encode($input)
+            || $actual->workflow_instance_id !== $instance || ($role === 'order' && $actual->id !== $plan->rootRun)) {
+            throw new LogicException('The native actor differs from the pinned original admission.');
+        }
+        return false;
     }
 }

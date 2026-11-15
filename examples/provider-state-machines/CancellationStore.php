@@ -32,20 +32,7 @@ final readonly class CancellationStore
         PortableDescriptor::identifier($requestKey, 'original cancellation request');
         [$assignment] = $this->authority->assignment($key);
         $root = $this->authority->subject($key, 'order');
-        $actual = WorkflowRun::query()->where('namespace', Catalogue::NAMESPACE)
-            ->where('workflow_class', Order::class)->where(
-                'workflow_instance_id',
-                'provider-order-' . $key
-            )->findOrFail($rootRun);
-        $instance = WorkflowInstance::query()->findOrFail($actual->workflow_instance_id);
-        if ($actual->workflow_class !== Order::class || $actual->namespace !== Catalogue::NAMESPACE
-            || $actual->workflowArguments() !== [$key] || $actual->workflow_instance_id !== 'provider-order-' . $key
-            || (int) $instance->run_count !== 1 || $instance->current_run_id !== $rootRun
-            || ($assignment->root_run !== null && $assignment->root_run !== $rootRun)) {
-            throw new LogicException(
-                'Cancellation cannot move the original business generation to another native owner.'
-            );
-        }
+        $this->assertOriginalRoot($key, $rootRun, $assignment);
         $id = hash('sha256', PortableDescriptor::encode([$key, $rootRun, $requestKey]));
         $hash = hash('sha256', PortableDescriptor::encode([$key, $rootRun, $requestKey, $this->authority->principal]));
         $this->authority->db->transaction(function () use ($key, $rootRun, $root, $id, $hash): void {
@@ -259,5 +246,23 @@ final readonly class CancellationStore
     public static function instance(string $key, string $rootRun, string $requestKey): string
     {
         return 'provider-cancel-' . hash('sha256', PortableDescriptor::encode([$key, $rootRun, $requestKey]));
+    }
+
+    private function assertOriginalRoot(string $key, string $rootRun, object $assignment): void
+    {
+        $actual = WorkflowRun::query()->where('namespace', Catalogue::NAMESPACE)
+            ->where('workflow_class', Order::class)->where(
+                'workflow_instance_id',
+                'provider-order-' . $key
+            )->findOrFail($rootRun);
+        $instance = WorkflowInstance::query()->findOrFail($actual->workflow_instance_id);
+        if ($actual->workflow_class !== Order::class || $actual->namespace !== Catalogue::NAMESPACE
+            || $actual->workflowArguments() !== [$key] || $actual->workflow_instance_id !== 'provider-order-' . $key
+            || (int) $instance->run_count !== 1 || $instance->current_run_id !== $rootRun
+            || ($assignment->root_run !== null && $assignment->root_run !== $rootRun)) {
+            throw new LogicException(
+                'Cancellation cannot move the original business generation to another native owner.'
+            );
+        }
     }
 }

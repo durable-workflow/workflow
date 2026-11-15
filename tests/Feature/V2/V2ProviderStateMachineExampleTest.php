@@ -192,7 +192,8 @@ final class V2ProviderStateMachineExampleTest extends TestCase
         $this->drain();
         $this->assertSame(
             'cancelled',
-            $this->store->authority->subject($this->terms->subjectKey(), 'order')->state,
+            $this->store->authority->subject($this->terms->subjectKey(), 'order')
+->state,
             $this->progress()
         );
         $this->assertSame(['reserve', 'capture', 'book', 'cancel-booking', 'refund', 'release'], $this->effects());
@@ -214,6 +215,13 @@ final class V2ProviderStateMachineExampleTest extends TestCase
         $this->assertSame('booked', $this->store->authority->subject($key, 'order')->state);
         $this->assertSame('pending', $cancellation->finish($key, $stub->runId(), 'processing-refund')['status']);
         $history = $this->history($stub->runId());
+        $failedChild = WorkflowRun::query()->where(
+            'workflow_instance_id',
+            $plan->childScope('payment')
+                ->recoveryInstanceId()
+        )->sole();
+        $this->assertSame(RunStatus::Failed, $failedChild->status);
+        $failedChildHistory = $this->history($failedChild->id);
         $this->provider->resolve(
             Request::fromArray($this->terms->descriptor('payment')['compensation']),
             Status::Confirmed
@@ -227,6 +235,17 @@ final class V2ProviderStateMachineExampleTest extends TestCase
         );
         $this->assertSame(['reserve', 'capture', 'book', 'cancel-booking', 'refund', 'release'], $this->effects());
         $this->assertSame($history, $this->history($stub->runId()));
+        $childRuns = WorkflowRun::query()->where(
+            'workflow_instance_id',
+            $plan->childScope('payment')
+                ->recoveryInstanceId()
+        )->get();
+        $this->assertCount(2, $childRuns);
+        $this->assertCount(
+            1,
+            $childRuns->filter(static fn (WorkflowRun $run): bool => $run->status === RunStatus::Completed)
+        );
+        $this->assertSame($failedChildHistory, $this->history($failedChild->id));
         $this->assertSame('started', $cancellation->finish($key, $stub->runId(), 'confirmed-late-refund')['status']);
         $this->drain();
         $this->assertSame('cancelled', $this->store->authority->subject($key, 'order')->state, $this->progress());
@@ -311,9 +330,16 @@ final class V2ProviderStateMachineExampleTest extends TestCase
     private function progress(): string
     {
         return json_encode([
-            'runs' => WorkflowRun::query()->get(['id', 'workflow_class', 'status', 'output'])->toArray(),
-            'failures' => WorkflowFailure::query()->pluck('message')->all(),
-            'tasks' => WorkflowTask::query()->get(['task_type', 'status', 'last_error'])->toArray(),
+            'runs' => WorkflowRun::query()->get(['id', 'workflow_class', 'status'])->toArray(),
+            'failures' => WorkflowFailure::query()->orderByDesc('created_at')->limit(10)->pluck('message')->map(
+                static fn (string $message): string => substr($message, 0, 256)
+            )->all(),
+            'tasks' => WorkflowTask::query()->selectRaw('task_type, status, COUNT(*) as total')->groupBy(
+                'task_type',
+                'status'
+            )->get()
+                ->toArray(),
+            'scopes' => DB::table('workflow_compensation_scopes')->get(['id', 'original_run_id', 'status'])->all(),
         ], JSON_THROW_ON_ERROR);
     }
 
