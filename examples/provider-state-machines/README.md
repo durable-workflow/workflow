@@ -9,6 +9,24 @@ source increment. This directory remains experimental
 source, not an installed-package guide.
 Published Workflow 2.28.1 does not contain these retained-scope or StateMachine APIs.
 
+The authorization/capture source work adds immutable optional authorization
+terms, a common Payment definition with separate stock and recipient-delivery
+trigger profiles, and a recorded financial inspection boundary. The native
+Order assembly does not select those profiles yet. It refuses authorization
+assignments rather than falling back to immediate capture. The actual trigger
+producers and original parent/child milestone handoffs remain unfinished.
+
+`FinancialInspectionActivity` requires an explicitly bound
+`FinancialInspectionStore`. Its mandatory host callback must authorize the
+original native actor, business generation, financial graph and paired retained
+obligations before provider SQL. The store persists the first observation by
+original activity identity. An acknowledgement retry returns that observation
+after reauthorization; it does not refresh its time or extend authorization
+expiry. A later inspection has a distinct recorded identity. Raw unknown,
+processing and refused observations remain available alongside confirmed facts.
+These observations grant no authority to execute a capture and do not replace
+the live protected business admission check.
+
 The first selected policy uses an original stock reservation, immediate full
 payment capture and carrier booking before handover. Payment is a distinct
 machine with its own capture transition; booking is a distinct Shipment

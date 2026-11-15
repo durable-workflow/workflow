@@ -76,6 +76,9 @@ final readonly class MachineStore
     {
         $key = $terms->subjectKey();
         $this->authority->authorize($key, $this->authority->principal);
+        if ($terms->authorization !== null) {
+            throw new LogicException('The selected native recipe does not implement authorization and capture.');
+        }
         $payload = PortableDescriptor::encode($terms->toArray());
         $this->authority->db->transaction(function () use ($key, $payload): void {
             $this->authority->db->table('provider_machine_assignments')

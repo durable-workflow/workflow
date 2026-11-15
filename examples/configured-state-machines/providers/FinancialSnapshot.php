@@ -24,7 +24,9 @@ final readonly class FinancialSnapshot
         }
     }
 
-    /** A missing confirmation never proves nonexecution; native admissions and raw observations remain authoritative. */
+    /**
+     * A missing confirmation never proves nonexecution; native admissions and raw observations remain authoritative.
+     */
     public function facts(): array
     {
         $terms = AuthorizationTerms::fromArray($this->descriptor->authorize->terms);
