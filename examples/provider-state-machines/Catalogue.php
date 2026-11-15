@@ -56,30 +56,8 @@ final class Catalogue
     public static function profile(string $role, string $recipe = self::RESERVE_FIRST): PolicyProfile
     {
         self::assertRecipe($recipe);
-        [$states, $edges] = match ($role) {
-            'order' => [
-                ['received', 'reserved', 'paid', 'booked', 'cancelled'],
-                [
-                    ['reserve', 'received', 'reserved', true],
-                    ['pay', 'reserved', 'paid', true],
-                    ['book', 'paid', 'booked', true],
-                    ['cancel', ['received', 'reserved', 'paid', 'booked'], 'cancelled', false],
-                ],
-            ],
-            'payment' => [['received', 'captured'], [['capture', 'received', 'captured', true]]],
-            // This is the booking boundary, not delivery or the complete physical Shipment lifecycle.
-            'shipment' => [['received', 'booked'], [['book', 'received', 'booked', true]]],
-            default => throw new LogicException('The provider machine role is unavailable.'),
-        };
         $checkout = $role === 'order' && $recipe !== self::RESERVE_FIRST;
-        if ($checkout) {
-            $states = ['received', 'ready', 'booked', 'cancelled'];
-            $edges = [
-                ['prepare', 'received', 'ready', true],
-                ['book', 'ready', 'booked', true],
-                ['cancel', ['received', 'ready', 'booked'], 'cancelled', false],
-            ];
-        }
+        [$states, $edges] = self::route($role, $checkout);
         $transitions = [];
         $conditions = [];
         foreach ($edges as [$key, $from, $to, $work]) {
@@ -100,16 +78,7 @@ final class Catalogue
             array_map(static fn (string $state): MachineState => new MachineState($state, $state), $states),
             array_column($edges, 0),
             self::all(['model_consistent']),
-            $role === 'order' ? [
-                new ChildSlot('payment', $checkout ? ['received', 'ready'] : [
-                    'reserved',
-                    'paid',
-                ], 'provider.payment', '1', 'captured'),
-                new ChildSlot('shipment', $checkout ? ['ready', 'booked'] : [
-                    'paid',
-                    'booked',
-                ], 'provider.shipment', '1', 'booked'),
-            ] : [],
+            $role === 'order' ? self::childSlots($checkout) : [],
         );
         return PolicyProfile::forDefinition(
             $definition,
@@ -140,6 +109,49 @@ final class Catalogue
                 '1' => new BooleanFact(),
             ],
         ]);
+    }
+
+    private static function route(string $role, bool $checkout): array
+    {
+        if ($checkout) {
+            return [
+                ['received', 'ready', 'booked', 'cancelled'],
+                [
+                    ['prepare', 'received', 'ready', true],
+                    ['book', 'ready', 'booked', true],
+                    ['cancel', ['received', 'ready', 'booked'], 'cancelled', false],
+                ],
+            ];
+        }
+        return match ($role) {
+            'order' => [
+                ['received', 'reserved', 'paid', 'booked', 'cancelled'],
+                [
+                    ['reserve', 'received', 'reserved', true],
+                    ['pay', 'reserved', 'paid', true],
+                    ['book', 'paid', 'booked', true],
+                    ['cancel', ['received', 'reserved', 'paid', 'booked'], 'cancelled', false],
+                ],
+            ],
+            'payment' => [['received', 'captured'], [['capture', 'received', 'captured', true]]],
+            // This is the booking boundary, not delivery or the complete physical Shipment lifecycle.
+            'shipment' => [['received', 'booked'], [['book', 'received', 'booked', true]]],
+            default => throw new LogicException('The provider machine role is unavailable.'),
+        };
+    }
+
+    private static function childSlots(bool $checkout): array
+    {
+        return [
+            new ChildSlot('payment', $checkout ? ['received', 'ready'] : [
+                'reserved',
+                'paid',
+            ], 'provider.payment', '1', 'captured'),
+            new ChildSlot('shipment', $checkout ? ['ready', 'booked'] : [
+                'paid',
+                'booked',
+            ], 'provider.shipment', '1', 'booked'),
+        ];
     }
 
     /**

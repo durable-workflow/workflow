@@ -106,6 +106,15 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
 
     public function binding(string $role): BindingIdentity
     {
+        $parentStates = $this->recipe === Catalogue::RESERVE_FIRST
+            ? [
+                'payment' => 'paid',
+                'shipment' => 'booked',
+            ]
+            : [
+                'payment' => 'ready',
+                'shipment' => 'booked',
+            ];
         $binding = new BindingIdentity(
             $this->execution($role),
             Catalogue::NAMESPACE,
@@ -114,7 +123,7 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
             $role,
             $this->execution($role)
 ->executionId,
-            $role === 'payment' ? ($this->recipe === Catalogue::RESERVE_FIRST ? 'paid' : 'ready') : 'booked',
+            $parentStates[$role],
             $role === 'payment' ? self::PAYMENT : self::SHIPMENT,
             Catalogue::profile($role)->fingerprint(),
             $role === 'payment' ? 'captured' : 'booked',

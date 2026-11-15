@@ -24,18 +24,14 @@ final class CheckoutOrder extends Workflow
         ]));
         try {
             $machine->registerOwner();
-            $prepared = $machine->transition('prepare');
-            if ($prepared->status !== TransitionStatus::Committed) {
-                return [
-                    'businessOutcome' => 'unsettled',
-                    'transition' => $prepared->toArray(),
-                ];
+            $transition = $machine->transition('prepare');
+            if ($transition->status === TransitionStatus::Committed) {
+                $transition = $machine->transition('book');
             }
-            $booked = $machine->transition('book');
-            if ($booked->status !== TransitionStatus::Committed) {
+            if ($transition->status !== TransitionStatus::Committed) {
                 return [
                     'businessOutcome' => 'unsettled',
-                    'transition' => $booked->toArray(),
+                    'transition' => $transition->toArray(),
                 ];
             }
             self::await('finish');
