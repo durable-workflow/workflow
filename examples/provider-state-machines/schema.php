@@ -14,6 +14,8 @@ return static function (Builder $schema): void {
         $table->string('terms_sha256', 64);
         $table->string('root_run')
             ->nullable();
+        $table->text('stock_refusal')
+            ->nullable();
     });
     $schema->create('provider_machine_actors', static function (Blueprint $table): void {
         $table->string('id', 64)

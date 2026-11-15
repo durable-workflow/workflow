@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DurableWorkflow\Examples\ProviderStateMachines;
 
 use DurableWorkflow\Examples\BusinessStateMachines\SqlBusinessStore;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Request;
 use LogicException;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 use Workflow\V2\Compensation\Persistence\ScopeRepository;
@@ -171,19 +172,12 @@ final readonly class CancellationStore
                     'status' => TransitionStatus::Committed->value,
                     'reason' => 'verified_business_cancellation_committed',
                 ]);
+            $publication = $this->publication($execution, $revision, $plan);
             $this->authority->db->table('example_machine_publications')
                 ->insert([
                     'id' => $id,
                     'subject_id' => $row->id,
-                    'payload' => PortableDescriptor::encode([
-                        'execution' => $execution->toArray(),
-                        'transitionKey' => 'cancel',
-                        'state' => 'cancelled',
-                        'revision' => (string) $revision,
-                        'originalRunId' => $plan->rootRun,
-                        'scope' => $plan->rootScope()
-                            ->toArray(),
-                    ]),
+                    'payload' => PortableDescriptor::encode($publication),
                 ]);
             return [
                 'execution' => $execution->toArray(),
@@ -248,15 +242,47 @@ final readonly class CancellationStore
         return 'provider-cancel-' . hash('sha256', PortableDescriptor::encode([$key, $rootRun, $requestKey]));
     }
 
+    private function publication(
+        \Workflow\V2\StateMachine\Execution\ExecutionReference $execution,
+        int $revision,
+        BindingPlan $plan
+    ): array {
+        $publication = [
+            'execution' => $execution->toArray(),
+            'transitionKey' => 'cancel',
+            'state' => 'cancelled',
+            'revision' => (string) $revision,
+            'originalRunId' => $plan->rootRun,
+            'scope' => $plan->rootScope()
+                ->toArray(),
+        ];
+        if ($plan->recipe !== Catalogue::RESERVE_FIRST) {
+            $assignment = $this->authority->db->table('provider_machine_assignments')
+                ->where('id', $plan->terms->subjectKey())
+                ->sole();
+            $receipt = [
+                'originalRunId' => $plan->rootRun,
+                'operation' => Request::fromArray($plan->terms->descriptor('order')['forward'])->identity->key(),
+                'status' => 'refused',
+                'admissionClosed' => true,
+            ];
+            if ($assignment->root_run !== $plan->rootRun || ($assignment->stock_refusal !== null
+                && $assignment->stock_refusal !== PortableDescriptor::encode($receipt))) {
+                throw new LogicException('The protected cancellation has a substituted stock refusal.');
+            }
+            $publication['stockRefusal'] = $assignment->stock_refusal === null ? null : $receipt;
+        }
+        return $publication;
+    }
+
     private function assertOriginalRoot(string $key, string $rootRun, object $assignment): void
     {
+        $class = Catalogue::rootClass($this->authority->recipe($key));
         $actual = WorkflowRun::query()->where('namespace', Catalogue::NAMESPACE)
-            ->where('workflow_class', Order::class)->where(
-                'workflow_instance_id',
-                'provider-order-' . $key
-            )->findOrFail($rootRun);
+            ->where('workflow_class', $class)
+            ->where('workflow_instance_id', 'provider-order-' . $key)->findOrFail($rootRun);
         $instance = WorkflowInstance::query()->findOrFail($actual->workflow_instance_id);
-        if ($actual->workflow_class !== Order::class || $actual->namespace !== Catalogue::NAMESPACE
+        if ($actual->workflow_class !== $class || $actual->namespace !== Catalogue::NAMESPACE
             || $actual->workflowArguments() !== [$key] || $actual->workflow_instance_id !== 'provider-order-' . $key
             || (int) $instance->run_count !== 1 || $instance->current_run_id !== $rootRun
             || ($assignment->root_run !== null && $assignment->root_run !== $rootRun)) {

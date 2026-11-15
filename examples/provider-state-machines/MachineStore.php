@@ -111,7 +111,7 @@ final readonly class MachineStore
         $scope = $role === 'order' ? $plan->rootScope() : $plan->childScope($role);
         $this->persistActor($root, $key, $role, $actual, $scope);
         $this->authority->actor($actual);
-        return [
+        return $this->withRecipe([
             'key' => $key,
             'role' => $role,
             'rootRun' => $plan->rootRun,
@@ -126,7 +126,7 @@ final readonly class MachineStore
                     ->toArray(),
                 'input' => $plan->childInput($child),
             ], ['payment', 'shipment']) : [],
-        ];
+        ], $key);
     }
 
     public function execution(WorkflowRun $actual, string $key): array
@@ -135,12 +135,13 @@ final readonly class MachineStore
         if ($actual->workflow_class === Cancellation::class && $key !== 'cancel') {
             throw new LogicException('A proof-only finalizer cannot take over original forward work.');
         }
-        Catalogue::transition($actor->role, $key);
+        Catalogue::transition($actor->role, $key, $this->authority->recipe($actor->root_key));
         return (new ExecutionReference(
             $row->scope,
             $row->subject,
             $actual->id . '.' . $key . '.' . $row->revision,
-            Catalogue::profile($actor->role)->fingerprint(),
+            $this->authority->profile($actor->root_key, $actor->role)
+                ->fingerprint(),
             $row->state,
             (string) $row->revision,
         ))->toArray();
@@ -154,7 +155,7 @@ final readonly class MachineStore
         ) !== PortableDescriptor::encode($actual->workflowArguments())) {
             throw new LogicException('Only the exact original cancellation finalizer may initialize here.');
         }
-        return [
+        return $this->withRecipe([
             'key' => $actor->root_key,
             'role' => 'order',
             'rootRun' => $plan->rootRun,
@@ -164,7 +165,7 @@ final readonly class MachineStore
                 ->toArray(),
             'descriptor' => [],
             'children' => [],
-        ];
+        ], $actor->root_key);
     }
 
     /**
@@ -247,7 +248,7 @@ final readonly class MachineStore
     {
         $execution = Authority::reference($value);
         [$actor, , $plan] = $this->authority->actor($actual, $execution);
-        Catalogue::transition($actor->role, $key);
+        Catalogue::transition($actor->role, $key, $this->authority->recipe($actor->root_key));
         if ($execution->executionId !== $actual->id . '.' . $key . '.' . $execution->sourceRevision) {
             throw new LogicException('Step compensation requires its original transition identity.');
         }
@@ -260,12 +261,17 @@ final readonly class MachineStore
         )) {
             throw new LogicException('The original forward gate must be permanently closed.');
         }
-        $obligation = $actor->role === 'order' ? match ($key) {
-            'reserve' => 'effect', 'pay' => 'payment', 'book' => 'shipment',
+        $obligations = $actor->role === 'order' ? match ($key) {
+            'reserve' => ['effect'], 'pay' => ['payment'], 'book' => ['shipment'],
+            'prepare' => ['payment', 'effect'],
             default => throw new LogicException('The proof-only transition cannot own provider work.'),
-        } : 'effect';
+        } : ['effect'];
         foreach ($metadata['obligations'] as $item) {
-            if ($item['descriptor']['key'] === $obligation && $item['compensation_status'] !== 'verified') {
+            if (in_array(
+                $item['descriptor']['key'],
+                $obligations,
+                true
+            ) && $item['compensation_status'] !== 'verified') {
                 throw new LogicException('An original transition obligation remains unresolved.');
             }
         }
@@ -283,14 +289,15 @@ final readonly class MachineStore
         OrderTerms $terms
     ): BindingPlan {
         $instance = WorkflowInstance::query()->findOrFail($actual->workflow_instance_id);
-        if ($args !== [$key] || $actual->workflow_instance_id !== 'provider-order-' . $key
+        if ($actual->workflow_class !== Catalogue::rootClass($this->authority->recipe($key))
+            || $args !== [$key] || $actual->workflow_instance_id !== 'provider-order-' . $key
             || (int) $instance->run_count !== 1 || $instance->current_run_id !== $actual->id
             || ($assignment->root_run !== null && $assignment->root_run !== $actual->id)) {
             throw new LogicException('This example does not transfer its original Order to a successor.');
         }
         return new BindingPlan($terms, $actual->id, $this->authority->principal, static function (): void {
             throw new LogicException('Initialization does not authorize child admission.');
-        });
+        }, $this->authority->recipe($key));
     }
 
     private function childPlan(WorkflowRun $actual, array $args, string $key, string $role): BindingPlan
@@ -374,10 +381,19 @@ final readonly class MachineStore
                 'scope' => Catalogue::APPLICATION,
                 'subject' => Authority::subjectName($key, $role),
                 'principal' => $this->authority->principal,
-                'authority_version' => Authority::grant($role),
+                'authority_version' => $this->authority->grantFor($key, $role),
                 'state' => 'received',
                 'revision' => 1,
                 'cancellation_requested' => $cancelled,
             ]);
+    }
+
+    private function withRecipe(array $initialization, string $key): array
+    {
+        $recipe = $this->authority->recipe($key);
+        if ($recipe !== Catalogue::RESERVE_FIRST) {
+            $initialization['recipe'] = $recipe;
+        }
+        return $initialization;
     }
 }

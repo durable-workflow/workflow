@@ -15,6 +15,8 @@ use PHPUnit\Framework\TestCase;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
 use Workflow\V2\StateMachine\Binding\BindingIdentity;
 use Workflow\V2\StateMachine\Binding\ChildScopeParticipation;
+use Workflow\V2\StateMachine\Definition\PolicyProfile;
+use Workflow\V2\StateMachine\Definition\TransitionDefinition;
 use Workflow\V2\StateMachine\Rules\RecordedFacts;
 use Workflow\V2\StateMachine\Rules\Verdict;
 
@@ -22,6 +24,76 @@ require_once __DIR__ . '/../../../../examples/provider-state-machines/bootstrap.
 
 final class ProviderMachinePolicyTest extends TestCase
 {
+    public function testNewPoliciesShareDefinitionAndRouteWhilePinningDifferentPreparationActions(): void
+    {
+        $reserve = Catalogue::profile('order', Catalogue::COMMON_RESERVE_FIRST);
+        $pay = Catalogue::profile('order', Catalogue::PAYMENT_FIRST);
+        $this->assertSame($reserve->definition->toArray(), $pay->definition->toArray());
+        $route = static fn (PolicyProfile $profile): array => array_map(static fn (TransitionDefinition $t): array =>
+            [$t->key, $t->event, $t->from, $t->to, $t->hasWork], $profile->transitions);
+        $this->assertSame($route($reserve), $route($pay));
+        $this->assertSame(['received', 'ready', 'booked', 'cancelled'], $reserve->states);
+        $this->assertNotSame($reserve->fingerprint(), $pay->fingerprint());
+        $this->assertNotSame($reserve->transitions[0]->handler, $pay->transitions[0]->handler);
+        $this->assertSame(['reserve', 'payment'], Catalogue::preparation(Catalogue::COMMON_RESERVE_FIRST));
+        $this->assertSame(['payment', 'reserve'], Catalogue::preparation(Catalogue::PAYMENT_FIRST));
+    }
+
+    public function testExistingProviderProfilesKeepTheirAcceptedFingerprints(): void
+    {
+        // Captured from the accepted predecessor source, before introducing recipe selection.
+        foreach ([
+            'order' => '015a3f53d1b1a7285bd3cf73074f64523fff28ef85aac9226616aacf719b0243',
+            'payment' => 'a0834bea346015a028003b2a6cb580aa6074e75897d466a755d6b0fa6a5e6af2',
+            'shipment' => 'bfbafc9b46772a7823d0c7fd0936779a3a37665b5da3042b7585fdeec4b0c1df',
+        ] as $role => $fingerprint) {
+            $this->assertSame($fingerprint, Catalogue::profile($role)->fingerprint());
+        }
+    }
+
+    public function testPaymentFirstRecipeChangesRootEntryButKeepsOriginalChildPolicies(): void
+    {
+        $legacy = Catalogue::profile('order');
+        $selected = Catalogue::profile('order', Catalogue::PAYMENT_FIRST);
+        $this->assertNotSame($legacy->fingerprint(), $selected->fingerprint());
+        foreach (['payment', 'shipment'] as $role) {
+            $this->assertSame(
+                Catalogue::profile($role)->fingerprint(),
+                Catalogue::profile($role, Catalogue::PAYMENT_FIRST)->fingerprint()
+            );
+        }
+        $plan = new BindingPlan($this->terms(), 'original-run', 'worker-a', static function (): void {
+        }, Catalogue::PAYMENT_FIRST);
+        $this->assertSame('received', $plan->execution('payment')->sourceState);
+        $this->assertSame('1', $plan->execution('payment')->sourceRevision);
+        $this->assertSame('ready', $plan->execution('shipment')->sourceState);
+        $this->assertSame('2', $plan->execution('shipment')->sourceRevision);
+        $this->assertSame($selected->fingerprint(), $plan->binding('payment')->parentExecution->policyFingerprint);
+        $this->assertNotSame(BindingPlan::VERSION, $plan->version());
+        $this->assertSame(['received'], Catalogue::transition('order', 'prepare', Catalogue::PAYMENT_FIRST)->from);
+    }
+
+    public function testForeignRecipeBindingIsRefusedBeforeCallingOriginalOwner(): void
+    {
+        $calls = 0;
+        $original = new BindingPlan($this->terms(), 'original-run', 'worker-a', static function () use (&$calls): void {
+            ++$calls;
+        });
+        $changed = new BindingPlan($this->terms(), 'original-run', 'worker-a', static function (): void {
+        }, Catalogue::PAYMENT_FIRST);
+        $identity = $changed->binding('payment');
+        try {
+            $original->assertAllowed($identity, 'worker-a', 'reserve');
+            $this->fail('A different policy must not reuse the original admission authority.');
+        } catch (LogicException $error) {
+            $this->assertSame(
+                'The child binding does not belong to this original business generation.',
+                $error->getMessage()
+            );
+        }
+        $this->assertSame(0, $calls);
+    }
+
     public function testPaymentRequiresCapturedFactsRatherThanShipmentCompletion(): void
     {
         $profile = Catalogue::profile('payment');

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
-use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Journal;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Request;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Status;
 use DurableWorkflow\Examples\ProviderStateMachines\AssessmentStore;
@@ -12,28 +11,14 @@ use DurableWorkflow\Examples\ProviderStateMachines\Authority;
 use DurableWorkflow\Examples\ProviderStateMachines\Booking;
 use DurableWorkflow\Examples\ProviderStateMachines\CancellationStore;
 use DurableWorkflow\Examples\ProviderStateMachines\Catalogue;
-use DurableWorkflow\Examples\ProviderStateMachines\MachineStore;
 use DurableWorkflow\Examples\ProviderStateMachines\Order;
-use DurableWorkflow\Examples\ProviderStateMachines\OrderTerms;
 use DurableWorkflow\Examples\ProviderStateMachines\Payment;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Queue;
-use PDO;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
-use Workflow\V2\Compensation\Execution\HandlerRegistry;
 use Workflow\V2\Compensation\Persistence\ScopeRepository;
 use Workflow\V2\Enums\RunStatus;
-use Workflow\V2\Enums\TaskStatus;
-use Workflow\V2\Enums\TaskType;
-use Workflow\V2\Jobs\RunActivityTask;
-use Workflow\V2\Jobs\RunTimerTask;
-use Workflow\V2\Jobs\RunWorkflowTask;
-use Workflow\V2\Models\WorkflowFailure;
-use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
-use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\WorkflowStub;
 
@@ -42,60 +27,7 @@ require_once __DIR__ . '/../../../examples/provider-state-machines/bootstrap.php
 /** Actual embedded native machines, with a provider database independent of DW/business transactions. */
 final class V2ProviderStateMachineExampleTest extends TestCase
 {
-    private OrderTerms $terms;
-
-    private MachineStore $store;
-
-    private string $providerPath;
-
-    private ?PDO $providerDb = null;
-
-    private ?Journal $provider = null;
-
-    private array $taskTrace = [];
-
-    protected function setUp(): void
-    {
-        parent::setUp();
-        self::stopWorkers();
-        Queue::fake();
-        // drain() advances native time explicitly; SQL latency must not also advance that test clock.
-        Carbon::setTestNow('2026-01-01T00:00:00Z');
-        config([
-            'workflows.v2.namespaces' => [Catalogue::NAMESPACE],
-            'workflows.v2.task_dispatch_mode' => 'queue',
-            'queue.default' => 'redis',
-        ]);
-        foreach (['business-state-machines', 'provider-state-machines'] as $example) {
-            $schema = require __DIR__ . '/../../../examples/' . $example . '/schema.php';
-            $schema(DB::connection()->getSchemaBuilder());
-        }
-        $this->terms = new OrderTerms('shop-a', 'purchase-1', 'business-generation-1', 1499, 'USD', 'sku-1', 2);
-        $this->providerPath = tempnam(sys_get_temp_dir(), 'machine-provider-');
-        $this->providerDb = new PDO('sqlite:' . $this->providerPath);
-        $this->provider = new Journal($this->providerDb, $this->terms->client);
-        $this->provider->install();
-        $authority = new Authority(DB::connection(), 'provider-worker', [$this->terms->subjectKey()]);
-        $this->store = MachineStore::configure($this->app, $authority, $this->provider);
-        $this->store->seed($this->terms);
-    }
-
-    protected function tearDown(): void
-    {
-        Carbon::setTestNow();
-        $this->app->forgetInstance(HandlerRegistry::class);
-        foreach (['provider_machine_cancellations', 'provider_machine_milestones', 'provider_machine_admissions',
-            'provider_machine_assessments', 'provider_machine_actors', 'provider_machine_assignments',
-            'example_machine_publications', 'example_machine_decisions', 'example_machine_subjects'] as $table) {
-            DB::connection()->getSchemaBuilder()->dropIfExists($table);
-        }
-        $this->provider = null;
-        $this->providerDb = null;
-        if (isset($this->providerPath)) {
-            unlink($this->providerPath);
-        }
-        parent::tearDown();
-    }
+    use \Tests\Support\ProviderMachineFixture;
 
     public static function acknowledgements(): array
     {
@@ -214,7 +146,7 @@ final class V2ProviderStateMachineExampleTest extends TestCase
         $cancellation = app(CancellationStore::class);
         $cancellation->request($key, $stub->runId(), 'booking-worker-delayed');
         // Deliberately leave this child's work queued while the original parent's finite attempts run.
-        $this->drain($plan->childScope('shipment')->recoveryInstanceId());
+        $this->drain(pausedInstance: $plan->childScope('shipment')->recoveryInstanceId());
         $this->assertSame(RunStatus::Failed, WorkflowRun::query()->findOrFail($stub->runId())->status);
         $this->assertSame('requested', (new ScopeRepository())->metadata($plan->rootScope())['status']);
         $this->assertSame(['reserve', 'capture', 'book'], $this->effects());
@@ -329,114 +261,5 @@ final class V2ProviderStateMachineExampleTest extends TestCase
             'expectedRevision' => '4',
             'machineAssessment' => $payload['machineAssessment'],
         ]);
-    }
-
-    private function start(Status $refund = Status::Confirmed, bool $lost = false): WorkflowStub
-    {
-        foreach (['order', 'payment', 'shipment'] as $role) {
-            $descriptor = $this->terms->descriptor($role);
-            $this->provider->plan(
-                Request::fromArray($descriptor['forward']),
-                Status::Confirmed,
-                $lost && $role !== 'order'
-            );
-            $this->provider->plan(
-                Request::fromArray($descriptor['compensation']),
-                $role === 'payment' ? $refund : Status::Confirmed,
-                $lost && $role === 'payment'
-            );
-        }
-        $stub = WorkflowStub::make(Order::class, 'provider-order-' . $this->terms->subjectKey(), Catalogue::NAMESPACE);
-        $stub->start($this->terms->subjectKey());
-        $this->drain();
-        return $stub;
-    }
-
-    private function effects(): array
-    {
-        return $this->providerDb->query(
-            'SELECT json_extract(o.request, \'$.action\') FROM provider_effects e JOIN provider_operations o ON o.id = e.operation_id ORDER BY e.sequence'
-        )
-            ->fetchAll(PDO::FETCH_COLUMN);
-    }
-
-    private function history(string $run): array
-    {
-        return WorkflowHistoryEvent::query()->where('workflow_run_id', $run)->orderBy('sequence')->get()->map(
-            static fn (WorkflowHistoryEvent $event): array => [$event->event_type->value, $event->payload]
-        )->all();
-    }
-
-    private function progress(): string
-    {
-        return json_encode([
-            'runs' => WorkflowRun::query()->get(['id', 'workflow_class', 'status'])->toArray(),
-            'failures' => WorkflowFailure::query()->orderByDesc('created_at')->limit(10)->pluck('message')->map(
-                static fn (string $message): string => substr($message, 0, 256)
-            )->all(),
-            'tasks' => WorkflowTask::query()->selectRaw('task_type, status, COUNT(*) as total')->groupBy(
-                'task_type',
-                'status'
-            )->get()
-                ->toArray(),
-            'scopes' => DB::table('workflow_compensation_scopes')->get(['id', 'original_run_id', 'status'])->all(),
-            'obligations' => DB::table('workflow_compensation_obligations')->orderBy('scope_id')->orderBy('position')
-                ->limit(32)
-                ->get(['scope_id', 'id', 'forward_status', 'compensation_status', 'evidence'])->map(
-                    static function (object $row): array {
-                        $evidence = json_decode($row->evidence ?? '{}', true, flags: JSON_THROW_ON_ERROR);
-                        return [
-                            'scope' => $row->scope_id,
-                            'id' => $row->id,
-                            'forward' => $row->forward_status,
-                            'compensation' => $row->compensation_status,
-                            'reason' => $evidence['reason'] ?? null,
-                        ];
-                    }
-                )->all(),
-            'activities' => DB::table('activity_executions')->orderByDesc('created_at')->limit(32)
-                ->get(['id', 'workflow_run_id', 'activity_class', 'status', 'attempt_count', 'started_at', 'closed_at'])
-                ->all(),
-            'taskTrace' => $this->taskTrace,
-        ], JSON_THROW_ON_ERROR);
-    }
-
-    private function drain(?string $pausedInstance = null): void
-    {
-        for ($i = 0; $i < 800; ++$i) {
-            $tasks = WorkflowTask::query()->whereRelation('run', 'namespace', Catalogue::NAMESPACE)
-                ->where('status', TaskStatus::Ready);
-            if ($pausedInstance !== null) {
-                $tasks->whereRelation('run', 'workflow_instance_id', '<>', $pausedInstance);
-            }
-            $task = $tasks->orderBy('available_at')
-                ->orderBy('created_at')
-                ->orderBy('id')
-                ->first();
-            if ($task === null) {
-                return;
-            }
-            if ($task->available_at !== null && $task->available_at->isFuture()) {
-                Carbon::setTestNow($task->available_at->copy()->addSecond());
-            }
-            $this->taskTrace[] = [
-                'id' => $task->id,
-                'run' => $task->workflow_run_id,
-                'type' => $task->task_type->value,
-                'available' => $task->available_at?->toISOString(),
-                'clock' => now()
-                    ->toISOString(),
-            ];
-            if (count($this->taskTrace) > 64) {
-                array_shift($this->taskTrace);
-            }
-            $job = match ($task->task_type) {
-                TaskType::Workflow => new RunWorkflowTask($task->id),
-                TaskType::Activity => new RunActivityTask($task->id),
-                TaskType::Timer => new RunTimerTask($task->id),
-            };
-            $this->app->call([$job, 'handle']);
-        }
-        $this->fail('The bounded native provider-machine drain did not settle.');
     }
 }

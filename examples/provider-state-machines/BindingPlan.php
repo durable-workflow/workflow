@@ -31,9 +31,26 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
         public string $rootRun,
         private string $principal,
         private Closure $authorizeOriginalOwner,
+        public string $recipe = Catalogue::RESERVE_FIRST,
     ) {
         PortableDescriptor::identifier($rootRun, 'original root run');
         PortableDescriptor::identifier($principal, 'authenticated principal');
+        Catalogue::assertRecipe($recipe);
+    }
+
+    public function version(): string
+    {
+        return self::versionFor($this->recipe);
+    }
+
+    public static function versionFor(string $recipe): string
+    {
+        Catalogue::assertRecipe($recipe);
+        return match ($recipe) {
+            Catalogue::RESERVE_FIRST => self::VERSION,
+            Catalogue::PAYMENT_FIRST => 'provider-order-pair-checkout-payment-v1',
+            Catalogue::COMMON_RESERVE_FIRST => 'provider-order-pair-checkout-reserve-v1',
+        };
     }
 
     public function rootScope(): ScopeIdentity
@@ -48,16 +65,17 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
 
     public function execution(string $role): ExecutionReference
     {
+        $checkout = $this->recipe !== Catalogue::RESERVE_FIRST;
         [$key, $state, $revision] = match ($role) {
-            'payment' => ['pay', 'reserved', '2'],
-            'shipment' => ['book', 'paid', '3'],
+            'payment' => $checkout ? ['prepare', 'received', '1'] : ['pay', 'reserved', '2'],
+            'shipment' => $checkout ? ['book', 'ready', '2'] : ['book', 'paid', '3'],
             default => throw new LogicException('Only the original Payment and booking children are selected.'),
         };
         return new ExecutionReference(
             Catalogue::APPLICATION,
             $this->terms->subjectKey(),
             $this->rootRun . '.' . $key . '.' . $revision,
-            Catalogue::profile('order')->fingerprint(),
+            Catalogue::profile('order', $this->recipe)->fingerprint(),
             $state,
             $revision,
         );
@@ -88,6 +106,15 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
 
     public function binding(string $role): BindingIdentity
     {
+        $parentStates = $this->recipe === Catalogue::RESERVE_FIRST
+            ? [
+                'payment' => 'paid',
+                'shipment' => 'booked',
+            ]
+            : [
+                'payment' => 'ready',
+                'shipment' => 'booked',
+            ];
         $binding = new BindingIdentity(
             $this->execution($role),
             Catalogue::NAMESPACE,
@@ -96,13 +123,13 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
             $role,
             $this->execution($role)
 ->executionId,
-            $role === 'payment' ? 'paid' : 'booked',
+            $parentStates[$role],
             $role === 'payment' ? self::PAYMENT : self::SHIPMENT,
             Catalogue::profile($role)->fingerprint(),
             $role === 'payment' ? 'captured' : 'booked',
             ChildReservation::inputFingerprint($this->childInput($role)),
         );
-        $parent = Catalogue::profile('order');
+        $parent = Catalogue::profile('order', $this->recipe);
         $parent->definition->assertBinding($parent, $binding, Catalogue::profile($role));
         return $binding;
     }
@@ -123,7 +150,7 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
             throw new LogicException('The child binding does not belong to this original business generation.');
         }
         ($this->authorizeOriginalOwner)($identity, $operation);
-        return self::VERSION;
+        return $this->version();
     }
 
     public function assertParticipationAllowed(
@@ -137,7 +164,7 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
         if (! in_array($identity->slot, ['payment', 'shipment'], true)
             || $participation->toArray() !== $this->participation($identity->slot)
                 ->toArray()
-            || ($pinnedPolicyVersion !== null && $pinnedPolicyVersion !== self::VERSION)) {
+            || ($pinnedPolicyVersion !== null && $pinnedPolicyVersion !== $this->version())) {
             throw new LogicException('The child scope, binding and original business owner must agree.');
         }
         return $this->assertAllowed($identity, $principal, $operation);

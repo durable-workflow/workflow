@@ -51,7 +51,8 @@ final readonly class Machine
         $execution = Authority::reference(Workflow::activity(BoundaryActivity::class, 'execution', [
             'key' => $key,
         ]));
-        $profile = Catalogue::profile($this->initialization['role']);
+        $recipe = $this->initialization['recipe'] ?? Catalogue::RESERVE_FIRST;
+        $profile = Catalogue::profile($this->initialization['role'], $recipe);
         $step = new RetainedStep($this->scope, $this->identity, $this->initialization);
         $handlers = [];
         foreach ($profile->transitions as $transition) {
@@ -61,7 +62,7 @@ final readonly class Machine
             $this->workflow,
             $profile,
             $execution,
-            Catalogue::transition($this->initialization['role'], $key)->event,
+            Catalogue::transition($this->initialization['role'], $key, $recipe)->event,
             new ActivityTransitionRuntime(
                 SnapshotActivity::class,
                 AdmissionActivity::class,

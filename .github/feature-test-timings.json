@@ -116,6 +116,7 @@
     "tests/Feature/V2/V2OperatorMetricsTest.php": 45.338706,
     "tests/Feature/V2/V2OperatorQueueVisibilityTest.php": 0.869676,
     "tests/Feature/V2/V2ParentClosePolicyTest.php": 20.250084,
+    "tests/Feature/V2/V2PaymentFirstProviderMachineTest.php": 300.0,
     "tests/Feature/V2/V2PortableCancellationDeliveryTest.php": 88.086443,
     "tests/Feature/V2/V2PortableLocalActivityCheckpointTest.php": 5.63902,
     "tests/Feature/V2/V2PortableLocalActivityCleanupTest.php": 10.415421,
@@ -189,7 +190,8 @@
     "tests/Feature/VersionWorkflowTest.php": 5.216298,
     "tests/Feature/WebhookWorkflowTest.php": 2.21556,
     "tests/Feature/WorkflowPollingTest.php": 26.687723,
-    "tests/Feature/WorkflowTest.php": 8.794024
+    "tests/Feature/WorkflowTest.php": 8.794024,
+    "tests/Feature/V2/V2CommonReserveFirstProviderMachineTest.php": 200.0
   },
   "postgresql": {
     "tests/Feature/ActivityCompletionWakeTest.php": 2.529449,
@@ -287,6 +289,7 @@
     "tests/Feature/V2/V2OperatorMetricsTest.php": 19.277848,
     "tests/Feature/V2/V2OperatorQueueVisibilityTest.php": 1.04,
     "tests/Feature/V2/V2ParentClosePolicyTest.php": 18.046,
+    "tests/Feature/V2/V2PaymentFirstProviderMachineTest.php": 200.0,
     "tests/Feature/V2/V2PortableCancellationDeliveryTest.php": 60.26707,
     "tests/Feature/V2/V2PortableLocalActivityCheckpointTest.php": 8.875992,
     "tests/Feature/V2/V2PortableLocalActivityCleanupTest.php": 21.941789,
@@ -352,6 +355,7 @@
     "tests/Feature/WorkflowTest.php": 9.056121,
     "tests/Feature/V2/V2NestedCompensationExampleTest.php": 30.0,
     "tests/Feature/V2/V2ConfiguredStateMachineExampleTest.php": 300.0,
-    "tests/Feature/V2/V2MachineDefinitionTest.php": 30.0
+    "tests/Feature/V2/V2MachineDefinitionTest.php": 30.0,
+    "tests/Feature/V2/V2CommonReserveFirstProviderMachineTest.php": 120.0
   }
 }
