@@ -29,7 +29,7 @@ use Workflow\V2\WorkflowStub;
 
 require_once __DIR__ . '/../../../examples/provider-state-machines/bootstrap.php';
 
-/** Stock-trigger preparation through real machines; full physical Shipment and delivery capture remain unfinished. */
+/** Original authorization and stock-trigger preparation through the recorded machine boundary. */
 final class V2AuthorizedPaymentMachineTest extends TestCase
 {
     use ProviderMachineFixture {
