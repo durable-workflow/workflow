@@ -155,6 +155,40 @@ final class ProviderJournalTest extends TestCase
         }
     }
 
+    public function testClosingAdmissionCannotReconstructALostProviderEffectRecord(): void
+    {
+        $request = $this->request();
+        $this->provider->plan($request, Status::Confirmed);
+        $this->provider->attempt($request);
+        $this->db->exec('DELETE FROM provider_effects');
+        $closed = $this->provider->closeAdmission($request);
+        $this->assertSame(Status::Confirmed, $closed->status);
+        $this->assertTrue($closed->admissionClosed);
+        $this->assertNull($closed->effectId);
+        $this->assertSame(0, $this->rowCount('provider_effects'));
+    }
+
+    public function testAChangedStoredCommandCannotKeepItsOriginalContentFingerprint(): void
+    {
+        $request = $this->request();
+        $this->provider->plan($request, Status::Confirmed);
+        $this->provider->attempt($request);
+        $this->db->exec("UPDATE provider_operations SET request = '{}'");
+        $this->expectException(LogicException::class);
+        $this->provider->lookup($request);
+    }
+
+    public function testAnotherOperationEffectIdCannotStandInForTheOriginalReceipt(): void
+    {
+        $request = $this->request();
+        $this->provider->plan($request, Status::Confirmed);
+        $this->provider->attempt($request);
+        $this->db->exec("UPDATE provider_effects SET effect_id = 'effect-foreign'");
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('The provider evidence belongs to another original operation.');
+        $this->provider->lookup($request);
+    }
+
     public function testDefinitiveNonExecutionCanBeRetriedOnlyByAnExplicitNewProviderPlan(): void
     {
         $request = $this->request();

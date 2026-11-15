@@ -56,3 +56,39 @@ identity controls with the repository dependencies:
 ```shell
 vendor/bin/phpunit tests/Unit/V2/StateMachine/ProviderJournalTest.php
 ```
+
+## Native retained-operation boundary
+
+`RetainedOperation` implements the existing `ScopedOperation` contract. Register
+it in the trusted handler registry and invoke it through a `DurableScope`; all
+provider I/O then belongs in recorded native activities. Its portable descriptor
+contains `forward` and `compensation` requests with closed identity/term fields.
+The compensation must target that exact original operation, with the matching
+action (capture/refund, book/cancel-booking, or reserve/release).
+
+The mandatory host authorization callback must check the complete relationship
+between the original native scope/run, business client/subject/generation,
+registered descriptor, pinned policy and trusted worker principal before provider
+SQL. Independent authorization of two unrelated owners is insufficient. The
+simulator's client credential check does not supply this application policy.
+
+An uncertain forward attempt performs lookup only; missing data cannot authorize
+a new charge or booking. Processing/refused observations remain distinct from a
+successful business milestone. Later changing facts still need their own recorded
+snapshot activities; an earlier recorded processing result is not silently
+replaced during replay.
+
+Compensation first closes provider admission. A genuine permanent non-admission
+or definitive forward refusal can establish absence under this simulator's
+contract. An admitted processing/unknown forward remains unresolved. A confirmed
+forward requires the original linked undo and its confirmed effect evidence;
+processing, unknown, refused or unexecuted undo does not verify compensation.
+The simulator guarantees same-key idempotency, so lost refund acknowledgements
+can reconcile on a later native compensation attempt without a second refund.
+Real adapters must establish their own provider contract before reissuing a call.
+
+These adapter controls still do not constitute the native Payment child or the
+complete Order/Shipment/Payment cancellation fixture. The application must use
+the shared transition protocol, genuine child reservation/participation and
+protected business commits; verified provider compensation alone does not set
+the parent business state to Cancelled.

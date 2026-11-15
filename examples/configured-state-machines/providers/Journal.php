@@ -109,7 +109,11 @@ final readonly class Journal
         $this->authorize($request);
         return $this->transaction(function () use ($request): Observation {
             $row = $this->operation($request);
-            $this->write($request, $row === null ? Status::NotExecuted : Status::from($row['status']), true);
+            if ($row === null) {
+                $this->write($request, Status::NotExecuted, true);
+            } else {
+                $this->query('UPDATE provider_operations SET closed = 1 WHERE id = ?', [$request->identity->key()]);
+            }
             return $this->observation($request, $this->operation($request));
         });
     }
@@ -147,7 +151,8 @@ final readonly class Journal
     {
         $row = $this->query('SELECT * FROM provider_operations WHERE id = ?', [$request->identity->key()])
             ->fetch(PDO::FETCH_ASSOC);
-        if ($row !== false && $row['fingerprint'] !== $request->fingerprint()) {
+        if ($row !== false && ($row['fingerprint'] !== $request->fingerprint()
+            || ! hash_equals($row['fingerprint'], hash('sha256', $row['request'])))) {
             throw new LogicException('The original provider command terms were substituted.');
         }
         return $row === false ? null : $row;
@@ -172,6 +177,9 @@ final readonly class Journal
             ->fetch(PDO::FETCH_ASSOC);
         if ($row === false) {
             return false;
+        }
+        if (! hash_equals($row['fingerprint'], hash('sha256', $row['request']))) {
+            throw new LogicException('The original provider command content was substituted.');
         }
         $target = json_decode($row['request'], true, flags: JSON_THROW_ON_ERROR);
         $expected = match ($request->action) {
@@ -207,6 +215,9 @@ final readonly class Journal
         $effect = $this->query('SELECT effect_id FROM provider_effects WHERE operation_id = ?', [
             $request->identity->key(),
         ])->fetchColumn();
+        if ($effect !== false && $effect !== 'effect-' . $request->identity->key()) {
+            throw new LogicException('The provider evidence belongs to another original operation.');
+        }
         return new Observation(
             $row === null ? Status::Unknown : Status::from($row['status']),
             $effect === false ? null : $effect,
