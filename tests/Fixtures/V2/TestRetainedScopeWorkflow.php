@@ -13,9 +13,20 @@ use Workflow\V2\Workflow;
 
 final class TestRetainedScopeWorkflow extends Workflow
 {
-    public function handle(array $identity, string $mode, ?array $child = null): array
+    public function handle(array $identity, string $mode, ?array $child = null, bool $deferred = false): array
     {
         $scope = new DurableScope($this, ScopeIdentity::fromArray($identity), 'operator-a');
+        if ($deferred) {
+            $first = $scope->register(new Obligation('first', 'test.operation', '1', [
+                'mode' => $mode,
+            ]));
+            $second = $scope->register(new Obligation('second', 'test.operation', '1', []));
+            $second->execute();
+            $first->execute(new ActivityOptions(maxAttempts: 1));
+            return [
+                'status' => 'done',
+            ];
+        }
         try {
             $scope->execute(new Obligation('first', 'test.operation', '1', [
                 'mode' => $mode,

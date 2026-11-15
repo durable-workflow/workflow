@@ -2,10 +2,11 @@
 
 Work in progress for [#1069](https://github.com/durable-workflow/workflow/issues/1069).
 The recorded SQL host, workflow composition and initial native tests are
-implemented. The failed-child-recovery routing correction has focused source
-proof. Complete backend qualification exposed a test-clock scheduling failure;
-its correction and the complete backend cycle remain in progress. This
-directory remains experimental source, not an installed-package guide.
+implemented. The original reservation-first policy, failed-child-recovery
+routing correction and controlled-clock fixture passed the complete source
+backend cycle in #1161. The common checkout policies below are a subsequent
+source increment under qualification. This directory remains experimental
+source, not an installed-package guide.
 Published Workflow 2.28.1 does not contain these retained-scope or StateMachine APIs.
 
 The first selected policy uses an original stock reservation, immediate full
@@ -106,8 +107,8 @@ installed-package, real financial or physical-inventory qualification.
 This first full-refund, pre-handover policy does not implement the remaining
 payment, subscription, partial-stock, physical return or replacement variants in
 the [consumer acceptance matrix](https://github.com/durable-workflow/workflow/issues/1069#issuecomment-6889952106).
-Those requirements remain open. No native scenario, release, installed upgrade,
-rollback, real provider operation or production readiness is qualified here.
+Those requirements remain open. These source fixtures do not qualify a release,
+installed upgrade, rollback, real provider operation or production readiness.
 
 ## One checkout route, two prerequisite policies
 
