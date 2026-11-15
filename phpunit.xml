@@ -16,4 +16,5 @@
       <directory suffix=".php">src/</directory>
     </include>
   </source>
+  <coverage includeUncoveredFiles="true"/>
 </phpunit>

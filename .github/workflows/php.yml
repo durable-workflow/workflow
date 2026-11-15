@@ -1068,10 +1068,12 @@ jobs:
           > /tmp/mysql-shard-files
         cat /tmp/mysql-shard-files
         cp /tmp/mysql-shard-files "build/test-results/mysql-shard-${{ matrix.shard }}-files.txt"
+        # Unit coverage includes every source file. Shards contribute collected
+        # PCOV data only: static maps for unloaded files can disagree with PCOV.
         started_at=$(date +%s)
         set +e
         timeout --foreground 15m xargs -a /tmp/mysql-shard-files \
-          vendor/bin/phpunit --testdox --testsuite feature \
+          vendor/bin/phpunit --configuration phpunit.feature-coverage.xml --testdox --testsuite feature \
           --coverage-clover "build/test-results/mysql-shard-${{ matrix.shard }}-coverage.xml" \
           --log-junit "build/test-results/mysql-shard-${{ matrix.shard }}.xml"
         status=$?
@@ -1508,6 +1510,12 @@ jobs:
         DB_DATABASE: ${{ env.COVERAGE_DB_PATH }}
         QUEUE_CONNECTION: sync
         XDEBUG_MODE: off
+
+    - name: Require the complete unit source inventory
+      run: >-
+        php scripts/ci/check-v2-coverage.php
+        --contract=resources/v2-unit-coverage-contract.json
+        --output=build/coverage/unit-coverage-summary.json
 
     - name: Retain unit coverage for the combined gate
       id: unit_coverage

@@ -396,6 +396,18 @@ These defaults are load-bearing testing-strategy choices for v2.0:
   truth for public API and history-event wire-format rules consumed
   by the typed-command-result-compatibility bucket above.
 
+## Coverage collection
+
+The complete unit run uses `phpunit.xml`, includes uncovered source files and
+checks the full `src/` inventory against the unit coverage contract. Each MySQL
+feature shard uses `phpunit.feature-coverage.xml`, which differs only by disabling
+uncovered-file synthesis. The shard reports add collected PCOV coverage to the
+complete unit report. Synthesizing unloaded files in every shard can merge static
+line maps with different PCOV executable-line maps and create false misses when
+test placement changes. Files never executed by any suite remain uncovered in
+the complete unit report. The combined coverage ratchet, Codecov thresholds,
+source set and required shard reports remain unchanged.
+
 ## Changing This Contract
 
 Adding, removing, or renaming a required test bucket, changing the
