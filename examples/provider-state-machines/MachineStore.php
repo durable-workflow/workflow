@@ -288,10 +288,9 @@ final readonly class MachineStore
             || ($assignment->root_run !== null && $assignment->root_run !== $actual->id)) {
             throw new LogicException('This example does not transfer its original Order to a successor.');
         }
-        $plan = new BindingPlan($terms, $actual->id, $this->authority->principal, static function (): void {
+        return new BindingPlan($terms, $actual->id, $this->authority->principal, static function (): void {
             throw new LogicException('Initialization does not authorize child admission.');
         });
-        return $plan;
     }
 
     private function childPlan(WorkflowRun $actual, array $args, string $key, string $role): BindingPlan
