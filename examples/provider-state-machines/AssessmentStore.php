@@ -45,7 +45,7 @@ final readonly class AssessmentStore
             return $this->read($existing);
         }
         $facts = $this->facts($actor, $row, $plan, $transition->key, $id);
-        $profile = Catalogue::profile($actor->role);
+        $profile = $this->authority->profile($actor->root_key, $actor->role);
         $registry = Catalogue::registry();
         $target = $registry->evaluateCondition($profile->condition($transition->key . '.target'), $facts);
         $permission = $registry->evaluateCondition($profile->condition($transition->key . '.permission'), $facts);
@@ -153,7 +153,7 @@ final readonly class AssessmentStore
             if ($operation !== 'commit' || $proposed !== $context || ! $context->snapshot->target->satisfied()) {
                 throw new LogicException('The protected commit lacks its original satisfied provider assessment.');
             }
-            return Authority::grant($actor->role);
+            return $this->authority->grantFor($actor->root_key, $actor->role);
         });
         $result = $store->commit($context, $this->authority->principal);
         return [
@@ -161,6 +161,89 @@ final readonly class AssessmentStore
             'status' => $result->status->value,
             'reason' => $result->reason,
         ];
+    }
+
+    /**
+     * Recorded boundary: unknown is never promoted to stock refusal or financial settlement.
+     */
+    public function stockRefusal(WorkflowRun $actual, bool $requestCancellation = false): array
+    {
+        [$actor, $row, $forward] = $this->reservationForRefusal($actual);
+        $observed = $this->provider->lookup($forward);
+        if ($observed->status === Status::Refused && $observed->effectId === null) {
+            $observed = $this->provider->closeAdmission($forward);
+        }
+        $refused = $observed->status === Status::Refused && $observed->effectId === null && $observed->admissionClosed;
+        $result = [
+            'refused' => $refused,
+            'status' => $observed->status->value,
+            'operation' => $forward->identity->key(),
+        ];
+        if ($requestCancellation) {
+            if (! $refused) {
+                throw new LogicException('An unresolved reservation cannot be treated as definitive stock refusal.');
+            }
+            $this->recordStockRefusal($actual, $actor, $row, $forward);
+            $result['cancellation'] = app(CancellationStore::class)->request(
+                $actor->root_key,
+                $actual->id,
+                'stock-refused'
+            );
+        }
+        return $result;
+    }
+
+    private function reservationForRefusal(WorkflowRun $actual): array
+    {
+        [$actor, $row, $plan] = $this->authority->actor($actual);
+        if ($actual->workflow_class !== PaymentFirstOrder::class || $actor->role !== 'order'
+            || $plan->recipe !== Catalogue::PAYMENT_FIRST || $row->state !== 'paid' || (string) $row->revision !== '2') {
+            throw new LogicException('Stock refusal requires the original paid payment-first Order.');
+        }
+        [, $terms] = $this->authority->assignment($actor->root_key);
+        $descriptor = $terms->descriptor('order');
+        $scope = (new ScopeRepository())->inspect($plan->rootScope());
+        $effect = array_filter(
+            $scope['obligations'],
+            static fn (array $item): bool => ($item['descriptor']['key'] ?? null) === 'effect'
+        );
+        $obligation = count($effect) === 1 ? array_values($effect)[0]['descriptor'] : null;
+        if ($scope['original_run_id'] !== $actual->id || ($obligation['handlerType'] ?? null) !== 'provider.effect'
+            || ($obligation['handlerVersion'] ?? null) !== '1'
+            || PortableDescriptor::encode($obligation['input'] ?? []) !== PortableDescriptor::encode($descriptor)) {
+            throw new LogicException('Stock refusal requires the original recorded reservation obligation.');
+        }
+        $forward = Request::fromArray($descriptor['forward']);
+        return [$actor, $row, $forward];
+    }
+
+    private function recordStockRefusal(WorkflowRun $actual, object $actor, object $row, Request $forward): void
+    {
+        $receipt = PortableDescriptor::encode([
+            'originalRunId' => $actual->id,
+            'operation' => $forward->identity->key(),
+            'status' => 'refused',
+            'admissionClosed' => true,
+        ]);
+        $this->authority->db->transaction(function () use ($actor, $row, $actual, $receipt): void {
+            $current = $this->authority->db->table('example_machine_subjects')
+                ->where('id', $row->id)
+                ->lockForUpdate()
+                ->sole();
+            $this->authority->assertGrant($current, $actor->root_key, 'order');
+            $assignment = $this->authority->db->table('provider_machine_assignments')
+                ->where('id', $actor->root_key)
+                ->sole();
+            if ($assignment->root_run !== $actual->id || $current->state !== 'paid' || (string) $current->revision !== '2'
+                || ($assignment->stock_refusal !== null && $assignment->stock_refusal !== $receipt)) {
+                throw new LogicException('The original stock refusal or paid Order changed.');
+            }
+            $this->authority->db->table('provider_machine_assignments')
+                ->where('id', $actor->root_key)
+                ->update([
+                    'stock_refusal' => $receipt,
+                ]);
+        });
     }
 
     private function facts(
@@ -176,11 +259,21 @@ final readonly class AssessmentStore
             'cancellation_requested' => (bool) $root->cancellation_requested,
             'model_consistent' => (int) $row->revision > 0 && in_array(
                 $row->state,
-                Catalogue::profile($actor->role)->states,
+                $this->authority->profile($actor->root_key, $actor->role)
+->states,
                 true
             ),
         ];
         $evidence = array_fill_keys(array_keys($values), 'business-snapshot:' . $id);
+        if ($actor->role === 'order' && $plan->recipe === Catalogue::PAYMENT_FIRST && $transitionKey === 'reserve') {
+            $scope = (new ScopeRepository())->inspect($plan->rootScope());
+            $registered = array_filter(
+                $scope['obligations'],
+                static fn (array $item): bool => ($item['descriptor']['key'] ?? null) === 'effect'
+            );
+            $values['reservation_dispatch_open'] = $scope['original_run_id'] === $plan->rootRun && $scope['status'] === 'open' && $registered === [];
+            $evidence['reservation_dispatch_open'] = 'original-reservation-admission:' . $plan->rootScope()->id();
+        }
         if ($actor->role === 'order' && in_array($transitionKey, ['pay', 'book'], true)) {
             $role = $transitionKey === 'pay' ? 'payment' : 'shipment';
             $values[$transitionKey . '_confirmed'] = $this->childConfirmed($row, $plan, $role);
@@ -249,7 +342,8 @@ final readonly class AssessmentStore
         ), $v['reason'], $v['evidence']);
         $machine = MachineAssessment::fromArray(
             $snapshot['machineAssessment'],
-            Catalogue::profile($actor->role)->definition
+            $this->authority->profile($actor->root_key, $actor->role)
+->definition
         );
         if (! $machine->decision->satisfied()) {
             throw new LogicException('The protected boundary requires a satisfied shared machine invariant.');
@@ -288,11 +382,15 @@ final readonly class AssessmentStore
             throw new LogicException('The recorded provider transition request is malformed.');
         }
         SnapshotPhase::from($request['phase']);
-        $transition = Catalogue::transition($actor->role, $request['transition']['key'] ?? '');
+        $transition = Catalogue::transition(
+            $actor->role,
+            $request['transition']['key'] ?? '',
+            $this->authority->recipe($actor->root_key)
+        );
         if ($actual->workflow_class === Cancellation::class && $transition->key !== 'cancel') {
             throw new LogicException('The proof-only finalizer cannot admit or assess forward work.');
         }
-        $profile = Catalogue::profile($actor->role);
+        $profile = $this->authority->profile($actor->root_key, $actor->role);
         if (PortableDescriptor::encode($request['transition']) !== PortableDescriptor::encode(
             get_object_vars($transition)
         )

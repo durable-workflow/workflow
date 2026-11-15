@@ -18,6 +18,7 @@ final class BoundaryActivity extends Activity
             'execution' => ['key'],
             'observe' => ['binding', 'outcome'],
             'verify-step' => ['execution', 'key'],
+            'stock-refusal', 'cancel-stock-refusal' => [],
             default => throw new LogicException('The provider machine boundary is unavailable.'),
         };
         $keys = array_keys($input);
@@ -33,6 +34,8 @@ final class BoundaryActivity extends Activity
             'execution' => $store->execution($this->run, $input['key']),
             'observe' => $store->observe($this->run, $input['binding'], $input['outcome']),
             'verify-step' => $store->verifyStep($this->run, $input['execution'], $input['key']),
+            'stock-refusal' => app(AssessmentStore::class)->stockRefusal($this->run),
+            'cancel-stock-refusal' => app(AssessmentStore::class)->stockRefusal($this->run, true),
         };
     }
 }

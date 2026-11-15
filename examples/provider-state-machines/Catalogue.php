@@ -22,8 +22,26 @@ final class Catalogue
 
     public const NAMESPACE = 'provider-machines';
 
-    public static function profile(string $role): PolicyProfile
+    public const RESERVE_FIRST = 'reserve-first';
+
+    public const PAYMENT_FIRST = 'payment-first';
+
+    public static function assertRecipe(string $recipe): void
     {
+        if (! in_array($recipe, [self::RESERVE_FIRST, self::PAYMENT_FIRST], true)) {
+            throw new LogicException('The trusted provider policy recipe is unavailable.');
+        }
+    }
+
+    public static function rootClass(string $recipe): string
+    {
+        self::assertRecipe($recipe);
+        return $recipe === self::PAYMENT_FIRST ? PaymentFirstOrder::class : Order::class;
+    }
+
+    public static function profile(string $role, string $recipe = self::RESERVE_FIRST): PolicyProfile
+    {
+        self::assertRecipe($recipe);
         [$states, $edges] = match ($role) {
             'order' => [
                 ['received', 'reserved', 'paid', 'booked', 'cancelled'],
@@ -39,6 +57,15 @@ final class Catalogue
             'shipment' => [['received', 'booked'], [['book', 'received', 'booked', true]]],
             default => throw new LogicException('The provider machine role is unavailable.'),
         };
+        $paymentFirst = $role === 'order' && $recipe === self::PAYMENT_FIRST;
+        if ($paymentFirst) {
+            $edges = [
+                ['pay', 'received', 'paid', true],
+                ['reserve', 'paid', 'reserved', true],
+                ['book', 'reserved', 'booked', true],
+                ['cancel', ['received', 'reserved', 'paid', 'booked'], 'cancelled', false],
+            ];
+        }
         $transitions = [];
         $conditions = [];
         foreach ($edges as [$key, $from, $to, $work]) {
@@ -51,25 +78,41 @@ final class Catalogue
             ]);
             $conditions[$key . '.permission'] = self::all([
                 $key === 'cancel' ? 'cancellation_requested' : 'forward_open',
+                ...($paymentFirst && $key === 'reserve' ? ['reservation_dispatch_open'] : []),
             ]);
         }
         $definition = new MachineDefinition(
             'provider.' . $role,
-            '1',
+            $paymentFirst ? '2' : '1',
             array_map(static fn (string $state): MachineState => new MachineState($state, $state), $states),
             array_column($edges, 0),
             self::all(['model_consistent']),
             $role === 'order' ? [
-                new ChildSlot('payment', ['reserved', 'paid'], 'provider.payment', '1', 'captured'),
-                new ChildSlot('shipment', ['paid', 'booked'], 'provider.shipment', '1', 'booked'),
+                new ChildSlot('payment', [
+                    $paymentFirst ? 'received' : 'reserved',
+                    'paid',
+                ], 'provider.payment', '1', 'captured'),
+                new ChildSlot('shipment', [
+                    $paymentFirst ? 'reserved' : 'paid',
+                    'booked',
+                ], 'provider.shipment', '1', 'booked'),
             ] : [],
         );
-        return PolicyProfile::forDefinition($definition, 'immediate-pre-handover', '1', $transitions, $conditions);
+        return PolicyProfile::forDefinition(
+            $definition,
+            $paymentFirst ? 'payment-first-pre-handover' : 'immediate-pre-handover',
+            '1',
+            $transitions,
+            $conditions
+        );
     }
 
-    public static function transition(string $role, string $key): TransitionDefinition
-    {
-        foreach (self::profile($role)->transitions as $transition) {
+    public static function transition(
+        string $role,
+        string $key,
+        string $recipe = self::RESERVE_FIRST
+    ): TransitionDefinition {
+        foreach (self::profile($role, $recipe)->transitions as $transition) {
             if ($transition->key === $key) {
                 return $transition;
             }

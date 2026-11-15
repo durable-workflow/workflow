@@ -22,6 +22,86 @@ require_once __DIR__ . '/../../../../examples/provider-state-machines/bootstrap.
 
 final class ProviderMachinePolicyTest extends TestCase
 {
+    public function testReservationReconciliationCannotDispatchAnAlreadyRegisteredOperation(): void
+    {
+        $condition = Catalogue::profile('order', Catalogue::PAYMENT_FIRST)->condition('reserve.permission');
+        foreach ([
+            false => Verdict::Unsatisfied,
+            true => Verdict::Satisfied,
+        ] as $open => $expected) {
+            $facts = new RecordedFacts(
+                'reservation-snapshot',
+                [
+                    'forward_open' => true,
+                    'reservation_dispatch_open' => (bool) $open,
+                ],
+                [
+                    'forward_open' => 'original-owner',
+                    'reservation_dispatch_open' => 'original-reservation-admission',
+                ]
+            );
+            $this->assertSame(
+                $expected,
+                Catalogue::registry()->evaluateCondition($condition, $facts)->decision->verdict
+            );
+        }
+    }
+
+    public function testExistingProviderProfilesKeepTheirAcceptedFingerprints(): void
+    {
+        // Captured from the accepted predecessor source, before introducing recipe selection.
+        foreach ([
+            'order' => '015a3f53d1b1a7285bd3cf73074f64523fff28ef85aac9226616aacf719b0243',
+            'payment' => 'a0834bea346015a028003b2a6cb580aa6074e75897d466a755d6b0fa6a5e6af2',
+            'shipment' => 'bfbafc9b46772a7823d0c7fd0936779a3a37665b5da3042b7585fdeec4b0c1df',
+        ] as $role => $fingerprint) {
+            $this->assertSame($fingerprint, Catalogue::profile($role)->fingerprint());
+        }
+    }
+
+    public function testPaymentFirstRecipeChangesRootEntryButKeepsOriginalChildPolicies(): void
+    {
+        $legacy = Catalogue::profile('order');
+        $selected = Catalogue::profile('order', Catalogue::PAYMENT_FIRST);
+        $this->assertNotSame($legacy->fingerprint(), $selected->fingerprint());
+        foreach (['payment', 'shipment'] as $role) {
+            $this->assertSame(
+                Catalogue::profile($role)->fingerprint(),
+                Catalogue::profile($role, Catalogue::PAYMENT_FIRST)->fingerprint()
+            );
+        }
+        $plan = new BindingPlan($this->terms(), 'original-run', 'worker-a', static function (): void {
+        }, Catalogue::PAYMENT_FIRST);
+        $this->assertSame('received', $plan->execution('payment')->sourceState);
+        $this->assertSame('1', $plan->execution('payment')->sourceRevision);
+        $this->assertSame('reserved', $plan->execution('shipment')->sourceState);
+        $this->assertSame('3', $plan->execution('shipment')->sourceRevision);
+        $this->assertSame($selected->fingerprint(), $plan->binding('payment')->parentExecution->policyFingerprint);
+        $this->assertNotSame(BindingPlan::VERSION, $plan->version());
+        $this->assertSame(['paid'], Catalogue::transition('order', 'reserve', Catalogue::PAYMENT_FIRST)->from);
+    }
+
+    public function testForeignRecipeBindingIsRefusedBeforeCallingOriginalOwner(): void
+    {
+        $calls = 0;
+        $original = new BindingPlan($this->terms(), 'original-run', 'worker-a', static function () use (&$calls): void {
+            ++$calls;
+        });
+        $changed = new BindingPlan($this->terms(), 'original-run', 'worker-a', static function (): void {
+        }, Catalogue::PAYMENT_FIRST);
+        $identity = $changed->binding('payment');
+        try {
+            $original->assertAllowed($identity, 'worker-a', 'reserve');
+            $this->fail('A different policy must not reuse the original admission authority.');
+        } catch (LogicException $error) {
+            $this->assertSame(
+                'The child binding does not belong to this original business generation.',
+                $error->getMessage()
+            );
+        }
+        $this->assertSame(0, $calls);
+    }
+
     public function testPaymentRequiresCapturedFactsRatherThanShipmentCompletion(): void
     {
         $profile = Catalogue::profile('payment');

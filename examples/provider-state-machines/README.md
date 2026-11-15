@@ -94,3 +94,54 @@ payment, subscription, partial-stock, physical return or replacement variants in
 the [consumer acceptance matrix](https://github.com/durable-workflow/workflow/issues/1069#issuecomment-6889952106).
 Those requirements remain open. No native scenario, release, installed upgrade,
 rollback, real provider operation or production readiness is qualified here.
+
+## Payment before stock reservation
+
+The separate `PaymentFirstOrder` workflow selects a second, versioned root
+policy for a new business generation: confirmed payment capture, then stock
+reservation, then booking. The original `Order` workflow and default policy
+fingerprints remain unchanged; Payment and booking keep their existing policy
+versions. This is source work for STK-02, with qualification still pending.
+
+Select the recipe in trusted client and worker configuration before `seed()`:
+
+```php
+use DurableWorkflow\Examples\ProviderStateMachines\PaymentFirstOrder;
+
+$key = $terms->subjectKey(); // A new original business generation.
+$authority = new Authority(DB::connection(), 'provider-worker', [$key], [
+    $key => Catalogue::PAYMENT_FIRST,
+]);
+$host = MachineStore::configure(app(), $authority, $provider);
+$host->seed($terms);
+$order = WorkflowStub::make(PaymentFirstOrder::class, 'provider-order-' . $key, Catalogue::NAMESPACE);
+$order->start($key);
+```
+
+Workflow arguments cannot select or change the recipe. The subject's immutable
+authority version pins the selected profile and joint parent/child policy;
+another worker recipe is refused before protected terms decode. Do not change
+that mapping for an existing generation or admit it under another workflow type.
+
+A definitive provider refusal closes admission of the original reservation and
+records its exact original-run and operation receipt. It requests compensation
+of the original captured Payment. There is no booking and no release effect for
+stock that was never reserved. A processing or unknown refund leaves the Order
+financially unsettled; only verified original compensation permits the protected
+business cancellation commit. Recovery and the proof-only finalizer keep the
+original owners and operation keys.
+
+Unknown and processing reservation outcomes do not mean "no stock". The original
+uncertain activity reconciles by lookup; a known processing result can await
+`reconcile-stock` and then take a new recorded assessment. The signal only wakes
+the original owner and does not prove availability or authorize another charge.
+If the original activity's retry/deadline budget expires, retain the unresolved
+outcome rather than declaring stock refusal or financial settlement.
+
+Native cancellation may close with no workflow output. Read the protected
+business publication instead: its `stockRefusal` receipt retains the original
+operation and positive refusal separately from the verified financial settlement.
+A technical terminal status or a cancellation request is insufficient evidence.
+The additional source cases are in
+`tests/Feature/V2/V2PaymentFirstProviderMachineTest.php`. Other payment,
+subscription, partial-stock, returns and replacement scenarios remain open.

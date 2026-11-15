@@ -1,0 +1,69 @@
+<?php
+
+declare(strict_types=1);
+
+namespace DurableWorkflow\Examples\ProviderStateMachines;
+
+use DurableWorkflow\Examples\BusinessStateMachines\BusinessCancellationRequested;
+use Workflow\V2\Attributes\Signal;
+use Workflow\V2\Attributes\Type;
+use Workflow\V2\Exceptions\WorkflowCancellationRequestedException;
+use Workflow\V2\StateMachine\Execution\TransitionStatus;
+use Workflow\V2\Workflow;
+
+/** A separately selected original policy, never a migration of an existing reserve-first Order. */
+#[Type('example.provider.order.payment-first.v1')]
+#[Signal('finish')]
+#[Signal('reconcile-stock')]
+final class PaymentFirstOrder extends Workflow
+{
+    public function handle(string $key): array
+    {
+        $machine = new Machine($this, self::activity(BoundaryActivity::class, 'initialize', [
+            'arguments' => [$key],
+        ]));
+        try {
+            $machine->registerOwner();
+            $paid = $machine->transition('pay');
+            if ($paid->status !== TransitionStatus::Committed) {
+                return [
+                    'businessOutcome' => 'unsettled',
+                    'transition' => $paid->toArray(),
+                ];
+            }
+            while ($machine->transition('reserve')->status !== TransitionStatus::Committed) {
+                $refusal = self::activity(BoundaryActivity::class, 'stock-refusal', []);
+                if ($refusal['refused']) {
+                    self::activity(BoundaryActivity::class, 'cancel-stock-refusal', []);
+                    throw new BusinessCancellationRequested('The original reservation was definitively refused.');
+                }
+                // Reconcile the original operation after an external observation; never create a new payment.
+                self::await('reconcile-stock');
+            }
+            $booked = $machine->transition('book');
+            if ($booked->status !== TransitionStatus::Committed) {
+                return [
+                    'businessOutcome' => 'unsettled',
+                    'transition' => $booked->toArray(),
+                ];
+            }
+            self::await('finish');
+            return [
+                'businessOutcome' => 'booked',
+                'originalRunId' => $this->runId(),
+            ];
+        } catch (WorkflowCancellationRequestedException|BusinessCancellationRequested $error) {
+            self::cancellationShield(fn () => $this->compensate());
+            $proof = self::cancellationShield(static fn () => $machine->scope->verifyCompensation());
+            if (($proof['status'] ?? null) !== 'verified') {
+                throw $error;
+            }
+            $settled = self::cancellationShield(static fn () => $machine->transition('cancel'));
+            return [
+                'businessOutcome' => $settled->status === TransitionStatus::Committed ? 'cancelled' : 'unsettled',
+                'originalRunId' => $this->runId(),
+                'transition' => $settled->toArray(),
+            ];
+        }
+    }
+}

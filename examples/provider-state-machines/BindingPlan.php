@@ -31,9 +31,22 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
         public string $rootRun,
         private string $principal,
         private Closure $authorizeOriginalOwner,
+        public string $recipe = Catalogue::RESERVE_FIRST,
     ) {
         PortableDescriptor::identifier($rootRun, 'original root run');
         PortableDescriptor::identifier($principal, 'authenticated principal');
+        Catalogue::assertRecipe($recipe);
+    }
+
+    public function version(): string
+    {
+        return self::versionFor($this->recipe);
+    }
+
+    public static function versionFor(string $recipe): string
+    {
+        Catalogue::assertRecipe($recipe);
+        return $recipe === Catalogue::RESERVE_FIRST ? self::VERSION : 'provider-order-pair-payment-first-v1';
     }
 
     public function rootScope(): ScopeIdentity
@@ -49,15 +62,19 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
     public function execution(string $role): ExecutionReference
     {
         [$key, $state, $revision] = match ($role) {
-            'payment' => ['pay', 'reserved', '2'],
-            'shipment' => ['book', 'paid', '3'],
+            'payment' => [
+                'pay',
+                $this->recipe === Catalogue::PAYMENT_FIRST ? 'received' : 'reserved',
+                $this->recipe === Catalogue::PAYMENT_FIRST ? '1' : '2',
+            ],
+            'shipment' => ['book', $this->recipe === Catalogue::PAYMENT_FIRST ? 'reserved' : 'paid', '3'],
             default => throw new LogicException('Only the original Payment and booking children are selected.'),
         };
         return new ExecutionReference(
             Catalogue::APPLICATION,
             $this->terms->subjectKey(),
             $this->rootRun . '.' . $key . '.' . $revision,
-            Catalogue::profile('order')->fingerprint(),
+            Catalogue::profile('order', $this->recipe)->fingerprint(),
             $state,
             $revision,
         );
@@ -102,7 +119,7 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
             $role === 'payment' ? 'captured' : 'booked',
             ChildReservation::inputFingerprint($this->childInput($role)),
         );
-        $parent = Catalogue::profile('order');
+        $parent = Catalogue::profile('order', $this->recipe);
         $parent->definition->assertBinding($parent, $binding, Catalogue::profile($role));
         return $binding;
     }
@@ -123,7 +140,7 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
             throw new LogicException('The child binding does not belong to this original business generation.');
         }
         ($this->authorizeOriginalOwner)($identity, $operation);
-        return self::VERSION;
+        return $this->version();
     }
 
     public function assertParticipationAllowed(
@@ -137,7 +154,7 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
         if (! in_array($identity->slot, ['payment', 'shipment'], true)
             || $participation->toArray() !== $this->participation($identity->slot)
                 ->toArray()
-            || ($pinnedPolicyVersion !== null && $pinnedPolicyVersion !== self::VERSION)) {
+            || ($pinnedPolicyVersion !== null && $pinnedPolicyVersion !== $this->version())) {
             throw new LogicException('The child scope, binding and original business owner must agree.');
         }
         return $this->assertAllowed($identity, $principal, $operation);

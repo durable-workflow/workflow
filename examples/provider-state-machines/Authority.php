@@ -14,6 +14,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\StateMachine\Binding\BindingIdentity;
 use Workflow\V2\StateMachine\Binding\ChildScopeBindingAuthorization;
 use Workflow\V2\StateMachine\Binding\ChildScopeParticipation;
+use Workflow\V2\StateMachine\Definition\PolicyProfile;
 use Workflow\V2\StateMachine\Execution\ExecutionReference;
 
 /** Trusted bootstrap owns the principal and business grants; workflow arguments never grant access. */
@@ -26,6 +27,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
         public ConnectionInterface $db,
         public string $principal,
         private array $subjects,
+        private array $recipes = [],
     ) {
         PortableDescriptor::identifier($principal, 'authenticated principal');
         if (! array_is_list($subjects)) {
@@ -36,6 +38,30 @@ final readonly class Authority implements ChildScopeBindingAuthorization
                 throw new LogicException('Business grants must use canonical client/subject/generation identities.');
             }
         }
+        foreach ($recipes as $subject => $recipe) {
+            if (! in_array($subject, $subjects, true) || ! is_string($recipe)) {
+                throw new LogicException('Policy selection requires an existing trusted subject grant.');
+            }
+            Catalogue::assertRecipe($recipe);
+        }
+    }
+
+    public function recipe(string $key): string
+    {
+        return $this->recipes[$key] ?? Catalogue::RESERVE_FIRST;
+    }
+
+    public function profile(string $key, string $role): PolicyProfile
+    {
+        return Catalogue::profile($role, $this->recipe($key));
+    }
+
+    public function grantFor(string $key, string $role): string
+    {
+        return hash(
+            'sha256',
+            BindingPlan::versionFor($this->recipe($key)) . ':' . $this->profile($key, $role)->fingerprint()
+        );
     }
 
     public function authorize(string $key, string $principal): void
@@ -49,6 +75,8 @@ final readonly class Authority implements ChildScopeBindingAuthorization
     public function assignment(string $key): array
     {
         $this->authorize($key, $this->principal);
+        // The immutable subject authority pins the bootstrap-selected recipe before protected terms decode.
+        $this->subject($key, 'order');
         $row = $this->db->table('provider_machine_assignments')
             ->where('id', $key)
             ->sole();
@@ -79,7 +107,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
                     || (string) $root->revision !== $identity->parentExecution->sourceRevision))) {
                 throw new LogicException('The live original owner refused this child admission.');
             }
-        });
+        }, $this->recipe($key));
     }
 
     public function subject(string $key, string $role): object
@@ -95,7 +123,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
     {
         if ($row->id !== self::subjectId($key, $role) || $row->scope !== Catalogue::APPLICATION
             || $row->subject !== self::subjectName($key, $role) || $row->principal !== $this->principal
-            || $row->authority_version !== self::grant($role)) {
+            || $row->authority_version !== $this->grantFor($key, $role)) {
             throw new LogicException('The original subject authority or selected policy is unavailable.');
         }
     }
@@ -123,7 +151,8 @@ final readonly class Authority implements ChildScopeBindingAuthorization
         }
         $row = $this->subject($key, $role);
         if ($execution !== null && ($execution->scope !== $row->scope || $execution->subject !== $row->subject
-            || $execution->policyFingerprint !== Catalogue::profile($role)->fingerprint()
+            || $execution->policyFingerprint !== $this->profile($key, $role)
+                ->fingerprint()
             || ! str_starts_with($execution->executionId, $actual->id . '.'))) {
             throw new LogicException('The transition belongs to another original native or business owner.');
         }
@@ -146,7 +175,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
         foreach ([$plan->rootScope(), $plan->childScope('payment'), $plan->childScope('shipment')] as $expected) {
             if ($scope->toArray() === $expected->toArray()) {
                 $this->subject($key, 'order');
-                return BindingPlan::VERSION;
+                return $plan->version();
             }
         }
         throw new LogicException('The original retained scope generation was substituted.');
@@ -201,7 +230,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
     public static function role(string $class): string
     {
         return match ($class) {
-            Order::class, Cancellation::class => 'order',
+            Order::class, PaymentFirstOrder::class, Cancellation::class => 'order',
             Payment::class => 'payment',
             Booking::class => 'shipment',
             default => throw new LogicException('The native workflow is outside this example.'),
@@ -264,7 +293,8 @@ final readonly class Authority implements ChildScopeBindingAuthorization
         }
         $input = $role === 'order' ? [$key] : $plan->childInput($role);
         $instance = $role === 'order' ? 'provider-order-' . $key : 'dw-bound-child-' . $plan->binding($role)->key();
-        if (PortableDescriptor::encode($args) !== PortableDescriptor::encode($input)
+        if (($role === 'order' && $actual->workflow_class !== Catalogue::rootClass($this->recipe($key)))
+            || PortableDescriptor::encode($args) !== PortableDescriptor::encode($input)
             || $actual->workflow_instance_id !== $instance || ($role === 'order' && $actual->id !== $plan->rootRun)) {
             throw new LogicException('The native actor differs from the pinned original admission.');
         }
