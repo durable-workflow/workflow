@@ -345,6 +345,52 @@ qualification. The common route below adds native bank prepayment integration;
 expired cart reservations, installed qualification and the complete customer
 acceptance matrix remain unfinished.
 
+## Fixed Cart leases before a formal Order
+
+`CartCheckout` is an opt-in bank-funded purchase route using the same Order,
+Payment and Shipment definitions. A purchase can hold stock before its formal
+Order exists. `CartPlan` pins the original Cart, purchase owner, stock, initial
+creation/expiry times, distinct late reservation and payment observation deadline.
+The expiry does not reset when a worker restarts or an Order is created.
+
+Install `cart-schema.php` alongside the host schemas, and install the provider's
+Cart inventory and physical Shipment schemas on the same separate provider
+connection as its original incoming-payment journal. Explicitly grant Cart mode
+for the purchase key; input data cannot select this mode for another purchase:
+
+```php
+$authority = new Authority($host, 'provider-worker', [$key], [$key => FundingCatalogue::BANK], [$key]);
+$store = MachineStore::configure($app, $authority, $provider, $incoming);
+$store->seed($terms, $cartPlan); // The terms and immutable CartPlan must have the same original owner.
+$purchase = WorkflowStub::make(CartCheckout::class, 'provider-order-' . $key, Catalogue::NAMESPACE);
+$purchase->start($key);
+```
+
+The host purchase projection is not a formal Order. Only confirmed original
+payment plus a factual stock hold permit a `provider_cart_orders` association.
+That write shares the original cancellation lock and retains the original
+purchase/run, scope, Payment child, reservation and future Order reference.
+The Cart's initial and late stock duties are registered before Payment so reverse
+compensation refunds money before releasing paid stock.
+
+Unpaid initial expiry releases only the original lease, leaving its distinct
+payment observation window open. Late confirmed money requires a new reservation
+after positive original release; a prior availability observation is no promise.
+Definitive refusal requests the original refund without creating an Order.
+Unknown outcomes remain uncertain and wait for `reconcile-stock` or the original
+payment milestone. Reconciliation observes the same provider key and native duty;
+it cannot substitute a new purchase, move compensation ownership or invent a
+refund. The fixed payment deadline still bounds forward admission.
+
+Before handover, release also fences late carrier handover. After handover,
+physical return, receipt, saleable inspection and one confirmed restock are
+required before those goods become available again. A missing/damaged return is
+not a stock receipt. `CartReservationProviderTest.php` covers provider fences and
+physical stock facts; `V2Cart*MachineTest.php` exercises the native routes with a
+controlled fixture clock and explicit native task driver. Current source/backend,
+race, cold-process, installed and complete customer-matrix qualification remain
+separate requirements; this is not a published Cart integration.
+
 ## Common funding and physical fulfillment
 
 `FundingCheckout` and `FundingPayment` use one new definition per machine type

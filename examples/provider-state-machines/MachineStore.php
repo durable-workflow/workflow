@@ -55,6 +55,7 @@ final readonly class MachineStore
         }
         $store = new self($authority, $incoming, $cod);
         $app->instance(self::class, $store);
+        $app->instance(CartStore::class, new CartStore($authority, $provider, $incoming));
         $app->instance(AssessmentStore::class, new AssessmentStore($authority, $provider));
         $financial = new FinancialAuthority($authority);
         $handoff = new FinancialHandoffStore($authority, $provider, $financial);
@@ -144,11 +145,15 @@ final readonly class MachineStore
         return $store;
     }
 
-    public function seed(OrderTerms $terms): void
+    public function seed(OrderTerms $terms, ?CartPlan $cart = null): void
     {
         $key = $terms->subjectKey();
         $this->authority->authorize($key, $this->authority->principal);
         $recipe = $this->authority->recipe($key);
+        if ($this->authority->cart($key) !== ($cart !== null)) {
+            throw new LogicException('The native cart entry requires its exact trusted original cart assignment.');
+        }
+        $cart?->assertOrder($terms);
         $this->assertAdvanceBalance($terms, $recipe);
         if (($terms->codPayment !== null) !== CodFundingPolicy::selected($recipe)
             || ($terms->codPayment !== null && ($this->cod === null
@@ -174,7 +179,7 @@ final readonly class MachineStore
             throw new LogicException('The selected native recipe does not implement authorization and capture.');
         }
         $payload = PortableDescriptor::encode($terms->toArray());
-        $this->authority->db->transaction(function () use ($key, $payload): void {
+        $this->authority->db->transaction(function () use ($key, $payload, $terms, $cart): void {
             $this->authority->db->table('provider_machine_assignments')
                 ->insert([
                     'id' => $key,
@@ -183,6 +188,9 @@ final readonly class MachineStore
                     'root_run' => null,
                 ]);
             $this->createSubject($key, 'order', false);
+            if ($cart !== null) {
+                app(CartStore::class)->seedRow($terms, $cart, hash('sha256', $payload));
+            }
         });
     }
 
@@ -414,6 +422,9 @@ final readonly class MachineStore
                     }
                 }),
             ],
+            'provider.cart' => [
+                '1' => new CartLeaseOperation($provider, app(CartStore::class)->operation(...)),
+            ],
             'provider.shipment.full' => [
                 '1' => new ShipmentOperation($provider, $physical->operation(...)),
             ],
@@ -447,6 +458,10 @@ final readonly class MachineStore
 
     private function descriptor(OrderTerms $terms, string $role, string $recipe): array
     {
+        if ($role === 'order' && $this->authority->cart($terms->subjectKey())) {
+            return $this->authority->stockObligation($terms->subjectKey())
+->input;
+        }
         if ((FinancialCatalogue::selected($recipe) || FundingCatalogue::selected($recipe)) && $role !== 'order') {
             return match ($role) {
                 'shipment' => $terms->physicalDescriptor(),
@@ -473,7 +488,7 @@ final readonly class MachineStore
         OrderTerms $terms
     ): BindingPlan {
         $instance = WorkflowInstance::query()->findOrFail($actual->workflow_instance_id);
-        if ($actual->workflow_class !== Catalogue::rootClass($this->authority->recipe($key))
+        if ($actual->workflow_class !== $this->authority->rootClass($key)
             || $args !== [$key] || $actual->workflow_instance_id !== 'provider-order-' . $key
             || (int) $instance->run_count !== 1 || $instance->current_run_id !== $actual->id
             || ($assignment->root_run !== null && $assignment->root_run !== $actual->id)) {
@@ -481,7 +496,7 @@ final readonly class MachineStore
         }
         return new BindingPlan($terms, $actual->id, $this->authority->principal, static function (): void {
             throw new LogicException('Initialization does not authorize child admission.');
-        }, $this->authority->recipe($key));
+        }, $this->authority->recipe($key), $this->authority->cart($key));
     }
 
     private function childPlan(WorkflowRun $actual, array $args, string $key, string $role): BindingPlan

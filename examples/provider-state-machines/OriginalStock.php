@@ -26,6 +26,9 @@ final readonly class OriginalStock
         if ($request === null) {
             return null;
         }
+        if ($this->authority->cart($key) && ! app(CartStore::class)->stockHeld($key)) {
+            return null;
+        }
         $value = $this->provider->lookup($request);
         return $value->status === Status::Confirmed && $value->effectId === 'effect-' . $request->identity->key()
             ? $value->effectId : null;
@@ -35,9 +38,9 @@ final readonly class OriginalStock
     {
         [, $terms] = $this->authority->assignment($key);
         $ledger = (new ScopeRepository())->inspect($plan->rootScope());
-        $expected = new Obligation('effect', 'provider.effect', '1', $terms->descriptor('order'));
+        $expected = $this->authority->stockObligation($key);
         $rows = array_values(array_filter($ledger['obligations'], static fn (array $row): bool =>
-            ($row['descriptor']['key'] ?? null) === 'effect'));
+            ($row['descriptor']['key'] ?? null) === $expected->key));
         if ($rows === []) {
             return null;
         }
@@ -49,6 +52,6 @@ final readonly class OriginalStock
         if ($rows[0]['forward_status'] !== 'observed') {
             return null;
         }
-        return Request::fromArray($terms->descriptor('order')['forward']);
+        return Request::fromArray($expected->input['forward']);
     }
 }

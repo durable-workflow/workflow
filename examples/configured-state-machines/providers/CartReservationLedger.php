@@ -69,8 +69,11 @@ final readonly class CartReservationLedger
         ]);
     }
 
-    public function bindFulfillment(CartReservationDescriptor $reservation, ShipmentDescriptor $shipment): void
-    {
+    public function bindFulfillment(
+        CartReservationDescriptor $reservation,
+        ShipmentDescriptor $shipment,
+        bool $paidBeforeExpiry = false
+    ): void {
         $this->assertTransaction();
         $request = $reservation->reserve;
         $terms = $reservation->terms;
@@ -99,7 +102,7 @@ final readonly class CartReservationLedger
         if ($row === null || ! (bool) $row['held'] || (bool) $row['released'] || (bool) $row['admission_closed']
             || $this->operation($request->identity->key())['status'] !== Status::Confirmed
                 ->value
-                            || $this->now() >= $terms->expiresAt || $this->hasPhysicalDeduction($request)) {
+            || ($this->now() >= $terms->expiresAt && ! $paidBeforeExpiry) || $this->hasPhysicalDeduction($request)) {
             throw new LogicException('Checkout requires its confirmed original unexpired stock hold before dispatch.');
         }
         $ledger = new ShipmentLedger($this->db);

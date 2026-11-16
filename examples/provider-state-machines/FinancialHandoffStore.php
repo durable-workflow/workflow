@@ -461,7 +461,7 @@ readonly class FinancialHandoffStore
         $keys = array_keys($value);
         sort($keys);
         [, $terms] = $this->authority->assignment($key);
-        $stock = Request::fromArray($terms->descriptor('order')['forward']);
+        $stock = Request::fromArray($this->authority->stockObligation($key)->input['forward']);
         $authorization = $this->publication($key, $binding, $this->commonFunding ? 'prepare' : 'authorize');
         $expected = ['authorizationPublication', 'binding', 'kind', 'recipe', 'stockEffect'];
         $kind = $this->commonFunding ? 'funding-capture-instruction-v1' : 'financial-capture-instruction-v1';

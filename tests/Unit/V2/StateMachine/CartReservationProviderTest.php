@@ -9,6 +9,9 @@ use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\CartInventory;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\CartReservationDescriptor;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\CartReservationTerms;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Identity;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentDescriptor;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentJournal;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentReceipt;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Journal;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\LostAcknowledgement;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Request;
@@ -427,6 +430,88 @@ final class CartReservationProviderTest extends TestCase
         $this->confirm($shipment->booking);
         $this->refuses(fn () => $this->stock->bindFulfillment($cart, $shipment));
         $this->assertSame(0, (int) $this->db->query('SELECT COUNT(*) FROM provider_cart_fulfillments')->fetchColumn());
+    }
+
+    public static function checkoutPaymentReceipts(): array
+    {
+        return [
+            'timely full payment' => [[[1059, 1499]], 'held', true],
+            'timely split payment' => [[[1058, 700], [1059, 799]], 'held', true],
+            'timely partial payment' => [[[1059, 1498]], 'held', false],
+            'payment at expiry' => [[[1060, 1499]], 'held', false],
+            'late payment' => [[[1061, 1499]], 'held', false],
+            'released original lease' => [[[1059, 1499]], 'released', false],
+            'closed original admission' => [[[1059, 1499]], 'closed', false],
+        ];
+    }
+
+    #[DataProvider('checkoutPaymentReceipts')]
+    public function testOnlyActualTimelyMoneyCanAdoptAStillHeldOriginalLeaseAfterExpiry(
+        array $receipts,
+        string $disposition,
+        bool $allowed
+    ): void {
+        $cart = $this->cart();
+        $this->stock->receive('sku-a', 'receipt', 2);
+        $this->confirm($cart->reserve);
+        $this->provider->shipments()
+            ->install();
+        $money = new IncomingPaymentJournal($this->db, 'shop-a', fn (): int => $this->now);
+        $money->install();
+        $payment = new IncomingPaymentDescriptor(new Identity(
+            'shop-a',
+            'purchase-a',
+            'g1',
+            'incoming'
+        ), 'bank-ref', 1499, 'USD', 2000);
+        $money->register($payment);
+        $this->now = 1061;
+        foreach ($receipts as $index => [$receivedAt, $amount]) {
+            $money->record(
+                $payment,
+                new IncomingPaymentReceipt($payment->identity->key(), 'transfer-' . $index, $amount, 'USD', $receivedAt)
+            );
+        }
+        if ($disposition === 'released') {
+            $this->confirm($cart->release);
+        } elseif ($disposition === 'closed') {
+            $this->provider->closeAdmission($cart->reserve);
+        }
+        $bind = fn () => $this->stock->bindFulfillment($cart, $this->shipment(), $payment);
+        if ($allowed) {
+            $bind();
+            $bind();
+        } else {
+            $this->refuses($bind);
+        }
+        $this->assertSame(
+            $allowed ? 1 : 0,
+            (int) $this->db->query('SELECT COUNT(*) FROM provider_cart_fulfillments')
+                ->fetchColumn()
+        );
+        $this->assertSame($disposition === 'released' ? 2 : 0, $this->stock->inspect($cart)['availableQuantity']);
+        $this->assertSame($disposition === 'released' ? 2 : 1, $this->effects());
+    }
+
+    public function testForeignPaymentOwnershipIsRefusedBeforeItsReferenceIsRead(): void
+    {
+        $cart = $this->cart();
+        foreach ([['another-purchase', 'g1'], ['purchase-a', 'another-generation']] as [$subject, $generation]) {
+            $payment = new IncomingPaymentDescriptor(new Identity(
+                'shop-a',
+                $subject,
+                $generation,
+                'incoming'
+            ), 'foreign-ref', 1499, 'USD', 2000);
+            try {
+                $this->stock->bindFulfillment($cart, $this->shipment(), $payment);
+                $this->fail('A foreign payment cannot authorize the original cart.');
+            } catch (LogicException $error) {
+                $this->assertSame('Checkout payment belongs to another original cart purchase.', $error->getMessage());
+            }
+        }
+        $this->assertSame(0, (int) $this->db->query('SELECT COUNT(*) FROM provider_cart_fulfillments')->fetchColumn());
+        $this->assertSame(0, $this->effects());
     }
 
     public static function fulfillmentSubstitutions(): array

@@ -96,12 +96,17 @@ final readonly class ShipmentAuthority
 
     public function stock(string $key): void
     {
+        if ($this->authority->cart($key) && ! app(CartStore::class)->stockHeld($key)) {
+            throw new LogicException(
+                'Cart fulfillment requires its original paid association and live bound stock hold.'
+            );
+        }
         [, $terms] = $this->authority->assignment($key);
         $plan = $this->authority->plan($key);
         $ledger = (new ScopeRepository())->inspect($plan->rootScope());
-        $expected = new Obligation('effect', 'provider.effect', '1', $terms->descriptor('order'));
+        $expected = $this->authority->stockObligation($key);
         foreach ($ledger['obligations'] as $row) {
-            if ($row['descriptor']['key'] === 'effect' && $row['fingerprint'] === $expected->fingerprint()
+            if ($row['descriptor']['key'] === $expected->key && $row['fingerprint'] === $expected->fingerprint()
                 && Obligation::fromArray($row['descriptor'])->fingerprint() === $expected->fingerprint()
                 && $row['forward_status'] === 'observed' && $ledger['original_run_id'] === $plan->rootRun) {
                 return;

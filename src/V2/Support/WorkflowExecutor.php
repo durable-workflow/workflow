@@ -1365,12 +1365,16 @@ final class WorkflowExecutor
             return null;
         }
         $signalEvent = $this->appliedSignalEvent($run, $sequence, $current);
+        // A recorded timeout resolves this wait just as a signal does. Later cancellation must not
+        // replace that completed boundary while replay is rebuilding the original forward path.
+        $completionEvent = $signalEvent ?? ($current->timeoutSeconds !== null
+            ? $this->signalTimeoutFiredEvent($run, $sequence, $current->name) : null);
         $cancellationDelivery = $this->deliverCancellationAtCall(
             $run,
             $task,
             $sequence,
             'signal',
-            $signalEvent,
+            $completionEvent,
             $workflowExecution
         );
         if ($cancellationDelivery === CancellationDeliveryState::Waiting) {
@@ -1906,8 +1910,29 @@ final class WorkflowExecutor
         if ($cancellationDelivery === CancellationDeliveryState::Delivered) {
             return $this->resumeCancellation($run, $task, $frame, $groupSize);
         }
+        $recordedWinner = null;
+        if ($current instanceof SelectCall && $groupResolution instanceof WorkflowHistoryEvent) {
+            try {
+                $recordedWinner = ParallelChildGroup::validatedSelectionResolution(
+                    $run,
+                    $current,
+                    $sequence,
+                    $groupResolution
+                );
+            } catch (Throwable $throwable) {
+                $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+                return null;
+            }
+        }
         $group = new WorkflowParallelDispatch($sequence);
         foreach ($leafDescriptors as $descriptor) {
+            $memberSequence = $sequence + $descriptor['offset'];
+            if ($recordedWinner !== null && ($memberSequence < $recordedWinner['member_base_sequence']
+                || $memberSequence >= $recordedWinner['member_base_sequence'] + $recordedWinner['member_size'])) {
+                // Rebuild the recorded winner without advancing an old losing wait. A new signal
+                // belongs to its current occurrence, including after the old handle was cancelled.
+                continue;
+            }
             if (! $this->dispatchParallelMember($run, $task, $descriptor, $group)) {
                 return null;
             }

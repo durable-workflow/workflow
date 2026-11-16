@@ -9,6 +9,7 @@ use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
 use Workflow\V2\Exceptions\WorkflowCancellationRequestedException;
 use Workflow\V2\StateMachine\Execution\TransitionStatus;
+use Workflow\V2\StateMachine\Transition\TransitionStep;
 use Workflow\V2\Workflow;
 
 /** Common authorization Order route. Ready is a prerequisite milestone, never recipient delivery. */
@@ -24,9 +25,19 @@ class AuthorizationCheckout extends Workflow
         $machine = new Machine($this, self::activity(BoundaryActivity::class, 'initialize', [
             'arguments' => [$key],
         ]));
+        return $this->checkout($machine);
+    }
+
+    protected function checkout(
+        Machine $machine,
+        bool $ownerRegistered = false,
+        ?TransitionStep $preparation = null
+    ): array {
         try {
-            $machine->registerOwner();
-            $prepared = $machine->transition('prepare', new FinancialPreparationStep($machine));
+            if (! $ownerRegistered) {
+                $machine->registerOwner();
+            }
+            $prepared = $machine->transition('prepare', $preparation ?? new FinancialPreparationStep($machine));
             if ($prepared->status !== TransitionStatus::Committed) {
                 return [
                     'businessOutcome' => 'unsettled',

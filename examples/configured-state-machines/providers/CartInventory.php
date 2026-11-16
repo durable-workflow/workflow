@@ -95,14 +95,31 @@ final readonly class CartInventory
     /**
      * Bind the original physical graph at checkout; the recorded host must authorize the paid purchase first.
      */
-    public function bindFulfillment(CartReservationDescriptor $reservation, ShipmentDescriptor $shipment): void
-    {
+    public function bindFulfillment(
+        CartReservationDescriptor $reservation,
+        ShipmentDescriptor $shipment,
+        ?IncomingPaymentDescriptor $payment = null
+    ): void {
         if ($reservation->reserve->identity->client !== $this->client) {
             throw new LogicException('The cart belongs to another provider client.');
         }
-        $this->transaction(function () use ($reservation, $shipment): void {
+        $paidBeforeExpiry = false;
+        if ($payment !== null) {
+            if (! $payment->identity->sameOwner($reservation->reserve->identity)) {
+                throw new LogicException('Checkout payment belongs to another original cart purchase.');
+            }
+            $snapshot = (new IncomingPaymentJournal($this->db, $this->client, $this->clock))->inspect($payment);
+            $total = 0;
+            foreach ($snapshot['receipts'] as $receipt) {
+                if ($receipt['receivedAt'] < $reservation->terms->expiresAt) {
+                    $total += $receipt['amountMinor'];
+                }
+            }
+            $paidBeforeExpiry = $total >= $payment->amountMinor;
+        }
+        $this->transaction(function () use ($reservation, $shipment, $paidBeforeExpiry): void {
             (new CartReservationLedger($this->db, $this->clock ?? static fn (): int => time()))
-                ->bindFulfillment($reservation, $shipment);
+                ->bindFulfillment($reservation, $shipment, $paidBeforeExpiry);
         });
     }
 

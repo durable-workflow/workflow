@@ -124,6 +124,12 @@ final readonly class CancellationStore
             throw new LogicException('Cancellation requires its original satisfied proof-only assessment.');
         }
         $proof = (new ScopeRepository())->metadata($plan->rootScope());
+        $stockOperation = null;
+        if ($plan->recipe !== Catalogue::RESERVE_FIRST) {
+            $obligation = $this->authority->stockObligation($plan->terms->subjectKey());
+            $stock = Request::fromArray($obligation->input['forward']);
+            $stockOperation = $stock->identity->key();
+        }
         $id = SqlBusinessStore::decisionId($execution, 'transition', $execution->executionId);
         $hash = hash(
             'sha256',
@@ -133,7 +139,15 @@ final readonly class CancellationStore
                 $context->snapshot->target->toArray(),
             ])
         );
-        return $this->authority->db->transaction(function () use ($execution, $row, $plan, $proof, $id, $hash): array {
+        return $this->authority->db->transaction(function () use (
+            $execution,
+            $row,
+            $plan,
+            $proof,
+            $id,
+            $hash,
+            $stockOperation
+        ): array {
             $current = $this->authority->db->table('example_machine_subjects')
                 ->where('id', $row->id)
                 ->lockForUpdate()
@@ -172,7 +186,7 @@ final readonly class CancellationStore
                     'status' => TransitionStatus::Committed->value,
                     'reason' => 'verified_business_cancellation_committed',
                 ]);
-            $publication = $this->publication($execution, $revision, $plan);
+            $publication = $this->publication($execution, $revision, $plan, $stockOperation);
             $this->authority->db->table('example_machine_publications')
                 ->insert([
                     'id' => $id,
@@ -245,7 +259,8 @@ final readonly class CancellationStore
     private function publication(
         \Workflow\V2\StateMachine\Execution\ExecutionReference $execution,
         int $revision,
-        BindingPlan $plan
+        BindingPlan $plan,
+        ?string $stockOperation
     ): array {
         $publication = [
             'execution' => $execution->toArray(),
@@ -260,9 +275,10 @@ final readonly class CancellationStore
             $assignment = $this->authority->db->table('provider_machine_assignments')
                 ->where('id', $plan->terms->subjectKey())
                 ->sole();
+
             $receipt = [
                 'originalRunId' => $plan->rootRun,
-                'operation' => Request::fromArray($plan->terms->descriptor('order')['forward'])->identity->key(),
+                'operation' => $stockOperation,
                 'status' => 'refused',
                 'admissionClosed' => true,
             ];
@@ -277,7 +293,7 @@ final readonly class CancellationStore
 
     private function assertOriginalRoot(string $key, string $rootRun, object $assignment): void
     {
-        $class = Catalogue::rootClass($this->authority->recipe($key));
+        $class = $this->authority->rootClass($key);
         $actual = WorkflowRun::query()->where('namespace', Catalogue::NAMESPACE)
             ->where('workflow_class', $class)
             ->where('workflow_instance_id', 'provider-order-' . $key)->findOrFail($rootRun);
