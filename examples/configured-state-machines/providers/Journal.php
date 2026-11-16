@@ -25,6 +25,10 @@ final readonly class Journal
 
     public ProviderContext $context;
 
+    private AuthorizationLedger $authorization;
+
+    private CartReservationLedger $cart;
+
     public function __construct(
         private PDO $db,
         private string $client,
@@ -37,6 +41,8 @@ final readonly class Journal
         }
         $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         $this->context = new ProviderContext($db, $client, $clock);
+        $this->authorization = new AuthorizationLedger($db, $clock ?? static fn (): int => time());
+        $this->cart = new CartReservationLedger($db, $clock ?? static fn (): int => time());
     }
 
     public function install(): void
@@ -53,12 +59,17 @@ final readonly class Journal
      */
     public function installAuthorizationSupport(): void
     {
-        $this->transaction(fn () => $this->authorizationLedger()->install());
+        $this->transaction(fn () => $this->authorization->install());
     }
 
     public function shipments(): ShipmentJournal
     {
         return new ShipmentJournal($this->db, $this->client, $this->beforePhysicalEvent);
+    }
+
+    public function cartInventory(): CartInventory
+    {
+        return new CartInventory($this->db, $this->client, $this->clock);
     }
 
     /**
@@ -91,8 +102,11 @@ final readonly class Journal
             }
             $plan = $this->assertPlan($request);
             $status = Status::from($plan['status']);
-            if (AuthorizationLedger::handles($request)) {
-                $status = $this->authorizationLedger()
+            if (CartReservationLedger::handles($request)) {
+                $status = $this->cart
+                    ->admit($request, $status);
+            } elseif (AuthorizationLedger::handles($request)) {
+                $status = $this->authorization
                     ->admit($request, $status);
             } elseif (in_array($request->action, ShipmentLedger::ACTIONS, true)) {
                 $status = (new ShipmentLedger($this->db))
@@ -144,7 +158,7 @@ final readonly class Journal
             foreach ($descriptor->requests() as $key => $request) {
                 $observations[$key] = $this->observation($request, $this->operation($request));
             }
-            $state = $this->authorizationLedger()
+            $state = $this->authorization
                 ->inspectCapture($descriptor);
             $clock = $this->clock ?? static fn (): int => time();
             $now = $clock();
@@ -173,6 +187,10 @@ final readonly class Journal
         $this->authorize($request);
         return $this->transaction(function () use ($request): Observation {
             $row = $this->operation($request);
+            if (CartReservationLedger::handles($request) && $request->action === 'reserve') {
+                $this->cart
+                    ->closeAdmission($request);
+            }
             if ($row === null) {
                 $this->write($request, Status::NotExecuted, true);
             } else {
@@ -196,7 +214,7 @@ final readonly class Journal
             }
             if ($status === Status::Confirmed) {
                 if (AuthorizationLedger::handles($request)) {
-                    $this->authorizationLedger()
+                    $this->authorization
                         ->assertCompletion($request);
                 } elseif (in_array($request->action, ShipmentLedger::ACTIONS, true)) {
                     (new ShipmentLedger($this->db))
@@ -213,6 +231,10 @@ final readonly class Journal
                     );
                 }
             }
+            if (CartReservationLedger::handles($request)) {
+                $this->cart
+                    ->complete($request, $status);
+            }
             $this->write($request, $status, (bool) $row['closed']);
             return $this->observation($request, $this->operation($request));
         });
@@ -223,11 +245,6 @@ final readonly class Journal
         if ($request->identity->client !== $this->client) {
             throw new LogicException('The provider credential belongs to another client.');
         }
-    }
-
-    private function authorizationLedger(): AuthorizationLedger
-    {
-        return new AuthorizationLedger($this->db, $this->clock ?? static fn (): int => time());
     }
 
     private function operation(Request $request): ?array
@@ -295,12 +312,16 @@ final readonly class Journal
 
     private function observation(Request $request, ?array $row): Observation
     {
+        if ($row !== null && $row['status'] === Status::Confirmed->value && CartReservationLedger::handles($request)) {
+            $this->cart
+                ->assertCompletion($request);
+        }
         if ($row !== null && $row['status'] === Status::Confirmed->value && IncomingRefundLedger::handles($request)) {
             (new IncomingRefundLedger($this->db, $this->clock ?? static fn (): int => time()))
                 ->assertCompletion($request);
         }
         if ($row !== null && $row['status'] === Status::Confirmed->value && AuthorizationLedger::handles($request)) {
-            $this->authorizationLedger()
+            $this->authorization
                 ->assertCompletion($request);
         }
         if ($row !== null && $row['status'] === Status::Confirmed->value && in_array(

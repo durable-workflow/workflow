@@ -42,15 +42,19 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
         private string $principal,
         private Closure $authorizeOriginalOwner,
         public string $recipe = Catalogue::RESERVE_FIRST,
+        public bool $cart = false,
     ) {
         PortableDescriptor::identifier($rootRun, 'original root run');
         PortableDescriptor::identifier($principal, 'authenticated principal');
         Catalogue::assertRecipe($recipe);
+        if ($cart && $recipe !== FundingCatalogue::BANK) {
+            throw new LogicException('The cart contract requires its original bank funding profile.');
+        }
     }
 
     public function version(): string
     {
-        return self::versionFor($this->recipe);
+        return self::versionFor($this->recipe) . ($this->cart ? '.cart-v1' : '');
     }
 
     public static function versionFor(string $recipe): string

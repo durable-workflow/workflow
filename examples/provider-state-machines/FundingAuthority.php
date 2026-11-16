@@ -150,6 +150,9 @@ final readonly class FundingAuthority
 
     public function effect(OperationContext $context, string $mode): void
     {
+        if ($this->authority->cart->selected(explode('.', $context->scope->key)[0])) {
+            throw new LogicException('Cart stock must retain its predeclared lease responsibility.');
+        }
         if (! in_array($mode, ['forward', 'compensate'], true)) {
             throw new LogicException('The funding operation mode is unavailable.');
         }

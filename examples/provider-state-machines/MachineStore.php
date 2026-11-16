@@ -55,6 +55,7 @@ final readonly class MachineStore
         }
         $store = new self($authority, $incoming, $cod);
         $app->instance(self::class, $store);
+        $app->instance(CartStore::class, new CartStore($authority, $provider, $incoming));
         $app->instance(AssessmentStore::class, new AssessmentStore($authority, $provider));
         $financial = new FinancialAuthority($authority);
         $handoff = new FinancialHandoffStore($authority, $provider, $financial);
@@ -144,37 +145,19 @@ final readonly class MachineStore
         return $store;
     }
 
-    public function seed(OrderTerms $terms): void
+    public function seed(OrderTerms $terms, ?CartPlan $cart = null): void
     {
         $key = $terms->subjectKey();
         $this->authority->authorize($key, $this->authority->principal);
         $recipe = $this->authority->recipe($key);
+        if ($this->authority->cart->selected($key) !== ($cart !== null)) {
+            throw new LogicException('The native cart entry requires its exact trusted original cart assignment.');
+        }
+        $cart?->assertOrder($terms);
         $this->assertAdvanceBalance($terms, $recipe);
-        if (($terms->codPayment !== null) !== CodFundingPolicy::selected($recipe)
-            || ($terms->codPayment !== null && ($this->cod === null
-                || $terms->codPayment->handoverPolicy !== CodFundingPolicy::handover($recipe)))) {
-            throw new LogicException(
-                'Native COD requires its original provider, recipe and recipient-handover policy.'
-            );
-        }
-        if (FundingCatalogue::selected($recipe) && $terms->fulfillmentDeadline === null) {
-            throw new LogicException('Common funding checkout requires its original fulfillment deadline.');
-        }
-        if (($terms->incomingPayment !== null) !== ($recipe === FundingCatalogue::BANK)
-            || ($recipe === FundingCatalogue::BANK && $this->incoming === null)) {
-            throw new LogicException('Only the original bank policy may use its configured incoming-payment provider.');
-        }
-        if ($recipe === FinancialCatalogue::AFTER_DELIVERY && $terms->fulfillmentDeadline === null) {
-            throw new LogicException(
-                'The selected delivery policy requires its original physical fulfillment deadline.'
-            );
-        }
-        if (($terms->authorization !== null) !== (FinancialCatalogue::selected($recipe)
-            || (FundingCatalogue::selected($recipe) && FundingCatalogue::requiresAuthorization($recipe)))) {
-            throw new LogicException('The selected native recipe does not implement authorization and capture.');
-        }
+        $this->assertFundingProviders($terms, $recipe);
         $payload = PortableDescriptor::encode($terms->toArray());
-        $this->authority->db->transaction(function () use ($key, $payload): void {
+        $this->authority->db->transaction(function () use ($key, $payload, $terms, $cart): void {
             $this->authority->db->table('provider_machine_assignments')
                 ->insert([
                     'id' => $key,
@@ -183,6 +166,9 @@ final readonly class MachineStore
                     'root_run' => null,
                 ]);
             $this->createSubject($key, 'order', false);
+            if ($cart !== null) {
+                app(CartStore::class)->seedRow($terms, $cart, hash('sha256', $payload));
+            }
         });
     }
 
@@ -414,6 +400,9 @@ final readonly class MachineStore
                     }
                 }),
             ],
+            'provider.cart' => [
+                '1' => new CartLeaseOperation($provider, app(CartStore::class)->operation(...)),
+            ],
             'provider.shipment.full' => [
                 '1' => new ShipmentOperation($provider, $physical->operation(...)),
             ],
@@ -447,6 +436,10 @@ final readonly class MachineStore
 
     private function descriptor(OrderTerms $terms, string $role, string $recipe): array
     {
+        if ($role === 'order' && $this->authority->cart->selected($terms->subjectKey())) {
+            return $this->authority->cart->stockObligation($terms->subjectKey())
+->input;
+        }
         if ((FinancialCatalogue::selected($recipe) || FundingCatalogue::selected($recipe)) && $role !== 'order') {
             return match ($role) {
                 'shipment' => $terms->physicalDescriptor(),
@@ -473,7 +466,7 @@ final readonly class MachineStore
         OrderTerms $terms
     ): BindingPlan {
         $instance = WorkflowInstance::query()->findOrFail($actual->workflow_instance_id);
-        if ($actual->workflow_class !== Catalogue::rootClass($this->authority->recipe($key))
+        if ($actual->workflow_class !== $this->authority->cart->rootClass($key)
             || $args !== [$key] || $actual->workflow_instance_id !== 'provider-order-' . $key
             || (int) $instance->run_count !== 1 || $instance->current_run_id !== $actual->id
             || ($assignment->root_run !== null && $assignment->root_run !== $actual->id)) {
@@ -481,7 +474,7 @@ final readonly class MachineStore
         }
         return new BindingPlan($terms, $actual->id, $this->authority->principal, static function (): void {
             throw new LogicException('Initialization does not authorize child admission.');
-        }, $this->authority->recipe($key));
+        }, $this->authority->recipe($key), $this->authority->cart->selected($key));
     }
 
     private function childPlan(WorkflowRun $actual, array $args, string $key, string $role): BindingPlan
@@ -588,6 +581,33 @@ final readonly class MachineStore
                 || ! $this->cod->physicalContract
                 || $terms->advanceBalance->balance->handoverPolicy !== AdvanceBalancePolicy::handover($recipe)))) {
             throw new LogicException('The selected native recipe does not implement the original advance and balance.');
+        }
+    }
+
+    private function assertFundingProviders(OrderTerms $terms, string $recipe): void
+    {
+        if (($terms->codPayment !== null) !== CodFundingPolicy::selected($recipe)
+            || ($terms->codPayment !== null && ($this->cod === null
+                || $terms->codPayment->handoverPolicy !== CodFundingPolicy::handover($recipe)))) {
+            throw new LogicException(
+                'Native COD requires its original provider, recipe and recipient-handover policy.'
+            );
+        }
+        if (FundingCatalogue::selected($recipe) && $terms->fulfillmentDeadline === null) {
+            throw new LogicException('Common funding checkout requires its original fulfillment deadline.');
+        }
+        if (($terms->incomingPayment !== null) !== ($recipe === FundingCatalogue::BANK)
+            || ($recipe === FundingCatalogue::BANK && $this->incoming === null)) {
+            throw new LogicException('Only the original bank policy may use its configured incoming-payment provider.');
+        }
+        if ($recipe === FinancialCatalogue::AFTER_DELIVERY && $terms->fulfillmentDeadline === null) {
+            throw new LogicException(
+                'The selected delivery policy requires its original physical fulfillment deadline.'
+            );
+        }
+        if (($terms->authorization !== null) !== (FinancialCatalogue::selected($recipe)
+            || (FundingCatalogue::selected($recipe) && FundingCatalogue::requiresAuthorization($recipe)))) {
+            throw new LogicException('The selected native recipe does not implement authorization and capture.');
         }
     }
 }

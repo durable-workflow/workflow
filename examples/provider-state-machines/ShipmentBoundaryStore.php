@@ -48,7 +48,7 @@ final readonly class ShipmentBoundaryStore
 
     public function deduct(WorkflowRun $actual): array
     {
-        [$actor, , $terms, $graph, $row] = $this->physical->rows($actual);
+        [$actor, , , $graph, $row] = $this->physical->rows($actual);
         $this->physical->forward($actor->root_key);
         $this->physical->stock($actor->root_key);
         $subject = $this->authority->subject($actor->root_key, 'shipment');
@@ -58,7 +58,7 @@ final readonly class ShipmentBoundaryStore
                 'Deduction requires the original booked Shipment and predeclared physical responsibility.'
             );
         }
-        $reservation = Request::fromArray($terms->descriptor('order')['forward']);
+        $reservation = Request::fromArray($this->authority->cart->stockObligation($actor->root_key)->input['forward']);
         $receipt = $this->provider->lookup($reservation);
         if ($receipt->status !== Status::Confirmed || $receipt->effectId !== 'effect-' . $reservation->identity->key()) {
             throw new LogicException('Physical deduction requires the current original reservation receipt.');
@@ -78,7 +78,7 @@ final readonly class ShipmentBoundaryStore
         $snapshot = $this->provider->shipments()
             ->inspect($graph)
             ->toArray();
-        $stock = Request::fromArray($terms->descriptor('order')['forward']);
+        $stock = Request::fromArray($this->authority->cart->stockObligation($actor->root_key)->input['forward']);
         $reservation = $this->provider->lookup($stock);
         $payment = $this->payment($plan);
         $stage = $plan->recipe === FinancialCatalogue::AFTER_STOCK ? 'capture' : 'authorize';

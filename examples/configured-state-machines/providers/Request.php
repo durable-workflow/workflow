@@ -35,6 +35,9 @@ final readonly class Request
             || $identity->key() === $target->key()))) {
             throw new InvalidArgumentException('Compensation must name another original operation of the same owner.');
         }
+        if (CartReservationTerms::selected($terms)) {
+            CartReservationTerms::fromArray($terms)->assertRequest($this);
+        }
         if (in_array($action, ['authorize', 'capture-authorized', 'void-authorization'], true)) {
             AuthorizationTerms::fromArray($terms);
         }

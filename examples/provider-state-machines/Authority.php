@@ -21,6 +21,8 @@ use Workflow\V2\StateMachine\Execution\ExecutionReference;
 /** Trusted bootstrap owns the principal and business grants; workflow arguments never grant access. */
 final readonly class Authority implements ChildScopeBindingAuthorization
 {
+    public CartPolicy $cart;
+
     /**
      * @param list<string> $subjects Canonical OrderTerms::subjectKey() grants.
      */
@@ -29,6 +31,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
         public string $principal,
         private array $subjects,
         private array $recipes = [],
+        array $cartPurchases = [],
     ) {
         PortableDescriptor::identifier($principal, 'authenticated principal');
         if (! array_is_list($subjects)) {
@@ -45,6 +48,17 @@ final readonly class Authority implements ChildScopeBindingAuthorization
             }
             Catalogue::assertRecipe($recipe);
         }
+        if (! array_is_list($cartPurchases)) {
+            throw new LogicException('Cart purchase authority must be an explicit trusted grant list.');
+        }
+        foreach ($cartPurchases as $key) {
+            if (! is_string($key) || ! in_array($key, $subjects, true) || $this->recipe(
+                $key
+            ) !== FundingCatalogue::BANK) {
+                throw new LogicException('Cart checkout requires an existing original bank purchase grant.');
+            }
+        }
+        $this->cart = new CartPolicy($this, $cartPurchases);
     }
 
     public function recipe(string $key): string
@@ -61,7 +75,8 @@ final readonly class Authority implements ChildScopeBindingAuthorization
     {
         return hash(
             'sha256',
-            BindingPlan::versionFor($this->recipe($key)) . ':' . $this->profile($key, $role)->fingerprint()
+            BindingPlan::versionFor($this->recipe($key)) . ($this->cart->selected($key) ? '.cart-v1' : '')
+                . ':' . $this->profile($key, $role)->fingerprint()
         );
     }
 
@@ -88,6 +103,9 @@ final readonly class Authority implements ChildScopeBindingAuthorization
         if ($terms->subjectKey() !== $key) {
             throw new LogicException('The original client, subject or generation was substituted.');
         }
+        if ($this->cart->selected($key)) {
+            app(CartStore::class)->assertTerms($key, $terms, $row->terms_sha256);
+        }
         return [$row, $terms];
     }
 
@@ -108,7 +126,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
                     || (string) $root->revision !== $identity->parentExecution->sourceRevision))) {
                 throw new LogicException('The live original owner refused this child admission.');
             }
-        }, $this->recipe($key));
+        }, $this->recipe($key), $this->cart->selected($key));
     }
 
     public function subject(string $key, string $role): object
@@ -239,7 +257,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
     public static function role(string $class): string
     {
         return match ($class) {
-            Order::class, CheckoutOrder::class, AuthorizationCheckout::class, FundingCheckout::class, Cancellation::class => 'order',
+            Order::class, CheckoutOrder::class, AuthorizationCheckout::class, FundingCheckout::class, CartCheckout::class, Cancellation::class => 'order',
             Payment::class, AuthorizedPayment::class, FundingPayment::class, CodFundingPayment::class, AdvanceBalancePayment::class => 'payment',
             Booking::class, FullShipment::class => 'shipment',
             default => throw new LogicException('The native workflow is outside this example.'),
@@ -302,7 +320,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
         }
         $input = $role === 'order' ? [$key] : $plan->childInput($role);
         $instance = $role === 'order' ? 'provider-order-' . $key : 'dw-bound-child-' . $plan->binding($role)->key();
-        if (($role === 'order' && $actual->workflow_class !== Catalogue::rootClass($this->recipe($key)))
+        if (($role === 'order' && $actual->workflow_class !== $this->cart->rootClass($key))
             || PortableDescriptor::encode($args) !== PortableDescriptor::encode($input)
             || $actual->workflow_instance_id !== $instance || ($role === 'order' && $actual->id !== $plan->rootRun)) {
             throw new LogicException('The native actor differs from the pinned original admission.');
