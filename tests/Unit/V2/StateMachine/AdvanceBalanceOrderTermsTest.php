@@ -5,8 +5,15 @@ declare(strict_types=1);
 namespace Tests\Unit\V2\StateMachine;
 
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\AuthorizationTerms;
+use DurableWorkflow\Examples\ProviderStateMachines\Authority;
+use DurableWorkflow\Examples\ProviderStateMachines\Catalogue;
+use DurableWorkflow\Examples\ProviderStateMachines\FinancialCatalogue;
+use DurableWorkflow\Examples\ProviderStateMachines\FundingCatalogue;
+use DurableWorkflow\Examples\ProviderStateMachines\MachineStore;
 use DurableWorkflow\Examples\ProviderStateMachines\OrderTerms;
+use Illuminate\Database\ConnectionInterface;
 use InvalidArgumentException;
+use LogicException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Tests\Support\AdvanceBalanceFixture;
@@ -43,6 +50,34 @@ final class AdvanceBalanceOrderTermsTest extends TestCase
         $this->assertSame($wire, OrderTerms::fromArray($wire)->toArray());
         $this->expectException(InvalidArgumentException::class);
         $old->advanceBalanceDescriptor();
+    }
+
+    public function testExistingNativeRecipesCannotAdoptUnimplementedMixedMoneyBeforeStorage(): void
+    {
+        $db = $this->createMock(ConnectionInterface::class);
+        $db->method('transactionLevel')
+            ->willReturn(0);
+        $db->expects($this->never())
+            ->method('transaction');
+        $db->expects($this->never())
+            ->method('table');
+        $terms = $this->order();
+        foreach ([Catalogue::RESERVE_FIRST, Catalogue::PAYMENT_FIRST,
+            FinancialCatalogue::AFTER_STOCK, FinancialCatalogue::AFTER_DELIVERY,
+            ...FundingCatalogue::recipes()] as $recipe) {
+            $authority = new Authority($db, 'worker-original', [$terms->subjectKey()], [
+                $terms->subjectKey() => $recipe,
+            ]);
+            try {
+                (new MachineStore($authority))->seed($terms);
+                $this->fail('An existing recipe cannot adopt a new mixed-money assignment.');
+            } catch (LogicException $error) {
+                $this->assertSame(
+                    'The advance-and-balance native payment policy is not implemented.',
+                    $error->getMessage()
+                );
+            }
+        }
     }
 
     public static function substitutions(): array

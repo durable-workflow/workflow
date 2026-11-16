@@ -145,6 +145,9 @@ final readonly class MachineStore
         $key = $terms->subjectKey();
         $this->authority->authorize($key, $this->authority->principal);
         $recipe = $this->authority->recipe($key);
+        if ($terms->advanceBalance !== null) {
+            throw new LogicException('The advance-and-balance native payment policy is not implemented.');
+        }
         if (($terms->codPayment !== null) !== CodFundingPolicy::selected($recipe)
             || ($terms->codPayment !== null && ($this->cod === null
                 || $terms->codPayment->handoverPolicy !== CodFundingPolicy::handover($recipe)))) {
