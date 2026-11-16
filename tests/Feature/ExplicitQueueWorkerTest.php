@@ -10,8 +10,6 @@ use Workflow\WorkflowStub;
 
 final class ExplicitQueueWorkerTest extends TestCase
 {
-    protected const START_QUEUE_WORKERS = false;
-
     public function testOptingOutOfAutomaticBootPreservesExplicitConcurrentWorkers(): void
     {
         $this->assertSame([], self::workerDiagnostics());
@@ -22,5 +20,10 @@ final class ExplicitQueueWorkerTest extends TestCase
         $this->waitForWorkflow($workflow);
         $this->assertSame('workflow_activity_other', $workflow->output());
         $this->assertSame(2, $workflow->logs()->count());
+    }
+
+    protected function startQueueWorkersAutomatically(): bool
+    {
+        return false;
     }
 }

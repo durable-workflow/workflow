@@ -38,8 +38,6 @@ use Workflow\V2\WorkflowStub;
 
 final class V2CompensationRecoveryAuthorityTest extends TestCase
 {
-    protected const START_QUEUE_WORKERS = false;
-
     protected function setUp(): void
     {
         parent::setUp();
@@ -130,6 +128,11 @@ final class V2CompensationRecoveryAuthorityTest extends TestCase
         });
         $this->assertBoundaryRefuses($scope, $task);
         $this->assertTrue($changed);
+    }
+
+    protected function startQueueWorkersAutomatically(): bool
+    {
+        return false;
     }
 
     private function origin(): array

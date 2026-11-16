@@ -32,9 +32,6 @@ use Workflow\V2\WorkflowStub;
 
 final class V2CompensationScopeTest extends TestCase
 {
-    // This suite uses sync execution or its own explicit cold-process task drivers.
-    protected const START_QUEUE_WORKERS = false;
-
     protected function setUp(): void
     {
         parent::setUp();
@@ -1109,6 +1106,12 @@ final class V2CompensationScopeTest extends TestCase
             ['order-42/second', 'shipment-42/second', 'shipment-42/first', 'order-42/first'],
             Cache::get('test:scope:undo-scoped-log')
         );
+    }
+
+    // This suite uses sync execution or its own explicit cold-process task drivers.
+    protected function startQueueWorkersAutomatically(): bool
+    {
+        return false;
     }
 
     private function assertRecoveryPruningHeld(string $runId): void
