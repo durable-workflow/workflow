@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 const FEATURE_SHARDS = [
-    'mysql' => 12,
+    'mysql' => 16,
     'postgresql' => 8,
 ];
 const PULL_REQUEST_CONDITION = "github.event_name == 'pull_request'";
@@ -108,6 +108,7 @@ function verify_workflow_job(string $workflow, string $job, string $profile): vo
         $requirements['target-branch routing'] = "github.event_name != 'pull_request'";
         $requirements['PCOV coverage driver'] = 'coverage: pcov';
         $requirements['per-shard Clover report'] = '--coverage-clover "build/test-results/mysql-shard-${{ matrix.shard }}-coverage.xml"';
+        $requirements['partial execution trace'] = '--log-events-text "build/test-results/mysql-shard-${{ matrix.shard }}-events.log"';
     }
 
     foreach ($requirements as $description => $needle) {
@@ -171,6 +172,14 @@ function verify_gate_wiring(string $workflow, string $publicBoundaryWorkflow): v
         $needle = "--clover=build/feature-coverage/mysql-shard-{$shard}-coverage.xml";
         if (! str_contains($coverage, $needle)) {
             fail("Coverage job is missing feature report merge input [{$needle}].");
+        }
+        $sonar = "          build/feature-coverage/mysql-shard-{$shard}-coverage.xml\n";
+        if (! str_contains($coverage, $sonar)) {
+            fail("Coverage job is missing Sonar feature report input for shard [{$shard}].");
+        }
+        $codecov = "./build/feature-coverage/mysql-shard-{$shard}-coverage.xml";
+        if (! str_contains($coverage, $codecov)) {
+            fail("Coverage job is missing Codecov feature report input for shard [{$shard}].");
         }
     }
 
