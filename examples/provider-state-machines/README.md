@@ -405,8 +405,12 @@ cancellation. Original known collections use stable payer-refund keys;
 processing, refusal, uncertainty and lost acknowledgements remain explicit.
 Even confirmed customer refunds do not erase gross collection history or prove
 the independent merchant/carrier balance settled. Those outstanding duties keep
-dependent parent compensation blocked. Physical return still requires original
-warehouse receipt, suitable inspection and restocking before money recovery.
+dependent parent compensation blocked. Once the original collection inventory is
+atomically fenced, verified remittance of every actually collected amount can
+settle the separate merchant duty. Partial remittance or an open collection
+reference remains unresolved, even when all currently known receipts were paid.
+Physical return still requires original warehouse receipt, suitable inspection
+and restocking before money recovery.
 
 Run `vendor/bin/phpunit tests/Feature/V2/V2CodFundingMachineTest.php` and
 `vendor/bin/phpunit tests/Unit/V2/StateMachine/RetainedCodPaymentOperationTest.php`
@@ -447,7 +451,7 @@ An original closable reference can fence later receipts. An open reference or
 an unknown refund outcome retains the unresolved obligation instead of claiming
 that no later payment is possible.
 
-Run `vendor/bin/phpunit tests/Feature/V2/V2AdvanceBalanceMachineTest.php` for the
+Run `vendor/bin/phpunit tests/Feature/V2/V2AdvanceBalanceMachineTest.php tests/Feature/V2/V2AdvanceBalanceRefundTest.php` for the
 native staged-payment routes and cancellation, and
 `vendor/bin/phpunit tests/Unit/V2/StateMachine/AdvanceBalanceProviderTest.php`
 for original portion and refund controls. These synthetic source cases do not
