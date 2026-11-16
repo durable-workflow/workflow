@@ -2493,6 +2493,10 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 $this->assertSignalTimeoutSurvivesLaterCancellation($fixture);
                 continue;
             }
+            if ($fixture['id'] === 'selection-cancelled-signal-occurrence') {
+                $this->assertLaterSignalBelongsToItsCurrentSelection($fixture);
+                continue;
+            }
 
             if ($fixture['id'] === 'version-usage-retained-reused-decision') {
                 config()->set('app.key', 'version-usage-corpus-signing-key');
@@ -5629,6 +5633,53 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             ),
             $paths,
         );
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function assertLaterSignalBelongsToItsCurrentSelection(array $fixture): void
+    {
+        $scenario = $fixture['signal_occurrences'];
+        $stub = WorkflowStub::make($fixture['workflow']['type']);
+        $stub->start(...$fixture['workflow']['arguments']);
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $this->runReadyWorkflowTask($run);
+        $stub->withRequestId('first-selection')
+            ->signal($scenario['first']);
+        $this->runReadyWorkflowTask($run);
+        $prefix = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get();
+        $wait = $prefix->filter(static fn (WorkflowHistoryEvent $event): bool =>
+            $event->event_type === HistoryEventType::SignalWaitOpened && $event->payload['signal_name'] === $scenario['second'])->last();
+        $this->assertInstanceOf(WorkflowHistoryEvent::class, $wait);
+        $original = $prefix->map(static fn (WorkflowHistoryEvent $event): array => $event->getRawOriginal())
+            ->all();
+        $stub->withRequestId('second-selection')
+            ->signal($scenario['second']);
+        $this->runReadyWorkflowTask($run);
+        $this->assertSame(
+            RunStatus::Completed,
+            $run->fresh()
+->status,
+            'A cancelled selection must not consume a later signal.'
+        );
+        $this->assertSame([$scenario['first'], $scenario['second']], $stub->refresh()->output());
+        $applied = $run->historyEvents()
+            ->where('event_type', HistoryEventType::SignalApplied)->reorder('sequence', 'desc')->firstOrFail();
+        $this->assertSame($wait->payload['sequence'], $applied->payload['sequence']);
+        $this->assertSame($wait->payload['signal_wait_id'], $applied->payload['signal_wait_id']);
+        $this->assertSame(
+            $original,
+            $run->historyEvents()
+                ->where('sequence', '<=', count($original))
+                ->orderBy('sequence')
+                ->get()
+                ->map(static fn (WorkflowHistoryEvent $event): array => $event->getRawOriginal())
+                ->all()
+        );
+        $this->assertSame(0, $run->tasks()->where('status', TaskStatus::Failed)->count());
     }
 
     /**

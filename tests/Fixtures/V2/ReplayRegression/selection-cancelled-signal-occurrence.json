@@ -1,0 +1,258 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "selection-cancelled-signal-occurrence",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner",
+    "workflow-executor"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestRepeatedSignalSelectionWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "id": "01j000000000000000000000001",
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "01j000000000000000000000002",
+      "sequence": 2,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 1,
+        "signal_name": "earlier",
+        "signal_wait_id": "earlier-original",
+        "parallel_group_id": "select-calls:1:2",
+        "parallel_group_kind": "signal",
+        "parallel_group_mode": "select",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "selection_member_key": "earlier",
+        "selection_member_index": 0,
+        "selection_member_base_sequence": 1,
+        "selection_member_size": 1,
+        "selection_member_kind": "signal",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "select-calls:1:2",
+            "parallel_group_kind": "signal",
+            "parallel_group_mode": "select",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "selection_member_key": "earlier",
+            "selection_member_index": 0,
+            "selection_member_base_sequence": 1,
+            "selection_member_size": 1,
+            "selection_member_kind": "signal"
+          }
+        ]
+      },
+      "recorded_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "01j000000000000000000000003",
+      "sequence": 3,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 2,
+        "signal_name": "later",
+        "signal_wait_id": "later-cancelled",
+        "parallel_group_id": "select-calls:1:2",
+        "parallel_group_kind": "signal",
+        "parallel_group_mode": "select",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "selection_member_key": "later",
+        "selection_member_index": 1,
+        "selection_member_base_sequence": 2,
+        "selection_member_size": 1,
+        "selection_member_kind": "signal",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "select-calls:1:2",
+            "parallel_group_kind": "signal",
+            "parallel_group_mode": "select",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "selection_member_key": "later",
+            "selection_member_index": 1,
+            "selection_member_base_sequence": 2,
+            "selection_member_size": 1,
+            "selection_member_kind": "signal"
+          }
+        ]
+      },
+      "recorded_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "01j000000000000000000000004",
+      "sequence": 4,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 1,
+        "signal_name": "earlier",
+        "signal_wait_id": "earlier-original",
+        "value": "wwHioz3/VYAiNwoKZmlyc3Q=",
+        "parallel_group_id": "select-calls:1:2",
+        "parallel_group_kind": "signal",
+        "parallel_group_mode": "select",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "selection_member_key": "earlier",
+        "selection_member_index": 0,
+        "selection_member_base_sequence": 1,
+        "selection_member_size": 1,
+        "selection_member_kind": "signal",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "select-calls:1:2",
+            "parallel_group_kind": "signal",
+            "parallel_group_mode": "select",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "selection_member_key": "earlier",
+            "selection_member_index": 0,
+            "selection_member_base_sequence": 1,
+            "selection_member_size": 1,
+            "selection_member_kind": "signal"
+          }
+        ]
+      },
+      "recorded_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "01j000000000000000000000005",
+      "sequence": 5,
+      "event_type": "SelectionResolved",
+      "payload": {
+        "selection_group_id": "select-calls:1:2",
+        "selection_group_base_sequence": 1,
+        "selection_group_size": 2,
+        "member_key": "earlier",
+        "member_index": 0,
+        "member_base_sequence": 1,
+        "member_size": 1,
+        "operation_kind": "signal",
+        "operation_identity": "earlier-original",
+        "outcome": "completed",
+        "resolution_event_id": "01j000000000000000000000004",
+        "resolution_event_type": "SignalApplied"
+      },
+      "recorded_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "01j000000000000000000000006",
+      "sequence": 6,
+      "event_type": "SelectionOperationCancelled",
+      "payload": {
+        "selection_group_id": "select-calls:1:2",
+        "member_key": "later",
+        "member_index": 1,
+        "member_base_sequence": 2,
+        "member_size": 1,
+        "operation_kind": "signal",
+        "operation_identity": "later-cancelled",
+        "cancelled_at": "2026-01-01T00:00:00Z"
+      },
+      "recorded_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "01j000000000000000000000007",
+      "sequence": 7,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 3,
+        "signal_name": "earlier",
+        "signal_wait_id": "earlier-current",
+        "parallel_group_id": "select-calls:3:2",
+        "parallel_group_kind": "signal",
+        "parallel_group_mode": "select",
+        "parallel_group_base_sequence": 3,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "selection_member_key": "earlier",
+        "selection_member_index": 0,
+        "selection_member_base_sequence": 3,
+        "selection_member_size": 1,
+        "selection_member_kind": "signal",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "select-calls:3:2",
+            "parallel_group_kind": "signal",
+            "parallel_group_mode": "select",
+            "parallel_group_base_sequence": 3,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0,
+            "selection_member_key": "earlier",
+            "selection_member_index": 0,
+            "selection_member_base_sequence": 3,
+            "selection_member_size": 1,
+            "selection_member_kind": "signal"
+          }
+        ]
+      },
+      "recorded_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "01j000000000000000000000008",
+      "sequence": 8,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 4,
+        "signal_name": "later",
+        "signal_wait_id": "later-current",
+        "parallel_group_id": "select-calls:3:2",
+        "parallel_group_kind": "signal",
+        "parallel_group_mode": "select",
+        "parallel_group_base_sequence": 3,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "selection_member_key": "later",
+        "selection_member_index": 1,
+        "selection_member_base_sequence": 4,
+        "selection_member_size": 1,
+        "selection_member_kind": "signal",
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "select-calls:3:2",
+            "parallel_group_kind": "signal",
+            "parallel_group_mode": "select",
+            "parallel_group_base_sequence": 3,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1,
+            "selection_member_key": "later",
+            "selection_member_index": 1,
+            "selection_member_base_sequence": 4,
+            "selection_member_size": 1,
+            "selection_member_kind": "signal"
+          }
+        ]
+      },
+      "recorded_at": "2026-01-01T00:00:00Z"
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": []
+  },
+  "signal_occurrences": {
+    "first": "earlier",
+    "second": "later"
+  }
+}
