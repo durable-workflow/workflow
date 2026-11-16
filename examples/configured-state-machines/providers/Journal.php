@@ -46,6 +46,16 @@ final readonly class Journal
     }
 
     /**
+     * Sharing preserves this exact engine, connection, client, clock and physical-admission hook.
+     */
+    public function assertSharedContext(PDO $db, string $client, ?Closure $clock): void
+    {
+        if ($this->db !== $db || $this->client !== $client || $this->clock !== $clock || $db->inTransaction()) {
+            throw new LogicException('A shared payment journal must retain its original provider context.');
+        }
+    }
+
+    /**
      * Explicit optional provider support; install() keeps the original four-table fixtures unchanged.
      */
     public function installAuthorizationSupport(): void

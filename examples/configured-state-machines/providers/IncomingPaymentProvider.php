@@ -18,9 +18,11 @@ final readonly class IncomingPaymentProvider
     public function __construct(
         private PDO $db,
         string $client,
-        private ?Closure $clock = null
+        private ?Closure $clock = null,
+        ?Journal $commands = null
     ) {
-        $this->commands = new Journal($db, $client, $clock);
+        $commands?->assertSharedContext($db, $client, $clock);
+        $this->commands = $commands ?? new Journal($db, $client, $clock);
         $this->receipts = new IncomingPaymentJournal($db, $client, $clock);
     }
 

@@ -33,6 +33,8 @@ foreach ([
     'Journal',
     'IncomingPaymentProvider',
     'CodPaymentProvider',
+    'AdvanceBalanceTerms',
+    'AdvanceBalanceProvider',
     'CodPaymentOperation',
     'IncomingPaymentOperation',
     'RetainedOperation',
