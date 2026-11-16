@@ -370,6 +370,9 @@ The host purchase projection is not a formal Order. Only confirmed original
 payment plus a factual stock hold permit a `provider_cart_orders` association.
 That write shares the original cancellation lock and retains the original
 purchase/run, scope, Payment child, reservation and future Order reference.
+The same transaction pins the complete original Order receipt on the purchase.
+Reads require that pin and the original paid publication. They do not close
+child admission or reconstruct missing evidence.
 The Cart's initial and late stock duties are registered before Payment so reverse
 compensation refunds money before releasing paid stock.
 

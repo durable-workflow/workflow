@@ -94,6 +94,11 @@ final class V2CartOrderAssociationConcurrencyTest extends TestCase
         $this->assertSame(['reserve', 'refund-incoming', 'release'], $this->effects());
         $this->assertTrue($this->provider->cartInventory()->inspect($this->cart->initial)['released']);
         $this->assertSame($orders, DB::table('provider_cart_orders')->count());
+        if ($orders === 1) {
+            $retained = app(CartStore::class)->order($key);
+            $this->assertSame($origin->runId(), $retained['rootRun']);
+            $this->assertSame($binding->toArray(), ChildBinding::fromArray($retained['paymentBinding'])->toArray());
+        }
     }
 
     private function operate(string $operation, string $runId, array $binding): string

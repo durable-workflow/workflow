@@ -24,6 +24,8 @@ return static function (Builder $schema): void {
         $table->string('order_id', 64)
             ->nullable()
             ->unique();
+        $table->string('order_sha256', 64)
+            ->nullable();
     });
     $schema->create('provider_cart_orders', static function (Blueprint $table): void {
         $table->string('id', 64)
