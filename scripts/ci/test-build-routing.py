@@ -203,7 +203,7 @@ class FeatureShardRoutingTest(unittest.TestCase):
     def shard_assignments(self, profile: str) -> list[list[str]]:
         assignments = []
 
-        count = 12 if profile == "mysql" else 6
+        count = 12 if profile == "mysql" else 8
         for shard in range(count):
             result = self.run_php(
                 "scripts/ci/split-feature-tests.php",

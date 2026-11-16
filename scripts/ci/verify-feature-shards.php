@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 const FEATURE_SHARDS = [
     'mysql' => 12,
-    'postgresql' => 6,
+    'postgresql' => 8,
 ];
 const PULL_REQUEST_CONDITION = "github.event_name == 'pull_request'";
 
