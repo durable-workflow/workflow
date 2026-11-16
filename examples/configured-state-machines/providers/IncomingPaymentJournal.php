@@ -10,9 +10,13 @@ use PDO;
 use Throwable;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 
-/** Synthetic incoming-payment facts only. No charge/refund command or native acceptance is selected here. */
+/** Synthetic bank facts. Only an originally pinned closable reference can reject future transfers. */
 final readonly class IncomingPaymentJournal
 {
+    public const OPEN = 'incoming-unfenced-v1';
+
+    public const CLOSABLE = 'synthetic-incoming-atomic-close-v1';
+
     public function __construct(
         private PDO $db,
         private string $client,
@@ -34,29 +38,60 @@ final readonly class IncomingPaymentJournal
                 id TEXT PRIMARY KEY, client TEXT NOT NULL, reference_id TEXT NOT NULL,
                 transfer_id TEXT NOT NULL, received_at INTEGER NOT NULL,
                 fingerprint TEXT NOT NULL, payload TEXT NOT NULL, UNIQUE(client, transfer_id))');
+            $this->db->exec('CREATE TABLE IF NOT EXISTS incoming_payment_contracts (
+                reference_id TEXT PRIMARY KEY, descriptor_sha256 TEXT NOT NULL,
+                contract TEXT NOT NULL, closed INTEGER NOT NULL DEFAULT 0)');
+            $this->db->exec('CREATE TABLE IF NOT EXISTS incoming_payment_closures (
+                reference_id TEXT PRIMARY KEY, descriptor_sha256 TEXT NOT NULL,
+                contract TEXT NOT NULL, closed_at INTEGER NOT NULL, receipts_sha256 TEXT NOT NULL)');
         });
     }
 
-    public function register(IncomingPaymentDescriptor $descriptor): void
+    public function register(IncomingPaymentDescriptor $descriptor, string $contract = self::OPEN): void
     {
         $this->authorize($descriptor);
-        $this->transaction(function () use ($descriptor): void {
-            $existing = $this->query('SELECT * FROM incoming_payment_references
-                WHERE id = ? OR (client = ? AND reference = ?)', [
-                $descriptor->identity->key(), $this->client, $descriptor->reference,
-            ])->fetchAll(PDO::FETCH_ASSOC);
-            if ($existing !== []) {
-                if (count($existing) !== 1) {
-                    throw new LogicException('The incoming reference has conflicting original owners.');
-                }
-                $this->assertDescriptor($descriptor, $existing[0]);
-                return;
-            }
-            $this->query('INSERT INTO incoming_payment_references
-                (id, client, reference, fingerprint, payload) VALUES (?, ?, ?, ?, ?)', [
-                $descriptor->identity->key(), $this->client, $descriptor->reference,
-                $descriptor->fingerprint(), PortableDescriptor::encode($descriptor->toArray()),
+        $this->assertContract($contract);
+        $this->transaction(fn () => $this->registerOriginal($descriptor, $contract));
+    }
+
+    /**
+     * Atomic provider fence, including a never-opened reference. This is not ordinary bank expiry.
+     */
+    public function closeAdmission(IncomingPaymentDescriptor $descriptor, string $contract): array
+    {
+        $this->authorize($descriptor);
+        if ($contract !== self::CLOSABLE) {
+            throw new LogicException('The original incoming contract cannot fence future transfers.');
+        }
+        return $this->transaction(function () use ($descriptor, $contract): array {
+            $this->registerOriginal($descriptor, $contract);
+            // A retained closed contract may not reconstruct a lost authoritative fence.
+            $this->closure($descriptor);
+            $receipts = $this->receipts($descriptor);
+            $hash = hash('sha256', PortableDescriptor::encode($receipts));
+            $this->query('INSERT INTO incoming_payment_closures
+                (reference_id, descriptor_sha256, contract, closed_at, receipts_sha256)
+                VALUES (?, ?, ?, ?, ?) ON CONFLICT(reference_id) DO NOTHING', [
+                $descriptor->identity->key(), $descriptor->fingerprint(), $contract, $this->now(), $hash,
             ]);
+            $this->query('UPDATE incoming_payment_contracts SET closed = 1 WHERE reference_id = ?', [
+                $descriptor->identity->key(),
+            ]);
+            $row = $this->closure($descriptor);
+            if ($row === null || $row['receipts_sha256'] !== $hash) {
+                throw new LogicException('The fenced incoming receipt inventory changed or is incomplete.');
+            }
+            return [
+                'original' => $descriptor->toArray(),
+                'admissionContract' => $contract,
+                'admissionClosed' => true,
+                'closedAt' => (int) $row['closed_at'],
+                'receipts' => $receipts,
+                'receiptsSha256' => $hash,
+                'evidence' => 'incoming-fenced:' . hash('sha256', PortableDescriptor::encode([
+                    $descriptor->identity->key(), $hash,
+                ])),
+            ];
         });
     }
 
@@ -85,6 +120,11 @@ final readonly class IncomingPaymentJournal
                 }
                 return $receipt->toArray();
             }
+            if ($this->closure($descriptor) !== null) {
+                throw new LogicException(
+                    'The original incoming reference rejects new transfers after its provider fence.'
+                );
+            }
             $this->query('INSERT INTO incoming_payment_receipts
                 (id, client, reference_id, transfer_id, received_at, fingerprint, payload) VALUES (?, ?, ?, ?, ?, ?, ?)', [
                     $id,
@@ -107,17 +147,11 @@ final readonly class IncomingPaymentJournal
         $this->authorize($descriptor);
         return $this->transaction(function () use ($descriptor): array {
             $this->original($descriptor);
-            $rows = $this->query('SELECT * FROM incoming_payment_receipts
-                WHERE reference_id = ? ORDER BY received_at, id LIMIT 65', [$descriptor->identity->key()])
-                ->fetchAll(PDO::FETCH_ASSOC);
-            if (count($rows) > 64) {
-                throw new LogicException('The bounded incoming-payment snapshot is incomplete and remains unresolved.');
-            }
-            $receipts = [];
+            $receipts = $this->receipts($descriptor);
             $total = 0;
             $onTime = 0;
-            foreach ($rows as $row) {
-                $receipt = $this->readReceipt($descriptor, $row);
+            foreach ($receipts as $value) {
+                $receipt = IncomingPaymentReceipt::fromArray($value);
                 if ($receipt->amountMinor > PHP_INT_MAX - $total) {
                     throw new LogicException('Incoming money exceeds the exact integer observation range.');
                 }
@@ -125,7 +159,6 @@ final readonly class IncomingPaymentJournal
                 if ($receipt->receivedAt < $descriptor->deadline) {
                     $onTime += $receipt->amountMinor;
                 }
-                $receipts[] = $receipt->toArray();
             }
             $now = $this->now();
             return [
@@ -143,6 +176,87 @@ final readonly class IncomingPaymentJournal
                 'nonExecutionEstablished' => false,
             ];
         });
+    }
+
+    private function registerOriginal(IncomingPaymentDescriptor $descriptor, string $contract): void
+    {
+        $existing = $this->query('SELECT * FROM incoming_payment_references
+                WHERE id = ? OR (client = ? AND reference = ?)', [
+            $descriptor->identity->key(), $this->client, $descriptor->reference,
+        ])->fetchAll(PDO::FETCH_ASSOC);
+        if ($existing !== []) {
+            if (count($existing) !== 1) {
+                throw new LogicException('The incoming reference has conflicting original owners.');
+            }
+            $this->assertDescriptor($descriptor, $existing[0]);
+            $this->originalContract($descriptor, $contract);
+            return;
+        }
+        $this->query('INSERT INTO incoming_payment_references
+                (id, client, reference, fingerprint, payload) VALUES (?, ?, ?, ?, ?)', [
+            $descriptor->identity->key(), $this->client, $descriptor->reference,
+            $descriptor->fingerprint(), PortableDescriptor::encode($descriptor->toArray()),
+        ]);
+        $this->query('INSERT INTO incoming_payment_contracts
+            (reference_id, descriptor_sha256, contract) VALUES (?, ?, ?)', [
+            $descriptor->identity->key(), $descriptor->fingerprint(), $contract,
+        ]);
+    }
+
+    private function receipts(IncomingPaymentDescriptor $descriptor): array
+    {
+        $rows = $this->query('SELECT * FROM incoming_payment_receipts
+            WHERE reference_id = ? ORDER BY received_at, id LIMIT 65', [$descriptor->identity->key()])
+            ->fetchAll(PDO::FETCH_ASSOC);
+        if (count($rows) > 64) {
+            throw new LogicException('The bounded incoming-payment snapshot is incomplete and remains unresolved.');
+        }
+        return array_map(fn (array $row): array => $this->readReceipt($descriptor, $row)->toArray(), $rows);
+    }
+
+    private function assertContract(string $contract): void
+    {
+        if (! in_array($contract, [self::OPEN, self::CLOSABLE], true)) {
+            throw new LogicException('The incoming provider contract is unavailable.');
+        }
+    }
+
+    private function originalContract(IncomingPaymentDescriptor $descriptor, string $contract): array
+    {
+        $row = $this->query('SELECT * FROM incoming_payment_contracts WHERE reference_id = ?', [
+            $descriptor->identity->key(),
+        ])->fetch(PDO::FETCH_ASSOC);
+        if ($row === false || $row['descriptor_sha256'] !== $descriptor->fingerprint() || $row['contract'] !== $contract) {
+            throw new LogicException('The original incoming admission contract cannot be replaced or reconstructed.');
+        }
+        return $row;
+    }
+
+    private function closure(IncomingPaymentDescriptor $descriptor): ?array
+    {
+        $contract = $this->query('SELECT * FROM incoming_payment_contracts WHERE reference_id = ?', [
+            $descriptor->identity->key(),
+        ])->fetch(PDO::FETCH_ASSOC);
+        if ($contract === false || $contract['descriptor_sha256'] !== $descriptor->fingerprint()
+            || ! in_array($contract['contract'], [self::OPEN, self::CLOSABLE], true)
+            || ! in_array($contract['closed'], [0, 1], true)) {
+            throw new LogicException('The original incoming provider contract is unavailable or inconsistent.');
+        }
+        $row = $this->query('SELECT * FROM incoming_payment_closures WHERE reference_id = ?', [
+            $descriptor->identity->key(),
+        ])->fetch(PDO::FETCH_ASSOC);
+        if ($row === false) {
+            if ($contract['closed'] !== 0) {
+                throw new LogicException('The original incoming provider fence is missing.');
+            }
+            return null;
+        }
+        $this->originalContract($descriptor, self::CLOSABLE);
+        if ($contract['closed'] !== 1 || $row['descriptor_sha256'] !== $descriptor->fingerprint() || $row['contract'] !== self::CLOSABLE
+            || (int) $row['closed_at'] < 0 || (int) $row['closed_at'] > $this->now()) {
+            throw new LogicException('The original incoming provider fence was substituted.');
+        }
+        return $row;
     }
 
     private function authorize(IncomingPaymentDescriptor $descriptor): void

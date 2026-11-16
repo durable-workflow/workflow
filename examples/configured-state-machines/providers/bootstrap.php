@@ -23,6 +23,7 @@ foreach ([
     'IncomingPaymentJournal',
     'IncomingRefundLedger',
     'Journal',
+    'IncomingPaymentOperation',
     'RetainedOperation',
     'FinancialOperation',
     'ShipmentOperation',
