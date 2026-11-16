@@ -366,7 +366,7 @@ all four recipes. Its original return, warehouse acceptance and deduction
 responsibilities remain ahead of refund and reservation release.
 
 Run the native source scenarios with
-`vendor/bin/phpunit tests/Feature/V2/V2CommonFundingMachineTest.php`. They do not
+`vendor/bin/phpunit tests/Feature/V2/V2CommonFundingMachineTest.php tests/Feature/V2/V2BankFundingMachineTest.php`. They do not
 substitute for the complete customer matrix, cold-process failures, installed
 upgrade/recovery/rollback checks or a published release.
 
