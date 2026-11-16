@@ -11,6 +11,7 @@ use Illuminate\Database\Schema\Builder as SchemaBuilder;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Testing\DatabaseTruncation;
 use Illuminate\Foundation\Testing\RefreshDatabaseState;
+use Illuminate\Queue\RedisQueue;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
@@ -594,7 +595,9 @@ abstract class TestCase extends BaseTestCase
                         ? ($queuedJobs > 0 ? 'queued' : 'no queued job')
                         : 'unavailable',
                     'queued_jobs' => $queuedJobs,
+                    'queue_state' => $this->queuePollingState($connection, $queue),
                 ],
+                'overlap' => $this->legacyOverlapState((string) $activeWorkflow->getKey()),
                 'history' => [
                     'logs' => $activeWorkflow->logs()
                         ->count(),
@@ -615,6 +618,47 @@ abstract class TestCase extends BaseTestCase
                 'diagnostic_error' => $exception->getMessage(),
             ];
         }
+    }
+
+    private function queuePollingState(string $connection, string $queue): array
+    {
+        try {
+            $driver = Queue::connection($connection);
+            if (! $driver instanceof RedisQueue) {
+                return [];
+            }
+            $redis = $driver->getConnection();
+            $key = $driver->getQueue($queue);
+            return [
+                'ready' => $redis->llen($key),
+                'delayed' => $redis->zcard($key . ':delayed'),
+                'reserved' => $redis->zcard($key . ':reserved'),
+            ];
+        } catch (Throwable $error) {
+            return [
+                'error_class' => $error::class,
+            ];
+        }
+    }
+
+    private function legacyOverlapState(string $workflowId): array
+    {
+        $key = 'laravel-workflow-overlap:' . $workflowId;
+        $activities = Cache::get($key . ':activity', []);
+        if (! is_array($activities)) {
+            return [
+                'available' => false,
+            ];
+        }
+        return [
+            'workflow' => (int) Cache::get($key . ':workflow', 0),
+            'activity_entries' => count($activities),
+            'active_activities' => count(array_filter(
+                array_slice($activities, 0, 128),
+                static fn (mixed $activity): bool => is_string($activity) && Cache::has($activity)
+            )),
+            'truncated' => count($activities) > 128,
+        ];
     }
 
     /**

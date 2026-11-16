@@ -24,6 +24,11 @@ final class V2BankFundingMachineTest extends TestCase
 {
     use CommonFundingMachineFixture;
 
+    public function testBankPrepaymentUsesTheSameNativeRouteAndOriginalPhysicalDelivery(): void
+    {
+        $this->assertOriginalFundingRoute(FundingCatalogue::BANK);
+    }
+
     public function testPartialAndSpoofedPaymentCannotReserveOrFulfillAndDuplicateReceiptDoesNotRepeatWork(): void
     {
         $this->startFunding(FundingCatalogue::BANK);
