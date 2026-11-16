@@ -241,3 +241,33 @@ or complete Shipment-child qualification.
 ```shell
 vendor/bin/phpunit tests/Unit/V2/StateMachine/ProviderShipmentTest.php
 ```
+## Refunds of incoming transfers
+
+`IncomingPaymentProvider` binds the existing command engine and optional bank
+receipt journal to one provider-owned connection. Call its `commands->install()`
+for the original four-table schema, then `install()` for incoming receipt and
+refund-allocation storage. Its `receipts` property exposes the bank journal;
+refund commands use `commands`. The original `Journal::install()` is unchanged.
+
+A `refund-incoming` request carries `IncomingRefundTerms` and targets its
+original receivable. Each refund has its own stable business identity and
+names one original transfer and an integer amount in its currency. Separate
+portions cannot refund more than that transfer actually received. Money
+reserved by processing or unknown refunds remains unavailable to other
+refunds. Only an authoritative non-execution/refusal outcome releases that
+reservation; retry still rechecks the remaining amount under the original
+request identity. A competing request exceeding the available amount is
+refused, and cannot silently acquire another identity.
+
+Confirmed incoming receipts and refunds remain historical facts. Refunding
+money does not erase the incoming receipt, restart its deadline, imply a card
+capture, or close future incoming admission. Lost acknowledgements reconcile
+the original refund through the existing provider command/effect journal.
+Missing admission/outcome rows, changed receipts, or substituted request
+metadata refuse further admission rather than freeing unaccounted money.
+The simulator bounds each original transfer to 64 refund intents.
+
+These provider controls do not themselves implement the native retained
+incoming-payment handler, the common Payment route, fulfillment admission or
+the provider's future-incoming fence. The host must still authorize refund
+amounts and original ownership; the provider budget is not business authority.

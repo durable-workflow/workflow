@@ -258,3 +258,69 @@ returning the original outcome. The cases count those requests separately from
 committed effects and preserve both closed Order and original Payment histories.
 They are synthetic source controls, not a claim about a real provider's retry
 contract or installed-package acceptance.
+
+## Incoming bank-payment observations
+
+`IncomingPaymentJournal` is a separate synthetic bank-side receipt journal. It
+keeps the original receivable, individual transfer identities, integer amounts,
+currency and fixed deadline. Partial payment, overpayment and late receipts
+remain distinct facts. An empty lookup or an expired deadline does not establish
+that money cannot arrive later.
+
+`IncomingPaymentInspectionActivity` records those facts for the original native
+owner. Its host-supplied authorization must relate the run, retained money duty,
+business grant and exact receivable before protected storage or provider access.
+Reusing the same activity returns its first persisted observation after current
+authorization; a new activity can observe later receipts. Replay uses recorded
+activity results.
+
+`V2IncomingPaymentInspectionTest.php` exercises this observation boundary. Its
+technical workflow can complete while the original incoming-payment duty remains
+registered and unresolved. These controls do not implement bank refunds, close
+future incoming admission, admit fulfillment or complete the common Payment
+route. Those business integration and recovery requirements remain necessary;
+an incoming transfer must never be presented as a card authorization or capture.
+
+
+## Retained incoming-money cancellation
+
+`IncomingPaymentProvider` keeps optional bank setup and its receipt journal
+separate from the existing command engine, on the same provider-owned connection.
+Install the original command journal before installing this optional support.
+
+`IncomingPaymentOperation` registers the original receivable through a native
+retained activity. The host must authorize the complete original business
+assignment, run, scope and obligation before provider storage. Register the
+obligation before executing it. Establishing a reference is not a payment
+confirmation and must not admit fulfillment.
+
+The provider contract is pinned when the reference is first registered. The
+default `incoming-unfenced-v1` contract keeps accepting original transfers after
+the business deadline. Cancellation can refund known incoming money but remains
+unresolved while further transfers are possible. Expiry and an empty lookup do
+not close that obligation.
+
+The optional `synthetic-incoming-atomic-close-v1` contract is an explicit
+simulator capability. Its close command atomically rejects new transfers,
+including a never-opened original reference, and retains the exact admitted
+receipt inventory. Repeated confirmation of an already admitted transfer remains
+idempotent. A reference created with the unfenced contract cannot acquire this
+capability during cancellation. A real bank adapter may use this branch only
+when its original provider contract proves the same complete admission boundary.
+
+Cancellation reconciles each original transfer and uses a stable refund key
+from its original scope, obligation and transfer identity. Processing, unknown,
+not-executed and refused refunds remain unsettled. The simulator's same-key
+idempotency permits recovery after a lost acknowledgement without another
+committed refund. Verified settlement requires both the provider fence and
+confirmed refunds for the complete receipt inventory; it preserves gross
+incoming receipts as historical facts. Other previously admitted partial refunds
+can make the full-transfer refund refuse rather than reimburse money twice;
+partial-return allocation and common Payment-route integration remain unfinished.
+
+`V2IncomingPaymentRetentionTest.php` runs the native registered-obligation and
+closed-origin recovery paths. The replacement-provider case reopens the same
+provider database in the same test process; it is not a cold-process or installed
+qualification. These examples do not yet integrate bank prepayment into the
+common Order/Payment route, release expired cart stock, or complete PAY-03 and
+the full customer acceptance matrix.

@@ -93,6 +93,9 @@ final readonly class Journal
             } elseif (in_array($request->action, ShipmentLedger::ACTIONS, true)) {
                 $status = (new ShipmentLedger($this->db))
                     ->admit($request, $status);
+            } elseif (IncomingRefundLedger::handles($request)) {
+                $status = (new IncomingRefundLedger($this->db, $this->clock ?? static fn (): int => time()))
+                    ->admit($request, $status);
             } elseif (! $this->targetConfirmed($request)) {
                 $status = Status::Unknown;
             }
@@ -191,6 +194,9 @@ final readonly class Journal
                 } elseif (in_array($request->action, ShipmentLedger::ACTIONS, true)) {
                     (new ShipmentLedger($this->db))
                         ->assertCompletion($request);
+                } elseif (IncomingRefundLedger::handles($request)) {
+                    (new IncomingRefundLedger($this->db, $this->clock ?? static fn (): int => time()))
+                        ->assertCompletion($request);
                 } elseif (! $this->targetConfirmed($request)) {
                     throw new LogicException(
                         'Compensation cannot confirm against an unknown or different original effect.'
@@ -279,6 +285,10 @@ final readonly class Journal
 
     private function observation(Request $request, ?array $row): Observation
     {
+        if ($row !== null && $row['status'] === Status::Confirmed->value && IncomingRefundLedger::handles($request)) {
+            (new IncomingRefundLedger($this->db, $this->clock ?? static fn (): int => time()))
+                ->assertCompletion($request);
+        }
         if ($row !== null && $row['status'] === Status::Confirmed->value && AuthorizationLedger::handles($request)) {
             $this->authorizationLedger()
                 ->assertCompletion($request);

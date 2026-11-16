@@ -22,12 +22,14 @@ final readonly class Request
             'capture', 'refund', 'book', 'cancel-booking', 'reserve', 'release',
             'authorize', 'capture-authorized', 'void-authorization', 'refund-authorized',
             'ship-book', 'ship-cancel-booking', 'request-return', 'restock', 'deduct-stock',
+            'refund-incoming',
         ], true)) {
             throw new InvalidArgumentException('The synthetic provider action is unavailable.');
         }
         $targeted = in_array($action, [
             'refund', 'cancel-booking', 'release', 'capture-authorized', 'void-authorization', 'refund-authorized',
             'ship-cancel-booking', 'request-return', 'restock', 'deduct-stock',
+            'refund-incoming',
         ], true);
         if ($targeted !== ($target !== null) || ($target !== null && (! $identity->sameOwner($target)
             || $identity->key() === $target->key()))) {
@@ -35,6 +37,12 @@ final readonly class Request
         }
         if (in_array($action, ['authorize', 'capture-authorized', 'void-authorization'], true)) {
             AuthorizationTerms::fromArray($terms);
+        }
+        if ($action === 'refund-incoming') {
+            $incoming = IncomingRefundTerms::fromArray($terms);
+            if ($target?->toArray() !== $incoming->original->identity->toArray()) {
+                throw new InvalidArgumentException('An incoming refund must target its original receivable.');
+            }
         }
         if (in_array(
             $action,

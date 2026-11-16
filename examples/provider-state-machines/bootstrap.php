@@ -14,6 +14,7 @@ require_once __DIR__ . '/BindingPlan.php';
 foreach ([
     'Authority', 'OwnerOperation', 'MachineStore', 'AssessmentStore', 'CancellationStore',
     'FinancialInspectionStore', 'FinancialInspectionActivity', 'FinancialAuthority',
+    'IncomingPaymentInspectionStore', 'IncomingPaymentInspectionActivity',
     'FinancialHandoffStore', 'FinancialHandoffActivity', 'FinancialStep', 'FinancialPreparationStep',
     'BoundaryActivity', 'SnapshotActivity', 'AdmissionActivity', 'CommitActivity',
     'RetainedStep', 'Machine', 'Order', 'CheckoutOrder', 'Payment', 'Booking', 'Cancellation',
