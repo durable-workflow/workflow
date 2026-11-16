@@ -18,7 +18,7 @@ use PHPUnit\Framework\TestCase;
 
 require_once __DIR__ . '/../../../../examples/provider-state-machines/bootstrap.php';
 
-/** Provider-owned factual storage only; this open journal is not a native cancellation/refund contract. */
+/** Provider facts and explicit synthetic collection fencing; no native cancellation/refund acceptance. */
 final class CodJournalTest extends TestCase
 {
     private PDO $db;
@@ -163,6 +163,154 @@ final class CodJournalTest extends TestCase
         $this->assertSame(129, (int) $this->db->query('SELECT COUNT(*) FROM cod_payment_receipts')->fetchColumn());
         $this->expectException(InvalidArgumentException::class);
         $this->journal->inspect($this->original);
+    }
+
+    public function testNeverOpenedOriginalCanBeFencedAndCannotCollectAfterReplacement(): void
+    {
+        $this->selectClosableOriginal();
+        $closed = $this->journal->closeAdmission($this->original, CodJournal::CLOSABLE);
+        $this->assertTrue($closed['collectionAdmissionClosed']);
+        $this->assertSame([], $closed['collections']);
+        $this->journal = new CodJournal($this->db, 'shop-a', static fn (): int => 3000);
+        $this->journal->register($this->original, CodJournal::CLOSABLE);
+        $this->assertSame($closed, $this->journal->closeAdmission($this->original, CodJournal::CLOSABLE));
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('rejects collection after its provider fence');
+        $this->journal->record(
+            $this->original,
+            $this->receipt(CodReceipt::COLLECTION, 'late-payer', 1500, 'depot-original')
+        );
+    }
+
+    public function testOriginalCollectionRepeatsButNewCollectionsCannotFollowTheFence(): void
+    {
+        $this->selectClosableOriginal();
+        $this->journal->register($this->original, CodJournal::CLOSABLE);
+        $receipt = $this->receipt(CodReceipt::COLLECTION, 'payer-original', 1500, 'depot-original');
+        $this->journal->record($this->original, $receipt);
+        $closed = $this->journal->closeAdmission($this->original, CodJournal::CLOSABLE);
+        $this->assertSame([$receipt->toArray()], $closed['collections']);
+        $this->assertSame($receipt->toArray(), $this->journal->record($this->original, $receipt));
+        $this->expectException(LogicException::class);
+        $this->journal->record(
+            $this->original,
+            $this->receipt(CodReceipt::COLLECTION, 'another-payer', 1, 'depot-original')
+        );
+    }
+
+    public function testLateMerchantRemittanceRemainsVisibleAfterCollectionAdmissionCloses(): void
+    {
+        $this->selectClosableOriginal();
+        $this->journal->register($this->original, CodJournal::CLOSABLE);
+        $this->journal->record(
+            $this->original,
+            $this->receipt(CodReceipt::COLLECTION, 'payer-original', 1500, 'depot-original')
+        );
+        $closed = $this->journal->closeAdmission($this->original, CodJournal::CLOSABLE);
+        $this->journal = new CodJournal($this->db, 'shop-a', static fn (): int => 2200);
+        $before = $this->journal->inspect($this->original);
+        $this->assertTrue($before['facts']['remittance_deadline_passed']);
+        $this->assertFalse($before['facts']['merchant_receipt_confirmed']);
+        $this->assertSame(1500, $before['facts']['outstanding_remittance_minor']);
+        $this->journal->record($this->original, new CodReceipt(
+            $this->original->identity->key(),
+            'late-merchant-original',
+            CodReceipt::REMITTANCE,
+            1500,
+            'USD',
+            2100,
+            'payer-original'
+        ));
+        $after = $this->journal->inspect($this->original);
+        $this->assertTrue($after['facts']['merchant_receipt_confirmed']);
+        $this->assertSame(0, $after['facts']['outstanding_remittance_minor']);
+        $this->assertTrue($after['collectionAdmissionClosed']);
+        $this->assertSame($closed, $this->journal->closeAdmission($this->original, CodJournal::CLOSABLE));
+    }
+
+    public function testExpiryCannotCloseAnOpenContractOrPermitContractReplacement(): void
+    {
+        $this->journal = new CodJournal($this->db, 'shop-a', static fn (): int => 3000);
+        $view = $this->journal->inspect($this->original);
+        $this->assertTrue($view['facts']['collection_deadline_passed']);
+        $this->assertFalse($view['collectionAdmissionClosed']);
+        $this->assertFalse($view['facts']['non_execution_established']);
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('original carrier collection contract cannot be replaced');
+        $this->journal->closeAdmission($this->original, CodJournal::CLOSABLE);
+    }
+
+    public static function damagedClosures(): array
+    {
+        return [['missing-contract'], ['missing-fence'], ['changed-flag'], ['changed-descriptor']];
+    }
+
+    #[DataProvider('damagedClosures')]
+    public function testDamagedOriginalFenceCannotBeRecreated(string $case): void
+    {
+        $this->selectClosableOriginal();
+        $this->journal->closeAdmission($this->original, CodJournal::CLOSABLE);
+        if ($case === 'missing-contract') {
+            $this->db->exec('DELETE FROM cod_collection_contracts');
+        } elseif ($case === 'missing-fence') {
+            $this->db->exec('DELETE FROM cod_collection_closures');
+        } elseif ($case === 'changed-flag') {
+            $this->db->exec('UPDATE cod_collection_contracts SET closed = 0');
+        } else {
+            $this->db->exec("UPDATE cod_collection_closures SET descriptor_sha256 = 'changed'");
+        }
+        $this->expectException(LogicException::class);
+        $this->journal->closeAdmission($this->original, CodJournal::CLOSABLE);
+    }
+
+    public function testClosedCollectionCannotDisappearWithItsAnchor(): void
+    {
+        $this->selectClosableOriginal();
+        $this->journal->register($this->original, CodJournal::CLOSABLE);
+        $this->journal->record(
+            $this->original,
+            $this->receipt(CodReceipt::COLLECTION, 'payer-original', 1500, 'depot-original')
+        );
+        $this->journal->closeAdmission($this->original, CodJournal::CLOSABLE);
+        $this->db->exec('DELETE FROM cod_payment_receipts');
+        $this->db->exec('DELETE FROM cod_receipt_anchors');
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('fenced original carrier collection inventory is incomplete');
+        $this->journal->inspect($this->original);
+    }
+
+    public function testMissingOriginalReferenceCannotAdoptSurvivingFencedFacts(): void
+    {
+        $this->selectClosableOriginal();
+        $this->journal->closeAdmission($this->original, CodJournal::CLOSABLE);
+        $delete = $this->db->prepare('DELETE FROM cod_payment_references WHERE id = ?');
+        $delete->execute([$this->original->identity->key()]);
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('cannot adopt surviving provider facts');
+        $this->journal->closeAdmission($this->original, CodJournal::CLOSABLE);
+    }
+
+    public function testForeignClosureCannotAccessUninstalledProviderTables(): void
+    {
+        $foreign = new CodJournal(new PDO('sqlite::memory:'), 'foreign-client');
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('provider credential belongs to another client');
+        $foreign->closeAdmission($this->original, CodJournal::CLOSABLE);
+    }
+
+    public function testOpenContractCannotClaimSyntheticCollectionClosure(): void
+    {
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('cannot fence future payer collections');
+        $this->journal->closeAdmission($this->original, CodJournal::OPEN);
+    }
+
+    private function selectClosableOriginal(): void
+    {
+        $value = $this->original->toArray();
+        $value['identity']['operation'] = 'cod-fenced';
+        $value['reference'] = 'carrier-fenced';
+        $this->original = CodDescriptor::fromArray($value);
     }
 
     private function receipt(string $kind, string $id, int $amount, string $target): CodReceipt
