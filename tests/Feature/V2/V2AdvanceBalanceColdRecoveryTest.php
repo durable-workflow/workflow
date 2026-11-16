@@ -60,6 +60,7 @@ final class V2AdvanceBalanceColdRecoveryTest extends TestCase
         $process = null;
         try {
             $data = [
+                'profile' => 'advance-balance',
                 'key' => $this->terms->subjectKey(),
                 'recipe' => AdvanceBalancePolicy::BEFORE,
                 'rootRun' => $origin->runId(),
@@ -80,9 +81,9 @@ final class V2AdvanceBalanceColdRecoveryTest extends TestCase
                 'loseAcknowledgement' => $loseAcknowledgement,
             ];
             file_put_contents($input, json_encode($data, JSON_THROW_ON_ERROR));
-            $command = [PHP_BINARY, 'vendor/bin/phpunit', 'tests/Support/AdvanceBalanceRecoveryProcessTest.php'];
+            $command = [PHP_BINARY, 'vendor/bin/phpunit', 'tests/Support/FundingRecoveryProcessTest.php'];
             $process = new Process($command, dirname(__DIR__, 3), [
-                'DWF_ADVANCE_RECOVERY_INPUT' => $input,
+                'DWF_PROVIDER_RECOVERY_INPUT' => $input,
             ], timeout: 180);
             $process->start();
             $stoppedPid = $process->getPid();
@@ -115,7 +116,7 @@ final class V2AdvanceBalanceColdRecoveryTest extends TestCase
             file_put_contents($input, json_encode($data, JSON_THROW_ON_ERROR));
             file_put_contents($report, '');
             $process = new Process($command, dirname(__DIR__, 3), [
-                'DWF_ADVANCE_RECOVERY_INPUT' => $input,
+                'DWF_PROVIDER_RECOVERY_INPUT' => $input,
             ], timeout: 180);
             $process->mustRun();
             $resumed = json_decode(file_get_contents($report), true, flags: JSON_THROW_ON_ERROR);
