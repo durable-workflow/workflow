@@ -36,7 +36,11 @@ final readonly class CartInventory
                 id TEXT PRIMARY KEY, owner TEXT NOT NULL, original_key TEXT NOT NULL)');
             $this->db->exec('CREATE TABLE provider_cart_reservations (
                 id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, held INTEGER NOT NULL,
-                released INTEGER NOT NULL, admission_closed INTEGER NOT NULL, successor TEXT NULL)');
+                released INTEGER NOT NULL, admission_closed INTEGER NOT NULL, successor TEXT NULL,
+                fulfillment_key TEXT NULL)');
+            $this->db->exec('CREATE TABLE provider_cart_fulfillments (
+                reservation_id TEXT PRIMARY KEY, booking_id TEXT NOT NULL UNIQUE,
+                descriptor TEXT NOT NULL, descriptor_sha256 TEXT NOT NULL)');
         });
     }
 
@@ -86,6 +90,20 @@ final readonly class CartInventory
             $this->db,
             $this->clock ?? static fn (): int => time()
         ))->inspect($original));
+    }
+
+    /**
+     * Bind the original physical graph at checkout; the recorded host must authorize the paid purchase first.
+     */
+    public function bindFulfillment(CartReservationDescriptor $reservation, ShipmentDescriptor $shipment): void
+    {
+        if ($reservation->reserve->identity->client !== $this->client) {
+            throw new LogicException('The cart belongs to another provider client.');
+        }
+        $this->transaction(function () use ($reservation, $shipment): void {
+            (new CartReservationLedger($this->db, $this->clock ?? static fn (): int => time()))
+                ->bindFulfillment($reservation, $shipment);
+        });
     }
 
     public static function stockKey(string $client, string $sku): string

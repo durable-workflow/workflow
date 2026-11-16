@@ -377,6 +377,142 @@ final class CartReservationProviderTest extends TestCase
         $this->assertSame(Status::Unknown, $this->provider->lookup($third->reserve)->status);
     }
 
+    public function testCheckoutPinsOnePhysicalGraphBeforeAnyBookingOrHandover(): void
+    {
+        $cart = $this->cart();
+        $this->stock->receive('sku-a', 'receipt', 2);
+        $this->confirm($cart->reserve);
+        $this->provider->shipments()
+            ->install();
+        $shipment = $this->shipment();
+        $this->stock->bindFulfillment($cart, $shipment);
+        $this->stock->bindFulfillment($cart, $shipment);
+        $this->assertSame($shipment->booking->identity->key(), $this->stock->inspect($cart)['fulfillmentBooking']);
+        $this->assertFalse($this->stock->inspect($cart)['eligibleForFulfillment']);
+        $this->assertSame(1, (int) $this->db->query('SELECT COUNT(*) FROM provider_cart_fulfillments')->fetchColumn());
+        $this->refuses(fn () => $this->stock->bindFulfillment($cart, $this->shipment('replacement')));
+        $this->assertSame(1, $this->effects());
+        $this->now = 2000;
+        $this->stock->bindFulfillment($cart, $shipment);
+        $this->assertSame(1, $this->effects());
+    }
+
+    public function testCheckoutCannotBindAfterExpiryOrAfterTheOriginalBookingStarted(): void
+    {
+        $cart = $this->cart();
+        $this->stock->receive('sku-a', 'receipt', 2);
+        $this->confirm($cart->reserve);
+        $this->provider->shipments()
+            ->install();
+        $shipment = $this->shipment();
+        $this->now = 1060;
+        $this->refuses(fn () => $this->stock->bindFulfillment($cart, $shipment));
+        $this->now = 1000;
+        $this->provider->shipments()
+            ->register($shipment);
+        $this->confirm($shipment->booking);
+        $this->refuses(fn () => $this->stock->bindFulfillment($cart, $shipment));
+        $this->assertSame(0, (int) $this->db->query('SELECT COUNT(*) FROM provider_cart_fulfillments')->fetchColumn());
+    }
+
+    public static function fulfillmentSubstitutions(): array
+    {
+        return [
+            ['another-purchase', 'g1', 'sku-a', 2],
+            ['purchase-a', 'another-generation', 'sku-a', 2],
+            ['purchase-a', 'g1', 'another-sku', 2],
+            ['purchase-a', 'g1', 'sku-a', 1],
+        ];
+    }
+
+    #[DataProvider('fulfillmentSubstitutions')]
+    public function testCheckoutRefusesForeignPhysicalOwnerAndStockBeforeRegistration(
+        string $subject,
+        string $generation,
+        string $sku,
+        int $quantity
+    ): void {
+        $cart = $this->cart();
+        $this->stock->receive('sku-a', 'receipt', 2);
+        $this->confirm($cart->reserve);
+        $this->provider->shipments()
+            ->install();
+        $foreign = $this->shipment('shipment', $subject, $generation, $sku, $quantity);
+        $this->refuses(fn () => $this->stock->bindFulfillment($cart, $foreign));
+        $this->assertSame(0, (int) $this->db->query('SELECT COUNT(*) FROM provider_shipments')->fetchColumn());
+        $this->assertSame(0, (int) $this->db->query('SELECT COUNT(*) FROM provider_cart_fulfillments')->fetchColumn());
+        $this->assertSame(0, $this->stock->inspect($cart)['availableQuantity']);
+    }
+
+    public function testBeforeHandoverReleaseAtomicallyClosesNewCarrierHandover(): void
+    {
+        $cart = $this->cart();
+        $this->stock->receive('sku-a', 'receipt', 2);
+        $this->confirm($cart->reserve);
+        $this->provider->shipments()
+            ->install();
+        $shipment = $this->shipment();
+        $this->stock->bindFulfillment($cart, $shipment);
+        $this->confirm($shipment->booking);
+        $this->confirm($cart->release);
+        $this->refuses(fn () => $this->provider->shipments()->record($shipment, 'too-late', 'handed-over', 2));
+        $this->assertSame(2, $this->stock->inspect($cart)['availableQuantity']);
+    }
+
+    public function testReturnedGoodsBecomeSaleableOnlyAfterOriginalInspectionAndOneConfirmedRestock(): void
+    {
+        [$cart, $shipment] = $this->dispatched();
+        $this->provider->plan($cart->release, Status::Confirmed);
+        $this->assertSame(Status::Unknown, $this->provider->attempt($cart->release)->status);
+        $this->confirm($shipment->return);
+        $this->provider->shipments()
+            ->record($shipment, 'receipt', 'received', 2);
+        $this->refuses(fn () => $this->provider->resolve($cart->release, Status::Confirmed));
+        $this->provider->shipments()
+            ->record($shipment, 'inspection', 'inspected', 2, 2, 2);
+        $this->refuses(fn () => $this->provider->resolve($cart->release, Status::Confirmed));
+        $this->provider->plan($shipment->restock, Status::Confirmed, true);
+        try {
+            $this->provider->attempt($shipment->restock);
+            $this->fail('The original restock acknowledgement must be lost.');
+        } catch (LostAcknowledgement) {
+            $this->assertSame(0, $this->stock->inspect($cart)['availableQuantity']);
+        }
+        $this->provider->resolve($cart->release, Status::Confirmed);
+        $this->provider->attempt($cart->release);
+        $this->provider->attempt($shipment->restock);
+        $this->assertSame(2, $this->stock->inspect($cart)['availableQuantity']);
+        $this->assertSame(6, $this->effects());
+        $this->db->exec('DELETE FROM provider_cart_fulfillments');
+        $this->refuses(fn () => $this->provider->lookup($cart->release));
+        $this->refuses(fn () => $this->provider->lookup($cart->reserve));
+    }
+
+    public function testReceivedDamagedGoodsCannotBecomeSaleableByReleasingTheCart(): void
+    {
+        [$cart, $shipment] = $this->dispatched();
+        $this->confirm($shipment->return);
+        $this->provider->shipments()
+            ->record($shipment, 'receipt', 'received', 2);
+        $this->provider->shipments()
+            ->record($shipment, 'damage', 'inspected', 2, 2, 1);
+        $this->provider->plan($shipment->restock, Status::Confirmed);
+        $this->assertSame(Status::Refused, $this->provider->attempt($shipment->restock)->status);
+        $this->provider->plan($cart->release, Status::Confirmed);
+        $this->assertSame(Status::Unknown, $this->provider->attempt($cart->release)->status);
+        $this->assertSame(0, $this->stock->inspect($cart)['availableQuantity']);
+    }
+
+    public function testLostFulfillmentBindingIsNotAbsenceOfPhysicalDispatch(): void
+    {
+        [$cart] = $this->dispatched();
+        $this->db->exec('DELETE FROM provider_cart_fulfillments');
+        $this->provider->plan($cart->release, Status::Confirmed);
+        $this->refuses(fn () => $this->provider->attempt($cart->release));
+        $this->refuses(fn () => $this->stock->inspect($cart));
+        $this->assertSame(0, (int) $this->db->query('SELECT available FROM provider_cart_stock')->fetchColumn());
+    }
+
     public function testLegacyReserveFixturesNeedNoCartSchemaAndKeepTheirWire(): void
     {
         $db = new PDO('sqlite::memory:');
@@ -420,6 +556,47 @@ final class CartReservationProviderTest extends TestCase
     {
         $this->provider->plan($request, Status::Confirmed);
         $this->assertSame(Status::Confirmed, $this->provider->attempt($request)->status);
+    }
+
+    private function shipment(
+        string $prefix = 'shipment',
+        string $subject = 'purchase-a',
+        string $generation = 'g1',
+        string $sku = 'sku-a',
+        int $quantity = 2
+    ): ShipmentDescriptor {
+        $id = static fn (string $name): Identity => new Identity(
+            'shop-a',
+            $subject,
+            $generation,
+            $prefix . '.' . $name
+        );
+        $terms = (new ShipmentTerms($sku, $quantity, 'carrier'))->toArray();
+        $booking = $id('book');
+        $return = $id('return');
+        return new ShipmentDescriptor(
+            new Request($booking, 'ship-book', $terms),
+            new Request($id('cancel'), 'ship-cancel-booking', $terms, $booking),
+            new Request($return, 'request-return', $terms, $booking),
+            new Request($id('restock'), 'restock', $terms, $return),
+            new Request($id('deduct'), 'deduct-stock', $terms, $booking)
+        );
+    }
+
+    private function dispatched(): array
+    {
+        $cart = $this->cart();
+        $shipment = $this->shipment();
+        $this->stock->receive('sku-a', 'receipt', 2);
+        $this->confirm($cart->reserve);
+        $this->provider->shipments()
+            ->install();
+        $this->stock->bindFulfillment($cart, $shipment);
+        $this->confirm($shipment->booking);
+        $this->provider->shipments()
+            ->record($shipment, 'handover', 'handed-over', 2);
+        $this->confirm($shipment->deduction);
+        return [$cart, $shipment];
     }
 
     private function effects(): int

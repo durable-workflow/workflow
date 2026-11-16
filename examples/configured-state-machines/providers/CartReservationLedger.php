@@ -69,6 +69,55 @@ final readonly class CartReservationLedger
         ]);
     }
 
+    public function bindFulfillment(CartReservationDescriptor $reservation, ShipmentDescriptor $shipment): void
+    {
+        $this->assertTransaction();
+        $request = $reservation->reserve;
+        $terms = $reservation->terms;
+        $physical = ShipmentTerms::fromArray($shipment->booking->terms);
+        if (! $request->identity->sameOwner($shipment->booking->identity)
+            || $terms->sku !== $physical->sku || $terms->quantity !== $physical->quantity
+            || $shipment->deduction === null) {
+            throw new LogicException(
+                'Cart fulfillment must preserve its original owner, stock and physical deduction.'
+            );
+        }
+        $payload = PortableDescriptor::encode($shipment->toArray());
+        $this->assertCompletion($request);
+        $prior = $this->query('SELECT * FROM provider_cart_fulfillments WHERE reservation_id = ?', [
+            $request->identity->key(),
+        ])->fetch(PDO::FETCH_ASSOC);
+        if ($prior !== false) {
+            $this->fulfillment($request);
+            if ($prior['descriptor'] !== $payload) {
+                throw new LogicException('Checkout cannot replace its original physical graph.');
+            }
+            return;
+        }
+        $this->assertOperation($request, $this->operation($request->identity->key()));
+        $row = $this->row($request);
+        if ($row === null || ! (bool) $row['held'] || (bool) $row['released'] || (bool) $row['admission_closed']
+            || $this->operation($request->identity->key())['status'] !== Status::Confirmed
+                ->value
+                            || $this->now() >= $terms->expiresAt || $this->hasPhysicalDeduction($request)) {
+            throw new LogicException('Checkout requires its confirmed original unexpired stock hold before dispatch.');
+        }
+        $ledger = new ShipmentLedger($this->db);
+        $ledger->register($shipment);
+        if ($ledger->observe($shipment->booking)->status !== Status::Unknown || $ledger->events(
+            $shipment->booking
+        ) !== []) {
+            throw new LogicException('The physical graph must be bound before booking or carrier events.');
+        }
+        $this->query('INSERT INTO provider_cart_fulfillments
+            (reservation_id, booking_id, descriptor, descriptor_sha256) VALUES (?, ?, ?, ?)', [
+            $request->identity->key(), $shipment->booking->identity->key(), $payload, hash('sha256', $payload),
+        ]);
+        $this->query('UPDATE provider_cart_reservations SET fulfillment_key = ? WHERE id = ?', [
+            $shipment->booking->identity->key(), $request->identity->key(),
+        ]);
+    }
+
     public function assertCompletion(Request $request): void
     {
         $this->assertOperation($request, $this->operation($request->identity->key()));
@@ -78,6 +127,7 @@ final readonly class CartReservationLedger
             || ($request->action === 'release' && (! (bool) $row['released'] || (bool) $row['held']))) {
             throw new LogicException('The confirmed cart operation lost its original stock evidence.');
         }
+        $this->fulfillment($original);
     }
 
     public function inspect(CartReservationDescriptor $descriptor): array
@@ -93,6 +143,7 @@ final readonly class CartReservationLedger
             $this->assertOperation($original, $operation);
         }
         $stock = $this->stock($original, $terms);
+        $fulfillment = $row === null ? null : $this->fulfillment($original);
         $now = $this->now();
         return [
             'original' => $descriptor->toArray(),
@@ -104,7 +155,9 @@ final readonly class CartReservationLedger
             'released' => $row !== null && (bool) $row['released'],
             'admissionClosed' => $row !== null && ((bool) $row['admission_closed'] || (bool) ($operation['closed'] ?? false)),
             'deadlinePassed' => $now >= $terms->expiresAt,
+            'fulfillmentBooking' => $fulfillment?->booking->identity->key(),
             'eligibleForFulfillment' => $row !== null && (bool) $row['held'] && ! (bool) $row['released']
+                && $fulfillment === null
                 && ! (bool) $row['admission_closed'] && ! (bool) $operation['closed']
                 && $operation['status'] === Status::Confirmed->value && $now < $terms->expiresAt,
         ];
@@ -168,8 +221,11 @@ final readonly class CartReservationLedger
         if ($status !== Status::Confirmed) {
             return $status;
         }
-        // Until the physical graph is bound to this lease, any admitted deduction for this owner blocks release.
-        if ($this->hasPhysicalDeduction($original)) {
+        $physical = $this->fulfillment($original);
+        if ($physical === null && $this->hasPhysicalDeduction($original)) {
+            return Status::Unknown;
+        }
+        if ($physical !== null && ! $this->physicalStockReturned($physical)) {
             return Status::Unknown;
         }
         $this->returnStock($original, $terms);
@@ -344,6 +400,61 @@ final readonly class CartReservationLedger
             }
         }
         return false;
+    }
+
+    private function fulfillment(Request $original): ?ShipmentDescriptor
+    {
+        $reservation = $this->row($original);
+        if ($reservation === null) {
+            throw new LogicException('The original cart stock record is unavailable.');
+        }
+        $row = $this->query('SELECT * FROM provider_cart_fulfillments WHERE reservation_id = ?', [
+            $original->identity->key(),
+        ])->fetch(PDO::FETCH_ASSOC);
+        if ($row === false) {
+            if ($reservation['fulfillment_key'] !== null) {
+                throw new LogicException('The original cart fulfillment binding was lost.');
+            }
+            return null;
+        }
+        if (! hash_equals($row['descriptor_sha256'], hash('sha256', $row['descriptor']))) {
+            throw new LogicException('The original cart fulfillment lost its evidence integrity.');
+        }
+        $graph = ShipmentDescriptor::fromArray(json_decode($row['descriptor'], true, flags: JSON_THROW_ON_ERROR));
+        $terms = CartReservationTerms::fromArray($original->terms);
+        $physical = ShipmentTerms::fromArray($graph->booking->terms);
+        if ($row['booking_id'] !== $graph->booking->identity->key()
+            || $reservation['fulfillment_key'] !== $row['booking_id'] || $graph->deduction === null
+            || ! $original->identity->sameOwner($graph->booking->identity)
+            || $terms->sku !== $physical->sku || $terms->quantity !== $physical->quantity) {
+            throw new LogicException('The physical graph targets another original cart or stock quantity.');
+        }
+        (new ShipmentLedger($this->db))->assertDescriptor($graph);
+        return $graph;
+    }
+
+    private function physicalStockReturned(ShipmentDescriptor $graph): bool
+    {
+        $ledger = new ShipmentLedger($this->db);
+        $events = $ledger->events($graph->booking);
+        $request = $graph->deduction ?? throw new LogicException('The original physical deduction is unavailable.');
+        $deduction = $ledger->observe($request);
+        $this->query('UPDATE provider_shipments SET handover_closed = 1 WHERE id = ?', [
+            $graph->booking->identity->key(),
+        ]);
+        if (! isset($events['handed-over'])) {
+            return (in_array($deduction->status, [Status::NotExecuted, Status::Refused], true)
+                    && $deduction->effectId === null)
+                || ($deduction->status === Status::Unknown
+                    && $this->operation($request->identity->key()) === null);
+        }
+        $restock = $ledger->observe($graph->restock);
+        $quantity = $graph->booking->terms['quantity'];
+        return $deduction->status === Status::Confirmed && $deduction->effectId !== null
+            && $restock->status === Status::Confirmed && $restock->effectId !== null
+            && ($events['received']['quantity'] ?? null) === $quantity
+            && ($events['inspected']['accepted'] ?? null) === $quantity
+            && ($events['inspected']['saleable'] ?? null) === $quantity;
     }
 
     private function query(string $sql, array $bindings): PDOStatement
