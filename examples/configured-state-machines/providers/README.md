@@ -243,10 +243,11 @@ vendor/bin/phpunit tests/Unit/V2/StateMachine/ProviderShipmentTest.php
 ```
 ## Refunds of incoming transfers
 
-The optional `Journal::installIncomingPaymentSupport()` installs incoming
-receipt and refund-allocation storage after the ordinary provider schema.
-`incomingPayments()` gives access to the same provider's receipt journal.
-The original four-table `install()` remains unchanged.
+`IncomingPaymentProvider` binds the existing command engine and optional bank
+receipt journal to one provider-owned connection. Call its `commands->install()`
+for the original four-table schema, then `install()` for incoming receipt and
+refund-allocation storage. Its `receipts` property exposes the bank journal;
+refund commands use `commands`. The original `Journal::install()` is unchanged.
 
 A `refund-incoming` request carries `IncomingRefundTerms` and targets its
 original receivable. Each refund has its own stable business identity and
