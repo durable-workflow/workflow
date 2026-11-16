@@ -135,7 +135,7 @@ trait CartCheckoutMachineFixture
         return $origin;
     }
 
-    private function pay(string $transfer, Status $refund = Status::Confirmed): void
+    private function pay(string $transfer, Status $refund = Status::Confirmed, bool $pump = true): void
     {
         $receipt = new IncomingPaymentReceipt(
             $this->terms->incomingPayment->identity->key(),
@@ -157,7 +157,9 @@ trait CartCheckoutMachineFixture
         WorkflowStub::loadRun($this->child('payment')->id, Catalogue::NAMESPACE)->withRequestId($transfer)->signal(
             'incoming-observed'
         );
-        $this->pump();
+        if ($pump) {
+            $this->pump();
+        }
     }
 
     private function expireCart(): void

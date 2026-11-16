@@ -390,9 +390,15 @@ physical return, receipt, saleable inspection and one confirmed restock are
 required before those goods become available again. A missing/damaged return is
 not a stock receipt. `CartReservationProviderTest.php` covers provider fences and
 physical stock facts; `V2Cart*MachineTest.php` exercises the native routes with a
-controlled fixture clock and explicit native task driver. Current source/backend,
-race, cold-process, installed and complete customer-matrix qualification remain
+controlled fixture clock and explicit native task driver. Full backend,
+cold-process, installed and complete customer-matrix qualification remain
 separate requirements; this is not a published Cart integration.
+
+`V2CartOrderAssociationConcurrencyTest.php` exercises both cancellation/Order
+association orderings on PostgreSQL. It observes the losing process waiting on
+the original purchase row lock, then verifies retained identity and factual
+refund-before-stock-release compensation. These are source host-boundary races,
+not installed-worker qualification.
 
 ## Common funding and physical fulfillment
 
