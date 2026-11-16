@@ -130,6 +130,11 @@ final class V2CompensationRecoveryAuthorityTest extends TestCase
         $this->assertTrue($changed);
     }
 
+    protected function startQueueWorkersAutomatically(): bool
+    {
+        return false;
+    }
+
     private function origin(): array
     {
         $scope = new ScopeIdentity('shop', 'client-a', 'order-42', '1');

@@ -26,6 +26,7 @@ use PDO;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\WorkflowStub;
 
 require_once __DIR__ . '/../../examples/provider-state-machines/bootstrap.php';
@@ -67,6 +68,51 @@ trait CommonFundingMachineFixture
     {
         $this->incoming = null;
         $this->tearDownProvider();
+    }
+
+    private function assertOriginalFundingRoute(string $recipe): void
+    {
+        $origin = $this->startFunding($recipe);
+        if ($recipe === FundingCatalogue::BANK) {
+            $this->receive('original-bank-transfer', 1499);
+            $this->wakePayment('bank-transfer-confirmed');
+        }
+        $this->assertSame('ready', $this->state('order'), $this->progress());
+        $this->assertSame(
+            $recipe === FundingCatalogue::AFTER_DELIVERY ? 'ready' : 'paid',
+            $this->state('payment'),
+            $this->progress()
+        );
+        $origin->withRequestId('fulfill-original-purchase')
+            ->signal('fulfill');
+        $this->pump();
+        $this->assertSame('booked', $this->state('shipment'), $this->progress());
+        $this->recordPhysical('handed-over');
+        $this->recordPhysical('delivered');
+        $this->assertSame('fulfilled', $this->state('order'), $this->progress());
+        $this->assertSame('paid', $this->state('payment'));
+        $this->assertSame('delivered', $this->state('shipment'));
+        $publications = DB::table('example_machine_publications')->where(
+            'subject_id',
+            Authority::subjectId($this->terms->subjectKey(), 'payment')
+        )->get();
+        $states = $publications->map(
+            static fn (object $row): array => json_decode($row->payload, true, flags: JSON_THROW_ON_ERROR)
+        )
+            ->all();
+        usort($states, static fn (array $a, array $b): int => (int) $a['revision'] <=> (int) $b['revision']);
+        $this->assertSame(['ready', 'collected', 'paid'], array_column($states, 'state'));
+        if ($recipe === FundingCatalogue::BANK) {
+            $this->assertSame(['reserve', 'ship-book', 'deduct-stock'], $this->effects());
+        } elseif ($recipe === FundingCatalogue::AFTER_DELIVERY) {
+            $this->assertSame(
+                ['authorize', 'reserve', 'ship-book', 'deduct-stock', 'capture-authorized'],
+                $this->effects()
+            );
+        }
+        $before = $this->effects();
+        app(WorkflowReplayer::class)->replay($this->child('payment'));
+        $this->assertSame($before, $this->effects());
     }
 
     private function startFunding(

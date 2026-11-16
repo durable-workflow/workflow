@@ -2503,6 +2503,12 @@ final class V2FailedRunRedriveTest extends TestCase
         ], json_decode($coldReplay->getOutput(), true, flags: JSON_THROW_ON_ERROR));
     }
 
+    // Redrive runs synchronously; the two queue-backed controls use Queue::fake().
+    protected function startQueueWorkersAutomatically(): bool
+    {
+        return false;
+    }
+
     /**
      * Both views show the one existing link row as a diagnostic fallback, and
      * no typed redrive edge.

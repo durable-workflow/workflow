@@ -86,6 +86,12 @@ trait ProviderMachineFixture
         parent::tearDown();
     }
 
+    // These fixtures execute the recorded tasks explicitly and immediately stop automatic workers.
+    protected function startQueueWorkersAutomatically(): bool
+    {
+        return false;
+    }
+
     protected function recipe(): string
     {
         return Catalogue::RESERVE_FIRST;

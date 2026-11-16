@@ -1108,6 +1108,12 @@ final class V2CompensationScopeTest extends TestCase
         );
     }
 
+    // This suite uses sync execution or its own explicit cold-process task drivers.
+    protected function startQueueWorkersAutomatically(): bool
+    {
+        return false;
+    }
+
     private function assertRecoveryPruningHeld(string $runId): void
     {
         $snapshot = static fn (): array => [

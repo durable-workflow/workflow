@@ -412,7 +412,7 @@ reference remains unresolved, even when all currently known receipts were paid.
 Physical return still requires original warehouse receipt, suitable inspection
 and restocking before money recovery.
 
-Run `vendor/bin/phpunit tests/Feature/V2/V2CodFundingMachineTest.php` and
+Run `vendor/bin/phpunit tests/Feature/V2/V2CodFundingMachineTest.php tests/Feature/V2/V2CodMerchantSettlementTest.php` and
 `vendor/bin/phpunit tests/Unit/V2/StateMachine/RetainedCodPaymentOperationTest.php`
 for the native route and direct retained-operation controls. These are synthetic
 source fixtures, not real carrier integrations, cold-process/installed proofs,
