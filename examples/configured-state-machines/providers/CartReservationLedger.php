@@ -245,6 +245,11 @@ final readonly class CartReservationLedger
         if ($row !== null) {
             return $row;
         }
+        if ($this->query('SELECT effect_id FROM provider_effects WHERE operation_id = ?', [
+            $request->identity->key(),
+        ])->fetchColumn() !== false) {
+            throw new LogicException('A retained cart effect cannot reconstruct its lost admission records.');
+        }
         $rootKey = hash('sha256', PortableDescriptor::encode([$request->identity->client, $terms->cartId]));
         $owner = PortableDescriptor::encode(array_intersect_key($request->identity->toArray(), array_flip([
             'client', 'subject', 'generation',

@@ -266,6 +266,20 @@ final class CartReservationProviderTest extends TestCase
         $this->assertSame(2, (int) $this->db->query('SELECT available FROM provider_cart_stock')->fetchColumn());
     }
 
+    public function testIndependentEffectEvidencePreventsRecreatingALostOriginalCartRoot(): void
+    {
+        $cart = $this->cart();
+        $this->stock->receive('sku-a', 'receipt', 4);
+        $this->confirm($cart->reserve);
+        $this->db->exec('DELETE FROM provider_operations');
+        $this->db->exec('DELETE FROM provider_cart_reservations');
+        $this->db->exec('DELETE FROM provider_cart_roots');
+        $this->provider->plan($cart->reserve, Status::Confirmed);
+        $this->refuses(fn () => $this->provider->attempt($cart->reserve));
+        $this->assertSame(2, (int) $this->db->query('SELECT available FROM provider_cart_stock')->fetchColumn());
+        $this->assertSame(0, (int) $this->db->query('SELECT COUNT(*) FROM provider_cart_roots')->fetchColumn());
+    }
+
     public function testAnAdmittedSuccessorCannotRebuildItsLostEvidence(): void
     {
         $cart = $this->cart();

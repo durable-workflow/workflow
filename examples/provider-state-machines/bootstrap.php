@@ -13,6 +13,8 @@ require_once __DIR__ . '/FundingCatalogue.php';
 require_once __DIR__ . '/CodFundingPolicy.php';
 require_once __DIR__ . '/AdvanceBalancePolicy.php';
 require_once __DIR__ . '/OrderTerms.php';
+require_once __DIR__ . '/CartPlan.php';
+require_once __DIR__ . '/CartLeaseOperation.php';
 require_once __DIR__ . '/BindingPlan.php';
 foreach ([
     'Authority', 'OwnerOperation', 'MachineStore', 'AssessmentStore', 'CancellationStore',
