@@ -91,6 +91,10 @@ class FeatureShardRoutingTest(unittest.TestCase):
         "tests/Feature/FillerTwoTest.php",
         "tests/Feature/FillerThreeTest.php",
         "tests/Feature/FillerFourTest.php",
+        "tests/Feature/FillerFiveTest.php",
+        "tests/Feature/FillerSixTest.php",
+        "tests/Feature/FillerSevenTest.php",
+        "tests/Feature/FillerEightTest.php",
     ]
     unseen_feature = "tests/Feature/V2/UnprofiledFeatureTest.php"
 
@@ -199,7 +203,7 @@ class FeatureShardRoutingTest(unittest.TestCase):
     def shard_assignments(self, profile: str) -> list[list[str]]:
         assignments = []
 
-        count = 8 if profile == "mysql" else 6
+        count = 12 if profile == "mysql" else 6
         for shard in range(count):
             result = self.run_php(
                 "scripts/ci/split-feature-tests.php",
@@ -213,15 +217,17 @@ class FeatureShardRoutingTest(unittest.TestCase):
 
         return assignments
 
-    def test_missing_middle_mysql_report_cannot_pass_the_coverage_gate(self) -> None:
+    def test_missing_middle_or_last_mysql_report_cannot_pass_the_coverage_gate(self) -> None:
         workflow = self.root / ".github/workflows/php.yml"
         source = workflow.read_text()
-        report = "        --clover=build/feature-coverage/mysql-shard-6-coverage.xml\n"
-        self.assertIn(report, source)
-        workflow.write_text(source.replace(report, "", 1))
-        verification = self.run_php("scripts/ci/verify-feature-shards.php", check=False)
-        self.assertNotEqual(0, verification.returncode)
-        self.assertIn("Coverage job is missing feature report merge input", verification.stderr)
+        for shard in (6, 11):
+            with self.subTest(shard=shard):
+                report = f"        --clover=build/feature-coverage/mysql-shard-{shard}-coverage.xml\n"
+                self.assertIn(report, source)
+                workflow.write_text(source.replace(report, "", 1))
+                verification = self.run_php("scripts/ci/verify-feature-shards.php", check=False)
+                self.assertNotEqual(0, verification.returncode)
+                self.assertIn("Coverage job is missing feature report merge input", verification.stderr)
 
     def test_unprofiled_feature_enters_pull_request_and_target_branch_suites(
         self,
@@ -491,7 +497,7 @@ class BuildWorkflowTrustTest(unittest.TestCase):
         self.assertIn("artifact-ids: ${{ needs.coverage-unit.outputs.unit_artifact_id }}", aggregate)
         self.assertIn("digest-mismatch: error", aggregate)
         for report in ["coverage.xml"] + [
-            f"build/feature-coverage/mysql-shard-{shard}-coverage.xml" for shard in range(8)
+            f"build/feature-coverage/mysql-shard-{shard}-coverage.xml" for shard in range(12)
         ]:
             with self.subTest(report=report):
                 self.assertIn(f"--clover={report}", aggregate)
