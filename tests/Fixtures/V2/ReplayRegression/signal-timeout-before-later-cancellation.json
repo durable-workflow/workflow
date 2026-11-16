@@ -1,0 +1,59 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "signal-timeout-before-later-cancellation",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner", "workflow-executor"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestCancellationAfterSignalTimeoutWorkflow",
+    "arguments": [1],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "sequence": 2,
+      "event_type": "SignalWaitOpened",
+      "payload": {"sequence": 1, "signal_name": "earlier", "signal_wait_id": "original-first-wait"},
+      "recorded_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "sequence": 3,
+      "event_type": "TimerScheduled",
+      "payload": {"sequence": 1, "timer_id": "original-timeout", "timer_kind": "signal_timeout", "signal_name": "earlier", "signal_wait_id": "original-first-wait", "delay_seconds": 1},
+      "recorded_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "sequence": 4,
+      "event_type": "TimerFired",
+      "payload": {"sequence": 1, "timer_id": "original-timeout", "timer_kind": "signal_timeout", "signal_name": "earlier", "signal_wait_id": "original-first-wait", "delay_seconds": 1},
+      "recorded_at": "2026-01-01T00:00:01Z"
+    },
+    {
+      "sequence": 5,
+      "event_type": "ActivityScheduled",
+      "payload": {"sequence": 2, "activity_execution_id": "original-forward", "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity", "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity"},
+      "recorded_at": "2026-01-01T00:00:01Z"
+    },
+    {
+      "sequence": 6,
+      "event_type": "ActivityCompleted",
+      "payload": {"sequence": 2, "activity_execution_id": "original-forward", "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity", "payload_codec": "avro", "result": "wwHioz3/VYAiNwoeSGVsbG8sIGZvcndhcmQh"},
+      "recorded_at": "2026-01-01T00:00:01Z"
+    },
+    {
+      "sequence": 7,
+      "event_type": "SignalWaitOpened",
+      "payload": {"sequence": 3, "signal_name": "later", "signal_wait_id": "original-second-wait"},
+      "recorded_at": "2026-01-01T00:00:01Z"
+    }
+  ],
+  "expected": {"completed": false, "result": null, "commands": []},
+  "later_cancellation": {"delivery_sequence": 3, "cleanup_sequence": 4, "cleanup_result": "Hello, cleanup!"}
+}
