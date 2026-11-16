@@ -2489,6 +2489,11 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         foreach ($this->fixtures() as $fixture) {
             $this->executeColdReplayFixture($fixture);
 
+            if ($fixture['id'] === 'signal-timeout-before-later-cancellation') {
+                $this->assertSignalTimeoutSurvivesLaterCancellation($fixture);
+                continue;
+            }
+
             if ($fixture['id'] === 'version-usage-retained-reused-decision') {
                 config()->set('app.key', 'version-usage-corpus-signing-key');
                 $this->assertVersionUsageRetainedDecision($fixture);
@@ -5624,6 +5629,43 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             ),
             $paths,
         );
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function assertSignalTimeoutSurvivesLaterCancellation(array $fixture): void
+    {
+        $run = $this->createRunFromFixture($fixture);
+        $prefix = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->map(static fn (WorkflowHistoryEvent $event): array => $event->getRawOriginal())
+            ->all();
+        $request = WorkflowStub::loadRun($run->id)->requestCancellation('after retained signal timeout', 30);
+        $this->runReadyWorkflowTask($run);
+        $delivery = $run->historyEvents()
+            ->where('event_type', HistoryEventType::CooperativeCancellationDelivered)->sole();
+        $this->assertSame($fixture['later_cancellation']['delivery_sequence'], $delivery->payload['sequence']);
+        $this->assertSame($request->commandId(), $delivery->workflow_command_id);
+        $task = $run->tasks()
+            ->where('task_type', TaskType::Activity)->where('status', TaskStatus::Ready)->sole();
+        $this->app->call([new RunActivityTask($task->id), 'handle']);
+        $this->runReadyWorkflowTask($run);
+        $this->assertSame(RunStatus::Cancelled, $run->fresh()->status);
+        $cleanup = ActivityExecution::query()->where('workflow_run_id', $run->id)->sole();
+        $this->assertSame($fixture['later_cancellation']['cleanup_sequence'], $cleanup->sequence);
+        $this->assertSame($fixture['later_cancellation']['cleanup_result'], $cleanup->activityResult());
+        $this->assertSame(
+            $prefix,
+            $run->historyEvents()
+                ->where('sequence', '<=', count($prefix))
+                ->orderBy('sequence')
+                ->get()
+                ->map(static fn (WorkflowHistoryEvent $event): array => $event->getRawOriginal())
+                ->all()
+        );
+        $this->assertSame(0, $run->tasks()->where('status', TaskStatus::Failed)->count());
     }
 
     /**

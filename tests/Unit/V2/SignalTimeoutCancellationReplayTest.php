@@ -97,6 +97,42 @@ final class SignalTimeoutCancellationReplayTest extends TestCase
         );
     }
 
+    public static function pendingTimeouts(): iterable
+    {
+        yield 'timeout still pending' => [false];
+        yield 'timeout fires after the request' => [true];
+    }
+
+    #[DataProvider('pendingTimeouts')]
+    public function testCancellationRequestedBeforeTimeoutStillOwnsTheOriginalWait(bool $fireAfterRequest): void
+    {
+        $workflow = WorkflowStub::make(TestCancellationAfterSignalTimeoutWorkflow::class);
+        $workflow->start(1);
+        $runId = $workflow->runId();
+        $this->assertIsString($runId);
+        $this->runTask($runId, TaskType::Workflow);
+        $request = $workflow->requestCancellation('before original timeout', 30);
+        if ($fireAfterRequest) {
+            Carbon::setTestNow(Carbon::now()->addSecond());
+            $this->runTask($runId, TaskType::Timer);
+        }
+        $this->runTask($runId, TaskType::Workflow);
+        $delivery = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::CooperativeCancellationDelivered)->sole();
+        $this->assertSame(1, $delivery->payload['sequence']);
+        $this->assertSame($request->commandId(), $delivery->workflow_command_id);
+        $this->runTask($runId, TaskType::Activity);
+        $this->runTask($runId, TaskType::Workflow);
+        $this->assertTrue($workflow->refresh()->cancelled());
+        $cleanup = ActivityExecution::query()->where('workflow_run_id', $runId)->sole();
+        $this->assertSame(2, $cleanup->sequence);
+        $this->assertSame('Hello, cleanup!', $cleanup->activityResult());
+        $this->assertSame(
+            0,
+            WorkflowTask::query()->where('workflow_run_id', $runId)->where('status', TaskStatus::Failed)->count()
+        );
+    }
+
     private function runTask(string $runId, TaskType $type): void
     {
         $task = WorkflowTask::query()->where('workflow_run_id', $runId)->where('task_type', $type)
