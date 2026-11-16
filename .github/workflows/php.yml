@@ -1655,7 +1655,7 @@ jobs:
       with:
         binary: ${{ runner.temp }}/codecovcli
         flags: v2
-        files: ./coverage.xml,./build/feature-coverage/mysql-shard-0-coverage.xml,./build/feature-coverage/mysql-shard-1-coverage.xml,./build/feature-coverage/mysql-shard-2-coverage.xml,./build/feature-coverage/mysql-shard-3-coverage.xml,./build/feature-coverage/mysql-shard-4-coverage.xml,./build/feature-coverage/mysql-shard-5-coverage.xml,./build/feature-coverage/mysql-shard-6-coverage.xml,./build/feature-coverage/mysql-shard-7-coverage.xml,./build/feature-coverage/mysql-shard-8-coverage.xml,./build/feature-coverage/mysql-shard-9-coverage.xml,./build/feature-coverage/mysql-shard-10-coverage.xml,./build/feature-coverage/mysql-shard-11-coverage.xml
+        files: ./coverage.xml,./build/feature-coverage/mysql-shard-0-coverage.xml,./build/feature-coverage/mysql-shard-1-coverage.xml,./build/feature-coverage/mysql-shard-2-coverage.xml,./build/feature-coverage/mysql-shard-3-coverage.xml,./build/feature-coverage/mysql-shard-4-coverage.xml,./build/feature-coverage/mysql-shard-5-coverage.xml,./build/feature-coverage/mysql-shard-6-coverage.xml,./build/feature-coverage/mysql-shard-7-coverage.xml,./build/feature-coverage/mysql-shard-8-coverage.xml,./build/feature-coverage/mysql-shard-9-coverage.xml,./build/feature-coverage/mysql-shard-10-coverage.xml,./build/feature-coverage/mysql-shard-11-coverage.xml,./build/feature-coverage/mysql-shard-12-coverage.xml,./build/feature-coverage/mysql-shard-13-coverage.xml,./build/feature-coverage/mysql-shard-14-coverage.xml,./build/feature-coverage/mysql-shard-15-coverage.xml
         fail_ci_if_error: true
         name: v2
         override_branch: ${{ env.COVERAGE_BRANCH }}

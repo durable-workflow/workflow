@@ -245,6 +245,21 @@ class FeatureShardRoutingTest(unittest.TestCase):
         self.assertNotEqual(0, verification.returncode)
         self.assertIn("partial execution trace", verification.stderr)
 
+    def test_external_coverage_consumers_require_all_mysql_reports(self) -> None:
+        workflow = self.root / ".github/workflows/php.yml"
+        source = workflow.read_text()
+        for shard in (11, 12, 15):
+            for consumer, report in (
+                ("Sonar", f"          build/feature-coverage/mysql-shard-{shard}-coverage.xml\n"),
+                ("Codecov", f",./build/feature-coverage/mysql-shard-{shard}-coverage.xml"),
+            ):
+                with self.subTest(shard=shard, consumer=consumer):
+                    self.assertIn(report, source)
+                    workflow.write_text(source.replace(report, "", 1))
+                    verification = self.run_php("scripts/ci/verify-feature-shards.php", check=False)
+                    self.assertNotEqual(0, verification.returncode)
+                    self.assertIn(f"missing {consumer} feature report input", verification.stderr)
+
     def test_unprofiled_feature_enters_pull_request_and_target_branch_suites(
         self,
     ) -> None:

@@ -173,6 +173,14 @@ function verify_gate_wiring(string $workflow, string $publicBoundaryWorkflow): v
         if (! str_contains($coverage, $needle)) {
             fail("Coverage job is missing feature report merge input [{$needle}].");
         }
+        $sonar = "          build/feature-coverage/mysql-shard-{$shard}-coverage.xml\n";
+        if (! str_contains($coverage, $sonar)) {
+            fail("Coverage job is missing Sonar feature report input for shard [{$shard}].");
+        }
+        $codecov = "./build/feature-coverage/mysql-shard-{$shard}-coverage.xml";
+        if (! str_contains($coverage, $codecov)) {
+            fail("Coverage job is missing Codecov feature report input for shard [{$shard}].");
+        }
     }
 
     foreach (
