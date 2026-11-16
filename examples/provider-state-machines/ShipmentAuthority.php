@@ -25,7 +25,7 @@ final readonly class ShipmentAuthority
     {
         [$actor, , $plan] = $this->authority->actor($actual);
         if ($actual->workflow_class !== FullShipment::class || $actor->role !== 'shipment'
-            || ! FinancialCatalogue::selected($plan->recipe)) {
+            || (! FinancialCatalogue::selected($plan->recipe) && ! FundingCatalogue::selected($plan->recipe))) {
             throw new LogicException('Physical provider access requires its original full Shipment actor.');
         }
         [, $terms] = $this->authority->assignment($actor->root_key);
@@ -78,7 +78,7 @@ final readonly class ShipmentAuthority
         $plan = $this->authority->plan($key);
         [, $terms] = $this->authority->assignment($key);
         if ($terms->fulfillmentDeadline === null || Carbon::now()->getTimestamp() >= $terms->fulfillmentDeadline
-            || ($plan->recipe === FinancialCatalogue::AFTER_DELIVERY
+            || (in_array($plan->recipe, [FinancialCatalogue::AFTER_DELIVERY, FundingCatalogue::AFTER_DELIVERY], true)
                 && ! $terms->authorization->canAdmitCaptureAt(Carbon::now()->getTimestamp()))) {
             throw new LogicException('The original physical or financial admission deadline expired.');
         }

@@ -31,7 +31,7 @@ final class Catalogue
     public static function assertRecipe(string $recipe): void
     {
         if (! in_array($recipe, [self::RESERVE_FIRST, self::PAYMENT_FIRST, self::COMMON_RESERVE_FIRST], true)
-            && ! FinancialCatalogue::selected($recipe)) {
+            && ! FinancialCatalogue::selected($recipe) && ! FundingCatalogue::selected($recipe)) {
             throw new LogicException('The trusted provider policy recipe is unavailable.');
         }
     }
@@ -39,6 +39,9 @@ final class Catalogue
     public static function rootClass(string $recipe): string
     {
         self::assertRecipe($recipe);
+        if (FundingCatalogue::selected($recipe)) {
+            return FundingCheckout::class;
+        }
         if (FinancialCatalogue::selected($recipe)) {
             return AuthorizationCheckout::class;
         }
@@ -60,6 +63,9 @@ final class Catalogue
     public static function profile(string $role, string $recipe = self::RESERVE_FIRST): PolicyProfile
     {
         self::assertRecipe($recipe);
+        if (FundingCatalogue::selected($recipe)) {
+            return FundingCatalogue::profile($role, $recipe);
+        }
         if (FinancialCatalogue::selected($recipe)) {
             return match ($role) {
                 'order' => FinancialCatalogue::order($recipe),
@@ -68,6 +74,33 @@ final class Catalogue
                 default => throw new LogicException('The selected financial machine role is unavailable.'),
             };
         }
+        return self::legacyProfile($role, $recipe);
+    }
+
+    public static function transition(
+        string $role,
+        string $key,
+        string $recipe = self::RESERVE_FIRST
+    ): TransitionDefinition {
+        foreach (self::profile($role, $recipe)->transitions as $transition) {
+            if ($transition->key === $key) {
+                return $transition;
+            }
+        }
+        throw new LogicException('The original provider transition is unavailable.');
+    }
+
+    public static function registry(): RuleRegistry
+    {
+        return new RuleRegistry([
+            'example.boolean' => [
+                '1' => new BooleanFact(),
+            ],
+        ]);
+    }
+
+    private static function legacyProfile(string $role, string $recipe): PolicyProfile
+    {
         $checkout = $role === 'order' && $recipe !== self::RESERVE_FIRST;
         [$states, $edges] = self::route($role, $checkout);
         $transitions = [];
@@ -99,28 +132,6 @@ final class Catalogue
             $transitions,
             $conditions
         );
-    }
-
-    public static function transition(
-        string $role,
-        string $key,
-        string $recipe = self::RESERVE_FIRST
-    ): TransitionDefinition {
-        foreach (self::profile($role, $recipe)->transitions as $transition) {
-            if ($transition->key === $key) {
-                return $transition;
-            }
-        }
-        throw new LogicException('The original provider transition is unavailable.');
-    }
-
-    public static function registry(): RuleRegistry
-    {
-        return new RuleRegistry([
-            'example.boolean' => [
-                '1' => new BooleanFact(),
-            ],
-        ]);
     }
 
     private static function route(string $role, bool $checkout): array

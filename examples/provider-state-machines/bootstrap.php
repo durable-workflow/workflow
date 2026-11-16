@@ -9,16 +9,19 @@ require_once __DIR__ . '/../business-state-machines/BusinessCancellationRequeste
 require_once __DIR__ . '/Catalogue.php';
 require_once __DIR__ . '/FinancialCatalogue.php';
 require_once __DIR__ . '/PhysicalCatalogue.php';
+require_once __DIR__ . '/FundingCatalogue.php';
 require_once __DIR__ . '/OrderTerms.php';
 require_once __DIR__ . '/BindingPlan.php';
 foreach ([
     'Authority', 'OwnerOperation', 'MachineStore', 'AssessmentStore', 'CancellationStore',
     'FinancialInspectionStore', 'FinancialInspectionActivity', 'FinancialAuthority',
     'IncomingPaymentInspectionStore', 'IncomingPaymentInspectionActivity',
-    'FinancialHandoffStore', 'FinancialHandoffActivity', 'FinancialStep', 'FinancialPreparationStep',
+    'OriginalStock', 'FinancialHandoffStore', 'FinancialHandoffActivity', 'FinancialStep', 'FinancialPreparationStep',
+    'FundingAuthority', 'FundingFactsStore', 'FundingHandoffStore', 'FundingHandoffActivity',
+    'FundingStep', 'FundingPayment',
     'BoundaryActivity', 'SnapshotActivity', 'AdmissionActivity', 'CommitActivity',
     'RetainedStep', 'Machine', 'Order', 'CheckoutOrder', 'Payment', 'Booking', 'Cancellation',
-    'AuthorizedPayment', 'AuthorizationCheckout',
+    'AuthorizedPayment', 'AuthorizationCheckout', 'FundingCheckout',
     'ShipmentAuthority', 'ShipmentBoundaryStore', 'ShipmentBoundaryActivity', 'ShipmentStep', 'FullShipment', 'FulfillmentStep',
 ] as $class) {
     require_once __DIR__ . '/' . $class . '.php';

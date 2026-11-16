@@ -12,10 +12,8 @@ use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Request;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Status;
 use Illuminate\Support\Carbon;
 use LogicException;
-use Workflow\V2\Compensation\Definition\Obligation;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
-use Workflow\V2\Compensation\Persistence\ScopeRepository;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\StateMachine\Binding\ChildBinding;
 use Workflow\V2\StateMachine\Binding\ChildReservationStore;
@@ -23,13 +21,19 @@ use Workflow\V2\StateMachine\Execution\ExecutionReference;
 use Workflow\V2\WorkflowStub;
 
 /** Original business publications and protected policy instructions, never facts supplied by a signal payload. */
-final readonly class FinancialHandoffStore
+readonly class FinancialHandoffStore
 {
+    private bool $commonFunding;
+
+    private OriginalStock $originalStock;
+
     public function __construct(
         private Authority $authority,
         private Journal $provider,
-        private FinancialAuthority $financial
+        private FinancialAuthority|FundingAuthority $financial
     ) {
+        $this->commonFunding = $financial instanceof FundingAuthority;
+        $this->originalStock = new OriginalStock($authority, $provider);
     }
 
     public function milestone(WorkflowRun $parent, array $value, string $stage): array
@@ -37,7 +41,7 @@ final readonly class FinancialHandoffStore
         [$actor, , , $binding] = $this->parentBinding($parent, $value);
         $publication = $this->publication($actor->root_key, $binding, $stage);
         [, $terms] = $this->authority->assignment($actor->root_key);
-        if ($terms->authorization === null) {
+        if (! $this->commonFunding && $terms->authorization === null) {
             throw new LogicException('The original authorization terms are unavailable.');
         }
         return [
@@ -45,7 +49,10 @@ final readonly class FinancialHandoffStore
             'publication' => $publication,
             'originalRunId' => $binding->admission->childRunId,
             'originOpen' => ! WorkflowRun::query()->findOrFail($binding->admission->childRunId)->status->isTerminal(),
-            'waitSeconds' => max(0, $terms->authorization->expiresAt - Carbon::now()->getTimestamp()),
+            'waitSeconds' => max(
+                0,
+                ($terms->authorization?->expiresAt ?? $terms->fulfillmentDeadline) - Carbon::now()->getTimestamp()
+            ),
         ];
     }
 
@@ -62,10 +69,14 @@ final readonly class FinancialHandoffStore
         }
         $key = hash(
             'sha256',
-            PortableDescriptor::encode(['financial-publication-v1', $publication['id'], $plan->rootRun])
+            PortableDescriptor::encode([
+                $this->commonFunding ? 'funding-publication-v1' : 'financial-publication-v1',
+                $publication['id'],
+                $plan->rootRun,
+            ])
         );
         $signal = WorkflowStub::loadRun($plan->rootRun, Catalogue::NAMESPACE)->withRequestId($key)
-            ->attemptSignal('financial-milestone', $publication['id']);
+            ->attemptSignal($this->commonFunding ? 'funding-milestone' : 'financial-milestone', $publication['id']);
         return [
             'publicationId' => $publication['id'],
             'notificationAccepted' => $signal->accepted(),
@@ -75,38 +86,18 @@ final readonly class FinancialHandoffStore
     public function requestCapture(WorkflowRun $parent, array $value): array
     {
         [$actor, , $plan, $binding] = $this->parentBinding($parent, $value);
+        if ($this->financial instanceof FundingAuthority) {
+            if (! FundingCatalogue::requiresAuthorization($plan->recipe)) {
+                throw new LogicException('A bank transfer or immediate payment cannot manufacture a card capture.');
+            }
+            $this->financial->assertForward($actor->root_key, 'order');
+        }
         $id = $this->instructionId($binding);
         $row = $this->authority->db->table('provider_machine_milestones')
             ->where('id', $id)
             ->first();
         if ($row === null) {
-            [, $terms] = $this->authority->assignment($actor->root_key);
-            $authorizationTerms = $terms->authorization ?? throw new LogicException(
-                'The original authorization terms are unavailable.'
-            );
-            $authorization = $this->publication($actor->root_key, $binding, 'authorize');
-            $stock = $this->originalStock($actor->root_key, $plan);
-            if ($authorization === null || $stock === null) {
-                throw new LogicException(
-                    'Capture requires original confirmed authorization and warehouse reservation.'
-                );
-            }
-            $instruction = [
-                'kind' => 'financial-capture-instruction-v1',
-                'binding' => $binding->toArray(),
-                'recipe' => $plan->recipe,
-                'authorizationPublication' => $authorization['id'],
-                'stockEffect' => $stock,
-            ];
-            if ($plan->recipe === FinancialCatalogue::AFTER_DELIVERY) {
-                $delivery = app(ShipmentBoundaryStore::class)->delivery($parent);
-                if ($delivery === null) {
-                    throw new LogicException('Capture requires the original committed recipient-delivery publication.');
-                }
-                $instruction['kind'] = 'financial-capture-instruction-v2';
-                $instruction['deliveryPublication'] = $delivery['id'];
-            }
-            $payload = PortableDescriptor::encode($instruction);
+            [$payload, $authorizationTerms] = $this->capturePayload($parent, $actor->root_key, $plan, $binding);
             $this->recordInstruction($parent, $actor->root_key, $binding, $id, $payload, $authorizationTerms);
             $row = $this->authority->db->table('provider_machine_milestones')
                 ->where('id', $id)
@@ -127,7 +118,16 @@ final readonly class FinancialHandoffStore
     public function businessFacts(WorkflowRun $actual, ScopeIdentity $scope, FinancialDescriptor $descriptor): array
     {
         [$actor, , $plan] = $this->payment($actual);
-        $forward = $this->financial->forwardStates($actual, $scope, $descriptor);
+        if ($this->financial instanceof FundingAuthority) {
+            $this->financial->inspect($actual, $scope, $descriptor);
+            [, , , $rows] = $this->financial->rows($actual);
+            $forward = [
+                'authorize' => $rows['payment.authorize']['forward_status'],
+                'capture' => $rows['payment.capture']['forward_status'],
+            ];
+        } else {
+            $forward = $this->financial->forwardStates($actual, $scope, $descriptor);
+        }
         $binding = $this->admitted($plan);
         $row = $this->authority->db->table('provider_machine_milestones')
             ->where('id', $this->instructionId($binding))
@@ -140,6 +140,9 @@ final readonly class FinancialHandoffStore
 
     public function readCapture(WorkflowRun $actual, string $activityId): array
     {
+        if ($this->commonFunding) {
+            return app(FundingFactsStore::class)->observe($actual, $activityId);
+        }
         [$actor, , $plan] = $this->payment($actual);
         [, $terms] = $this->authority->assignment($actor->root_key);
         return app(FinancialInspectionStore::class)->inspect(
@@ -154,19 +157,27 @@ final readonly class FinancialHandoffStore
     public function expire(WorkflowRun $actual): array
     {
         [$actor, , $plan] = $this->authority->actor($actual);
-        if (! FinancialCatalogue::selected($plan->recipe)) {
+        if (! ($this->commonFunding ? FundingCatalogue::selected($plan->recipe) : FinancialCatalogue::selected(
+            $plan->recipe
+        ))) {
             throw new LogicException('The original authorization policy is unavailable.');
         }
-        return app(CancellationStore::class)->request($actor->root_key, $plan->rootRun, 'authorization-expired');
+        return app(CancellationStore::class)->request(
+            $actor->root_key,
+            $plan->rootRun,
+            $this->commonFunding ? 'funding-deadline-expired' : 'authorization-expired'
+        );
     }
 
     public function stock(WorkflowRun $actual): array
     {
         [$actor, , $plan] = $this->authority->actor($actual);
-        if ($actor->role !== 'order' || ! FinancialCatalogue::selected($plan->recipe)) {
+        if ($actor->role !== 'order' || ! ($this->commonFunding ? FundingCatalogue::selected(
+            $plan->recipe
+        ) : FinancialCatalogue::selected($plan->recipe))) {
             throw new LogicException('Stock reconciliation requires the original financial Order.');
         }
-        $request = $this->stockRequest($actor->root_key, $plan);
+        $request = $this->originalStock->request($actor->root_key, $plan);
         if ($request === null) {
             throw new LogicException('Stock reconciliation requires its original recorded forward execution.');
         }
@@ -179,7 +190,10 @@ final readonly class FinancialHandoffStore
             'status' => $value->status->value,
             'confirmed' => $value->status === Status::Confirmed && $value->effectId === 'effect-' . $request->identity->key(),
             'refused' => $value->status === Status::Refused && $value->effectId === null && $value->admissionClosed,
-            'waitSeconds' => max(0, $terms->authorization->expiresAt - Carbon::now()->getTimestamp()),
+            'waitSeconds' => max(
+                0,
+                ($terms->authorization?->expiresAt ?? $terms->fulfillmentDeadline) - Carbon::now()->getTimestamp()
+            ),
         ];
     }
 
@@ -195,28 +209,72 @@ final readonly class FinancialHandoffStore
     public function prepared(WorkflowRun $parent): bool
     {
         [$actor, , $plan] = $this->authority->actor($parent);
-        if ($actor->role !== 'order' || ! FinancialCatalogue::selected($plan->recipe)) {
+        if ($actor->role !== 'order' || ! ($this->commonFunding ? FundingCatalogue::selected(
+            $plan->recipe
+        ) : FinancialCatalogue::selected($plan->recipe))) {
             throw new LogicException('Financial readiness belongs to the original Order.');
         }
         $child = $this->authority->db->table('provider_machine_actors')
             ->where('id', Authority::subjectId($actor->root_key, 'payment'))->first();
-        if ($child === null || $this->originalStock($actor->root_key, $plan) === null) {
+        if ($child === null || $this->originalStock->confirmed($actor->root_key, $plan) === null) {
             return false;
         }
         $stage = $plan->recipe === FinancialCatalogue::AFTER_STOCK ? 'capture' : 'authorize';
+        if ($this->commonFunding) {
+            $stage = $plan->recipe === FundingCatalogue::AFTER_DELIVERY ? 'prepare' : 'confirm-receipt';
+        }
         [, $terms] = $this->authority->assignment($actor->root_key);
         return $this->publication($actor->root_key, $this->admitted($plan), $stage) !== null
-            && ($stage === 'capture' || $terms->authorization->canAdmitCaptureAt(Carbon::now()->getTimestamp()));
+            && (in_array($stage, ['capture', 'confirm-receipt'], true) || $terms->authorization->canAdmitCaptureAt(
+                Carbon::now()->getTimestamp()
+            ));
     }
 
     public function binding(WorkflowRun $parent): array
     {
         [$actor, , $plan] = $this->authority->actor($parent);
-        if ($actor->role !== 'order' || ! FinancialCatalogue::selected($plan->recipe)) {
+        if ($actor->role !== 'order' || ! ($this->commonFunding ? FundingCatalogue::selected(
+            $plan->recipe
+        ) : FinancialCatalogue::selected($plan->recipe))) {
             throw new LogicException('The financial admission belongs to its original Order.');
         }
         return $this->admitted($plan)
             ->toArray();
+    }
+
+    /**
+     * @return array{string, AuthorizationTerms}
+     */
+    private function capturePayload(WorkflowRun $parent, string $key, BindingPlan $plan, ChildBinding $binding): array
+    {
+        [, $terms] = $this->authority->assignment($key);
+        $authorizationTerms = $terms->authorization ?? throw new LogicException(
+            'The original authorization terms are unavailable.'
+        );
+        $authorization = $this->publication($key, $binding, $this->commonFunding ? 'prepare' : 'authorize');
+        $stock = $this->originalStock->confirmed($key, $plan);
+        if ($authorization === null || $stock === null) {
+            throw new LogicException(
+                'Capture requires original confirmed authorization and warehouse reservation.'
+            );
+        }
+        $instruction = [
+            'kind' => $this->commonFunding ? 'funding-capture-instruction-v1' : 'financial-capture-instruction-v1',
+            'binding' => $binding->toArray(),
+            'recipe' => $plan->recipe,
+            'authorizationPublication' => $authorization['id'],
+            'stockEffect' => $stock,
+        ];
+        if (in_array($plan->recipe, [FinancialCatalogue::AFTER_DELIVERY, FundingCatalogue::AFTER_DELIVERY], true)) {
+            $delivery = app(ShipmentBoundaryStore::class)->delivery($parent);
+            if ($delivery === null) {
+                throw new LogicException('Capture requires the original committed recipient-delivery publication.');
+            }
+            $instruction['kind'] = $this->commonFunding ? 'funding-capture-instruction-v2' : 'financial-capture-instruction-v2';
+            $instruction['deliveryPublication'] = $delivery['id'];
+        }
+        $payload = PortableDescriptor::encode($instruction);
+        return [$payload, $authorizationTerms];
     }
 
     private function recordInstruction(
@@ -243,7 +301,11 @@ final readonly class FinancialHandoffStore
                 ->sole();
             $this->authority->assertGrant($current, $key, 'order');
             $entry = $binding->identity->parentExecution;
-            $delivery = $this->authority->recipe($key) === FinancialCatalogue::AFTER_DELIVERY;
+            $delivery = in_array(
+                $this->authority->recipe($key),
+                [FinancialCatalogue::AFTER_DELIVERY, FundingCatalogue::AFTER_DELIVERY],
+                true
+            );
             $state = $delivery ? 'ready' : $entry->sourceState;
             $revision = $delivery ? '2' : $entry->sourceRevision;
             if ((bool) $current->cancellation_requested || ! $terms->canAdmitCaptureAt(Carbon::now()->getTimestamp())
@@ -274,7 +336,8 @@ final readonly class FinancialHandoffStore
     private function payment(WorkflowRun $actual): array
     {
         $value = $this->authority->actor($actual);
-        if ($value[0]->role !== 'payment' || ! FinancialCatalogue::selected($value[2]->recipe)) {
+        if ($value[0]->role !== 'payment' || ! ($this->commonFunding
+            ? FundingCatalogue::selected($value[2]->recipe) : FinancialCatalogue::selected($value[2]->recipe))) {
             throw new LogicException('The financial handoff requires the original authorized Payment actor.');
         }
         return $value;
@@ -284,7 +347,9 @@ final readonly class FinancialHandoffStore
     {
         [$actor, $row, $plan] = $this->authority->actor($parent);
         $binding = ChildBinding::fromArray($value);
-        if ($actor->role !== 'order' || ! FinancialCatalogue::selected($plan->recipe)
+        if ($actor->role !== 'order' || ! ($this->commonFunding ? FundingCatalogue::selected(
+            $plan->recipe
+        ) : FinancialCatalogue::selected($plan->recipe))
             || $binding->identity->parentRunId !== $parent->id
             || $binding->toArray() !== $this->admitted($plan)
                 ->toArray()) {
@@ -310,10 +375,18 @@ final readonly class FinancialHandoffStore
 
     private function publication(string $key, ChildBinding $binding, string $stage): ?array
     {
-        [$source, $revision] = match ($stage) {
-            'authorize' => ['received', '1'], 'capture' => ['authorized', '2'],
-            default => throw new LogicException('The financial business milestone is unavailable.'),
-        };
+        $route = $this->commonFunding ? [
+            'prepare' => ['received', '1'],
+            'collect' => ['ready', '2'],
+            'confirm-receipt' => ['collected', '3'],
+        ]
+            : [
+                'authorize' => ['received', '1'],
+                'capture' => ['authorized', '2'],
+            ];
+        [$source, $revision] = $route[$stage] ?? throw new LogicException(
+            'The financial business milestone is unavailable.'
+        );
         $recipe = $this->authority->recipe($key);
         $transition = Catalogue::transition('payment', $stage, $recipe);
         $execution = new ExecutionReference(
@@ -349,41 +422,12 @@ final readonly class FinancialHandoffStore
         ];
     }
 
-    private function originalStock(string $key, BindingPlan $plan): ?string
-    {
-        $request = $this->stockRequest($key, $plan);
-        if ($request === null) {
-            return null;
-        }
-        $value = $this->provider->lookup($request);
-        return $value->status === Status::Confirmed && $value->effectId === 'effect-' . $request->identity->key()
-            ? $value->effectId : null;
-    }
-
-    private function stockRequest(string $key, BindingPlan $plan): ?Request
-    {
-        [, $terms] = $this->authority->assignment($key);
-        $ledger = (new ScopeRepository())->inspect($plan->rootScope());
-        $expected = new Obligation('effect', 'provider.effect', '1', $terms->descriptor('order'));
-        $rows = array_values(array_filter($ledger['obligations'], static fn (array $row): bool =>
-            ($row['descriptor']['key'] ?? null) === 'effect'));
-        if ($rows === []) {
-            return null;
-        }
-        if (count($rows) !== 1 || $ledger['original_run_id'] !== $plan->rootRun
-            || $rows[0]['fingerprint'] !== $expected->fingerprint()
-            || Obligation::fromArray($rows[0]['descriptor'])->fingerprint() !== $expected->fingerprint()) {
-            throw new LogicException('The warehouse evidence is outside its original registered native owner.');
-        }
-        if ($rows[0]['forward_status'] !== 'observed') {
-            return null;
-        }
-        return Request::fromArray($terms->descriptor('order')['forward']);
-    }
-
     private function instructionId(ChildBinding $binding): string
     {
-        return hash('sha256', 'financial-capture-instruction-v1:' . $binding->identity->key());
+        return hash(
+            'sha256',
+            ($this->commonFunding ? 'funding-capture-instruction-v1:' : 'financial-capture-instruction-v1:') . $binding->identity->key()
+        );
     }
 
     private function readInstruction(object $row, string $key, ChildBinding $binding): array
@@ -400,13 +444,17 @@ final readonly class FinancialHandoffStore
         sort($keys);
         [, $terms] = $this->authority->assignment($key);
         $stock = Request::fromArray($terms->descriptor('order')['forward']);
-        $authorization = $this->publication($key, $binding, 'authorize');
+        $authorization = $this->publication($key, $binding, $this->commonFunding ? 'prepare' : 'authorize');
         $expected = ['authorizationPublication', 'binding', 'kind', 'recipe', 'stockEffect'];
-        $kind = 'financial-capture-instruction-v1';
-        if ($this->authority->recipe($key) === FinancialCatalogue::AFTER_DELIVERY) {
+        $kind = $this->commonFunding ? 'funding-capture-instruction-v1' : 'financial-capture-instruction-v1';
+        if (in_array(
+            $this->authority->recipe($key),
+            [FinancialCatalogue::AFTER_DELIVERY, FundingCatalogue::AFTER_DELIVERY],
+            true
+        )) {
             $expected[] = 'deliveryPublication';
             sort($expected);
-            $kind = 'financial-capture-instruction-v2';
+            $kind = $this->commonFunding ? 'funding-capture-instruction-v2' : 'financial-capture-instruction-v2';
             $delivery = app(ShipmentBoundaryStore::class)->delivery(
                 WorkflowRun::query()->findOrFail($this->authority->plan($key)->rootRun)
             );

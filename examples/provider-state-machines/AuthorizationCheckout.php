@@ -17,7 +17,7 @@ use Workflow\V2\Workflow;
 #[Signal('reconcile-stock')]
 #[Signal('fulfill')]
 #[Signal('physical-milestone')]
-final class AuthorizationCheckout extends Workflow
+class AuthorizationCheckout extends Workflow
 {
     public function handle(string $key): array
     {

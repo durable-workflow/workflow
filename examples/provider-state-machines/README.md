@@ -316,11 +316,56 @@ committed refund. Verified settlement requires both the provider fence and
 confirmed refunds for the complete receipt inventory; it preserves gross
 incoming receipts as historical facts. Other previously admitted partial refunds
 can make the full-transfer refund refuse rather than reimburse money twice;
-partial-return allocation and common Payment-route integration remain unfinished.
+partial-return allocation remains unfinished.
 
 `V2IncomingPaymentRetentionTest.php` runs the native registered-obligation and
 closed-origin recovery paths. The replacement-provider case reopens the same
 provider database in the same test process; it is not a cold-process or installed
-qualification. These examples do not yet integrate bank prepayment into the
-common Order/Payment route, release expired cart stock, or complete PAY-03 and
-the full customer acceptance matrix.
+qualification. The common route below adds native bank prepayment integration;
+expired cart reservations, installed qualification and the complete customer
+acceptance matrix remain unfinished.
+
+## Common funding and physical fulfillment
+
+`FundingCheckout` and `FundingPayment` use one new definition per machine type
+across all four recipes in `FundingCatalogue`: immediate direct capture,
+authorization with capture after stock reservation, authorization with capture
+after recipient delivery, and incoming bank prepayment. Historical definitions
+and profiles above remain available for their original executions.
+
+The Order route is `received -> ready -> fulfilled`, with verified cancellation
+available from each state. Payment uses `received -> ready -> collected -> paid`.
+Readiness is the selected financial prerequisite, collection is the original
+payer payment, and paid is confirmed merchant receipt. The synthetic direct
+acquirer confirms merchant receipt with its original capture effect; the bank
+recipe receives directly into the merchant account. Neither contract implements
+carrier collection or subsequent COD remittance.
+
+For bank prepayment, include the original `IncomingPaymentDescriptor` and
+explicit admission contract in `OrderTerms`. Assemble one
+`IncomingPaymentProvider`, install its optional tables after its
+`commands->install()`, and pass that exact `commands` object and provider as the
+third and fourth arguments to `MachineStore::configure()`. Configure Shipment
+support on the same command journal. Give `Authority` the selected recipe for
+the original subject key, seed its terms, and start `FundingCheckout` with that
+key. Workflow inputs and signals cannot choose the recipe or grant ownership.
+
+The Payment child registers its complete retained money graph before opening
+the bank reference or reading provider facts. `incoming-observed` is a wakeup
+hint; the recorded activity must read the original provider receipts. Partial
+payment cannot reserve stock or admit fulfillment. The fixed original bank
+deadline applies to incoming confirmation; worker restart cannot extend it.
+Gross receipts remain historical after refunds, while the live business and
+retained-scope fences prevent cancelled money from admitting forward work.
+
+Order observes original protected Payment publications instead of waiting for a
+mutually dependent terminal child. The delivery-capture recipe coordinates the
+actual Shipment delivery publication, original capture instruction and final
+Payment publication. The selected Shipment is the same full physical route for
+all four recipes. Its original return, warehouse acceptance and deduction
+responsibilities remain ahead of refund and reservation release.
+
+Run the native source scenarios with
+`vendor/bin/phpunit tests/Feature/V2/V2CommonFundingMachineTest.php`. They do not
+substitute for the complete customer matrix, cold-process failures, installed
+upgrade/recovery/rollback checks or a published release.

@@ -6,6 +6,8 @@ namespace DurableWorkflow\Examples\ProviderStateMachines;
 
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\AuthorizationTerms;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Identity;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentDescriptor;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentJournal;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Request;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\ShipmentDescriptor;
 use InvalidArgumentException;
@@ -24,6 +26,8 @@ final readonly class OrderTerms
         public int $quantity,
         public ?AuthorizationTerms $authorization = null,
         public ?int $fulfillmentDeadline = null,
+        public ?IncomingPaymentDescriptor $incomingPayment = null,
+        public string $incomingAdmissionContract = IncomingPaymentJournal::OPEN,
     ) {
         foreach (['client', 'subject', 'generation', 'sku'] as $key) {
             PortableDescriptor::identifier($this->{$key}, $key);
@@ -42,11 +46,17 @@ final readonly class OrderTerms
         if ($fulfillmentDeadline !== null && $fulfillmentDeadline <= 0) {
             throw new InvalidArgumentException('The original fulfillment deadline must be a positive Unix timestamp.');
         }
+        $this->assertIncomingPayment();
     }
 
     public function toArray(): array
     {
         $value = get_object_vars($this);
+        if ($this->incomingPayment === null) {
+            unset($value['incomingPayment'], $value['incomingAdmissionContract']);
+        } else {
+            $value['incomingPayment'] = $this->incomingPayment->toArray();
+        }
         if ($this->fulfillmentDeadline === null) {
             unset($value['fulfillmentDeadline']);
         }
@@ -65,9 +75,11 @@ final readonly class OrderTerms
 
     public static function fromArray(array $value): self
     {
+        [$value, $incomingKeys] = self::decodeIncoming($value);
         $keys = array_keys($value);
         sort($keys);
-        $expected = ['amountMinor', 'client', 'currency', 'generation', 'quantity', 'sku', 'subject'];
+        $expected = ['amountMinor', 'client', 'currency', 'generation', 'quantity', 'sku', 'subject', ...$incomingKeys];
+        sort($expected);
         if (array_key_exists('fulfillmentDeadline', $value)) {
             if (! is_int($value['fulfillmentDeadline'])) {
                 throw new InvalidArgumentException('The original fulfillment deadline must be an integer.');
@@ -109,6 +121,9 @@ final readonly class OrderTerms
     {
         if ($role === 'payment' && $this->authorization !== null) {
             throw new InvalidArgumentException('An authorized payment requires its explicit financial descriptor.');
+        }
+        if ($role === 'payment' && $this->incomingPayment !== null) {
+            throw new InvalidArgumentException('Incoming payment cannot become an immediate card charge.');
         }
         [$forward, $undo, $terms] = match ($role) {
             'order' => [
@@ -193,5 +208,56 @@ final readonly class OrderTerms
             new Request($identity('restock'), 'restock', $terms, $return),
             new Request($identity('deduct'), 'deduct-stock', $terms, $booking)
         ))->toArray();
+    }
+
+    public function incomingDescriptor(): array
+    {
+        if ($this->incomingPayment === null) {
+            throw new InvalidArgumentException('The original incoming-payment assignment is unavailable.');
+        }
+        return [
+            'original' => $this->incomingPayment->toArray(),
+            'admissionContract' => $this->incomingAdmissionContract,
+        ];
+    }
+
+    private function assertIncomingPayment(): void
+    {
+        $incoming = $this->incomingPayment;
+        if ($incoming === null) {
+            if ($this->incomingAdmissionContract !== IncomingPaymentJournal::OPEN) {
+                throw new InvalidArgumentException('An incoming admission contract requires its original receivable.');
+            }
+            return;
+        }
+        if ($this->authorization !== null || $incoming->identity->client !== $this->client
+            || $incoming->identity->subject !== $this->subject || $incoming->identity->generation !== $this->generation
+            || $incoming->amountMinor !== $this->amountMinor || $incoming->currency !== $this->currency) {
+            throw new InvalidArgumentException('Incoming payment must preserve the original purchase owner and money.');
+        }
+        if (! in_array(
+            $this->incomingAdmissionContract,
+            [IncomingPaymentJournal::OPEN, IncomingPaymentJournal::CLOSABLE],
+            true
+        )) {
+            throw new InvalidArgumentException('The original incoming admission contract is unavailable.');
+        }
+    }
+
+    /**
+     * @return array{array, list<string>}
+     */
+    private static function decodeIncoming(array $value): array
+    {
+        if (! array_key_exists('incomingPayment', $value) && ! array_key_exists('incomingAdmissionContract', $value)) {
+            return [$value, []];
+        }
+        if (! is_array($value['incomingPayment'] ?? null) || ! is_string($value['incomingAdmissionContract'] ?? null)) {
+            throw new InvalidArgumentException(
+                'Incoming assignment requires both its original receivable and provider contract.'
+            );
+        }
+        $value['incomingPayment'] = IncomingPaymentDescriptor::fromArray($value['incomingPayment']);
+        return [$value, ['incomingPayment', 'incomingAdmissionContract']];
     }
 }
