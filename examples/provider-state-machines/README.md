@@ -165,6 +165,24 @@ attempts expire, then verifies blocked earlier work and fresh retained recovery.
 These are synthetic source tests, not elapsed-time,
 installed-package, real financial or physical-inventory qualification.
 
+### Process loss during retained compensation
+
+`V2AdvanceBalanceColdRecoveryTest` stops a fresh PHP process after the original
+bank refund is durably verified, while the remaining Payment and Order
+compensation is still outstanding. A second fresh process uses the same
+application database and independent provider journal to finish the original
+cancellation. The case requires the original scope and obligation identities,
+unchanged history prefix, and exactly one bank-refund request and committed
+effect across both processes.
+
+This cut uses the advance-before-handover policy before Shipment dispatch. The
+fixture kills the first process with `SIGKILL`, carries its controlled native
+clock into the replacement, and runs the existing native test-task driver. It
+requires POSIX signals and declares a skip when they are unavailable. It is a
+source process-loss control; ordinary queue-worker execution, installed
+recovery, and the other interruption points in the consumer matrix still need
+their own qualification.
+
 This first full-refund, pre-handover policy does not implement the remaining
 payment, subscription, partial-stock, physical return or replacement variants in
 the [consumer acceptance matrix](https://github.com/durable-workflow/workflow/issues/1069#issuecomment-6889952106).
