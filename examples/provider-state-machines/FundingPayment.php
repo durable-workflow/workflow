@@ -10,7 +10,6 @@ use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
 use Workflow\V2\Compensation\Definition\Obligation;
 use Workflow\V2\Exceptions\WorkflowCancellationRequestedException;
-use Workflow\V2\StateMachine\Execution\TransitionStatus;
 use Workflow\V2\Workflow;
 
 #[Type('example.provider.payment.funding.v1')]
@@ -19,6 +18,8 @@ use Workflow\V2\Workflow;
 #[Signal('reconcile-funding')]
 final class FundingPayment extends Workflow
 {
+    use FundingPaymentExecution;
+
     public function handle(string $key, string $rootRun, array $entry, array $scope): array
     {
         $machine = new Machine($this, self::activity(BoundaryActivity::class, 'initialize', [
@@ -45,29 +46,13 @@ final class FundingPayment extends Workflow
                 $registered[$stage] = $machine->scope->register(new Obligation($duty, $handler, '1', $input));
             }
             $step = new FundingStep($recipe, $registered);
-            foreach (['prepare', 'collect', 'confirm-receipt'] as $transition) {
+            return $this->finishFunding($machine, $step, function (string $transition) use ($recipe): void {
                 if ($transition === 'collect' && FundingCatalogue::requiresAuthorization($recipe)) {
                     $this->awaitCapture($recipe);
                 }
-                $result = $machine->transition($transition, $step);
-                if ($result->status !== TransitionStatus::Committed) {
-                    return $machine->outcome($result);
-                }
-                self::activity(FundingHandoffActivity::class, 'notify', [
-                    'stage' => $transition,
-                ]);
-            }
-            return $machine->outcome($result);
+            });
         } catch (WorkflowCancellationRequestedException|BusinessCancellationRequested $error) {
-            self::cancellationShield(fn () => $this->compensate());
-            $proof = self::cancellationShield(static fn () => $machine->scope->verifyCompensation());
-            if (($proof['status'] ?? null) !== 'verified') {
-                throw $error;
-            }
-            return [
-                'businessOutcome' => 'compensated',
-                'originalRunId' => $this->runId(),
-            ];
+            return $this->compensateFunding($machine, $error);
         }
     }
 

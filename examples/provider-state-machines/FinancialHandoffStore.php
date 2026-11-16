@@ -232,15 +232,7 @@ readonly class FinancialHandoffStore
         }
         [, $terms] = $this->authority->assignment($actor->root_key);
         return $this->publication($actor->root_key, $this->admitted($plan), $stage) !== null
-            && (in_array($stage, ['capture', 'confirm-receipt'], true)
-                || (CodFundingPolicy::selected(
-                    $plan->recipe
-                ) && Carbon::now()->getTimestamp() < $terms->codPayment->collectionDeadline)
-                || (AdvanceBalancePolicy::selected($plan->recipe)
-                    && Carbon::now()->getTimestamp() < $terms->advanceBalance->balance->collectionDeadline)
-                || ($terms->authorization !== null && $terms->authorization->canAdmitCaptureAt(
-                    Carbon::now()->getTimestamp()
-                )));
+            && $this->fundingWindowOpen($terms, $plan, $stage);
     }
 
     public function binding(WorkflowRun $parent): array
@@ -253,6 +245,19 @@ readonly class FinancialHandoffStore
         }
         return $this->admitted($plan)
             ->toArray();
+    }
+
+    private function fundingWindowOpen(OrderTerms $terms, BindingPlan $plan, string $stage): bool
+    {
+        return in_array($stage, ['capture', 'confirm-receipt'], true)
+                || (CodFundingPolicy::selected(
+                    $plan->recipe
+                ) && Carbon::now()->getTimestamp() < $terms->codPayment->collectionDeadline)
+                || (AdvanceBalancePolicy::selected($plan->recipe)
+                    && Carbon::now()->getTimestamp() < $terms->advanceBalance->balance->collectionDeadline)
+                || ($terms->authorization !== null && $terms->authorization->canAdmitCaptureAt(
+                    Carbon::now()->getTimestamp()
+                ));
     }
 
     /**

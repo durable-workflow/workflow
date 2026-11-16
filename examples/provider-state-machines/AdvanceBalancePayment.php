@@ -9,7 +9,6 @@ use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Attributes\Type;
 use Workflow\V2\Compensation\Definition\Obligation;
 use Workflow\V2\Exceptions\WorkflowCancellationRequestedException;
-use Workflow\V2\StateMachine\Execution\TransitionStatus;
 use Workflow\V2\Workflow;
 
 /** A separate public workflow type preserves the previous funding signal/definition schema. */
@@ -18,6 +17,8 @@ use Workflow\V2\Workflow;
 #[Signal('cod-observed')]
 final class AdvanceBalancePayment extends Workflow
 {
+    use FundingPaymentExecution;
+
     public function handle(string $key, string $rootRun, array $entry, array $scope): array
     {
         $machine = new Machine($this, self::activity(BoundaryActivity::class, 'initialize', [
@@ -47,26 +48,9 @@ final class AdvanceBalancePayment extends Workflow
                 $duties[$stage] = $machine->scope->register(new Obligation($dutyKey, $handler, '1', $input));
             }
             $step = new FundingStep($machine->initialization['recipe'], $duties, $terms);
-            foreach (['prepare', 'collect', 'confirm-receipt'] as $transition) {
-                $result = $machine->transition($transition, $step);
-                if ($result->status !== TransitionStatus::Committed) {
-                    return $machine->outcome($result);
-                }
-                self::activity(FundingHandoffActivity::class, 'notify', [
-                    'stage' => $transition,
-                ]);
-            }
-            return $machine->outcome($result);
+            return $this->finishFunding($machine, $step);
         } catch (WorkflowCancellationRequestedException|BusinessCancellationRequested $error) {
-            self::cancellationShield(fn () => $this->compensate());
-            $proof = self::cancellationShield(static fn () => $machine->scope->verifyCompensation());
-            if (($proof['status'] ?? null) !== 'verified') {
-                throw $error;
-            }
-            return [
-                'businessOutcome' => 'compensated',
-                'originalRunId' => $this->runId(),
-            ];
+            return $this->compensateFunding($machine, $error);
         }
     }
 }

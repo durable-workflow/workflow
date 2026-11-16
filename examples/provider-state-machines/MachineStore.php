@@ -149,12 +149,7 @@ final readonly class MachineStore
         $key = $terms->subjectKey();
         $this->authority->authorize($key, $this->authority->principal);
         $recipe = $this->authority->recipe($key);
-        if (($terms->advanceBalance !== null) !== AdvanceBalancePolicy::selected($recipe)
-            || ($terms->advanceBalance !== null && ($this->incoming === null || $this->cod === null
-                || ! $this->cod->physicalContract
-                || $terms->advanceBalance->balance->handoverPolicy !== AdvanceBalancePolicy::handover($recipe)))) {
-            throw new LogicException('The selected native recipe does not implement the original advance and balance.');
-        }
+        $this->assertAdvanceBalance($terms, $recipe);
         if (($terms->codPayment !== null) !== CodFundingPolicy::selected($recipe)
             || ($terms->codPayment !== null && ($this->cod === null
                 || $terms->codPayment->handoverPolicy !== CodFundingPolicy::handover($recipe)))) {
@@ -584,5 +579,15 @@ final readonly class MachineStore
             $initialization['recipe'] = $recipe;
         }
         return $initialization;
+    }
+
+    private function assertAdvanceBalance(OrderTerms $terms, string $recipe): void
+    {
+        if (($terms->advanceBalance !== null) !== AdvanceBalancePolicy::selected($recipe)
+            || ($terms->advanceBalance !== null && ($this->incoming === null || $this->cod === null
+                || ! $this->cod->physicalContract
+                || $terms->advanceBalance->balance->handoverPolicy !== AdvanceBalancePolicy::handover($recipe)))) {
+            throw new LogicException('The selected native recipe does not implement the original advance and balance.');
+        }
     }
 }

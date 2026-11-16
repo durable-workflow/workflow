@@ -18,7 +18,7 @@ foreach ([
     'Authority', 'OwnerOperation', 'MachineStore', 'AssessmentStore', 'CancellationStore',
     'FinancialInspectionStore', 'FinancialInspectionActivity', 'FinancialAuthority',
     'IncomingPaymentInspectionStore', 'IncomingPaymentInspectionActivity',
-    'CodInspectionStore', 'CodFundingPayment', 'AdvanceBalancePayment',
+    'CodInspectionStore', 'FundingPaymentExecution', 'CodFundingPayment', 'AdvanceBalancePayment',
     'OriginalStock', 'FinancialHandoffStore', 'FinancialHandoffActivity', 'FinancialStep', 'FinancialPreparationStep',
     'FundingAuthority', 'FundingFactsStore', 'FundingHandoffStore', 'FundingHandoffActivity',
     'FundingStep', 'FundingPayment',

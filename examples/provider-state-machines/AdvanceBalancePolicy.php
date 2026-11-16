@@ -9,7 +9,6 @@ use LogicException;
 use Workflow\V2\StateMachine\Definition\ConditionDefinition;
 use Workflow\V2\StateMachine\Definition\PolicyProfile;
 use Workflow\V2\StateMachine\Definition\RuleReference;
-use Workflow\V2\StateMachine\Definition\TransitionDefinition;
 
 /** Original advance permits preparation; carrier balance and merchant receipt remain later facts. */
 final class AdvanceBalancePolicy
@@ -45,48 +44,19 @@ final class AdvanceBalancePolicy
         if (! in_array($recipe, [self::BEFORE, self::AFTER], true)) {
             throw new LogicException('The original advance/balance policy is unavailable.');
         }
-        $base = FundingCatalogue::profile($role, FundingCatalogue::IMMEDIATE);
-        $transitions = [];
-        foreach ($base->transitions as $edge) {
-            $handler = $edge->handler;
-            if ($role === 'payment') {
-                $handler = 'funding-' . $edge->key . '.' . $recipe;
-            } elseif ($role === 'order' && in_array($edge->key, ['prepare', 'fulfill'], true)) {
-                $handler = 'funding-order-' . $edge->key . '.' . $recipe;
-            }
-            $transitions[] = new TransitionDefinition(
-                $edge->key,
-                $edge->event,
-                $edge->from,
-                $edge->to,
-                $handler,
-                $edge->handlerVersion,
-                $edge->hasWork
-            );
-        }
-        $conditions = $base->conditions;
-        if ($role === 'payment') {
-            $conditions = [
-                'prepare.target' => self::all(['forward_open', 'advance_payment_confirmed', 'cod_reference_ready']),
-                'prepare.permission' => self::all(['forward_open']),
-                'collect.target' => self::all(
-                    ['forward_open', 'advance_payment_confirmed', 'cod_payer_collection_confirmed']
-                ),
-                'collect.permission' => self::all(['forward_open', 'advance_payment_confirmed', 'cod_reference_ready']),
-                'confirm-receipt.target' => self::all(
-                    [
-                        'forward_open', 'advance_payment_confirmed', 'cod_payer_collection_confirmed', 'merchant_receipt_confirmed']
-                ),
-                'confirm-receipt.permission' => self::all(['forward_open']),
-            ];
-        }
-        return PolicyProfile::forDefinition(
-            $base->definition ?? throw new LogicException('The common funding definition is unavailable.'),
-            $recipe,
-            '1',
-            $transitions,
-            $conditions
-        );
+        return FundingCatalogue::carrierProfile($role, $recipe, [
+            'prepare.target' => self::all(['forward_open', 'advance_payment_confirmed', 'cod_reference_ready']),
+            'prepare.permission' => self::all(['forward_open']),
+            'collect.target' => self::all(
+                ['forward_open', 'advance_payment_confirmed', 'cod_payer_collection_confirmed']
+            ),
+            'collect.permission' => self::all(['forward_open', 'advance_payment_confirmed', 'cod_reference_ready']),
+            'confirm-receipt.target' => self::all(
+                [
+                    'forward_open', 'advance_payment_confirmed', 'cod_payer_collection_confirmed', 'merchant_receipt_confirmed']
+            ),
+            'confirm-receipt.permission' => self::all(['forward_open']),
+        ]);
     }
 
     /**

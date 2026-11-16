@@ -64,6 +64,42 @@ final class FundingCatalogue
             ?? $terms->fulfillmentDeadline ?? throw new LogicException('The original funding deadline is unavailable.');
     }
 
+    /**
+     * @param array<string, ConditionDefinition> $paymentConditions
+     */
+    public static function carrierProfile(string $role, string $recipe, array $paymentConditions): PolicyProfile
+    {
+        if (! CodFundingPolicy::selected($recipe) && ! AdvanceBalancePolicy::selected($recipe)) {
+            throw new LogicException('The original carrier funding policy is unavailable.');
+        }
+        $base = self::profile($role, self::IMMEDIATE);
+        $transitions = [];
+        foreach ($base->transitions as $edge) {
+            $handler = $edge->handler;
+            if ($role === 'payment') {
+                $handler = 'funding-' . $edge->key . '.' . $recipe;
+            } elseif ($role === 'order' && in_array($edge->key, ['prepare', 'fulfill'], true)) {
+                $handler = 'funding-order-' . $edge->key . '.' . $recipe;
+            }
+            $transitions[] = new TransitionDefinition(
+                $edge->key,
+                $edge->event,
+                $edge->from,
+                $edge->to,
+                $handler,
+                $edge->handlerVersion,
+                $edge->hasWork
+            );
+        }
+        return PolicyProfile::forDefinition(
+            $base->definition ?? throw new LogicException('The common funding definition is unavailable.'),
+            $recipe,
+            '1',
+            $transitions,
+            $role === 'payment' ? $paymentConditions : $base->conditions
+        );
+    }
+
     public static function profile(string $role, string $recipe): PolicyProfile
     {
         if (AdvanceBalancePolicy::selected($recipe)) {

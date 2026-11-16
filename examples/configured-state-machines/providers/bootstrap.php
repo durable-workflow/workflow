@@ -30,6 +30,7 @@ foreach ([
     'RefundAllocationLedger',
     'IncomingRefundLedger',
     'CodRefundLedger',
+    'ProviderContext',
     'Journal',
     'IncomingPaymentProvider',
     'CodPaymentProvider',

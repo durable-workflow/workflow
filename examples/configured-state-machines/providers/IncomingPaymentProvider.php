@@ -21,7 +21,7 @@ final readonly class IncomingPaymentProvider
         private ?Closure $clock = null,
         ?Journal $commands = null
     ) {
-        $commands?->assertSharedContext($db, $client, $clock);
+        $commands?->context->assertMatches($db, $client, $clock);
         $this->commands = $commands ?? new Journal($db, $client, $clock);
         $this->receipts = new IncomingPaymentJournal($db, $client, $clock);
     }

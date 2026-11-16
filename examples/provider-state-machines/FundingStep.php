@@ -32,8 +32,6 @@ final class FundingStep extends AssessedTransitionStep
     public function execute(TransitionContext $context): ExecutionReceipt
     {
         $key = $context->transition->key;
-        $cod = CodFundingPolicy::selected($this->recipe);
-        $advance = AdvanceBalancePolicy::selected($this->recipe);
         $this->admit($key);
         $target = $this->target($key);
         $signal = match ($this->recipe) {
@@ -48,24 +46,12 @@ final class FundingStep extends AssessedTransitionStep
                     'original-funding:' . $context->execution()->executionId,
                 ]);
             }
-            $waitingForMerchant = ($cod || $advance) && $key === 'confirm-receipt';
-            $remaining = $value['waitSeconds'];
-            if ($this->parts !== null) {
-                $deadline = match ($key) {
-                    'prepare' => $this->parts->advance->deadline,
-                    'collect' => $this->parts->balance->collectionDeadline,
-                    'confirm-receipt' => $this->parts->balance->remittanceDeadline,
-                };
-                $remaining = max(0, $deadline - Workflow::now()->getTimestamp());
-            }
-            if ($remaining === 0 && ! $waitingForMerchant) {
+            $remaining = $this->waitSeconds($key, $value);
+            if ($remaining === 0) {
                 Workflow::activity(FundingHandoffActivity::class, 'expire', []);
                 throw new BusinessCancellationRequested(
                     'The original funding deadline expired without its required fact.'
                 );
-            }
-            if ($waitingForMerchant) {
-                $remaining = ($advance ? $remaining : $value['remittanceWaitSeconds']) ?: null;
             }
             Workflow::await($signal, $remaining);
         }
@@ -80,6 +66,27 @@ final class FundingStep extends AssessedTransitionStep
         foreach (array_reverse($this->duties) as $duty) {
             $duty->compensate();
         }
+    }
+
+    private function waitSeconds(string $key, array $value): ?int
+    {
+        $merchant = $key === 'confirm-receipt'
+            && (CodFundingPolicy::selected($this->recipe) || AdvanceBalancePolicy::selected($this->recipe));
+        $remaining = $value['waitSeconds'];
+        if ($this->parts !== null) {
+            $deadline = match ($key) {
+                'prepare' => $this->parts->advance->deadline,
+                'collect' => $this->parts->balance->collectionDeadline,
+                'confirm-receipt' => $this->parts->balance->remittanceDeadline,
+            };
+            $remaining = max(0, $deadline - Workflow::now()->getTimestamp());
+        } elseif ($merchant) {
+            $remaining = $value['remittanceWaitSeconds'];
+        }
+        if ($merchant && ! $remaining) {
+            return null;
+        }
+        return $remaining;
     }
 
     private function admit(string $key): void

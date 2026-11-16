@@ -23,6 +23,8 @@ final readonly class Journal
         'CREATE TABLE provider_requests (sequence INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL, kind TEXT NOT NULL)',
     ];
 
+    public ProviderContext $context;
+
     public function __construct(
         private PDO $db,
         private string $client,
@@ -34,6 +36,7 @@ final readonly class Journal
             throw new LogicException('The synthetic provider requires its own SQLite connection and transaction.');
         }
         $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $this->context = new ProviderContext($db, $client, $clock);
     }
 
     public function install(): void
@@ -43,16 +46,6 @@ final readonly class Journal
                 $this->db->exec($sql);
             }
         });
-    }
-
-    /**
-     * Sharing preserves this exact engine, connection, client, clock and physical-admission hook.
-     */
-    public function assertSharedContext(PDO $db, string $client, ?Closure $clock): void
-    {
-        if ($this->db !== $db || $this->client !== $client || $this->clock !== $clock || $db->inTransaction()) {
-            throw new LogicException('A shared payment journal must retain its original provider context.');
-        }
     }
 
     /**
