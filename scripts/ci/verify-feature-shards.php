@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 const FEATURE_SHARDS = [
-    'mysql' => 12,
+    'mysql' => 16,
     'postgresql' => 8,
 ];
 const PULL_REQUEST_CONDITION = "github.event_name == 'pull_request'";
@@ -108,6 +108,7 @@ function verify_workflow_job(string $workflow, string $job, string $profile): vo
         $requirements['target-branch routing'] = "github.event_name != 'pull_request'";
         $requirements['PCOV coverage driver'] = 'coverage: pcov';
         $requirements['per-shard Clover report'] = '--coverage-clover "build/test-results/mysql-shard-${{ matrix.shard }}-coverage.xml"';
+        $requirements['partial execution trace'] = '--log-events-text "build/test-results/mysql-shard-${{ matrix.shard }}-events.log"';
     }
 
     foreach ($requirements as $description => $needle) {

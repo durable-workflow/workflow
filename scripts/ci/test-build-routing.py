@@ -95,6 +95,10 @@ class FeatureShardRoutingTest(unittest.TestCase):
         "tests/Feature/FillerSixTest.php",
         "tests/Feature/FillerSevenTest.php",
         "tests/Feature/FillerEightTest.php",
+        "tests/Feature/FillerNineTest.php",
+        "tests/Feature/FillerTenTest.php",
+        "tests/Feature/FillerElevenTest.php",
+        "tests/Feature/FillerTwelveTest.php",
     ]
     unseen_feature = "tests/Feature/V2/UnprofiledFeatureTest.php"
 
@@ -203,7 +207,7 @@ class FeatureShardRoutingTest(unittest.TestCase):
     def shard_assignments(self, profile: str) -> list[list[str]]:
         assignments = []
 
-        count = 12 if profile == "mysql" else 8
+        count = 16 if profile == "mysql" else 8
         for shard in range(count):
             result = self.run_php(
                 "scripts/ci/split-feature-tests.php",
@@ -220,7 +224,7 @@ class FeatureShardRoutingTest(unittest.TestCase):
     def test_missing_middle_or_last_mysql_report_cannot_pass_the_coverage_gate(self) -> None:
         workflow = self.root / ".github/workflows/php.yml"
         source = workflow.read_text()
-        for shard in (6, 11):
+        for shard in (6, 11, 12, 15):
             with self.subTest(shard=shard):
                 report = f"        --clover=build/feature-coverage/mysql-shard-{shard}-coverage.xml\n"
                 self.assertIn(report, source)
@@ -228,6 +232,18 @@ class FeatureShardRoutingTest(unittest.TestCase):
                 verification = self.run_php("scripts/ci/verify-feature-shards.php", check=False)
                 self.assertNotEqual(0, verification.returncode)
                 self.assertIn("Coverage job is missing feature report merge input", verification.stderr)
+
+    def test_timeout_diagnostics_must_retain_the_partial_execution_trace(self) -> None:
+        workflow = self.root / ".github/workflows/php.yml"
+        source = workflow.read_text()
+        trace = '          --log-events-text "build/test-results/mysql-shard-${{ matrix.shard }}-events.log" \\\n'
+        self.assertIn(trace, source)
+        workflow.write_text(source.replace(trace, "", 1))
+
+        verification = self.run_php("scripts/ci/verify-feature-shards.php", check=False)
+
+        self.assertNotEqual(0, verification.returncode)
+        self.assertIn("partial execution trace", verification.stderr)
 
     def test_unprofiled_feature_enters_pull_request_and_target_branch_suites(
         self,
