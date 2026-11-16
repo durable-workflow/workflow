@@ -258,3 +258,25 @@ returning the original outcome. The cases count those requests separately from
 committed effects and preserve both closed Order and original Payment histories.
 They are synthetic source controls, not a claim about a real provider's retry
 contract or installed-package acceptance.
+
+## Incoming bank-payment observations
+
+`IncomingPaymentJournal` is a separate synthetic bank-side receipt journal. It
+keeps the original receivable, individual transfer identities, integer amounts,
+currency and fixed deadline. Partial payment, overpayment and late receipts
+remain distinct facts. An empty lookup or an expired deadline does not establish
+that money cannot arrive later.
+
+`IncomingPaymentInspectionActivity` records those facts for the original native
+owner. Its host-supplied authorization must relate the run, retained money duty,
+business grant and exact receivable before protected storage or provider access.
+Reusing the same activity returns its first persisted observation after current
+authorization; a new activity can observe later receipts. Replay uses recorded
+activity results.
+
+`V2IncomingPaymentInspectionTest.php` exercises this observation boundary. Its
+technical workflow can complete while the original incoming-payment duty remains
+registered and unresolved. These controls do not implement bank refunds, close
+future incoming admission, admit fulfillment or complete the common Payment
+route. Those business integration and recovery requirements remain necessary;
+an incoming transfer must never be presented as a card authorization or capture.
