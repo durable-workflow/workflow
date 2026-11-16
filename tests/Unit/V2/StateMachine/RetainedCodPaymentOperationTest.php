@@ -163,6 +163,85 @@ final class RetainedCodPaymentOperationTest extends TestCase
         );
     }
 
+    public static function collectedAmounts(): array
+    {
+        return [
+            'partial-original-collection' => [500],
+            'full-original-collection' => [1500],
+        ];
+    }
+
+    #[DataProvider('collectedAmounts')]
+    public function testClosedMerchantDutyRequiresEveryOriginalCollectedUnitToBeRemitted(int $amount): void
+    {
+        $this->handler('payer')
+            ->execute($this->context('payer'));
+        $receipt = new CodReceipt(
+            $this->original->identity->key(),
+            'original-part-to-settle',
+            CodReceipt::COLLECTION,
+            $amount,
+            'USD',
+            $this->now,
+            $this->original->collectionPoint
+        );
+        $this->provider->collections->record($this->original, $receipt);
+        $this->assertFalse($this->handler('merchant')->compensate($this->context('merchant'))->verified);
+        $this->provider->collections->record($this->original, new CodReceipt(
+            $receipt->payment,
+            'original-partial-remittance',
+            CodReceipt::REMITTANCE,
+            $amount - 1,
+            'USD',
+            $this->now,
+            $receipt->receipt
+        ));
+        $this->assertFalse($this->handler('merchant')->compensate($this->context('merchant'))->verified);
+        $this->assertSame(
+            1,
+            $this->provider->collections->inspect($this->original)['facts']['outstanding_remittance_minor']
+        );
+        $this->now = 3000;
+        $this->provider->collections->record($this->original, new CodReceipt(
+            $receipt->payment,
+            'original-final-remittance',
+            CodReceipt::REMITTANCE,
+            1,
+            'USD',
+            $this->now,
+            $receipt->receipt
+        ));
+        $result = $this->handler('merchant')
+            ->compensate($this->context('merchant', activity: 'original-debt-paid'));
+        $this->assertTrue($result->verified && $result->forwardSettled);
+        $this->assertSame(0, $this->effects());
+        $snapshot = $this->provider->collections->inspect($this->original);
+        $this->assertTrue($snapshot['collectionAdmissionClosed']);
+        $this->assertSame($amount, $snapshot['facts']['collected_amount_minor']);
+        $this->assertSame(0, $snapshot['facts']['outstanding_remittance_minor']);
+        $this->assertSame(2000, $snapshot['original']['remittanceDeadline']);
+    }
+
+    public function testPaidKnownMerchantReceiptsCannotSettleAnOpenCollectionContract(): void
+    {
+        $this->receive(CodJournal::OPEN);
+        $receipt = $this->receipt();
+        $this->provider->collections->record($this->original, new CodReceipt(
+            $receipt->payment,
+            'known-merchant-payment',
+            CodReceipt::REMITTANCE,
+            $receipt->amountMinor,
+            'USD',
+            $this->now,
+            $receipt->receipt
+        ));
+        $result = $this->handler('merchant')
+            ->compensate($this->context('merchant', CodJournal::OPEN));
+        $this->assertFalse($result->verified);
+        $this->assertSame('cod-original-merchant-settlement-open', $result->reason);
+        $this->assertFalse($this->provider->collections->inspect($this->original)['collectionAdmissionClosed']);
+    }
+
     public function testDeniedHostAuthorityCannotCreateReferenceOrCloseAdmission(): void
     {
         $this->allowed = false;

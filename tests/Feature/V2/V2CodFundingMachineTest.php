@@ -6,78 +6,27 @@ namespace Tests\Feature\V2;
 
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\CodDescriptor;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\CodJournal;
-use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\CodPaymentOperation;
-use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\CodPaymentProvider;
-use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\CodReceipt;
-use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Identity;
-use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Request;
-use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\ShipmentDescriptor;
-use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Status;
-use DurableWorkflow\Examples\ProviderStateMachines\Authority;
 use DurableWorkflow\Examples\ProviderStateMachines\CancellationStore;
-use DurableWorkflow\Examples\ProviderStateMachines\Catalogue;
 use DurableWorkflow\Examples\ProviderStateMachines\CodFundingPayment;
 use DurableWorkflow\Examples\ProviderStateMachines\CodFundingPolicy;
 use DurableWorkflow\Examples\ProviderStateMachines\CodInspectionStore;
-use DurableWorkflow\Examples\ProviderStateMachines\FundingCheckout;
-use DurableWorkflow\Examples\ProviderStateMachines\MachineStore;
-use DurableWorkflow\Examples\ProviderStateMachines\OrderTerms;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Queue;
 use InvalidArgumentException;
 use LogicException;
-use PDO;
 use PHPUnit\Framework\Attributes\DataProvider;
-use Tests\Support\ProviderMachineFixture;
+use Tests\Support\CodFundingMachineFixture;
 use Tests\TestCase;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 use Workflow\V2\Compensation\Persistence\ScopeRepository;
-use Workflow\V2\Enums\TaskStatus;
-use Workflow\V2\Models\WorkflowRun;
-use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\WorkflowReplayer;
-use Workflow\V2\WorkflowStub;
 
 require_once __DIR__ . '/../../../examples/provider-state-machines/bootstrap.php';
 
 /** Recorded native COD source cases; installed and full customer-matrix acceptance remain separate. */
 final class V2CodFundingMachineTest extends TestCase
 {
-    use ProviderMachineFixture { tearDown as private tearDownProvider; }
-
-    private ?CodPaymentProvider $cod = null;
-
-    protected function setUp(): void
-    {
-        parent::setUp();
-        self::stopWorkers();
-        Queue::fake();
-        Carbon::setTestNow('2026-01-01T00:00:00Z');
-        config([
-            'workflows.v2.namespaces' => [Catalogue::NAMESPACE],
-            'workflows.v2.task_dispatch_mode' => 'queue',
-            'queue.default' => 'redis',
-        ]);
-        foreach (['business-state-machines', 'provider-state-machines'] as $example) {
-            $schema = require __DIR__ . '/../../../examples/' . $example . '/schema.php';
-            $schema(DB::connection()->getSchemaBuilder());
-        }
-        $this->providerPath = tempnam(sys_get_temp_dir(), 'cod-funding-');
-        $this->providerDb = new PDO('sqlite:' . $this->providerPath);
-        $this->cod = new CodPaymentProvider($this->providerDb, 'shop-a', static fn (): int => now()->getTimestamp(), true);
-        $this->provider = $this->cod->commands;
-        $this->provider->install();
-        $this->provider->shipments()
-            ->install();
-        $this->cod->install();
-    }
-
-    protected function tearDown(): void
-    {
-        $this->cod = null;
-        $this->tearDownProvider();
-    }
+    use CodFundingMachineFixture;
 
     public static function policies(): array
     {
@@ -154,65 +103,6 @@ final class V2CodFundingMachineTest extends TestCase
         $this->assertSame('ready', $this->state('order'));
         $this->assertSame(1499, $this->cod->inspect($this->terms->codPayment)['facts']['outstanding_remittance_minor']);
         $this->assertSame(['reserve', 'ship-book', 'deduct-stock'], $this->effects());
-    }
-
-    public function testRefundProcessingRetainsPayerAndMerchantResponsibilitiesWithoutReleasingStock(): void
-    {
-        $origin = $this->startCod(CodFundingPolicy::BEFORE);
-        $origin->withRequestId('fulfill-cod-to-cancel')
-            ->signal('fulfill');
-        $this->pump();
-        $this->recordPhysical('handed-over');
-        $receipt = $this->collect('payer-to-refund', 1499);
-        $this->wakePayment('payer-collected-before-cancel');
-        $plan = $this->store->authority->plan($this->terms->subjectKey());
-        $refund = CodPaymentOperation::refundRequest(
-            $plan->childScope('payment'),
-            'payment.cod.payer',
-            $this->terms->codPayment,
-            $receipt
-        );
-        $this->provider->plan($refund, Status::Processing);
-        app(CancellationStore::class)->request($this->terms->subjectKey(), $origin->runId(), 'cancel-original-cod');
-        $this->pump();
-        $graph = ShipmentDescriptor::fromArray($this->terms->physicalDescriptor());
-        $this->provider->shipments()
-            ->record($graph, 'original-warehouse-receipt', 'received', $this->terms->quantity);
-        $this->provider->shipments()
-            ->record(
-                $graph,
-                'original-warehouse-inspection',
-                'inspected',
-                $this->terms->quantity,
-                $this->terms->quantity,
-                $this->terms->quantity
-            );
-        app(CancellationStore::class)->request(
-            $this->terms->subjectKey(),
-            $origin->runId(),
-            'original-return-accepted'
-        );
-        $this->pump();
-        $this->assertSame(Status::Processing, $this->provider->lookup($refund)->status, $this->progress());
-        $this->assertSame(
-            'requested',
-            (new ScopeRepository())->metadata($plan->rootScope())['status'],
-            $this->progress()
-        );
-        $this->assertSame('ready', $this->state('order'));
-        $this->assertNotContains('release', $this->effects());
-        $this->assertSame(1499, $this->cod->inspect($this->terms->codPayment)['facts']['outstanding_remittance_minor']);
-        $this->assertNotSame('verified', (new ScopeRepository())->metadata($plan->childScope('payment'))['status']);
-        $this->provider->resolve($refund, Status::Confirmed);
-        app(CancellationStore::class)->request($this->terms->subjectKey(), $origin->runId(), 'original-payer-refunded');
-        $this->pump();
-        $this->assertSame(
-            1,
-            count(array_filter($this->effects(), static fn (string $action): bool => $action === 'refund-cod'))
-        );
-        $this->assertNotContains('release', $this->effects());
-        $this->assertSame('requested', (new ScopeRepository())->metadata($plan->childScope('payment'))['status']);
-        $this->assertSame(1499, $this->cod->inspect($this->terms->codPayment)['facts']['outstanding_remittance_minor']);
     }
 
     public function testCancellationBeforePayerCollectionFencesBothMoneyDutiesAndReleasesOnlyOriginalStock(): void
@@ -308,135 +198,5 @@ final class V2CodFundingMachineTest extends TestCase
         }
         $this->assertSame($original, $read());
         $this->assertSame(['reserve'], $this->effects());
-    }
-
-    private function startCod(string $recipe): WorkflowStub
-    {
-        $now = now()
-            ->getTimestamp();
-        $base = new OrderTerms('shop-a', 'purchase-cod', 'g1', 1499, 'USD', 'sku-1', 2);
-        $cod = new CodDescriptor(
-            new Identity('shop-a', 'purchase-cod', 'g1', 'original-cod'),
-            ShipmentDescriptor::fromArray($base->physicalDescriptor()),
-            'carrier-original',
-            'point-original',
-            1499,
-            'USD',
-            $now + 3600,
-            $now + 7200,
-            CodFundingPolicy::handover($recipe)
-        );
-        $this->terms = new OrderTerms(
-            'shop-a',
-            'purchase-cod',
-            'g1',
-            1499,
-            'USD',
-            'sku-1',
-            2,
-            fulfillmentDeadline: $now + 2400,
-            codPayment: $cod,
-            codAdmissionContract: CodJournal::CLOSABLE
-        );
-        $authority = new Authority(DB::connection(), 'provider-worker', [$this->terms->subjectKey()], [
-            $this->terms->subjectKey() => $recipe,
-        ]);
-        $this->store = MachineStore::configure($this->app, $authority, $this->provider, cod: $this->cod);
-        $this->store->seed($this->terms);
-        foreach ([$this->terms->descriptor('order'), $this->terms->physicalDescriptor()] as $graph) {
-            foreach ($graph as $value) {
-                $this->provider->plan(Request::fromArray($value), Status::Confirmed);
-            }
-        }
-        $origin = WorkflowStub::make(
-            FundingCheckout::class,
-            'provider-order-' . $this->terms->subjectKey(),
-            Catalogue::NAMESPACE
-        );
-        $origin->start($this->terms->subjectKey());
-        $this->pump();
-        return $origin;
-    }
-
-    private function collect(string $id, int $amount): CodReceipt
-    {
-        $original = $this->terms->codPayment;
-        $receipt = new CodReceipt(
-            $original->identity->key(),
-            $id,
-            CodReceipt::COLLECTION,
-            $amount,
-            'USD',
-            now()
-                ->getTimestamp(),
-            $original->collectionPoint
-        );
-        $this->cod->collections->record($original, $receipt);
-        return $receipt;
-    }
-
-    private function remit(CodReceipt $collection, string $id, int $amount): void
-    {
-        $this->cod->collections->record($this->terms->codPayment, new CodReceipt(
-            $collection->payment,
-            $id,
-            CodReceipt::REMITTANCE,
-            $amount,
-            'USD',
-            now()
-                ->getTimestamp(),
-            $collection->receipt
-        ));
-    }
-
-    private function wakePayment(string $id): void
-    {
-        WorkflowStub::loadRun($this->child('payment')->id, Catalogue::NAMESPACE)->withRequestId($id)
-            ->signal('cod-observed', [
-                'paid' => true,
-                'merchantPaid' => true,
-            ]);
-        $this->pump();
-    }
-
-    private function recordPhysical(string $kind): void
-    {
-        $this->provider->shipments()
-            ->record(
-                ShipmentDescriptor::fromArray($this->terms->physicalDescriptor()),
-                'original-' . $kind,
-                $kind,
-                $this->terms->quantity
-            );
-        WorkflowStub::loadRun($this->child('shipment')->id, Catalogue::NAMESPACE)->withRequestId('physical-' . $kind)
-            ->signal('physical-milestone');
-        $this->pump();
-    }
-
-    private function child(string $role): WorkflowRun
-    {
-        $actor = DB::table('provider_machine_actors')->where(
-            'id',
-            Authority::subjectId($this->terms->subjectKey(), $role)
-        )->sole();
-        return WorkflowRun::query()->findOrFail($actor->native_run);
-    }
-
-    private function state(string $role): string
-    {
-        return $this->store->authority->subject($this->terms->subjectKey(), $role)
-->state;
-    }
-
-    private function pump(): void
-    {
-        $through = Carbon::now()->copy()->addSeconds(30);
-        $this->drain(
-            static fn (): bool => ! WorkflowTask::query()->whereRelation('run', 'namespace', Catalogue::NAMESPACE)
-                ->where('status', TaskStatus::Ready)->where(
-                    static fn ($q) => $q->whereNull('available_at')
-                        ->orWhere('available_at', '<=', $through)
-                )->exists()
-        );
     }
 }

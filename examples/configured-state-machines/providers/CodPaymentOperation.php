@@ -59,8 +59,20 @@ final readonly class CodPaymentOperation implements ScopedOperation
         ));
         if ($this->stage === 'merchant') {
             // The original collection-close capability cannot erase or settle carrier/merchant balances.
-            return $closed !== null && $receipts === [] ? Resolution::verified([$closed['evidence']], true)
-                : Resolution::unknown('cod-original-merchant-settlement-open');
+            if ($closed === null) {
+                return Resolution::unknown('cod-original-merchant-settlement-open');
+            }
+            if ($receipts === []) {
+                return Resolution::verified([$closed['evidence']], true);
+            }
+            $snapshot = $this->provider->collections->inspect($original);
+            if ($snapshot['facts']['outstanding_remittance_minor'] !== 0) {
+                return Resolution::unknown('cod-original-merchant-settlement-open');
+            }
+            return Resolution::verified([
+                $closed['evidence'],
+                'cod-merchant-remittance:' . hash('sha256', PortableDescriptor::encode($snapshot['receipts'])),
+            ], true);
         }
         return $this->refundPayer($context, $original, $closed, $receipts);
     }
