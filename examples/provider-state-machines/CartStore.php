@@ -141,7 +141,9 @@ final readonly class CartStore
         $late = $this->provider->cartInventory()
             ->inspect($plan->late);
         $paidOnTime = false;
-        if ($payment['confirmed']) {
+        // At expiry, read authoritative money even if the native publication is delayed.
+        // Before expiry the Payment may still be initializing its original reference.
+        if ($payment['confirmed'] || $initial['deadlinePassed']) {
             [, $terms] = $this->authority->assignment($key);
             $receipts = $this->incoming->receipts->inspect($terms->incomingPayment);
             $amount = 0;

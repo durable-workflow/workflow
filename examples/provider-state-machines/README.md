@@ -374,7 +374,10 @@ The Cart's initial and late stock duties are registered before Payment so revers
 compensation refunds money before releasing paid stock.
 
 Unpaid initial expiry releases only the original lease, leaving its distinct
-payment observation window open. Late confirmed money requires a new reservation
+payment observation window open. A full authoritative receipt before expiry
+preserves that lease even if the Payment publication is delayed. Formal Order
+creation still waits for the original protected publication. A partial receipt
+does not extend the original reservation. Late confirmed money requires a new reservation
 after positive original release; a prior availability observation is no promise.
 Definitive refusal requests the original refund without creating an Order.
 Unknown outcomes remain uncertain and wait for `reconcile-stock` or the original

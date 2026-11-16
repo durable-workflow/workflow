@@ -4,12 +4,15 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentReceipt;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Request;
 use DurableWorkflow\Examples\ProviderStateMachines\CartStore;
+use DurableWorkflow\Examples\ProviderStateMachines\Catalogue;
 use Illuminate\Support\Facades\DB;
 use Tests\Support\CartCheckoutMachineFixture;
 use Tests\TestCase;
 use Workflow\V2\Compensation\Persistence\ScopeRepository;
+use Workflow\V2\WorkflowStub;
 
 require_once __DIR__ . '/../../../examples/provider-state-machines/bootstrap.php';
 
@@ -95,5 +98,67 @@ final class V2CartCheckoutMachineTest extends TestCase
         );
         $this->assertSame(['reserve', 'release', 'reserve'], $this->effects());
         $this->assertTrue($this->provider->cartInventory()->inspect($this->cart->initial)['released']);
+    }
+
+    public function testTimelyMoneyKeepsTheOriginalLeaseWhileThePaymentPublicationIsDelayed(): void
+    {
+        $origin = $this->startCart();
+        $this->incoming->receipts->record($this->terms->incomingPayment, new IncomingPaymentReceipt(
+            $this->terms->incomingPayment->identity->key(),
+            'timely-money-delayed-publication',
+            $this->terms->amountMinor,
+            $this->terms->currency,
+            now()
+                ->getTimestamp()
+        ));
+        $this->expireCart();
+        $this->assertSame(0, DB::table('provider_cart_orders')->count(), $this->progress());
+        $this->assertSame(
+            ['reserve'],
+            $this->effects(),
+            'A delayed Payment publication must not release timely paid stock.'
+        );
+        $this->assertFalse($this->provider->cartInventory()->inspect($this->cart->initial)['released']);
+        WorkflowStub::loadRun($this->child('payment')->id, Catalogue::NAMESPACE)
+            ->withRequestId('publish-timely-cart-money')
+            ->signal('incoming-observed');
+        $this->pump();
+        $order = app(CartStore::class)->order($this->terms->subjectKey());
+        $this->assertSame('initial', $order['selected'], $this->progress());
+        $this->assertSame($origin->runId(), $order['rootRun']);
+        $this->assertSame(['reserve'], $this->effects());
+    }
+
+    public function testAPartialTimelyReceiptDoesNotExtendTheOriginalReservation(): void
+    {
+        $origin = $this->startCart();
+        $this->incoming->receipts->record($this->terms->incomingPayment, new IncomingPaymentReceipt(
+            $this->terms->incomingPayment->identity->key(),
+            'partial-before-cart-expiry',
+            $this->terms->amountMinor - 1,
+            $this->terms->currency,
+            now()
+                ->getTimestamp()
+        ));
+        $this->expireCart();
+        $this->assertSame(['reserve', 'release'], $this->effects(), $this->progress());
+        $this->assertTrue($this->provider->cartInventory()->inspect($this->cart->initial)['released']);
+        $this->assertSame(0, DB::table('provider_cart_orders')->count());
+        $this->incoming->receipts->record($this->terms->incomingPayment, new IncomingPaymentReceipt(
+            $this->terms->incomingPayment->identity->key(),
+            'balance-after-cart-expiry',
+            1,
+            $this->terms->currency,
+            now()
+                ->getTimestamp()
+        ));
+        WorkflowStub::loadRun($this->child('payment')->id, Catalogue::NAMESPACE)
+            ->withRequestId('publish-partial-cart-money')
+            ->signal('incoming-observed');
+        $this->pump();
+        $order = app(CartStore::class)->order($this->terms->subjectKey());
+        $this->assertSame('late', $order['selected'], $this->progress());
+        $this->assertSame($origin->runId(), $order['rootRun']);
+        $this->assertSame(['reserve', 'release', 'reserve'], $this->effects());
     }
 }
