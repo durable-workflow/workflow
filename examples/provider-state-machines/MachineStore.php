@@ -159,6 +159,11 @@ final readonly class MachineStore
         $key = $terms->subjectKey();
         $this->authority->authorize($key, $this->authority->principal);
         $recipe = $this->authority->recipe($key);
+        if ($terms->codPayment !== null) {
+            throw new LogicException(
+                'Native COD admission requires its recorded carrier and merchant settlement adapters.'
+            );
+        }
         if (FundingCatalogue::selected($recipe) && $terms->fulfillmentDeadline === null) {
             throw new LogicException('Common funding checkout requires its original fulfillment deadline.');
         }
