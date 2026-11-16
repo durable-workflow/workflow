@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentOperation;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Request;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Status;
 use DurableWorkflow\Examples\ProviderStateMachines\AdvanceBalancePolicy;
 use DurableWorkflow\Examples\ProviderStateMachines\CancellationStore;
 use Illuminate\Support\Facades\DB;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Component\Process\Exception\ProcessSignaledException;
 use Symfony\Component\Process\Process;
 use Tests\Support\AdvanceBalanceMachineFixture;
@@ -22,8 +24,18 @@ final class V2AdvanceBalanceColdRecoveryTest extends TestCase
 {
     use AdvanceBalanceMachineFixture;
 
-    public function testFreshWorkerSkipsTheVerifiedBankRefundAndFinishesTheOriginalCancellation(): void
+    public static function refundCuts(): array
     {
+        return [
+            'durable-confirmation' => [false],
+            'provider-commit-before-confirmation' => [true],
+        ];
+    }
+
+    #[DataProvider('refundCuts')]
+    public function testFreshProcessRecoversTheOriginalBankRefundAndFinishesCancellation(
+        bool $loseAcknowledgement
+    ): void {
         if (! function_exists('posix_kill')) {
             $this->markTestSkipped('The worker-loss control requires POSIX signals.');
         }
@@ -37,7 +49,7 @@ final class V2AdvanceBalanceColdRecoveryTest extends TestCase
             $this->terms->advanceBalance->advance,
             $receipt
         );
-        $this->provider->plan($refund, Status::Confirmed);
+        $this->provider->plan($refund, Status::Confirmed, $loseAcknowledgement);
         $history = $this->history($origin->runId());
         $request = 'cancel-original-before-worker-loss';
         app(CancellationStore::class)->request($this->terms->subjectKey(), $origin->runId(), $request);
@@ -64,6 +76,8 @@ final class V2AdvanceBalanceColdRecoveryTest extends TestCase
                 'request' => $request,
                 'phase' => 'crash',
                 'report' => $report,
+                'refundId' => $refund->identity->key(),
+                'loseAcknowledgement' => $loseAcknowledgement,
             ];
             file_put_contents($input, json_encode($data, JSON_THROW_ON_ERROR));
             $command = [PHP_BINARY, 'vendor/bin/phpunit', 'tests/Support/AdvanceBalanceRecoveryProcessTest.php'];
@@ -84,11 +98,17 @@ final class V2AdvanceBalanceColdRecoveryTest extends TestCase
             $scopes = new ScopeRepository();
             $payment = $scopes->inspect($plan->childScope('payment'));
             $this->assertSame('requested', $payment['status']);
-            $this->assertSame('verified', $payment['obligations'][2]['compensation_status']);
+            $this->assertSame(! $loseAcknowledgement, $cut['bankVerified']);
+            if ($loseAcknowledgement) {
+                $this->assertNotSame('verified', $payment['obligations'][2]['compensation_status']);
+            } else {
+                $this->assertSame('verified', $payment['obligations'][2]['compensation_status']);
+            }
             $this->assertSame('pending', $payment['obligations'][1]['compensation_status']);
             $this->assertSame('requested', $scopes->metadata($plan->rootScope())['status']);
             $this->assertSame(['reserve', 'refund-incoming'], $this->effects());
-            $this->assertSame(1, $this->refundRequests($refund->identity->key()));
+            $requestsBefore = $this->refundRequests($refund->identity->key());
+            $this->assertSame(1, $requestsBefore);
 
             $data['phase'] = 'resume';
             $data['clock'] = $cut['clock'];
@@ -112,7 +132,22 @@ final class V2AdvanceBalanceColdRecoveryTest extends TestCase
             ));
             $this->assertSame('cancelled', $this->state('order'));
             $this->assertSame(['reserve', 'refund-incoming', 'release'], $this->effects());
-            $this->assertSame(1, $this->refundRequests($refund->identity->key()));
+            $requestsAfter = $this->refundRequests($refund->identity->key());
+            if ($loseAcknowledgement) {
+                $this->assertGreaterThanOrEqual($requestsBefore, $requestsAfter);
+            } else {
+                $this->assertSame($requestsBefore, $requestsAfter);
+            }
+            $operation = $this->providerDb->prepare(
+                'SELECT request, fingerprint FROM provider_operations WHERE id = ?'
+            );
+            $this->assertNotFalse($operation);
+            $operation->execute([$refund->identity->key()]);
+            $recorded = $operation->fetch();
+            $this->assertIsArray($recorded);
+            $this->assertSame($refund->fingerprint(), $recorded['fingerprint']);
+            $recordedRequest = Request::fromArray(json_decode($recorded['request'], true, flags: JSON_THROW_ON_ERROR));
+            $this->assertSame($refund->toArray(), $recordedRequest->toArray());
             $this->assertSame($history, array_slice($this->history($origin->runId()), 0, count($history)));
         } finally {
             if ($process?->isRunning()) {

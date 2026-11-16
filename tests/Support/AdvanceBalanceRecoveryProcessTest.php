@@ -34,8 +34,9 @@ final class AdvanceBalanceRecoveryProcessTest extends TestCase
         $input = $this->input();
         Carbon::setTestNow($input['clock']);
         Queue::fake();
+        $providerDb = new PDO('sqlite:' . $input['provider']);
         $provider = new AdvanceBalanceProvider(
-            new PDO('sqlite:' . $input['provider']),
+            $providerDb,
             'shop-a',
             static fn (): int => now()
                 ->getTimestamp()
@@ -62,8 +63,8 @@ final class AdvanceBalanceRecoveryProcessTest extends TestCase
                     $bankVerified = $obligation['compensation_status'] === 'verified';
                 }
             }
-            if ($input['phase'] === 'crash' && $bankVerified) {
-                $this->report($input, $ledger['status']);
+            if ($input['phase'] === 'crash' && $this->atCut($providerDb, $input, $bankVerified)) {
+                $this->report($input, $ledger['status'], $bankVerified);
                 posix_kill(getmypid(), SIGKILL);
                 $this->fail('The selected recovery worker did not stop after the durable bank confirmation.');
             }
@@ -72,7 +73,7 @@ final class AdvanceBalanceRecoveryProcessTest extends TestCase
                 $finalizing = true;
             }
             if ($finalizing && $store->authority->subject($input['key'], 'order')->state === 'cancelled') {
-                $this->report($input, $scopes->metadata($root)['status']);
+                $this->report($input, $scopes->metadata($root)['status'], true);
                 return;
             }
             $task = WorkflowTask::query()->whereRelation('run', 'namespace', Catalogue::NAMESPACE)
@@ -113,11 +114,23 @@ final class AdvanceBalanceRecoveryProcessTest extends TestCase
         ]);
     }
 
-    private function report(array $input, string $status): void
+    private function atCut(PDO $provider, array $input, bool $bankVerified): bool
+    {
+        if (! $input['loseAcknowledgement']) {
+            return $bankVerified;
+        }
+        $statement = $provider->prepare('SELECT COUNT(*) FROM provider_effects WHERE operation_id = ?');
+        $this->assertNotFalse($statement);
+        $statement->execute([$input['refundId']]);
+        return ! $bankVerified && (int) $statement->fetchColumn() === 1;
+    }
+
+    private function report(array $input, string $status, bool $bankVerified): void
     {
         file_put_contents($input['report'], json_encode([
             'pid' => getmypid(),
             'status' => $status,
+            'bankVerified' => $bankVerified,
             'clock' => now()
                 ->toISOString(),
         ], JSON_THROW_ON_ERROR));

@@ -167,13 +167,15 @@ installed-package, real financial or physical-inventory qualification.
 
 ### Process loss during retained compensation
 
-`V2AdvanceBalanceColdRecoveryTest` stops a fresh PHP process after the original
-bank refund is durably verified, while the remaining Payment and Order
-compensation is still outstanding. A second fresh process uses the same
+`V2AdvanceBalanceColdRecoveryTest` stops a fresh PHP process at two cuts: after
+the original bank refund is durably verified, and after the provider commits it
+but loses the acknowledgement before verification. The remaining Payment and
+Order compensation is still outstanding. A second fresh process uses the same
 application database and independent provider journal to finish the original
-cancellation. The case requires the original scope and obligation identities,
-unchanged history prefix, and exactly one bank-refund request and committed
-effect across both processes.
+cancellation. Both cuts require the original scope, obligation and refund
+identities, unchanged history prefix, and one committed bank-refund effect.
+Verified refunds must not receive another command; an unacknowledged result may
+be retried or reconciled through the same original operation.
 
 This cut uses the advance-before-handover policy before Shipment dispatch. The
 fixture kills the first process with `SIGKILL`, carries its controlled native
