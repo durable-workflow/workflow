@@ -76,8 +76,18 @@ final class V2AdvanceBalanceRefundTest extends TestCase
         }
     }
 
-    public function testProcessingBalanceRefundBlocksTheSeparateAdvanceAndPreservesMerchantDebt(): void
+    public static function advanceRefundAcknowledgements(): array
     {
+        return [
+            'acknowledged' => [false],
+            'lost-bank-acknowledgement' => [true],
+        ];
+    }
+
+    #[DataProvider('advanceRefundAcknowledgements')]
+    public function testProcessingBalanceRefundBlocksTheSeparateAdvanceAndPreservesMerchantDebt(
+        bool $loseAcknowledgement
+    ): void {
         $origin = $this->startAdvance(AdvanceBalancePolicy::BEFORE);
         $advance = $this->receive('original-advance-to-refund', 500);
         $this->wake('incoming-observed', 'original-advance-received');
@@ -102,7 +112,7 @@ final class V2AdvanceBalanceRefundTest extends TestCase
         );
         $this->assertNotSame($payerRefund->identity->key(), $advanceRefund->identity->key());
         $this->provider->plan($payerRefund, Status::Processing);
-        $this->provider->plan($advanceRefund, Status::Confirmed);
+        $this->provider->plan($advanceRefund, Status::Confirmed, $loseAcknowledgement);
         $store = app(CancellationStore::class);
         $store->request($this->terms->subjectKey(), $origin->runId(), 'cancel-both-original-portions');
         $this->pump();
@@ -155,5 +165,16 @@ final class V2AdvanceBalanceRefundTest extends TestCase
             1,
             count(array_filter($this->effects(), static fn (string $v): bool => $v === 'refund-incoming'))
         );
+        $requests = $this->providerDb->prepare(
+            'SELECT COUNT(*) FROM provider_requests WHERE operation_id = ? AND kind = ?'
+        );
+        $this->assertNotFalse($requests);
+        $requests->execute([$advanceRefund->identity->key(), 'command']);
+        $attempts = (int) $requests->fetchColumn();
+        if ($loseAcknowledgement) {
+            $this->assertGreaterThanOrEqual(2, $attempts);
+        } else {
+            $this->assertSame(1, $attempts);
+        }
     }
 }
