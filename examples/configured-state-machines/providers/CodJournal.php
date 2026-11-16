@@ -20,7 +20,10 @@ final readonly class CodJournal
     public function __construct(
         private PDO $db,
         private string $client,
-        private ?Closure $clock = null
+        private ?Closure $clock = null,
+        private ?Closure $registerContract = null,
+        private ?Closure $beforeCollection = null,
+        private ?Closure $physicalSnapshot = null
     ) {
         PortableDescriptor::identifier($client, 'provider client');
         if ($db->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'sqlite' || $db->inTransaction()) {
@@ -126,6 +129,9 @@ final readonly class CodJournal
             if ($receipt->kind === CodReceipt::COLLECTION && $closure !== null) {
                 throw new LogicException('The original carrier reference rejects collection after its provider fence.');
             }
+            if ($receipt->kind === CodReceipt::COLLECTION) {
+                ($this->beforeCollection)?->__invoke($original, $receipt);
+            }
             $known = $this->receipts($original);
             // Keep overflow facts, while inspect() refuses an incomplete bounded inventory.
             if (count($known) < 128) {
@@ -159,12 +165,16 @@ final readonly class CodJournal
                 )) {
                 throw new LogicException('The fenced original carrier collection inventory is incomplete.');
             }
-            return [
+            $value = [
                 ...$snapshot->toArray(),
                 'admissionContract' => $this->contract($original)['contract'],
                 'collectionAdmissionClosed' => $closure !== null,
                 'closedAt' => $closure === null ? null : (int) $closure['closed_at'],
             ];
+            if ($this->physicalSnapshot !== null) {
+                $value['carrierContract'] = ($this->physicalSnapshot)($original);
+            }
+            return $value;
         });
     }
 
@@ -204,6 +214,7 @@ final readonly class CodJournal
             throw new LogicException('The original carrier collection contract cannot be replaced.');
         }
         $this->closure($original);
+        ($this->registerContract)?->__invoke($original, $existing === []);
     }
 
     private function assertContract(string $contract): void

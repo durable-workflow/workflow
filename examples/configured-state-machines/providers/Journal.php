@@ -27,6 +27,7 @@ final readonly class Journal
         private PDO $db,
         private string $client,
         private ?Closure $clock = null,
+        private ?Closure $beforePhysicalEvent = null,
     ) {
         PortableDescriptor::identifier($client, 'provider client');
         if ($db->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'sqlite' || $db->inTransaction()) {
@@ -54,7 +55,7 @@ final readonly class Journal
 
     public function shipments(): ShipmentJournal
     {
-        return new ShipmentJournal($this->db, $this->client);
+        return new ShipmentJournal($this->db, $this->client, $this->beforePhysicalEvent);
     }
 
     /**

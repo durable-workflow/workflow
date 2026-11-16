@@ -14,7 +14,8 @@ final readonly class ShipmentJournal
 {
     public function __construct(
         private PDO $db,
-        private string $client
+        private string $client,
+        private ?Closure $beforeEvent = null
     ) {
         if ($db->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'sqlite' || $db->inTransaction()) {
             throw new LogicException('The physical fixture requires its own SQLite connection and transaction.');
@@ -47,14 +48,24 @@ final readonly class ShipmentJournal
         int $saleable = 0
     ): array {
         $this->authorize($descriptor);
-        return $this->transaction(fn (): array => (new ShipmentLedger($this->db))->record(
+        return $this->transaction(function () use (
             $descriptor,
             $eventId,
             $kind,
             $quantity,
             $accepted,
             $saleable
-        ));
+        ): array {
+            ($this->beforeEvent)?->__invoke($descriptor, $kind);
+            return (new ShipmentLedger($this->db))->record(
+                $descriptor,
+                $eventId,
+                $kind,
+                $quantity,
+                $accepted,
+                $saleable
+            );
+        });
     }
 
     /**

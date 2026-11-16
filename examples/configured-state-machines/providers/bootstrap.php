@@ -16,6 +16,7 @@ foreach ([
     'CodSnapshot',
     'CodJournal',
     'CodRefundTerms',
+    'CodCarrierContract',
     'IncomingRefundTerms',
     'Status',
     'Observation',
