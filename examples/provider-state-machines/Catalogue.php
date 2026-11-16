@@ -74,6 +74,33 @@ final class Catalogue
                 default => throw new LogicException('The selected financial machine role is unavailable.'),
             };
         }
+        return self::legacyProfile($role, $recipe);
+    }
+
+    public static function transition(
+        string $role,
+        string $key,
+        string $recipe = self::RESERVE_FIRST
+    ): TransitionDefinition {
+        foreach (self::profile($role, $recipe)->transitions as $transition) {
+            if ($transition->key === $key) {
+                return $transition;
+            }
+        }
+        throw new LogicException('The original provider transition is unavailable.');
+    }
+
+    public static function registry(): RuleRegistry
+    {
+        return new RuleRegistry([
+            'example.boolean' => [
+                '1' => new BooleanFact(),
+            ],
+        ]);
+    }
+
+    private static function legacyProfile(string $role, string $recipe): PolicyProfile
+    {
         $checkout = $role === 'order' && $recipe !== self::RESERVE_FIRST;
         [$states, $edges] = self::route($role, $checkout);
         $transitions = [];
@@ -105,28 +132,6 @@ final class Catalogue
             $transitions,
             $conditions
         );
-    }
-
-    public static function transition(
-        string $role,
-        string $key,
-        string $recipe = self::RESERVE_FIRST
-    ): TransitionDefinition {
-        foreach (self::profile($role, $recipe)->transitions as $transition) {
-            if ($transition->key === $key) {
-                return $transition;
-            }
-        }
-        throw new LogicException('The original provider transition is unavailable.');
-    }
-
-    public static function registry(): RuleRegistry
-    {
-        return new RuleRegistry([
-            'example.boolean' => [
-                '1' => new BooleanFact(),
-            ],
-        ]);
     }
 
     private static function route(string $role, bool $checkout): array
