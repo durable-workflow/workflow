@@ -29,4 +29,12 @@ final class RegisteredObligationTest extends TestCase
         $this->expectExceptionMessage('authored inside its native workflow');
         $handle->execute();
     }
+
+    public function testAnUninitializedCompensationHandleRefusesBeforeReadingItsIdentity(): void
+    {
+        $handle = (new ReflectionClass(RegisteredObligation::class))->newInstanceWithoutConstructor();
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('Registered compensation must be authored inside its native workflow.');
+        $handle->compensate();
+    }
 }

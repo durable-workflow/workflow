@@ -8,6 +8,7 @@ use DurableWorkflow\Examples\BusinessStateMachines\SqlBusinessStore;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Journal;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Request;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Status;
+use Illuminate\Support\Carbon;
 use LogicException;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 use Workflow\V2\Compensation\Persistence\ScopeRepository;
@@ -44,7 +45,7 @@ final readonly class AssessmentStore
             }
             return $this->read($existing);
         }
-        $facts = $this->facts($actor, $row, $plan, $transition->key, $id);
+        $facts = $this->facts($actual, $activityId, $actor, $row, $plan, $transition->key, $id);
         $profile = $this->authority->profile($actor->root_key, $actor->role);
         $registry = Catalogue::registry();
         $target = $registry->evaluateCondition($profile->condition($transition->key . '.target'), $facts);
@@ -253,6 +254,8 @@ final readonly class AssessmentStore
     }
 
     private function facts(
+        WorkflowRun $actual,
+        string $activityId,
         object $actor,
         object $row,
         BindingPlan $plan,
@@ -271,15 +274,22 @@ final readonly class AssessmentStore
             ),
         ];
         $evidence = array_fill_keys(array_keys($values), 'business-snapshot:' . $id);
+        $selected = FinancialCatalogue::selected($plan->recipe)
+            ? $this->selectedFacts(
+                $actual,
+                $activityId,
+                $actor,
+                $plan,
+                $transitionKey,
+                new RecordedFacts($id, $values, $evidence)
+            ) : null;
+        if ($selected !== null) {
+            return $selected;
+        }
         if ($actor->role === 'order' && $transitionKey === 'prepare') {
-            [, $terms] = $this->authority->assignment($actor->root_key);
-            $forward = Request::fromArray($terms->descriptor('order')['forward']);
-            $stock = $this->provider->lookup($forward);
-            $values['prepare_confirmed'] = $this->childConfirmed($row, $plan, 'payment')
-                && $stock->status === Status::Confirmed && $stock->effectId === 'effect-' . $forward->identity->key();
-            $evidence['prepare_confirmed'] = 'original-checkout:' . $plan->binding('payment')->key() . ':'
-                . $forward->identity->key();
-        } elseif ($actor->role === 'order' && in_array($transitionKey, ['pay', 'book'], true)) {
+            return $this->preparationFacts($actual, $actor, $row, $plan, $values, $evidence, $id);
+        }
+        if ($actor->role === 'order' && in_array($transitionKey, ['pay', 'book'], true)) {
             $role = $transitionKey === 'pay' ? 'payment' : 'shipment';
             $values[$transitionKey . '_confirmed'] = $this->childConfirmed($row, $plan, $role);
             $evidence[$transitionKey . '_confirmed'] = 'original-child-publication:' . $plan->binding($role)->key();
@@ -296,6 +306,121 @@ final readonly class AssessmentStore
                 && $observation->effectId === 'effect-' . $forward->identity->key();
             $evidence[$transitionKey . '_confirmed'] = $observation->effectId
                 ?? 'provider-observation:' . $forward->identity->key() . ':' . $observation->status->value;
+        }
+        return new RecordedFacts($id, $values, $evidence);
+    }
+
+    private function selectedFacts(
+        WorkflowRun $actual,
+        string $activityId,
+        object $actor,
+        BindingPlan $plan,
+        string $transitionKey,
+        RecordedFacts $facts
+    ): ?RecordedFacts {
+        $values = $facts->values;
+        $evidence = $facts->evidence;
+        $id = $facts->snapshotId;
+        return match ($actor->role) {
+            'payment' => $this->financialFacts($actual, $activityId, $actor, $plan, $values, $evidence, $id),
+            'shipment' => $this->physicalFacts($actual, $values, $evidence, $id),
+            'order' => $transitionKey === 'fulfill' ? $this->fulfillmentFacts(
+                $actual,
+                $actor,
+                $values,
+                $evidence,
+                $id
+            ) : null,
+            default => null,
+        };
+    }
+
+    private function physicalFacts(WorkflowRun $actual, array $values, array $evidence, string $id): RecordedFacts
+    {
+        $physical = app(ShipmentBoundaryStore::class)->facts($actual);
+        foreach ($physical['values'] as $key => $value) {
+            $values[$key] = $value;
+            $evidence[$key] = 'original-physical-assessment:' . $id;
+        }
+        $values['physical_observations'] = $physical['snapshot'];
+        $evidence['physical_observations'] = 'original-physical-assessment:' . $id;
+        return new RecordedFacts($id, $values, $evidence);
+    }
+
+    private function fulfillmentFacts(
+        WorkflowRun $actual,
+        object $actor,
+        array $values,
+        array $evidence,
+        string $id
+    ): RecordedFacts {
+        [, $terms] = $this->authority->assignment($actor->root_key);
+        $values['fulfillment_permitted'] = $terms->fulfillmentDeadline !== null
+            && Carbon::now()->getTimestamp() < $terms->fulfillmentDeadline;
+        $values['fulfillment_confirmed'] = app(ShipmentBoundaryStore::class)->fulfilled($actual);
+        $evidence['fulfillment_permitted'] = $evidence['fulfillment_confirmed'] = 'original-fulfillment:' . $id;
+        return new RecordedFacts($id, $values, $evidence);
+    }
+
+    private function preparationFacts(
+        WorkflowRun $actual,
+        object $actor,
+        object $row,
+        BindingPlan $plan,
+        array $values,
+        array $evidence,
+        string $id
+    ): RecordedFacts {
+        if (FinancialCatalogue::selected($plan->recipe)) {
+            $values['prepare_confirmed'] = app(FinancialHandoffStore::class)->prepared($actual);
+            $evidence['prepare_confirmed'] = 'original-financial-preparation:' . $plan->binding('payment')->key();
+        } else {
+            [, $terms] = $this->authority->assignment($actor->root_key);
+            $forward = Request::fromArray($terms->descriptor('order')['forward']);
+            $stock = $this->provider->lookup($forward);
+            $values['prepare_confirmed'] = $this->childConfirmed($row, $plan, 'payment')
+                && $stock->status === Status::Confirmed && $stock->effectId === 'effect-' . $forward->identity->key();
+            $evidence['prepare_confirmed'] = 'original-checkout:' . $plan->binding(
+                'payment'
+            )->key() . ':' . $forward->identity->key();
+        }
+        return new RecordedFacts($id, $values, $evidence);
+    }
+
+    private function financialFacts(
+        WorkflowRun $actual,
+        string $activityId,
+        object $actor,
+        BindingPlan $plan,
+        array $values,
+        array $evidence,
+        string $id
+    ): RecordedFacts {
+        [, $terms] = $this->authority->assignment($actor->root_key);
+        $snapshot = app(FinancialInspectionStore::class)->inspect(
+            $actual,
+            $activityId,
+            $plan->childScope('payment')
+                ->toArray(),
+            $terms->financialDescriptor()
+        );
+        foreach ($snapshot['financial']['facts'] as $key => $value) {
+            $values[$key] = $value;
+            $evidence[$key] = 'original-financial-snapshot:' . $snapshot['snapshotId'];
+        }
+        // A provider confirmation alone cannot skip establishing this original native effect owner.
+        $values['authorization_confirmed'] = $values['authorization_confirmed']
+            && $snapshot['business']['nativeForward']['authorize'] === 'observed';
+        $values['capture_confirmed'] = $values['capture_confirmed']
+            && $snapshot['business']['nativeForward']['capture'] === 'observed';
+        $values['model_consistent'] = $values['model_consistent'] && $values['financial_observation_consistent'];
+        $values['financial_observations'] = $snapshot['financial']['observations'];
+        $values['financial_observed_at'] = $snapshot['financial']['observedAt'];
+        $evidence['financial_observations'] = $evidence['financial_observed_at'] = 'original-financial-snapshot:' . $snapshot['snapshotId'];
+        if ($snapshot['business']['captureInstruction'] !== null) {
+            $values[FinancialCatalogue::captureTrigger($plan->recipe)] = true;
+            $evidence[FinancialCatalogue::captureTrigger($plan->recipe)] = 'original-policy-instruction:'
+                . $snapshot['business']['captureInstruction']['id'];
         }
         return new RecordedFacts($id, $values, $evidence);
     }
@@ -370,6 +495,9 @@ final readonly class AssessmentStore
     {
         $execution = Authority::reference($request['execution'] ?? []);
         [$actor, $row, $plan] = $this->authority->actor($actual, $execution);
+        if ($actor->role === 'shipment' && FinancialCatalogue::selected($plan->recipe)) {
+            app(ShipmentBoundaryStore::class)->authorize($actual);
+        }
         $keys = $protected ? [
             'execution',
             'transition',

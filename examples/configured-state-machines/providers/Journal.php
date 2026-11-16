@@ -52,6 +52,11 @@ final readonly class Journal
         $this->transaction(fn () => $this->authorizationLedger()->install());
     }
 
+    public function shipments(): ShipmentJournal
+    {
+        return new ShipmentJournal($this->db, $this->client);
+    }
+
     /**
      * Select the next attempt's result. This never dispatches an operation or creates an effect.
      */
@@ -85,6 +90,9 @@ final readonly class Journal
             if (AuthorizationLedger::handles($request)) {
                 $status = $this->authorizationLedger()
                     ->admit($request, $status);
+            } elseif (in_array($request->action, ShipmentLedger::ACTIONS, true)) {
+                $status = (new ShipmentLedger($this->db))
+                    ->admit($request, $status);
             } elseif (! $this->targetConfirmed($request)) {
                 $status = Status::Unknown;
             }
@@ -110,6 +118,40 @@ final readonly class Journal
             $row = $this->operation($request);
             $this->recordRequest($request, 'lookup');
             return $this->observation($request, $row);
+        });
+    }
+
+    /**
+     * Invoke only from an authorized recorded host activity, never directly during workflow replay.
+     */
+    public function inspectFinancial(FinancialDescriptor $descriptor): FinancialSnapshot
+    {
+        foreach ($descriptor->requests() as $request) {
+            $this->authorize($request);
+        }
+        return $this->transaction(function () use ($descriptor): FinancialSnapshot {
+            $observations = [];
+            foreach ($descriptor->requests() as $key => $request) {
+                $observations[$key] = $this->observation($request, $this->operation($request));
+            }
+            $state = $this->authorizationLedger()
+                ->inspectCapture($descriptor);
+            $clock = $this->clock ?? static fn (): int => time();
+            $now = $clock();
+            if (! is_int($now) || $now < 0) {
+                throw new LogicException('The provider clock must return a nonnegative integer Unix timestamp.');
+            }
+            $this->recordRequest($descriptor->authorize, 'financial-inspection');
+            return new FinancialSnapshot(
+                $descriptor,
+                $now,
+                $observations['authorize'],
+                $observations['capture'],
+                $observations['void'],
+                $observations['refund'],
+                $state['closed'],
+                $state['inFlight']
+            );
         });
     }
 
@@ -145,6 +187,9 @@ final readonly class Journal
             if ($status === Status::Confirmed) {
                 if (AuthorizationLedger::handles($request)) {
                     $this->authorizationLedger()
+                        ->assertCompletion($request);
+                } elseif (in_array($request->action, ShipmentLedger::ACTIONS, true)) {
+                    (new ShipmentLedger($this->db))
                         ->assertCompletion($request);
                 } elseif (! $this->targetConfirmed($request)) {
                     throw new LogicException(
@@ -236,6 +281,14 @@ final readonly class Journal
     {
         if ($row !== null && $row['status'] === Status::Confirmed->value && AuthorizationLedger::handles($request)) {
             $this->authorizationLedger()
+                ->assertCompletion($request);
+        }
+        if ($row !== null && $row['status'] === Status::Confirmed->value && in_array(
+            $request->action,
+            ShipmentLedger::ACTIONS,
+            true
+        )) {
+            (new ShipmentLedger($this->db))
                 ->assertCompletion($request);
         }
         $effect = $this->query('SELECT effect_id FROM provider_effects WHERE operation_id = ?', [

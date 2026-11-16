@@ -6,6 +6,7 @@ namespace DurableWorkflow\Examples\ProviderStateMachines;
 
 use DurableWorkflow\Examples\BusinessStateMachines\SqlBusinessStore;
 use Illuminate\Database\ConnectionInterface;
+use Illuminate\Support\Carbon;
 use LogicException;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
@@ -172,7 +173,9 @@ final readonly class Authority implements ChildScopeBindingAuthorization
             throw new LogicException('The retained scope is outside the selected host boundary.');
         }
         $plan = $this->plan($key);
-        foreach ([$plan->rootScope(), $plan->childScope('payment'), $plan->childScope('shipment')] as $expected) {
+        $scopes = [$plan->rootScope(), $plan->childScope('payment')];
+        $scopes[] = $plan->childScope('shipment');
+        foreach ($scopes as $expected) {
             if ($scope->toArray() === $expected->toArray()) {
                 $this->subject($key, 'order');
                 return $plan->version();
@@ -205,7 +208,13 @@ final readonly class Authority implements ChildScopeBindingAuthorization
             throw new LogicException('The provider descriptor does not belong to this original native/business owner.');
         }
         $this->subject($key, $role);
-        return [$this->subject($key, 'order'), $terms];
+        $root = $this->subject($key, 'order');
+        if (! $owner && $operation === 'forward' && FinancialCatalogue::selected($this->recipe($key))
+            && ((bool) $root->cancellation_requested || $terms->authorization === null
+                || ! $terms->authorization->canAdmitCaptureAt(Carbon::now()->getTimestamp()))) {
+            throw new LogicException('The original financial policy has closed stock forward admission.');
+        }
+        return [$root, $terms];
     }
 
     public function assertAllowed(BindingIdentity $identity, string $principal, string $operation): string
@@ -230,9 +239,9 @@ final readonly class Authority implements ChildScopeBindingAuthorization
     public static function role(string $class): string
     {
         return match ($class) {
-            Order::class, CheckoutOrder::class, Cancellation::class => 'order',
-            Payment::class => 'payment',
-            Booking::class => 'shipment',
+            Order::class, CheckoutOrder::class, AuthorizationCheckout::class, Cancellation::class => 'order',
+            Payment::class, AuthorizedPayment::class => 'payment',
+            Booking::class, FullShipment::class => 'shipment',
             default => throw new LogicException('The native workflow is outside this example.'),
         };
     }

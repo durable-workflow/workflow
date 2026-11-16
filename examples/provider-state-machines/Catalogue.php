@@ -30,7 +30,8 @@ final class Catalogue
 
     public static function assertRecipe(string $recipe): void
     {
-        if (! in_array($recipe, [self::RESERVE_FIRST, self::PAYMENT_FIRST, self::COMMON_RESERVE_FIRST], true)) {
+        if (! in_array($recipe, [self::RESERVE_FIRST, self::PAYMENT_FIRST, self::COMMON_RESERVE_FIRST], true)
+            && ! FinancialCatalogue::selected($recipe)) {
             throw new LogicException('The trusted provider policy recipe is unavailable.');
         }
     }
@@ -38,6 +39,9 @@ final class Catalogue
     public static function rootClass(string $recipe): string
     {
         self::assertRecipe($recipe);
+        if (FinancialCatalogue::selected($recipe)) {
+            return AuthorizationCheckout::class;
+        }
         return $recipe === self::RESERVE_FIRST ? Order::class : CheckoutOrder::class;
     }
 
@@ -56,6 +60,14 @@ final class Catalogue
     public static function profile(string $role, string $recipe = self::RESERVE_FIRST): PolicyProfile
     {
         self::assertRecipe($recipe);
+        if (FinancialCatalogue::selected($recipe)) {
+            return match ($role) {
+                'order' => FinancialCatalogue::order($recipe),
+                'payment' => FinancialCatalogue::profile($recipe),
+                'shipment' => PhysicalCatalogue::profile($recipe),
+                default => throw new LogicException('The selected financial machine role is unavailable.'),
+            };
+        }
         $checkout = $role === 'order' && $recipe !== self::RESERVE_FIRST;
         [$states, $edges] = self::route($role, $checkout);
         $transitions = [];

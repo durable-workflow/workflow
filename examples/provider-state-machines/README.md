@@ -1,4 +1,4 @@
-# Provider-backed Order, Payment and booking machines
+# Provider-backed Order, Payment and Shipment machines
 
 Work in progress for [#1069](https://github.com/durable-workflow/workflow/issues/1069).
 The recorded SQL host, workflow composition and initial native tests are
@@ -8,6 +8,67 @@ backend cycle in #1161. The common checkout policies below are a subsequent
 source increment. This directory remains experimental
 source, not an installed-package guide.
 Published Workflow 2.28.1 does not contain these retained-scope or StateMachine APIs.
+
+The authorization recipes use one Order route (`received -> ready -> fulfilled`),
+one Payment route (`received -> authorized -> captured`) and one full Shipment
+route (`received -> booked -> in-transit -> delivered`). They are experimental
+source and require complete qualification before publication. The original
+immediate-capture profiles and booking-only child remain available.
+
+For `authorization-after-stock`, the original reservation permits capture before
+Order becomes ready. For `authorization-after-delivery`, ready requires the
+original reservation and valid authorization; it does not imply captured money.
+The trusted application requests fulfillment with the Order's `fulfill` signal.
+That request provides no stock, financial or delivery evidence.
+
+Full Shipment registers its original owner and whole physical obligation before
+provider access. It confirms booking, observes actual carrier handover, records
+the separate original stock-deduction effect, then observes recipient delivery.
+Booking and technical child completion cannot substitute for those facts. Order
+can observe the protected delivery publication while Shipment is still open.
+The delivery-capture policy then records a protected instruction to the same
+original Payment and waits for its captured business publication. Neither child
+waits for the other's technical completion.
+
+The complete runnable assignment supplies an absolute `fulfillmentDeadline`
+independently of authorization expiry. The original deadline bounds fulfillment
+requests and physical waits; replay and worker replacement do not restart it.
+An older financial-preparation assignment without that field cannot dispatch
+full fulfillment. Notifications use stable original publication/target keys and
+request authenticated rereads. Signal payloads provide no authority.
+
+After handover, cancellation or a permitted full return keeps the original
+Shipment responsibility outstanding until actual warehouse receipt, suitable
+acceptance and required original restocking confirm. Only then may the parent
+settle the original captured Payment and release its original reservation.
+Historical delivery remains visible. Unknown outcomes and missing original
+reservation receipts never establish successful settlement or permission to
+create another stock deduction.
+
+The source cases are `V2AuthorizedPaymentMachineTest`,
+`V2PhysicalShipmentMachineTest` and `V2DeliveryCaptureMachineTest`. They are
+synthetic recorded-task fixtures, not installed-package, real-provider or full
+33-scenario acceptance. The remaining payment, subscription, partial-stock,
+return/replacement, crash/race and installed/publication criteria remain open.
+
+`FinancialInspectionActivity` requires an explicitly bound
+`FinancialInspectionStore`. Its mandatory host callback must authorize the
+original native actor, business generation, financial graph and paired retained
+obligations before provider SQL. The store persists the first observation by
+original activity identity. An acknowledgement retry returns that observation
+after reauthorization; it does not refresh its time or extend authorization
+expiry. A later inspection has a distinct recorded identity. Raw unknown,
+processing and refused observations remain available alongside confirmed facts.
+These observations grant no authority to execute a capture and do not replace
+the live protected business admission check.
+
+The authorization and capture obligations are registered before provider
+inspection. `RegisteredObligation::compensate()` invokes the existing native
+scope request and verified compensation activity, so a transition can resolve
+these predeclared owners before its `compensate()` returns. The original
+automatic Saga callbacks remain present and observe the same verified rows.
+Reverse ordering and unknown-result refusal still apply; the handle introduces
+no separate compensation executor.
 
 The first selected policy uses an original stock reservation, immediate full
 payment capture and carrier booking before handover. Payment is a distinct

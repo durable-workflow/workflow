@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace DurableWorkflow\Examples\ProviderStateMachines;
 
 use DurableWorkflow\Examples\BusinessStateMachines\SqlBusinessStore;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\FinancialOperation;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Journal;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\RetainedOperation;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\ShipmentOperation;
 use Illuminate\Contracts\Container\Container;
 use LogicException;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
@@ -35,9 +37,30 @@ final readonly class MachineStore
         $store = new self($authority);
         $app->instance(self::class, $store);
         $app->instance(AssessmentStore::class, new AssessmentStore($authority, $provider));
+        $financial = new FinancialAuthority($authority);
+        $handoff = new FinancialHandoffStore($authority, $provider, $financial);
+        $app->instance(FinancialHandoffStore::class, $handoff);
+        $app->instance(FinancialInspectionStore::class, new FinancialInspectionStore(
+            $authority->db,
+            $provider,
+            $financial->inspect(...),
+            $handoff->businessFacts(...)
+        ));
         $app->instance(CancellationStore::class, new CancellationStore($authority));
+        $physical = new ShipmentAuthority($authority);
+        $app->instance(ShipmentBoundaryStore::class, new ShipmentBoundaryStore($authority, $provider, $physical));
         $app->instance(ChildReservationStore::class, new ChildReservationStore($authority));
         $app->instance(ChildDefinitionRegistry::class, new ChildDefinitionRegistry([
+            BindingPlan::FULL_SHIPMENT => [
+                PhysicalCatalogue::profile(FinancialCatalogue::AFTER_STOCK)->fingerprint() => FullShipment::class,
+                PhysicalCatalogue::profile(FinancialCatalogue::AFTER_DELIVERY)->fingerprint() => FullShipment::class,
+            ],
+            BindingPlan::AUTHORIZED_PAYMENT => [
+                FinancialCatalogue::profile(FinancialCatalogue::AFTER_STOCK)->fingerprint() => AuthorizedPayment::class,
+                FinancialCatalogue::profile(
+                    FinancialCatalogue::AFTER_DELIVERY
+                )->fingerprint() => AuthorizedPayment::class,
+            ],
             BindingPlan::PAYMENT => [
                 Catalogue::profile('payment')->fingerprint() => Payment::class,
             ],
@@ -56,7 +79,7 @@ final readonly class MachineStore
                 return $this->authority->authorizeScope($scope, $principal, $operation);
             }
         });
-        $app->instance(HandlerRegistry::class, new HandlerRegistry([
+        $handlers = [
             'provider.owner' => [
                 '1' => new OwnerOperation($authority),
             ],
@@ -68,7 +91,21 @@ final readonly class MachineStore
                     $authority->authorizeOperation($context, $operation);
                 }),
             ],
-        ]));
+            'provider.shipment.full' => [
+                '1' => new ShipmentOperation($provider, $physical->operation(...)),
+            ],
+        ];
+        foreach (['authorize', 'capture'] as $stage) {
+            $handlers['provider.financial.' . $stage] = [
+                '1' => new FinancialOperation($provider, static function (
+                    OperationContext $context,
+                    string $mode
+                ) use ($financial, $stage): void {
+                    $financial->operation($context, $mode, $stage);
+                }, $stage),
+            ];
+        }
+        $app->instance(HandlerRegistry::class, new HandlerRegistry($handlers));
         return $store;
     }
 
@@ -76,6 +113,15 @@ final readonly class MachineStore
     {
         $key = $terms->subjectKey();
         $this->authority->authorize($key, $this->authority->principal);
+        $recipe = $this->authority->recipe($key);
+        if ($recipe === FinancialCatalogue::AFTER_DELIVERY && $terms->fulfillmentDeadline === null) {
+            throw new LogicException(
+                'The selected delivery policy requires its original physical fulfillment deadline.'
+            );
+        }
+        if (($terms->authorization !== null) !== FinancialCatalogue::selected($recipe)) {
+            throw new LogicException('The selected native recipe does not implement authorization and capture.');
+        }
         $payload = PortableDescriptor::encode($terms->toArray());
         $this->authority->db->transaction(function () use ($key, $payload): void {
             $this->authority->db->table('provider_machine_assignments')
@@ -111,6 +157,17 @@ final readonly class MachineStore
         $scope = $role === 'order' ? $plan->rootScope() : $plan->childScope($role);
         $this->persistActor($root, $key, $role, $actual, $scope);
         $this->authority->actor($actual);
+        $children = [];
+        if ($role === 'order') {
+            $roles = ['payment', 'shipment'];
+            $children = array_map(static fn (string $child): array => [
+                'binding' => $plan->binding($child)
+                    ->toArray(),
+                'scope' => $plan->childScope($child)
+                    ->toArray(),
+                'input' => $plan->childInput($child),
+            ], $roles);
+        }
         return $this->withRecipe([
             'key' => $key,
             'role' => $role,
@@ -118,14 +175,9 @@ final readonly class MachineStore
             'nativeRun' => $actual->id,
             'principal' => $this->authority->principal,
             'scope' => $scope->toArray(),
-            'descriptor' => $terms->descriptor($role),
-            'children' => $role === 'order' ? array_map(static fn (string $child): array => [
-                'binding' => $plan->binding($child)
-                    ->toArray(),
-                'scope' => $plan->childScope($child)
-                    ->toArray(),
-                'input' => $plan->childInput($child),
-            ], ['payment', 'shipment']) : [],
+            'descriptor' => $this->descriptor($terms, $role, $this->authority->recipe($key)),
+            'fulfillmentDeadline' => $terms->fulfillmentDeadline,
+            'children' => $children,
         ], $key);
     }
 
@@ -264,6 +316,7 @@ final readonly class MachineStore
         $obligations = $actor->role === 'order' ? match ($key) {
             'reserve' => ['effect'], 'pay' => ['payment'], 'book' => ['shipment'],
             'prepare' => ['payment', 'effect'],
+            'fulfill' => ['shipment'],
             default => throw new LogicException('The proof-only transition cannot own provider work.'),
         } : ['effect'];
         foreach ($metadata['obligations'] as $item) {
@@ -279,6 +332,19 @@ final readonly class MachineStore
             'execution' => $execution->toArray(),
             'verified' => true,
         ];
+    }
+
+    private function descriptor(OrderTerms $terms, string $role, string $recipe): array
+    {
+        if (FinancialCatalogue::selected($recipe)) {
+            if ($role === 'payment') {
+                return $terms->financialDescriptor();
+            }
+            if ($role === 'shipment') {
+                return $terms->physicalDescriptor();
+            }
+        }
+        return $terms->descriptor($role);
     }
 
     private function rootPlan(
