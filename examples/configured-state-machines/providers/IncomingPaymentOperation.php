@@ -21,7 +21,7 @@ final readonly class IncomingPaymentOperation implements ScopedOperation
      * Host must jointly authorize the original business assignment/run/scope/registered input before provider SQL.
      */
     public function __construct(
-        private Journal $provider,
+        private IncomingPaymentProvider $provider,
         private Closure $authorize
     ) {
     }
@@ -36,7 +36,7 @@ final readonly class IncomingPaymentOperation implements ScopedOperation
         [$original, $contract] = $this->original($context->obligation->input);
         ($this->authorize)($context, 'forward');
         // Repeating the same originally pinned reference is provider-idempotent; it never reopens a fence.
-        $this->provider->incomingPayments()
+        $this->provider->receipts
             ->register($original, $contract);
         return ForwardResult::observed([
             'original' => $original->toArray(),
@@ -50,7 +50,7 @@ final readonly class IncomingPaymentOperation implements ScopedOperation
     {
         [$original, $contract] = $this->original($context->obligation->input);
         ($this->authorize)($context, 'compensate');
-        $bank = $this->provider->incomingPayments();
+        $bank = $this->provider->receipts;
         $closed = $contract === IncomingPaymentJournal::CLOSABLE ? $bank->closeAdmission($original, $contract) : null;
         $receipts = $closed === null ? $bank->inspect($original)['receipts'] : $closed['receipts'];
         $evidence = hash_init('sha256');
@@ -58,7 +58,7 @@ final readonly class IncomingPaymentOperation implements ScopedOperation
             $receipt = IncomingPaymentReceipt::fromArray($value);
             $request = self::refundRequest($context->scope, $context->obligation->key, $original, $receipt);
             // Same original refund key across recovery. Processing/unknown/refusal never means reimbursement.
-            $refund = $this->provider->attempt($request);
+            $refund = $this->provider->commands->attempt($request);
             if ($refund->status !== Status::Confirmed || $refund->effectId === null) {
                 return Resolution::unknown('incoming-refund-' . $refund->status->value);
             }

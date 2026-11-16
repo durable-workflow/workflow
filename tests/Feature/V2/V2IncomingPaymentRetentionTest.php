@@ -8,6 +8,7 @@ use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Identity;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentDescriptor;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentJournal;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentOperation;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentProvider;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentReceipt;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Journal;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Request;
@@ -48,6 +49,8 @@ final class V2IncomingPaymentRetentionTest extends TestCase
 
     private Journal $provider;
 
+    private IncomingPaymentProvider $incoming;
+
     private string $providerPath;
 
     private ?string $originalRun = null;
@@ -73,9 +76,10 @@ final class V2IncomingPaymentRetentionTest extends TestCase
         ]);
         $this->providerPath = tempnam(sys_get_temp_dir(), 'native-incoming-retained-');
         $this->providerDb = new PDO('sqlite:' . $this->providerPath);
-        $this->provider = new Journal($this->providerDb, 'shop-a', fn (): int => $this->providerTime);
+        $this->incoming = new IncomingPaymentProvider($this->providerDb, 'shop-a', fn (): int => $this->providerTime);
+        $this->provider = $this->incoming->commands;
         $this->provider->install();
-        $this->provider->installIncomingPaymentSupport();
+        $this->incoming->install();
         $this->configureHandler();
     }
 
@@ -83,7 +87,7 @@ final class V2IncomingPaymentRetentionTest extends TestCase
     {
         Carbon::setTestNow();
         $this->app->forgetInstance(HandlerRegistry::class);
-        unset($this->provider, $this->providerDb);
+        unset($this->incoming, $this->provider, $this->providerDb);
         if (isset($this->providerPath)) {
             unlink($this->providerPath);
         }
@@ -107,7 +111,7 @@ final class V2IncomingPaymentRetentionTest extends TestCase
         $this->assertSame([1500], $this->effectAmounts());
         $this->assertSame($history, $this->history());
         $this->assertSame('completed', $origin->refresh()->status());
-        $this->assertSame(1500, $this->provider->incomingPayments()->inspect($this->original())['receivedAmountMinor']);
+        $this->assertSame(1500, $this->incoming->receipts->inspect($this->original())['receivedAmountMinor']);
         $before = $this->authorizations;
         $requests = (int) $this->providerDb->query('SELECT COUNT(*) FROM provider_requests')
             ->fetchColumn();
@@ -170,7 +174,8 @@ final class V2IncomingPaymentRetentionTest extends TestCase
         $ids = array_column($ledger['obligations'], 'id');
         $this->provider->resolve($refund, Status::Confirmed);
         $this->providerDb = new PDO('sqlite:' . $this->providerPath);
-        $this->provider = new Journal($this->providerDb, 'shop-a', fn (): int => $this->providerTime);
+        $this->incoming = new IncomingPaymentProvider($this->providerDb, 'shop-a', fn (): int => $this->providerTime);
+        $this->provider = $this->incoming->commands;
         $this->configureHandler();
         $this->recover('original-refund-now-confirmed');
         $after = (new ScopeRepository())->inspect($this->scope());
@@ -220,7 +225,7 @@ final class V2IncomingPaymentRetentionTest extends TestCase
                 ->fetchColumn()
         );
         $this->receive('still-open-transfer', 1);
-        $this->assertSame(1001, $this->provider->incomingPayments()->inspect($this->original())['receivedAmountMinor']);
+        $this->assertSame(1001, $this->incoming->receipts->inspect($this->original())['receivedAmountMinor']);
     }
 
     public function testRehashedForeignReceivableIsRefusedBeforeAnyProviderClosureOrRefund(): void
@@ -265,7 +270,7 @@ final class V2IncomingPaymentRetentionTest extends TestCase
         });
         $this->app->instance(HandlerRegistry::class, new HandlerRegistry([
             'test.incoming.retained' => [
-                '1' => new IncomingPaymentOperation($this->provider, function (
+                '1' => new IncomingPaymentOperation($this->incoming, function (
                     OperationContext $context,
                     string $mode
                 ): void {
@@ -375,7 +380,7 @@ final class V2IncomingPaymentRetentionTest extends TestCase
             'USD',
             $this->providerTime
         );
-        $this->provider->incomingPayments()
+        $this->incoming->receipts
             ->record($this->original(), $receipt);
         return $receipt;
     }

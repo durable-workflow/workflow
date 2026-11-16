@@ -52,21 +52,6 @@ final readonly class Journal
         $this->transaction(fn () => $this->authorizationLedger()->install());
     }
 
-    public function incomingPayments(): IncomingPaymentJournal
-    {
-        return new IncomingPaymentJournal($this->db, $this->client, $this->clock);
-    }
-
-    /**
-     * Optional incoming-receipt/refund support; the original four-table install stays unchanged.
-     */
-    public function installIncomingPaymentSupport(): void
-    {
-        $this->incomingPayments()
-            ->install();
-        $this->transaction(fn () => $this->incomingRefundLedger()->install());
-    }
-
     public function shipments(): ShipmentJournal
     {
         return new ShipmentJournal($this->db, $this->client);
@@ -109,7 +94,7 @@ final readonly class Journal
                 $status = (new ShipmentLedger($this->db))
                     ->admit($request, $status);
             } elseif (IncomingRefundLedger::handles($request)) {
-                $status = $this->incomingRefundLedger()
+                $status = (new IncomingRefundLedger($this->db, $this->clock ?? static fn (): int => time()))
                     ->admit($request, $status);
             } elseif (! $this->targetConfirmed($request)) {
                 $status = Status::Unknown;
@@ -210,7 +195,7 @@ final readonly class Journal
                     (new ShipmentLedger($this->db))
                         ->assertCompletion($request);
                 } elseif (IncomingRefundLedger::handles($request)) {
-                    $this->incomingRefundLedger()
+                    (new IncomingRefundLedger($this->db, $this->clock ?? static fn (): int => time()))
                         ->assertCompletion($request);
                 } elseif (! $this->targetConfirmed($request)) {
                     throw new LogicException(
@@ -233,11 +218,6 @@ final readonly class Journal
     private function authorizationLedger(): AuthorizationLedger
     {
         return new AuthorizationLedger($this->db, $this->clock ?? static fn (): int => time());
-    }
-
-    private function incomingRefundLedger(): IncomingRefundLedger
-    {
-        return new IncomingRefundLedger($this->db, $this->clock ?? static fn (): int => time());
     }
 
     private function operation(Request $request): ?array
@@ -306,7 +286,7 @@ final readonly class Journal
     private function observation(Request $request, ?array $row): Observation
     {
         if ($row !== null && $row['status'] === Status::Confirmed->value && IncomingRefundLedger::handles($request)) {
-            $this->incomingRefundLedger()
+            (new IncomingRefundLedger($this->db, $this->clock ?? static fn (): int => time()))
                 ->assertCompletion($request);
         }
         if ($row !== null && $row['status'] === Status::Confirmed->value && AuthorizationLedger::handles($request)) {

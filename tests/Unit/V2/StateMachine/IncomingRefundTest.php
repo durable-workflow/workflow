@@ -7,6 +7,7 @@ namespace Tests\Unit\V2\StateMachine;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Identity;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentDescriptor;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentJournal;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentProvider;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentReceipt;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingRefundLedger;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingRefundTerms;
@@ -36,10 +37,11 @@ final class IncomingRefundTest extends TestCase
     protected function setUp(): void
     {
         $this->db = new PDO('sqlite::memory:');
-        $this->provider = new Journal($this->db, 'shop-a', fn (): int => $this->now);
+        $support = new IncomingPaymentProvider($this->db, 'shop-a', fn (): int => $this->now);
+        $this->provider = $support->commands;
         $this->provider->install();
-        $this->provider->installIncomingPaymentSupport();
-        $this->bank = $this->provider->incomingPayments();
+        $support->install();
+        $this->bank = $support->receipts;
         $this->bank->register($this->original());
     }
 

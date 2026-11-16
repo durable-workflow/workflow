@@ -284,6 +284,10 @@ an incoming transfer must never be presented as a card authorization or capture.
 
 ## Retained incoming-money cancellation
 
+`IncomingPaymentProvider` keeps optional bank setup and its receipt journal
+separate from the existing command engine, on the same provider-owned connection.
+Install the original command journal before installing this optional support.
+
 `IncomingPaymentOperation` registers the original receivable through a native
 retained activity. The host must authorize the complete original business
 assignment, run, scope and obligation before provider storage. Register the

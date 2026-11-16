@@ -147,17 +147,7 @@ final readonly class IncomingRefundLedger
         $reserved = 0;
         $hasCurrent = false;
         foreach ($rows as $row) {
-            if (strlen($row['request']) > PortableDescriptor::MAX_BYTES
-                || ! hash_equals(hash('sha256', $row['request']), $row['fingerprint'])) {
-                throw new LogicException('An original incoming refund command lost its evidence integrity.');
-            }
-            $request = Request::fromArray(json_decode($row['request'], true, flags: JSON_THROW_ON_ERROR));
-            $other = IncomingRefundTerms::fromArray($request->terms);
-            if ($row['id'] !== $request->identity->key() || $request->fingerprint() !== $row['fingerprint']
-                || $other->original->fingerprint() !== $terms->original->fingerprint()
-                || $other->transfer !== $terms->transfer) {
-                throw new LogicException('The incoming refund inventory substituted its original terms or owner.');
-            }
+            [$request, $other] = $this->readOriginalRefund($row, $terms);
             $active = in_array(
                 Status::from($row['status']),
                 [Status::Confirmed, Status::Processing, Status::Unknown],
@@ -184,6 +174,25 @@ final readonly class IncomingRefundLedger
             'count' => count($rows),
             'current' => $hasCurrent,
         ];
+    }
+
+    /**
+     * @return array{Request, IncomingRefundTerms}
+     */
+    private function readOriginalRefund(array $row, IncomingRefundTerms $expected): array
+    {
+        if (strlen($row['request']) > PortableDescriptor::MAX_BYTES
+            || ! hash_equals(hash('sha256', $row['request']), $row['fingerprint'])) {
+            throw new LogicException('An original incoming refund command lost its evidence integrity.');
+        }
+        $request = Request::fromArray(json_decode($row['request'], true, flags: JSON_THROW_ON_ERROR));
+        $terms = IncomingRefundTerms::fromArray($request->terms);
+        if ($row['id'] !== $request->identity->key() || $request->fingerprint() !== $row['fingerprint']
+            || $terms->original->fingerprint() !== $expected->original->fingerprint()
+            || $terms->transfer !== $expected->transfer) {
+            throw new LogicException('The incoming refund inventory substituted its original terms or owner.');
+        }
+        return [$request, $terms];
     }
 
     private function assertAllocation(

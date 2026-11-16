@@ -8,6 +8,7 @@ use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Identity;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentDescriptor;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentJournal;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentOperation;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentProvider;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentReceipt;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Journal;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\LostAcknowledgement;
@@ -28,6 +29,8 @@ final class RetainedIncomingPaymentOperationTest extends TestCase
 
     private Journal $provider;
 
+    private IncomingPaymentProvider $incoming;
+
     private int $now = 1000;
 
     private bool $allowed = true;
@@ -35,9 +38,10 @@ final class RetainedIncomingPaymentOperationTest extends TestCase
     protected function setUp(): void
     {
         $this->db = new PDO('sqlite::memory:');
-        $this->provider = new Journal($this->db, 'shop-a', fn (): int => $this->now);
+        $this->incoming = new IncomingPaymentProvider($this->db, 'shop-a', fn (): int => $this->now);
+        $this->provider = $this->incoming->commands;
         $this->provider->install();
-        $this->provider->installIncomingPaymentSupport();
+        $this->incoming->install();
     }
 
     public function testCancellationBeforeReferenceCreationAuthoritativelyFencesRatherThanInferringAbsence(): void
@@ -50,7 +54,7 @@ final class RetainedIncomingPaymentOperationTest extends TestCase
             ->execute($this->context());
         $this->expectException(LogicException::class);
         $this->expectExceptionMessage('rejects new transfers');
-        $this->provider->incomingPayments()
+        $this->incoming->receipts
             ->record($this->original(), $this->receipt('late', 1000));
     }
 
@@ -73,7 +77,7 @@ final class RetainedIncomingPaymentOperationTest extends TestCase
             ->compensate($this->context());
         $this->assertTrue($result->verified && $result->forwardSettled);
         $this->assertSame(['refund-incoming'], $this->effects());
-        $snapshot = $this->provider->incomingPayments()
+        $snapshot = $this->incoming->receipts
             ->inspect($this->original());
         $this->assertSame(1100, $snapshot['original']['deadline']);
         $this->assertSame(1500, $snapshot['receivedAmountMinor']);
@@ -85,7 +89,7 @@ final class RetainedIncomingPaymentOperationTest extends TestCase
 
     public function testAlreadyAdmittedTransferRemainsIdempotentButBackdatedNewTransferIsRefusedAfterClosure(): void
     {
-        $bank = $this->provider->incomingPayments();
+        $bank = $this->incoming->receipts;
         $bank->register($this->original(), IncomingPaymentJournal::CLOSABLE);
         $receipt = $this->receipt('original', 400);
         $bank->record($this->original(), $receipt);
@@ -103,7 +107,7 @@ final class RetainedIncomingPaymentOperationTest extends TestCase
 
     public function testAnUnfencedReferenceCannotBeUpgradedToAClosableContractDuringCancellation(): void
     {
-        $this->provider->incomingPayments()
+        $this->incoming->receipts
             ->register($this->original());
         $this->expectException(LogicException::class);
         $this->expectExceptionMessage('contract cannot be replaced');
@@ -128,7 +132,7 @@ final class RetainedIncomingPaymentOperationTest extends TestCase
         $this->assertSame('incoming-admission-open', $result->reason);
         $this->assertSame(['refund-incoming'], $this->effects());
         $this->receive($this->receipt('later-transfer', 1));
-        $this->assertSame(1001, $this->provider->incomingPayments()->inspect($this->original())['receivedAmountMinor']);
+        $this->assertSame(1001, $this->incoming->receipts->inspect($this->original())['receivedAmountMinor']);
     }
 
     #[DataProvider('unsettled')]
@@ -182,7 +186,8 @@ final class RetainedIncomingPaymentOperationTest extends TestCase
                 ->compensate($this->context());
             $this->fail('The refund must commit before the selected acknowledgement loss.');
         } catch (LostAcknowledgement) {
-            $this->provider = new Journal($this->db, 'shop-a', fn (): int => $this->now);
+            $this->incoming = new IncomingPaymentProvider($this->db, 'shop-a', fn (): int => $this->now);
+            $this->provider = $this->incoming->commands;
             $this->assertTrue($this->handler()->compensate($this->context())->verified);
         }
         $this->assertSame(['refund-incoming'], $this->effects());
@@ -196,7 +201,7 @@ final class RetainedIncomingPaymentOperationTest extends TestCase
     #[DataProvider('lostEvidence')]
     public function testMissingFenceOrReceiptEvidenceCannotBeReconstructedAsSuccessfulSettlement(string $target): void
     {
-        $bank = $this->provider->incomingPayments();
+        $bank = $this->incoming->receipts;
         $bank->register($this->original(), IncomingPaymentJournal::CLOSABLE);
         $bank->record($this->original(), $this->receipt('original', 1000));
         $bank->closeAdmission($this->original(), IncomingPaymentJournal::CLOSABLE);
@@ -252,7 +257,7 @@ final class RetainedIncomingPaymentOperationTest extends TestCase
 
     private function handler(): IncomingPaymentOperation
     {
-        return new IncomingPaymentOperation($this->provider, function (OperationContext $context, string $mode): void {
+        return new IncomingPaymentOperation($this->incoming, function (OperationContext $context, string $mode): void {
             if (! $this->allowed || $context->originalRunId !== 'original-run' || ! in_array(
                 $mode,
                 ['forward', 'compensate'],
@@ -297,7 +302,7 @@ final class RetainedIncomingPaymentOperationTest extends TestCase
 
     private function receive(IncomingPaymentReceipt $receipt): void
     {
-        $this->provider->incomingPayments()
+        $this->incoming->receipts
             ->record($this->original(), $receipt);
     }
 
