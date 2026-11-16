@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DurableWorkflow\Examples\ProviderStateMachines;
 
 use DurableWorkflow\Examples\BusinessStateMachines\BusinessCancellationRequested;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\AdvanceBalanceTerms;
 use LogicException;
 use Workflow\V2\Compensation\RegisteredObligation;
 use Workflow\V2\StateMachine\Execution\ExecutionReceipt;
@@ -20,17 +21,23 @@ final class FundingStep extends AssessedTransitionStep
      */
     public function __construct(
         private readonly string $recipe,
-        private readonly array $duties
+        private readonly array $duties,
+        private readonly ?AdvanceBalanceTerms $parts = null
     ) {
+        if (AdvanceBalancePolicy::selected($recipe) !== ($parts !== null)) {
+            throw new LogicException('The funding step must retain its original paired payment assignment.');
+        }
     }
 
     public function execute(TransitionContext $context): ExecutionReceipt
     {
         $key = $context->transition->key;
         $cod = CodFundingPolicy::selected($this->recipe);
+        $advance = AdvanceBalancePolicy::selected($this->recipe);
         $this->admit($key);
         $target = $this->target($key);
         $signal = match ($this->recipe) {
+            AdvanceBalancePolicy::BEFORE, AdvanceBalancePolicy::AFTER => $key === 'prepare' ? 'incoming-observed' : 'cod-observed',
             CodFundingPolicy::BEFORE, CodFundingPolicy::AFTER => 'cod-observed',
             FundingCatalogue::BANK => 'incoming-observed', default => 'reconcile-funding',
         };
@@ -41,16 +48,24 @@ final class FundingStep extends AssessedTransitionStep
                     'original-funding:' . $context->execution()->executionId,
                 ]);
             }
-            $waitingForMerchant = $cod && $key === 'confirm-receipt';
-            if ($value['waitSeconds'] === 0 && ! $waitingForMerchant) {
+            $waitingForMerchant = ($cod || $advance) && $key === 'confirm-receipt';
+            $remaining = $value['waitSeconds'];
+            if ($this->parts !== null) {
+                $deadline = match ($key) {
+                    'prepare' => $this->parts->advance->deadline,
+                    'collect' => $this->parts->balance->collectionDeadline,
+                    'confirm-receipt' => $this->parts->balance->remittanceDeadline,
+                };
+                $remaining = max(0, $deadline - Workflow::now()->getTimestamp());
+            }
+            if ($remaining === 0 && ! $waitingForMerchant) {
                 Workflow::activity(FundingHandoffActivity::class, 'expire', []);
                 throw new BusinessCancellationRequested(
                     'The original funding deadline expired without its required fact.'
                 );
             }
-            $remaining = $value['waitSeconds'];
             if ($waitingForMerchant) {
-                $remaining = $value['remittanceWaitSeconds'] ?: null;
+                $remaining = ($advance ? $remaining : $value['remittanceWaitSeconds']) ?: null;
             }
             Workflow::await($signal, $remaining);
         }
@@ -70,7 +85,11 @@ final class FundingStep extends AssessedTransitionStep
     private function admit(string $key): void
     {
         $cod = CodFundingPolicy::selected($this->recipe);
-        if ($key === 'prepare' && $cod) {
+        if ($key === 'prepare' && AdvanceBalancePolicy::selected($this->recipe)) {
+            $this->duties['merchant']->execute();
+            $this->duties['incoming']->execute();
+            $this->duties['payer']->execute();
+        } elseif ($key === 'prepare' && $cod) {
             $this->duties['merchant']->execute();
             $this->duties['payer']->execute();
         } elseif ($key === 'prepare') {
@@ -92,6 +111,9 @@ final class FundingStep extends AssessedTransitionStep
         if (CodFundingPolicy::selected($this->recipe)) {
             $collected = 'cod_payer_collection_confirmed';
             $prepared = 'cod_reference_ready';
+        } elseif (AdvanceBalancePolicy::selected($this->recipe)) {
+            $collected = 'cod_payer_collection_confirmed';
+            $prepared = 'advance_payment_confirmed';
         }
         return match ($key) {
             'prepare' => $prepared, 'collect' => $collected, 'confirm-receipt' => 'merchant_receipt_confirmed',

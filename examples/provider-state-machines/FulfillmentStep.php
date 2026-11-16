@@ -41,7 +41,8 @@ final class FulfillmentStep extends AssessedTransitionStep
                 'binding' => $binding->toArray(),
             ]);
             if ($value['confirmed']) {
-                if (CodFundingPolicy::selected($this->machine->initialization['recipe'])) {
+                if (CodFundingPolicy::selected($this->machine->initialization['recipe'])
+                    || AdvanceBalancePolicy::selected($this->machine->initialization['recipe'])) {
                     $this->settlePaymentAfterDelivery(false);
                 } elseif (in_array(
                     $this->machine->initialization['recipe'],

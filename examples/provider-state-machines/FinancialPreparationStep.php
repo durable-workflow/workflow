@@ -48,7 +48,7 @@ final class FinancialPreparationStep extends AssessedTransitionStep
         $stage = $this->commonFunding ? 'prepare' : 'authorize';
         if ($this->commonFunding && ! FundingCatalogue::requiresAuthorization(
             $init['recipe']
-        ) && ! CodFundingPolicy::selected($init['recipe'])) {
+        ) && ! CodFundingPolicy::selected($init['recipe']) && ! AdvanceBalancePolicy::selected($init['recipe'])) {
             $stage = 'confirm-receipt';
         }
         $this->awaitMilestone($binding, $stage);

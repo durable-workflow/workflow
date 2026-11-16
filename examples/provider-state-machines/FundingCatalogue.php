@@ -29,7 +29,7 @@ final class FundingCatalogue
      */
     public static function recipes(): array
     {
-        return [...self::baseRecipes(), ...CodFundingPolicy::recipes()];
+        return [...self::baseRecipes(), ...CodFundingPolicy::recipes(), ...AdvanceBalancePolicy::recipes()];
     }
 
     /**
@@ -60,12 +60,15 @@ final class FundingCatalogue
 
     public static function deadline(OrderTerms $terms): int
     {
-        return $terms->authorization?->expiresAt ?? $terms->incomingPayment?->deadline ?? $terms->codPayment?->collectionDeadline
+        return $terms->advanceBalance?->balance->collectionDeadline ?? $terms->authorization?->expiresAt ?? $terms->incomingPayment?->deadline ?? $terms->codPayment?->collectionDeadline
             ?? $terms->fulfillmentDeadline ?? throw new LogicException('The original funding deadline is unavailable.');
     }
 
     public static function profile(string $role, string $recipe): PolicyProfile
     {
+        if (AdvanceBalancePolicy::selected($recipe)) {
+            return AdvanceBalancePolicy::profile($role, $recipe);
+        }
         if (CodFundingPolicy::selected($recipe)) {
             return CodFundingPolicy::profile($role, $recipe);
         }
@@ -77,6 +80,9 @@ final class FundingCatalogue
 
     public static function payment(string $recipe): PolicyProfile
     {
+        if (AdvanceBalancePolicy::selected($recipe)) {
+            return AdvanceBalancePolicy::profile('payment', $recipe);
+        }
         if (CodFundingPolicy::selected($recipe)) {
             return CodFundingPolicy::profile('payment', $recipe);
         }
@@ -116,6 +122,9 @@ final class FundingCatalogue
 
     public static function order(string $recipe): PolicyProfile
     {
+        if (AdvanceBalancePolicy::selected($recipe)) {
+            return AdvanceBalancePolicy::profile('order', $recipe);
+        }
         if (CodFundingPolicy::selected($recipe)) {
             return CodFundingPolicy::profile('order', $recipe);
         }
@@ -156,6 +165,9 @@ final class FundingCatalogue
 
     public static function shipment(string $recipe): PolicyProfile
     {
+        if (AdvanceBalancePolicy::selected($recipe)) {
+            return AdvanceBalancePolicy::profile('shipment', $recipe);
+        }
         if (CodFundingPolicy::selected($recipe)) {
             return CodFundingPolicy::profile('shipment', $recipe);
         }

@@ -109,6 +109,10 @@ final readonly class MachineStore
                 FundingCatalogue::payment(
                     $recipe
                 )->fingerprint(), CodFundingPolicy::recipes()), CodFundingPayment::class),
+            BindingPlan::ADVANCE_BALANCE_PAYMENT => array_fill_keys(array_map(static fn (string $recipe): string =>
+                FundingCatalogue::payment(
+                    $recipe
+                )->fingerprint(), AdvanceBalancePolicy::recipes()), AdvanceBalancePayment::class),
             BindingPlan::AUTHORIZED_PAYMENT => [
                 FinancialCatalogue::profile(FinancialCatalogue::AFTER_STOCK)->fingerprint() => AuthorizedPayment::class,
                 FinancialCatalogue::profile(
@@ -145,8 +149,11 @@ final readonly class MachineStore
         $key = $terms->subjectKey();
         $this->authority->authorize($key, $this->authority->principal);
         $recipe = $this->authority->recipe($key);
-        if ($terms->advanceBalance !== null) {
-            throw new LogicException('The advance-and-balance native payment policy is not implemented.');
+        if (($terms->advanceBalance !== null) !== AdvanceBalancePolicy::selected($recipe)
+            || ($terms->advanceBalance !== null && ($this->incoming === null || $this->cod === null
+                || ! $this->cod->physicalContract
+                || $terms->advanceBalance->balance->handoverPolicy !== AdvanceBalancePolicy::handover($recipe)))) {
+            throw new LogicException('The selected native recipe does not implement the original advance and balance.');
         }
         if (($terms->codPayment !== null) !== CodFundingPolicy::selected($recipe)
             || ($terms->codPayment !== null && ($this->cod === null
@@ -449,6 +456,7 @@ final readonly class MachineStore
             return match ($role) {
                 'shipment' => $terms->physicalDescriptor(),
                 'payment' => match (true) {
+                    AdvanceBalancePolicy::selected($recipe) => $terms->advanceBalanceDescriptor(),
                     CodFundingPolicy::selected($recipe) => $terms->codDescriptor(),
                     $recipe === FundingCatalogue::BANK => $terms->incomingDescriptor(),
                     FinancialCatalogue::selected($recipe) || FundingCatalogue::requiresAuthorization(

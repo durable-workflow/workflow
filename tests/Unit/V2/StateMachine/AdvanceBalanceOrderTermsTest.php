@@ -52,7 +52,7 @@ final class AdvanceBalanceOrderTermsTest extends TestCase
         $old->advanceBalanceDescriptor();
     }
 
-    public function testExistingNativeRecipesCannotAdoptUnimplementedMixedMoneyBeforeStorage(): void
+    public function testPairedMoneyCannotUseAnIncompatibleRecipeOrMissingProvidersBeforeStorage(): void
     {
         $db = $this->createMock(ConnectionInterface::class);
         $db->method('transactionLevel')
@@ -70,10 +70,10 @@ final class AdvanceBalanceOrderTermsTest extends TestCase
             ]);
             try {
                 (new MachineStore($authority))->seed($terms);
-                $this->fail('An existing recipe cannot adopt a new mixed-money assignment.');
+                $this->fail('Paired money requires its exact recipe and original provider assembly.');
             } catch (LogicException $error) {
                 $this->assertSame(
-                    'The advance-and-balance native payment policy is not implemented.',
+                    'The selected native recipe does not implement the original advance and balance.',
                     $error->getMessage()
                 );
             }

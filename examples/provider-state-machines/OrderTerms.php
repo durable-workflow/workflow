@@ -249,23 +249,25 @@ final readonly class OrderTerms
 
     public function incomingDescriptor(): array
     {
-        if ($this->incomingPayment === null) {
+        $incoming = $this->incomingPayment ?? $this->advanceBalance?->advance;
+        if ($incoming === null) {
             throw new InvalidArgumentException('The original incoming-payment assignment is unavailable.');
         }
         return [
-            'original' => $this->incomingPayment->toArray(),
-            'admissionContract' => $this->incomingAdmissionContract,
+            'original' => $incoming->toArray(),
+            'admissionContract' => $this->advanceBalance?->advanceAdmissionContract ?? $this->incomingAdmissionContract,
         ];
     }
 
     public function codDescriptor(): array
     {
-        if ($this->codPayment === null) {
+        $cod = $this->codPayment ?? $this->advanceBalance?->balance;
+        if ($cod === null) {
             throw new InvalidArgumentException('The original COD payment assignment is unavailable.');
         }
         return [
-            'original' => $this->codPayment->toArray(),
-            'admissionContract' => $this->codAdmissionContract,
+            'original' => $cod->toArray(),
+            'admissionContract' => $this->advanceBalance?->balanceAdmissionContract ?? $this->codAdmissionContract,
         ];
     }
 

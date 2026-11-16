@@ -240,7 +240,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
     {
         return match ($class) {
             Order::class, CheckoutOrder::class, AuthorizationCheckout::class, FundingCheckout::class, Cancellation::class => 'order',
-            Payment::class, AuthorizedPayment::class, FundingPayment::class, CodFundingPayment::class => 'payment',
+            Payment::class, AuthorizedPayment::class, FundingPayment::class, CodFundingPayment::class, AdvanceBalancePayment::class => 'payment',
             Booking::class, FullShipment::class => 'shipment',
             default => throw new LogicException('The native workflow is outside this example.'),
         };

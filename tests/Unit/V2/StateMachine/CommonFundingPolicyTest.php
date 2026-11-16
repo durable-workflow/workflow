@@ -25,7 +25,7 @@ require_once __DIR__ . '/../../../../examples/provider-state-machines/FundingCat
 /** Definition/guard controls only; native common-route integration remains required. */
 final class CommonFundingPolicyTest extends TestCase
 {
-    public function testAllSixPoliciesShareOneDefinitionAndRouteForEveryMachineType(): void
+    public function testAllEightPoliciesShareOneDefinitionAndRouteForEveryMachineType(): void
     {
         foreach (['order', 'payment', 'shipment'] as $role) {
             $profiles = array_map(
@@ -40,7 +40,7 @@ final class CommonFundingPolicyTest extends TestCase
                 ))
             );
             $this->assertCount(
-                6,
+                8,
                 array_unique(array_map(static fn (PolicyProfile $p): string => $p->fingerprint(), $profiles))
             );
             $routes = array_map(
@@ -152,6 +152,8 @@ final class CommonFundingPolicyTest extends TestCase
             $this->assertSame(Verdict::Satisfied, $this->evaluate($recipe, 'confirm-receipt.target', [
                 'forward_open' => true,
                 'merchant_receipt_confirmed' => true,
+                'advance_payment_confirmed' => true,
+                'cod_payer_collection_confirmed' => true,
             ]));
         }
     }
