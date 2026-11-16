@@ -1910,13 +1910,45 @@ final class WorkflowExecutor
         if ($cancellationDelivery === CancellationDeliveryState::Delivered) {
             return $this->resumeCancellation($run, $task, $frame, $groupSize);
         }
+        try {
+            $dispatchDescriptors = $this->parallelReplayDescriptors(
+                $run,
+                $current,
+                $sequence,
+                $leafDescriptors,
+                $groupResolution
+            );
+        } catch (Throwable $throwable) {
+            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+            return null;
+        }
         $group = new WorkflowParallelDispatch($sequence);
-        foreach ($leafDescriptors as $descriptor) {
+        foreach ($dispatchDescriptors as $descriptor) {
             if (! $this->dispatchParallelMember($run, $task, $descriptor, $group)) {
                 return null;
             }
         }
         return $this->finishParallelDispatch($run, $task, $frame, $leafDescriptors, $group);
+    }
+
+    private function parallelReplayDescriptors(
+        WorkflowRun $run,
+        AllCall $current,
+        int $sequence,
+        array $descriptors,
+        ?WorkflowHistoryEvent $resolution,
+    ): array {
+        if (! $current instanceof SelectCall || ! $resolution instanceof WorkflowHistoryEvent) {
+            return $descriptors;
+        }
+        $winner = ParallelChildGroup::validatedSelectionResolution($run, $current, $sequence, $resolution);
+        // Rebuild the recorded winner without advancing an old losing wait. A new signal
+        // belongs to its current occurrence, including after the old handle was cancelled.
+        return array_filter($descriptors, static function (array $descriptor) use ($sequence, $winner): bool {
+            $member = $sequence + $descriptor['offset'];
+            return $member >= $winner['member_base_sequence']
+                && $member < $winner['member_base_sequence'] + $winner['member_size'];
+        });
     }
 
     private function parallelMemberIdentity(mixed $call): array
