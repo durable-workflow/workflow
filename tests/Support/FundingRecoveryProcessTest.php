@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Support;
 
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\AdvanceBalanceProvider;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentProvider;
 use DurableWorkflow\Examples\ProviderStateMachines\Authority;
 use DurableWorkflow\Examples\ProviderStateMachines\CancellationStore;
 use DurableWorkflow\Examples\ProviderStateMachines\Catalogue;
@@ -12,6 +13,7 @@ use DurableWorkflow\Examples\ProviderStateMachines\MachineStore;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use LogicException;
 use Orchestra\Testbench\TestCase;
 use PDO;
 use Workflow\Providers\WorkflowServiceProvider;
@@ -27,42 +29,22 @@ use Workflow\V2\Models\WorkflowTask;
 require_once __DIR__ . '/../../examples/provider-state-machines/bootstrap.php';
 
 /** Fresh application and provider connections; no migration, seed or inherited parent container. */
-final class AdvanceBalanceRecoveryProcessTest extends TestCase
+final class FundingRecoveryProcessTest extends TestCase
 {
-    public function testResumeOriginalAdvanceCompensation(): void
+    public function testResumeOriginalFundingCompensation(): void
     {
         $input = $this->input();
         Carbon::setTestNow($input['clock']);
         Queue::fake();
         $providerDb = new PDO('sqlite:' . $input['provider']);
-        $provider = new AdvanceBalanceProvider(
-            $providerDb,
-            'shop-a',
-            static fn (): int => now()
-                ->getTimestamp()
-        );
-        $authority = new Authority(DB::connection(), 'provider-worker', [$input['key']], [
-            $input['key'] => $input['recipe'],
-        ]);
-        $store = MachineStore::configure(
-            $this->app,
-            $authority,
-            $provider->commands,
-            $provider->incoming,
-            $provider->cod
-        );
+        $store = $this->configureProvider($providerDb, $input);
         $root = ScopeIdentity::fromArray($input['rootScope']);
         $payment = ScopeIdentity::fromArray($input['paymentScope']);
         $scopes = new ScopeRepository();
         $finalizing = false;
         for ($step = 0; $step < 800; ++$step) {
             $ledger = $scopes->inspect($payment);
-            $bankVerified = false;
-            foreach ($ledger['obligations'] as $obligation) {
-                if ($obligation['descriptor']['key'] === 'payment.incoming') {
-                    $bankVerified = $obligation['compensation_status'] === 'verified';
-                }
-            }
+            $bankVerified = $this->bankVerified($ledger);
             if ($input['phase'] === 'crash' && $this->atCut($providerDb, $input, $bankVerified)) {
                 $this->report($input, $ledger['status'], $bankVerified);
                 posix_kill(getmypid(), SIGKILL);
@@ -76,21 +58,9 @@ final class AdvanceBalanceRecoveryProcessTest extends TestCase
                 $this->report($input, $scopes->metadata($root)['status'], true);
                 return;
             }
-            $task = WorkflowTask::query()->whereRelation('run', 'namespace', Catalogue::NAMESPACE)
-                ->where('status', TaskStatus::Ready)->orderBy('available_at')->orderBy('created_at')->orderBy('id')
-                ->first();
-            $this->assertNotNull($task, 'The original cancellation has no runnable task before its required outcome.');
-            if ($task->available_at !== null && $task->available_at->isFuture()) {
-                Carbon::setTestNow($task->available_at->copy()->addSecond());
-            }
-            $job = match ($task->task_type) {
-                TaskType::Workflow => new RunWorkflowTask($task->id),
-                TaskType::Activity => new RunActivityTask($task->id),
-                TaskType::Timer => new RunTimerTask($task->id),
-            };
-            $this->app->call([$job, 'handle']);
+            $this->nextTask();
         }
-        $this->fail('The bounded original mixed-payment recovery did not reach its selected cut or settlement.');
+        $this->fail('The bounded original funding recovery did not reach its selected cut or settlement.');
     }
 
     protected function getPackageProviders($app): array
@@ -112,6 +82,54 @@ final class AdvanceBalanceRecoveryProcessTest extends TestCase
             'cache' => $input['cache'],
             'logging.default' => 'null',
         ]);
+    }
+
+    private function bankVerified(array $ledger): bool
+    {
+        foreach ($ledger['obligations'] as $obligation) {
+            if ($obligation['descriptor']['key'] === 'payment.incoming') {
+                return $obligation['compensation_status'] === 'verified';
+            }
+        }
+        return false;
+    }
+
+    private function nextTask(): void
+    {
+        $task = WorkflowTask::query()->whereRelation('run', 'namespace', Catalogue::NAMESPACE)
+            ->where('status', TaskStatus::Ready)->orderBy('available_at')->orderBy('created_at')->orderBy('id')
+            ->first();
+        $this->assertNotNull($task, 'The original cancellation has no runnable task before its required outcome.');
+        if ($task->available_at !== null && $task->available_at->isFuture()) {
+            Carbon::setTestNow($task->available_at->copy()->addSecond());
+        }
+        $job = match ($task->task_type) {
+            TaskType::Workflow => new RunWorkflowTask($task->id),
+            TaskType::Activity => new RunActivityTask($task->id),
+            TaskType::Timer => new RunTimerTask($task->id),
+        };
+        $this->app->call([$job, 'handle']);
+    }
+
+    private function configureProvider(PDO $db, array $input): MachineStore
+    {
+        $clock = static fn (): int => now()
+            ->getTimestamp();
+        $provider = match ($input['profile']) {
+            'advance-balance' => new AdvanceBalanceProvider($db, 'shop-a', $clock),
+            'cart' => new IncomingPaymentProvider($db, 'shop-a', $clock),
+            default => throw new LogicException('The source recovery fixture profile is unavailable.'),
+        };
+        $authority = new Authority(DB::connection(), 'provider-worker', [$input['key']], [
+            $input['key'] => $input['recipe'],
+        ], $input['profile'] === 'cart' ? [$input['key']] : []);
+        return MachineStore::configure(
+            $this->app,
+            $authority,
+            $provider->commands,
+            $provider instanceof IncomingPaymentProvider ? $provider : $provider->incoming,
+            $provider instanceof AdvanceBalanceProvider ? $provider->cod : null
+        );
     }
 
     private function atCut(PDO $provider, array $input, bool $bankVerified): bool
@@ -138,9 +156,9 @@ final class AdvanceBalanceRecoveryProcessTest extends TestCase
 
     private function input(): array
     {
-        $path = getenv('DWF_ADVANCE_RECOVERY_INPUT');
+        $path = getenv('DWF_PROVIDER_RECOVERY_INPUT');
         if (! is_string($path) || $path === '') {
-            $this->markTestSkipped('Invoked only by the original mixed-payment recovery control.');
+            $this->markTestSkipped('Invoked only by the original funding recovery controls.');
         }
         return json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
     }

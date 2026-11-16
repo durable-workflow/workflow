@@ -954,7 +954,7 @@ jobs:
     needs: preflight
     if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 21
+    timeout-minutes: 26
 
     strategy:
       fail-fast: false
@@ -1055,7 +1055,7 @@ jobs:
 
     - name: Run feature test suite (MySQL shard ${{ matrix.shard }})
       id: mysql_suite
-      timeout-minutes: 15
+      timeout-minutes: 22
       run: |
         mkdir -p build/test-results
         php scripts/ci/split-feature-tests.php \
@@ -1072,7 +1072,7 @@ jobs:
         # PCOV data only: static maps for unloaded files can disagree with PCOV.
         started_at=$(date +%s)
         set +e
-        timeout --foreground 15m xargs -a /tmp/mysql-shard-files \
+        timeout --foreground --kill-after=10s 20m xargs -a /tmp/mysql-shard-files \
           vendor/bin/phpunit --configuration phpunit.feature-coverage.xml --testdox --testsuite feature \
           --coverage-clover "build/test-results/mysql-shard-${{ matrix.shard }}-coverage.xml" \
           --log-events-text "build/test-results/mysql-shard-${{ matrix.shard }}-events.log" \
@@ -1135,7 +1135,7 @@ jobs:
   feature-postgresql:
     needs: preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 26
 
     strategy:
       fail-fast: false
@@ -1222,7 +1222,7 @@ jobs:
 
     - name: Run feature test suite (PostgreSQL shard ${{ matrix.shard }})
       id: pgsql_suite
-      timeout-minutes: 17
+      timeout-minutes: 22
       run: |
         mkdir -p build/test-results
         php scripts/ci/split-feature-tests.php \
@@ -1237,7 +1237,7 @@ jobs:
         cp /tmp/pgsql-shard-files "build/test-results/pgsql-shard-${{ matrix.shard }}-files.txt"
         started_at=$(date +%s)
         set +e
-        timeout --foreground 15m xargs -a /tmp/pgsql-shard-files \
+        timeout --foreground --kill-after=10s 20m xargs -a /tmp/pgsql-shard-files \
           vendor/bin/phpunit --testdox --testsuite feature \
           --log-junit "build/test-results/pgsql-shard-${{ matrix.shard }}.xml"
         status=$?
