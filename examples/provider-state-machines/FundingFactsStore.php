@@ -37,10 +37,19 @@ final readonly class FundingFactsStore
         ];
         $now = Carbon::now()->getTimestamp();
         $snapshot = null;
-        if (CodFundingPolicy::selected($plan->recipe) || $plan->recipe === FundingCatalogue::BANK) {
-            $observed = CodFundingPolicy::selected($plan->recipe)
-                ? $this->cod($actual, $activityId, $plan, $terms, $rows)
-                : $this->bank($actual, $activityId, $plan, $terms, $rows);
+        if (AdvanceBalancePolicy::selected($plan->recipe) || CodFundingPolicy::selected($plan->recipe)
+            || $plan->recipe === FundingCatalogue::BANK) {
+            $observed = match (true) {
+                AdvanceBalancePolicy::selected($plan->recipe) => $this->advance(
+                    $actual,
+                    $activityId,
+                    $plan,
+                    $terms,
+                    $rows
+                ),
+                CodFundingPolicy::selected($plan->recipe) => $this->cod($actual, $activityId, $plan, $terms, $rows),
+                default => $this->bank($actual, $activityId, $plan, $terms, $rows),
+            };
             $snapshot = $observed['snapshot'];
             $values = [...$values, ...$observed['values']];
             $now = $observed['observedAt'];
@@ -77,15 +86,42 @@ final readonly class FundingFactsStore
                 'effectId' => $value->effectId,
             ];
         }
-        return [
+        $cod = $terms->codPayment ?? $terms->advanceBalance?->balance;
+        $value = [
             'values' => $values,
             'observations' => $snapshot,
             'observedAt' => $now,
             'waitSeconds' => max(0, FundingCatalogue::deadline($terms) - $now),
-            'remittanceWaitSeconds' => $terms->codPayment === null ? null : max(
-                0,
-                $terms->codPayment->remittanceDeadline - $now
-            ),
+            'remittanceWaitSeconds' => $cod === null ? null : max(0, $cod->remittanceDeadline - $now),
+        ];
+        if ($terms->advanceBalance !== null) {
+            $value['advanceWaitSeconds'] = max(0, $terms->advanceBalance->advance->deadline - $now);
+        }
+        return $value;
+    }
+
+    private function advance(
+        WorkflowRun $actual,
+        string $activityId,
+        BindingPlan $plan,
+        OrderTerms $terms,
+        array $rows
+    ): array {
+        $bank = $this->bank($actual, $activityId, $plan, $terms, $rows);
+        $carrier = $this->cod($actual, $activityId, $plan, $terms, $rows);
+        $advance = $bank['values']['incoming_full_amount_confirmed'] ?? false;
+        return [
+            'snapshot' => [
+                'advance' => $bank['snapshot'],
+                'balance' => $carrier['snapshot'],
+            ],
+            'values' => [
+                ...$bank['values'],
+                ...$carrier['values'],
+                'advance_payment_confirmed' => $advance,
+                'merchant_receipt_confirmed' => $advance && ($carrier['values']['merchant_receipt_confirmed'] ?? false),
+            ],
+            'observedAt' => max($bank['observedAt'], $carrier['observedAt']),
         ];
     }
 
@@ -100,6 +136,7 @@ final readonly class FundingFactsStore
         $values = [];
         $now = Carbon::now()->getTimestamp();
         if ($rows['payment.cod.payer']['forward_status'] === 'observed') {
+            $original = $terms->codPayment ?? $terms->advanceBalance->balance;
             $snapshot = app(CodInspectionStore::class)->inspect(
                 $actual,
                 $activityId,
@@ -110,11 +147,11 @@ final readonly class FundingFactsStore
             $values['cod_reference_ready'] = true;
             $onTime = 0;
             foreach ($snapshot['cod']['receipts'] as $receipt) {
-                if ($receipt['kind'] === CodReceipt::COLLECTION && $receipt['occurredAt'] < $terms->codPayment->collectionDeadline) {
+                if ($receipt['kind'] === CodReceipt::COLLECTION && $receipt['occurredAt'] < $original->collectionDeadline) {
                     $onTime += $receipt['amountMinor'];
                 }
             }
-            $values['cod_payer_collection_confirmed'] = $onTime >= $terms->codPayment->amountMinor;
+            $values['cod_payer_collection_confirmed'] = $onTime >= $original->amountMinor;
             $values['merchant_receipt_confirmed'] = $snapshot['cod']['facts']['merchant_receipt_confirmed'];
             $now = $snapshot['cod']['observedAt'];
         }
@@ -142,7 +179,7 @@ final readonly class FundingFactsStore
                 $activityId,
                 $plan->childScope('payment')
                     ->toArray(),
-                $terms->incomingPayment->toArray()
+                $terms->incomingDescriptor()['original']
             );
             $values['incoming_full_amount_confirmed'] = $snapshot['incoming']['requiredAmountReceivedBeforeDeadline'];
             // This policy receives directly into the merchant's bank account; COD remittance is a separate contract.

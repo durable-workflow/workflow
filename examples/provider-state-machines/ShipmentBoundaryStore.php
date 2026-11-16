@@ -87,7 +87,7 @@ final readonly class ShipmentBoundaryStore
             $handoff = FundingHandoffStore::class;
             $stage = $plan->recipe === FundingCatalogue::AFTER_DELIVERY || CodFundingPolicy::selected(
                 $plan->recipe
-            ) ? 'prepare' : 'confirm-receipt';
+            ) || AdvanceBalancePolicy::selected($plan->recipe) ? 'prepare' : 'confirm-receipt';
         }
         $milestone = app($handoff)
             ->milestone(WorkflowRun::query()->findOrFail($plan->rootRun), $payment->toArray(), $stage);

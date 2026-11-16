@@ -29,6 +29,8 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
 
     public const COD_PAYMENT = 'example.provider.payment.cod.v1';
 
+    public const ADVANCE_BALANCE_PAYMENT = 'example.provider.payment.advance-balance.v1';
+
     public const FULL_SHIPMENT = 'example.provider.shipment.full.v1';
 
     /**
@@ -66,6 +68,8 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
             FundingCatalogue::BANK => 'provider-order-pair-funding-bank-v1',
             CodFundingPolicy::BEFORE => 'provider-order-pair-cod-before-v1',
             CodFundingPolicy::AFTER => 'provider-order-pair-cod-after-v1',
+            AdvanceBalancePolicy::BEFORE => 'provider-order-pair-advance-balance-before-v1',
+            AdvanceBalancePolicy::AFTER => 'provider-order-pair-advance-balance-after-v1',
         };
     }
 
@@ -205,6 +209,7 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
     {
         return match ($role) {
             'payment' => match (true) {
+                AdvanceBalancePolicy::selected($this->recipe) => self::ADVANCE_BALANCE_PAYMENT,
                 CodFundingPolicy::selected($this->recipe) => self::COD_PAYMENT,
                 FundingCatalogue::selected($this->recipe) => self::FUNDING_PAYMENT,
                 FinancialCatalogue::selected($this->recipe) => self::AUTHORIZED_PAYMENT,

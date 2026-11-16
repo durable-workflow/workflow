@@ -41,6 +41,7 @@ readonly class FinancialHandoffStore
         [$actor, , , $binding] = $this->parentBinding($parent, $value);
         $publication = $this->publication($actor->root_key, $binding, $stage);
         [, $terms] = $this->authority->assignment($actor->root_key);
+        $cod = $terms->codPayment ?? $terms->advanceBalance?->balance;
         if (! $this->commonFunding && $terms->authorization === null) {
             throw new LogicException('The original authorization terms are unavailable.');
         }
@@ -53,9 +54,9 @@ readonly class FinancialHandoffStore
                 0,
                 ($terms->authorization?->expiresAt ?? $terms->fulfillmentDeadline) - Carbon::now()->getTimestamp()
             ),
-            'remittanceWaitSeconds' => $terms->codPayment === null ? null : max(
+            'remittanceWaitSeconds' => $cod === null ? null : max(
                 0,
-                $terms->codPayment->remittanceDeadline - Carbon::now()->getTimestamp()
+                $cod->remittanceDeadline - Carbon::now()->getTimestamp()
             ),
         ];
     }
@@ -227,17 +228,11 @@ readonly class FinancialHandoffStore
         if ($this->commonFunding) {
             $stage = $plan->recipe === FundingCatalogue::AFTER_DELIVERY || CodFundingPolicy::selected(
                 $plan->recipe
-            ) ? 'prepare' : 'confirm-receipt';
+            ) || AdvanceBalancePolicy::selected($plan->recipe) ? 'prepare' : 'confirm-receipt';
         }
         [, $terms] = $this->authority->assignment($actor->root_key);
         return $this->publication($actor->root_key, $this->admitted($plan), $stage) !== null
-            && (in_array($stage, ['capture', 'confirm-receipt'], true)
-                || (CodFundingPolicy::selected(
-                    $plan->recipe
-                ) && Carbon::now()->getTimestamp() < $terms->codPayment->collectionDeadline)
-                || ($terms->authorization !== null && $terms->authorization->canAdmitCaptureAt(
-                    Carbon::now()->getTimestamp()
-                )));
+            && $this->fundingWindowOpen($terms, $plan, $stage);
     }
 
     public function binding(WorkflowRun $parent): array
@@ -250,6 +245,19 @@ readonly class FinancialHandoffStore
         }
         return $this->admitted($plan)
             ->toArray();
+    }
+
+    private function fundingWindowOpen(OrderTerms $terms, BindingPlan $plan, string $stage): bool
+    {
+        return in_array($stage, ['capture', 'confirm-receipt'], true)
+                || (CodFundingPolicy::selected(
+                    $plan->recipe
+                ) && Carbon::now()->getTimestamp() < $terms->codPayment->collectionDeadline)
+                || (AdvanceBalancePolicy::selected($plan->recipe)
+                    && Carbon::now()->getTimestamp() < $terms->advanceBalance->balance->collectionDeadline)
+                || ($terms->authorization !== null && $terms->authorization->canAdmitCaptureAt(
+                    Carbon::now()->getTimestamp()
+                ));
     }
 
     /**

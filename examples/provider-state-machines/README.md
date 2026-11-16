@@ -417,3 +417,43 @@ Run `vendor/bin/phpunit tests/Feature/V2/V2CodFundingMachineTest.php tests/Featu
 for the native route and direct retained-operation controls. These are synthetic
 source fixtures, not real carrier integrations, cold-process/installed proofs,
 full 33-scenario acceptance or release qualification.
+
+### Bank advance and carrier-collected balance
+
+`AdvanceBalancePolicy::BEFORE` and `AdvanceBalancePolicy::AFTER` keep the same
+Order, Payment and Shipment definitions and routes as the other funding
+profiles. The original `AdvanceBalanceTerms` binds two distinct amounts and
+payment identities to one purchase: a bank advance and a carrier-collected
+balance. Their sum must equal the original purchase amount, with matching
+currency, owner, generation and Shipment. Neither portion can be replaced by
+another payment mode or reconstructed from a reduced Order assignment.
+
+Configure the original command journal, incoming-payment provider and
+physical-contract COD provider from the same `AdvanceBalanceProvider` instance.
+Payment registers the merchant, bank-refund and payer-refund duties before
+opening either payment reference. A separate native Payment type declares both
+observation signals, preserving the existing funding types and signal schemas.
+Signals only request recorded inspections of the original provider receipts.
+
+In these two profiles, the full original bank advance permits stock reservation
+and Shipment preparation. A smaller advance does not. Carrier collection obeys
+the original before/after-handover contract and moves Payment to `collected`
+only when the required balance is collected. Order fulfillment and Payment
+`paid` additionally require the carrier's separate merchant remittance. Partial
+remittance and an expired remittance deadline preserve the outstanding debt.
+Neither a finished Shipment nor a payment notification proves that debt paid.
+
+The advance, collection and remittance deadlines remain separate fixed values.
+Passing the advance deadline after its timely receipt does not expire the later
+balance stage. Cancellation targets each original receipt with its own stable
+refund identity; carrier balance and bank advance are reconciled separately.
+An original closable reference can fence later receipts. An open reference or
+an unknown refund outcome retains the unresolved obligation instead of claiming
+that no later payment is possible.
+
+Run `vendor/bin/phpunit tests/Feature/V2/V2AdvanceBalanceMachineTest.php tests/Feature/V2/V2AdvanceBalanceRefundTest.php` for the
+native staged-payment routes and cancellation, and
+`vendor/bin/phpunit tests/Unit/V2/StateMachine/AdvanceBalanceProviderTest.php`
+for original portion and refund controls. These synthetic source cases do not
+complete PAY-05, its interruption/concurrency coverage, the full customer
+matrix, installed recovery/upgrade acceptance or publication qualification.

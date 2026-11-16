@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Examples\ProviderStateMachines;
 
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\AdvanceBalanceTerms;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\AuthorizationTerms;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\CodDescriptor;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\CodJournal;
@@ -32,6 +33,7 @@ final readonly class OrderTerms
         public string $incomingAdmissionContract = IncomingPaymentJournal::OPEN,
         public ?CodDescriptor $codPayment = null,
         public string $codAdmissionContract = CodJournal::OPEN,
+        public ?AdvanceBalanceTerms $advanceBalance = null,
     ) {
         foreach (['client', 'subject', 'generation', 'sku'] as $key) {
             PortableDescriptor::identifier($this->{$key}, $key);
@@ -52,11 +54,17 @@ final readonly class OrderTerms
         }
         $this->assertIncomingPayment();
         $this->assertCodPayment();
+        $this->assertAdvanceBalance();
     }
 
     public function toArray(): array
     {
         $value = get_object_vars($this);
+        if ($this->advanceBalance === null) {
+            unset($value['advanceBalance']);
+        } else {
+            $value['advanceBalance'] = $this->advanceBalance->toArray();
+        }
         if ($this->codPayment === null) {
             unset($value['codPayment'], $value['codAdmissionContract']);
         } else {
@@ -87,6 +95,7 @@ final readonly class OrderTerms
     {
         [$value, $incomingKeys] = self::decodeIncoming($value);
         [$value, $codKeys] = self::decodeCod($value);
+        [$value, $advanceKeys] = self::decodeAdvanceBalance($value);
         $keys = array_keys($value);
         sort($keys);
         $expected = [
@@ -99,6 +108,7 @@ final readonly class OrderTerms
             'subject',
             ...$incomingKeys,
             ...$codKeys,
+            ...$advanceKeys,
         ];
         sort($expected);
         if (array_key_exists('fulfillmentDeadline', $value)) {
@@ -148,6 +158,9 @@ final readonly class OrderTerms
         }
         if ($role === 'payment' && $this->codPayment !== null) {
             throw new InvalidArgumentException('Carrier collection cannot become an immediate card charge.');
+        }
+        if ($role === 'payment' && $this->advanceBalance !== null) {
+            throw new InvalidArgumentException('Original payment portions cannot become an immediate card charge.');
         }
         [$forward, $undo, $terms] = match ($role) {
             'order' => [
@@ -236,24 +249,34 @@ final readonly class OrderTerms
 
     public function incomingDescriptor(): array
     {
-        if ($this->incomingPayment === null) {
+        $incoming = $this->incomingPayment ?? $this->advanceBalance?->advance;
+        if ($incoming === null) {
             throw new InvalidArgumentException('The original incoming-payment assignment is unavailable.');
         }
         return [
-            'original' => $this->incomingPayment->toArray(),
-            'admissionContract' => $this->incomingAdmissionContract,
+            'original' => $incoming->toArray(),
+            'admissionContract' => $this->advanceBalance?->advanceAdmissionContract ?? $this->incomingAdmissionContract,
         ];
     }
 
     public function codDescriptor(): array
     {
-        if ($this->codPayment === null) {
+        $cod = $this->codPayment ?? $this->advanceBalance?->balance;
+        if ($cod === null) {
             throw new InvalidArgumentException('The original COD payment assignment is unavailable.');
         }
         return [
-            'original' => $this->codPayment->toArray(),
-            'admissionContract' => $this->codAdmissionContract,
+            'original' => $cod->toArray(),
+            'admissionContract' => $this->advanceBalance?->balanceAdmissionContract ?? $this->codAdmissionContract,
         ];
+    }
+
+    public function advanceBalanceDescriptor(): array
+    {
+        if ($this->advanceBalance === null) {
+            throw new InvalidArgumentException('The original advance and balance assignment is unavailable.');
+        }
+        return $this->advanceBalance->toArray();
     }
 
     private function assertCodPayment(): void
@@ -281,6 +304,41 @@ final readonly class OrderTerms
         if (! in_array($this->codAdmissionContract, [CodJournal::OPEN, CodJournal::CLOSABLE], true)) {
             throw new InvalidArgumentException('The original carrier admission contract is unavailable.');
         }
+    }
+
+    private function assertAdvanceBalance(): void
+    {
+        $parts = $this->advanceBalance;
+        if ($parts === null) {
+            return;
+        }
+        $owner = $parts->advance->identity;
+        if ($this->authorization !== null || $this->incomingPayment !== null || $this->codPayment !== null
+            || $owner->client !== $this->client || $owner->subject !== $this->subject
+            || $owner->generation !== $this->generation || $parts->totalAmountMinor !== $this->amountMinor
+            || $parts->currency !== $this->currency
+            || $parts->balance->shipment->fingerprint() !== ShipmentDescriptor::fromArray(
+                $this->physicalDescriptor()
+            )->fingerprint()) {
+            throw new InvalidArgumentException(
+                'Advance and balance must retain one original purchase, total money and full Shipment graph.'
+            );
+        }
+    }
+
+    /**
+     * @return array{array, list<string>}
+     */
+    private static function decodeAdvanceBalance(array $value): array
+    {
+        if (! array_key_exists('advanceBalance', $value)) {
+            return [$value, []];
+        }
+        if (! is_array($value['advanceBalance'])) {
+            throw new InvalidArgumentException('Both original payment portions must contain their immutable terms.');
+        }
+        $value['advanceBalance'] = AdvanceBalanceTerms::fromArray($value['advanceBalance']);
+        return [$value, ['advanceBalance']];
     }
 
     /**

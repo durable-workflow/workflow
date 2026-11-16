@@ -29,8 +29,13 @@ final readonly class FundingAuthority
     public function rows(WorkflowRun $actual, bool $allowCodPrefix = false): array
     {
         [$actor, , $plan] = $this->authority->actor($actual);
-        $cod = CodFundingPolicy::selected($plan->recipe);
-        if ($actual->workflow_class !== ($cod ? CodFundingPayment::class : FundingPayment::class) || $actor->role !== 'payment' || ! FundingCatalogue::selected(
+        $cod = CodFundingPolicy::selected($plan->recipe) || AdvanceBalancePolicy::selected($plan->recipe);
+        $class = match (true) {
+            AdvanceBalancePolicy::selected($plan->recipe) => AdvanceBalancePayment::class,
+            CodFundingPolicy::selected($plan->recipe) => CodFundingPayment::class,
+            default => FundingPayment::class,
+        };
+        if ($actual->workflow_class !== $class || $actor->role !== 'payment' || ! FundingCatalogue::selected(
             $plan->recipe
         )) {
             throw new LogicException('Funding access requires its original policy Payment actor.');
@@ -62,8 +67,11 @@ final readonly class FundingAuthority
         IncomingPaymentDescriptor $descriptor
     ): void {
         [, $plan, $terms] = $this->rows($actual);
-        if ($plan->recipe !== FundingCatalogue::BANK || $scope->toArray() !== $plan->childScope('payment')->toArray()
-            || $terms->incomingPayment?->fingerprint() !== $descriptor->fingerprint()) {
+        if (($plan->recipe !== FundingCatalogue::BANK && ! AdvanceBalancePolicy::selected($plan->recipe))
+            || $scope->toArray() !== $plan->childScope('payment')
+                ->toArray()
+            || IncomingPaymentDescriptor::fromArray($terms->incomingDescriptor()['original'])->fingerprint()
+                !== $descriptor->fingerprint()) {
             throw new LogicException('Incoming facts must retain their original business assignment and native owner.');
         }
     }
@@ -75,9 +83,12 @@ final readonly class FundingAuthority
         string $contract
     ): void {
         [, $plan, $terms] = $this->rows($actual);
-        if (! CodFundingPolicy::selected($plan->recipe) || $scope->toArray() !== $plan->childScope('payment')->toArray()
-            || $terms->codPayment?->fingerprint() !== $descriptor->fingerprint()
-            || $terms->codAdmissionContract !== $contract) {
+        $original = $terms->codDescriptor();
+        if ((! CodFundingPolicy::selected($plan->recipe) && ! AdvanceBalancePolicy::selected($plan->recipe))
+            || $scope->toArray() !== $plan->childScope('payment')
+                ->toArray()
+            || CodDescriptor::fromArray($original['original'])->fingerprint() !== $descriptor->fingerprint()
+            || $original['admissionContract'] !== $contract) {
             throw new LogicException(
                 'COD facts must retain their original business, carrier contract and native owner.'
             );
@@ -90,7 +101,7 @@ final readonly class FundingAuthority
             throw new LogicException('The original COD responsibility is unavailable.');
         }
         [$actor, $plan] = $this->context($context, $mode, 'payment.cod.' . $stage, $mode === 'compensate');
-        if (! CodFundingPolicy::selected($plan->recipe)) {
+        if (! CodFundingPolicy::selected($plan->recipe) && ! AdvanceBalancePolicy::selected($plan->recipe)) {
             throw new LogicException('Only the original COD policy owns this money responsibility.');
         }
         if ($mode === 'forward') {
@@ -113,8 +124,8 @@ final readonly class FundingAuthority
 
     public function incoming(OperationContext $context, string $mode): void
     {
-        [$actor, $plan] = $this->context($context, $mode, 'payment.incoming');
-        if ($plan->recipe !== FundingCatalogue::BANK) {
+        [$actor, $plan] = $this->context($context, $mode, 'payment.incoming', $mode === 'compensate');
+        if ($plan->recipe !== FundingCatalogue::BANK && ! AdvanceBalancePolicy::selected($plan->recipe)) {
             throw new LogicException('Only the original bank policy owns this incoming-money duty.');
         }
         if ($mode === 'forward') {
@@ -198,7 +209,11 @@ final readonly class FundingAuthority
             'nativeRun' => $actual->id,
             'role' => 'payment',
         ])];
-        if ($cod) {
+        if (AdvanceBalancePolicy::selected($plan->recipe)) {
+            $expected[] = new Obligation('payment.cod.merchant', 'provider.cod.merchant', '1', $terms->codDescriptor());
+            $expected[] = new Obligation('payment.incoming', 'provider.incoming', '1', $terms->incomingDescriptor());
+            $expected[] = new Obligation('payment.cod.payer', 'provider.cod.payer', '1', $terms->codDescriptor());
+        } elseif ($cod) {
             foreach (['merchant', 'payer'] as $stage) {
                 $expected[] = new Obligation(
                     'payment.cod.' . $stage,
