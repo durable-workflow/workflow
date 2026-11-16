@@ -58,21 +58,7 @@ final readonly class CodPaymentOperation implements ScopedOperation
             static fn (array $receipt): bool => $receipt['kind'] === CodReceipt::COLLECTION
         ));
         if ($this->stage === 'merchant') {
-            // The original collection-close capability cannot erase or settle carrier/merchant balances.
-            if ($closed === null) {
-                return Resolution::unknown('cod-original-merchant-settlement-open');
-            }
-            if ($receipts === []) {
-                return Resolution::verified([$closed['evidence']], true);
-            }
-            $snapshot = $this->provider->collections->inspect($original);
-            if ($snapshot['facts']['outstanding_remittance_minor'] !== 0) {
-                return Resolution::unknown('cod-original-merchant-settlement-open');
-            }
-            return Resolution::verified([
-                $closed['evidence'],
-                'cod-merchant-remittance:' . hash('sha256', PortableDescriptor::encode($snapshot['receipts'])),
-            ], true);
+            return $this->settleMerchant($original, $closed, $receipts);
         }
         return $this->refundPayer($context, $original, $closed, $receipts);
     }
@@ -117,6 +103,22 @@ final readonly class CodPaymentOperation implements ScopedOperation
             );
         }
         return [CodDescriptor::fromArray($input['original']), $input['admissionContract']];
+    }
+
+    private function settleMerchant(CodDescriptor $original, ?array $closed, array $receipts): Resolution
+    {
+        // Closing collection alone cannot settle an existing carrier/merchant balance.
+        if ($closed === null) {
+            return Resolution::unknown('cod-original-merchant-settlement-open');
+        }
+        if ($receipts === []) {
+            return Resolution::verified([$closed['evidence']], true);
+        }
+        $snapshot = $this->provider->collections->inspect($original);
+        return $snapshot['facts']['outstanding_remittance_minor'] === 0 ? Resolution::verified([
+            $closed['evidence'],
+            'cod-merchant-remittance:' . hash('sha256', PortableDescriptor::encode($snapshot['receipts'])),
+        ], true) : Resolution::unknown('cod-original-merchant-settlement-open');
     }
 
     private function refundPayer(
