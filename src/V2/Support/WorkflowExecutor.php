@@ -1365,12 +1365,16 @@ final class WorkflowExecutor
             return null;
         }
         $signalEvent = $this->appliedSignalEvent($run, $sequence, $current);
+        // A recorded timeout resolves this wait just as a signal does. Later cancellation must not
+        // replace that completed boundary while replay is rebuilding the original forward path.
+        $completionEvent = $signalEvent ?? ($current->timeoutSeconds !== null
+            ? $this->signalTimeoutFiredEvent($run, $sequence, $current->name) : null);
         $cancellationDelivery = $this->deliverCancellationAtCall(
             $run,
             $task,
             $sequence,
             'signal',
-            $signalEvent,
+            $completionEvent,
             $workflowExecution
         );
         if ($cancellationDelivery === CancellationDeliveryState::Waiting) {

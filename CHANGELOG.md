@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Cancellation during embedded workflow replay preserves a signal wait that
+  already timed out. Cleanup starts at the original unresolved boundary instead
+  of replacing earlier completed work, including when only timer history remains.
+
 - Embedded schedule audits default to 1,000 snapshots, preserving the first and
   newest events. Compact firing receipts keep occurrence deduplication intact;
   a namespace-scoped prune command removes rows after physical schedule purge.
