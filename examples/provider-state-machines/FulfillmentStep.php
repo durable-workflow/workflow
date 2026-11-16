@@ -91,20 +91,26 @@ final class FulfillmentStep extends AssessedTransitionStep
             if ($value['confirmed']) {
                 return;
             }
-            if ($value['waitSeconds'] === 0 && $requestCapture) {
-                Workflow::activity($handoff, 'expire', []);
-                throw new BusinessCancellationRequested(
-                    'The original authorization expired before delivery capture settled.'
-                );
-            }
+            $remaining = $this->paymentWait($value, $requestCapture, $handoff);
             if (! $value['originOpen']) {
                 throw new LogicException('The original Payment closed without the required capture publication.');
             }
-            Workflow::await(
-                $common ? 'funding-milestone' : 'financial-milestone',
-                $requestCapture ? $value['waitSeconds'] : ($value['remittanceWaitSeconds'] ?: null)
-            );
+            Workflow::await($common ? 'funding-milestone' : 'financial-milestone', $remaining);
         }
         throw new LogicException('The bounded original delivery-capture wait remains unresolved.');
+    }
+
+    private function paymentWait(array $value, bool $requestCapture, string $handoff): ?int
+    {
+        if (! $requestCapture) {
+            return $value['remittanceWaitSeconds'] ?: null;
+        }
+        if ($value['waitSeconds'] === 0) {
+            Workflow::activity($handoff, 'expire', []);
+            throw new BusinessCancellationRequested(
+                'The original authorization expired before delivery capture settled.'
+            );
+        }
+        return $value['waitSeconds'];
     }
 }

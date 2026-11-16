@@ -27,6 +27,7 @@ foreach ([
     'ShipmentLedger',
     'ShipmentJournal',
     'IncomingPaymentJournal',
+    'RefundAllocationLedger',
     'IncomingRefundLedger',
     'CodRefundLedger',
     'Journal',

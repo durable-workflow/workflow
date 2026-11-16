@@ -54,7 +54,7 @@ final readonly class CodInspectionStore
             ->where('id', $id)
             ->first();
         if ($existing !== null) {
-            return $this->read($existing, $actual, $activityId, $scope, $descriptor, $contract, $id, $requestHash);
+            return $this->read($existing, $actual, $activityId, $scope, $descriptor, $contract, $requestHash);
         }
         $cod = $this->provider->inspect($descriptor);
         $this->assertCodFacts($cod, $descriptor, $contract);
@@ -81,7 +81,7 @@ final readonly class CodInspectionStore
                 ->lockForUpdate()
                 ->first();
             if ($existing !== null) {
-                return $this->read($existing, $actual, $activityId, $scope, $descriptor, $contract, $id, $requestHash);
+                return $this->read($existing, $actual, $activityId, $scope, $descriptor, $contract, $requestHash);
             }
             $this->db->table('provider_machine_assessments')
                 ->insert([
@@ -102,9 +102,9 @@ final readonly class CodInspectionStore
         ScopeIdentity $scope,
         CodDescriptor $descriptor,
         string $contract,
-        string $id,
         string $requestHash,
     ): array {
+        $id = hash('sha256', PortableDescriptor::encode(['cod-inspection-v1', $actual->id, $activityId]));
         if ($row->actor_id !== $scope->id() || ! hash_equals($row->request_sha256, $requestHash)
             || strlen($row->payload) > PortableDescriptor::MAX_BYTES
             || ! hash_equals($row->payload_sha256, hash('sha256', $row->payload))) {

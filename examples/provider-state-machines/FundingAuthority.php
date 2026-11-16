@@ -36,35 +36,7 @@ final readonly class FundingAuthority
             throw new LogicException('Funding access requires its original policy Payment actor.');
         }
         [, $terms] = $this->authority->assignment($actor->root_key);
-        $expected = [new Obligation('owner', 'provider.owner', '1', [
-            'key' => $actor->root_key,
-            'rootRun' => $plan->rootRun,
-            'nativeRun' => $actual->id,
-            'role' => 'payment',
-        ])];
-        if ($cod) {
-            foreach (['merchant', 'payer'] as $stage) {
-                $expected[] = new Obligation(
-                    'payment.cod.' . $stage,
-                    'provider.cod.' . $stage,
-                    '1',
-                    $terms->codDescriptor()
-                );
-            }
-        } elseif ($plan->recipe === FundingCatalogue::BANK) {
-            $expected[] = new Obligation('payment.incoming', 'provider.incoming', '1', $terms->incomingDescriptor());
-        } elseif (FundingCatalogue::requiresAuthorization($plan->recipe)) {
-            foreach (['authorize', 'capture'] as $stage) {
-                $expected[] = new Obligation(
-                    'payment.' . $stage,
-                    'provider.financial.' . $stage,
-                    '1',
-                    $terms->financialDescriptor()
-                );
-            }
-        } else {
-            $expected[] = new Obligation('effect', 'provider.effect', '1', $terms->descriptor('payment'));
-        }
+        $expected = $this->expected($actual, $actor, $plan, $terms);
         $scope = $plan->childScope('payment');
         $ledger = (new ScopeRepository())->inspect($scope);
         $count = count($ledger['obligations']);
@@ -212,6 +184,44 @@ final readonly class FundingAuthority
                 throw new LogicException('The original retained owner closed funding forward admission.');
             }
         }
+    }
+
+    /**
+     * @return non-empty-list<Obligation>
+     */
+    private function expected(WorkflowRun $actual, object $actor, BindingPlan $plan, OrderTerms $terms): array
+    {
+        $cod = CodFundingPolicy::selected($plan->recipe);
+        $expected = [new Obligation('owner', 'provider.owner', '1', [
+            'key' => $actor->root_key,
+            'rootRun' => $plan->rootRun,
+            'nativeRun' => $actual->id,
+            'role' => 'payment',
+        ])];
+        if ($cod) {
+            foreach (['merchant', 'payer'] as $stage) {
+                $expected[] = new Obligation(
+                    'payment.cod.' . $stage,
+                    'provider.cod.' . $stage,
+                    '1',
+                    $terms->codDescriptor()
+                );
+            }
+        } elseif ($plan->recipe === FundingCatalogue::BANK) {
+            $expected[] = new Obligation('payment.incoming', 'provider.incoming', '1', $terms->incomingDescriptor());
+        } elseif (FundingCatalogue::requiresAuthorization($plan->recipe)) {
+            foreach (['authorize', 'capture'] as $stage) {
+                $expected[] = new Obligation(
+                    'payment.' . $stage,
+                    'provider.financial.' . $stage,
+                    '1',
+                    $terms->financialDescriptor()
+                );
+            }
+        } else {
+            $expected[] = new Obligation('effect', 'provider.effect', '1', $terms->descriptor('payment'));
+        }
+        return $expected;
     }
 
     /**

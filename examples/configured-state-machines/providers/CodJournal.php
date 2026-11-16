@@ -135,7 +135,7 @@ final readonly class CodJournal
             $known = $this->receipts($original);
             // Keep overflow facts, while inspect() refuses an incomplete bounded inventory.
             if (count($known) < 128) {
-                new CodSnapshot($original, $now, [...$known, $receipt]);
+                (new CodSnapshot($original, $now, [...$known, $receipt]))->facts();
             }
             $hash = hash('sha256', $payload);
             $this->query(

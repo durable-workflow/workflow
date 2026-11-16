@@ -37,41 +37,13 @@ final readonly class FundingFactsStore
         ];
         $now = Carbon::now()->getTimestamp();
         $snapshot = null;
-        if (CodFundingPolicy::selected($plan->recipe)) {
-            if ($rows['payment.cod.payer']['forward_status'] === 'observed') {
-                $snapshot = app(CodInspectionStore::class)->inspect(
-                    $actual,
-                    $activityId,
-                    $plan->childScope('payment')
-                        ->toArray(),
-                    $terms->codDescriptor()
-                );
-                $values['cod_reference_ready'] = true;
-                $onTime = 0;
-                foreach ($snapshot['cod']['receipts'] as $receipt) {
-                    if ($receipt['kind'] === CodReceipt::COLLECTION && $receipt['occurredAt'] < $terms->codPayment->collectionDeadline) {
-                        $onTime += $receipt['amountMinor'];
-                    }
-                }
-                $values['cod_payer_collection_confirmed'] = $onTime >= $terms->codPayment->amountMinor;
-                $values['merchant_receipt_confirmed'] = $snapshot['cod']['facts']['merchant_receipt_confirmed'];
-                $now = $snapshot['cod']['observedAt'];
-            }
-        } elseif ($plan->recipe === FundingCatalogue::BANK) {
-            // An undispatched reference has no provider facts to read or adopt. Registration precedes every receipt.
-            if ($rows['payment.incoming']['forward_status'] === 'observed') {
-                $snapshot = app(IncomingPaymentInspectionStore::class)->inspect(
-                    $actual,
-                    $activityId,
-                    $plan->childScope('payment')
-                        ->toArray(),
-                    $terms->incomingPayment->toArray()
-                );
-                $values['incoming_full_amount_confirmed'] = $snapshot['incoming']['requiredAmountReceivedBeforeDeadline'];
-                // This policy receives directly into the merchant's bank account; COD remittance is a separate contract.
-                $values['merchant_receipt_confirmed'] = $values['incoming_full_amount_confirmed'];
-                $now = $snapshot['incoming']['observedAt'];
-            }
+        if (CodFundingPolicy::selected($plan->recipe) || $plan->recipe === FundingCatalogue::BANK) {
+            $observed = CodFundingPolicy::selected($plan->recipe)
+                ? $this->cod($actual, $activityId, $plan, $terms, $rows)
+                : $this->bank($actual, $activityId, $plan, $terms, $rows);
+            $snapshot = $observed['snapshot'];
+            $values = [...$values, ...$observed['values']];
+            $now = $observed['observedAt'];
         } elseif (FundingCatalogue::requiresAuthorization($plan->recipe)) {
             $snapshot = app(FinancialInspectionStore::class)->inspect(
                 $actual,
@@ -114,6 +86,73 @@ final readonly class FundingFactsStore
                 0,
                 $terms->codPayment->remittanceDeadline - $now
             ),
+        ];
+    }
+
+    private function cod(
+        WorkflowRun $actual,
+        string $activityId,
+        BindingPlan $plan,
+        OrderTerms $terms,
+        array $rows
+    ): array {
+        $snapshot = null;
+        $values = [];
+        $now = Carbon::now()->getTimestamp();
+        if ($rows['payment.cod.payer']['forward_status'] === 'observed') {
+            $snapshot = app(CodInspectionStore::class)->inspect(
+                $actual,
+                $activityId,
+                $plan->childScope('payment')
+                    ->toArray(),
+                $terms->codDescriptor()
+            );
+            $values['cod_reference_ready'] = true;
+            $onTime = 0;
+            foreach ($snapshot['cod']['receipts'] as $receipt) {
+                if ($receipt['kind'] === CodReceipt::COLLECTION && $receipt['occurredAt'] < $terms->codPayment->collectionDeadline) {
+                    $onTime += $receipt['amountMinor'];
+                }
+            }
+            $values['cod_payer_collection_confirmed'] = $onTime >= $terms->codPayment->amountMinor;
+            $values['merchant_receipt_confirmed'] = $snapshot['cod']['facts']['merchant_receipt_confirmed'];
+            $now = $snapshot['cod']['observedAt'];
+        }
+        return [
+            'snapshot' => $snapshot,
+            'values' => $values,
+            'observedAt' => $now,
+        ];
+    }
+
+    private function bank(
+        WorkflowRun $actual,
+        string $activityId,
+        BindingPlan $plan,
+        OrderTerms $terms,
+        array $rows
+    ): array {
+        $snapshot = null;
+        $values = [];
+        $now = Carbon::now()->getTimestamp();
+        // An undispatched reference has no provider facts to read or adopt. Registration precedes every receipt.
+        if ($rows['payment.incoming']['forward_status'] === 'observed') {
+            $snapshot = app(IncomingPaymentInspectionStore::class)->inspect(
+                $actual,
+                $activityId,
+                $plan->childScope('payment')
+                    ->toArray(),
+                $terms->incomingPayment->toArray()
+            );
+            $values['incoming_full_amount_confirmed'] = $snapshot['incoming']['requiredAmountReceivedBeforeDeadline'];
+            // This policy receives directly into the merchant's bank account; COD remittance is a separate contract.
+            $values['merchant_receipt_confirmed'] = $values['incoming_full_amount_confirmed'];
+            $now = $snapshot['incoming']['observedAt'];
+        }
+        return [
+            'snapshot' => $snapshot,
+            'values' => $values,
+            'observedAt' => $now,
         ];
     }
 }

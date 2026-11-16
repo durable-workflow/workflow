@@ -133,52 +133,10 @@ final readonly class MachineStore
                 return $this->authority->authorizeScope($scope, $principal, $operation);
             }
         });
-        $handlers = [
-            'provider.owner' => [
-                '1' => new OwnerOperation($authority),
-            ],
-            'provider.effect' => [
-                '1' => new RetainedOperation($provider, static function (
-                    OperationContext $context,
-                    string $operation,
-                ) use ($authority, $funding): void {
-                    $key = explode('.', $context->scope->key)[0];
-                    if (FundingCatalogue::selected($authority->recipe($key))) {
-                        $funding->effect($context, $operation);
-                    } else {
-                        $authority->authorizeOperation($context, $operation);
-                    }
-                }),
-            ],
-            'provider.shipment.full' => [
-                '1' => new ShipmentOperation($provider, $physical->operation(...)),
-            ],
-        ];
-        if ($incoming !== null) {
-            $handlers['provider.incoming'] = [
-                '1' => new IncomingPaymentOperation($incoming, $funding->incoming(...)),
-            ];
-        }
-        if ($cod !== null) {
-            foreach (['merchant', 'payer'] as $stage) {
-                $handlers['provider.cod.' . $stage] = [
-                    '1' => new CodPaymentOperation($cod, $funding->cod(...), $stage),
-                ];
-            }
-        }
-        foreach (['authorize', 'capture'] as $stage) {
-            $handlers['provider.financial.' . $stage] = [
-                '1' => new FinancialOperation($provider, static function (
-                    OperationContext $context,
-                    string $mode
-                ) use ($financial, $funding, $authority, $stage): void {
-                    $key = explode('.', $context->scope->key)[0];
-                    $selected = FundingCatalogue::selected($authority->recipe($key)) ? $funding : $financial;
-                    $selected->operation($context, $mode, $stage);
-                }, $stage),
-            ];
-        }
-        $app->instance(HandlerRegistry::class, new HandlerRegistry($handlers));
+        $app->instance(
+            HandlerRegistry::class,
+            new HandlerRegistry($store->handlers($provider, $financial, $funding, $physical))
+        );
         return $store;
     }
 
@@ -420,6 +378,66 @@ final readonly class MachineStore
             'execution' => $execution->toArray(),
             'verified' => true,
         ];
+    }
+
+    /**
+     * @return array<string, array<string, \Workflow\V2\Compensation\Execution\ScopedOperation>>
+     */
+    private function handlers(
+        Journal $provider,
+        FinancialAuthority $financial,
+        FundingAuthority $funding,
+        ShipmentAuthority $physical
+    ): array {
+        $authority = $this->authority;
+        $incoming = $this->incoming;
+        $cod = $this->cod;
+        $handlers = [
+            'provider.owner' => [
+                '1' => new OwnerOperation($authority),
+            ],
+            'provider.effect' => [
+                '1' => new RetainedOperation($provider, static function (
+                    OperationContext $context,
+                    string $operation,
+                ) use ($authority, $funding): void {
+                    $key = explode('.', $context->scope->key)[0];
+                    if (FundingCatalogue::selected($authority->recipe($key))) {
+                        $funding->effect($context, $operation);
+                    } else {
+                        $authority->authorizeOperation($context, $operation);
+                    }
+                }),
+            ],
+            'provider.shipment.full' => [
+                '1' => new ShipmentOperation($provider, $physical->operation(...)),
+            ],
+        ];
+        if ($incoming !== null) {
+            $handlers['provider.incoming'] = [
+                '1' => new IncomingPaymentOperation($incoming, $funding->incoming(...)),
+            ];
+        }
+        if ($cod !== null) {
+            foreach (['merchant', 'payer'] as $stage) {
+                $handlers['provider.cod.' . $stage] = [
+                    '1' => new CodPaymentOperation($cod, $funding->cod(...), $stage),
+                ];
+            }
+        }
+        foreach (['authorize', 'capture'] as $stage) {
+            $handlers['provider.financial.' . $stage] = [
+                '1' => new FinancialOperation($provider, static function (
+                    OperationContext $context,
+                    string $mode
+                ) use ($financial, $funding, $authority, $stage): void {
+                    $key = explode('.', $context->scope->key)[0];
+                    $selected = FundingCatalogue::selected($authority->recipe($key)) ? $funding : $financial;
+                    $selected->operation($context, $mode, $stage);
+                }, $stage),
+            ];
+        }
+        return $handlers;
     }
 
     private function descriptor(OrderTerms $terms, string $role, string $recipe): array

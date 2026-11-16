@@ -4,82 +4,39 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Examples\ConfiguredStateMachines\Providers;
 
-use Closure;
 use LogicException;
 use PDO;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 
-/** Provider-owned refund admission. Unknown/processing portions continue to reserve the original money. */
-final readonly class CodRefundLedger
+/** Original COD customer receipt validation; allocation bounds share the same provider transaction. */
+final readonly class CodRefundLedger extends RefundAllocationLedger
 {
-    public function __construct(
-        private PDO $db,
-        private Closure $clock
-    ) {
-    }
+    protected const TABLE = 'cod_refund_allocations';
 
-    public static function handles(Request $request): bool
-    {
-        return $request->action === 'refund-cod';
-    }
+    protected const OWNER_COLUMN = 'payment_id';
 
-    public function install(): void
-    {
-        $this->assertTransaction();
-        $this->db->exec('CREATE TABLE cod_refund_allocations (
-            operation_id TEXT PRIMARY KEY, payment_id TEXT NOT NULL, collection_id TEXT NOT NULL,
-            amount_minor INTEGER NOT NULL, request_sha256 TEXT NOT NULL, receipt_sha256 TEXT NOT NULL)');
-    }
+    protected const SOURCE_COLUMN = 'collection_id';
 
-    public function admit(Request $request, Status $planned): Status
-    {
-        $this->assertTransaction();
-        [$terms, $receipt] = $this->original($request);
-        if ($receipt === null) {
-            return Status::Unknown;
-        }
-        $budget = $this->reserved($terms, $receipt, $request->identity->key());
-        if ($budget['count'] >= 64 && ! $budget['current']) {
-            throw new LogicException('The bounded original COD customer refund inventory is full.');
-        }
-        if ($terms->amountMinor > $receipt->amountMinor - $budget['amount']) {
-            return Status::Refused;
-        }
-        if (in_array($planned, [Status::Confirmed, Status::Processing, Status::Unknown], true)) {
-            $this->query('INSERT INTO cod_refund_allocations
-                (operation_id, payment_id, collection_id, amount_minor, request_sha256, receipt_sha256)
-                VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(operation_id) DO NOTHING', [
-                $request->identity->key(), $terms->original->identity->key(), $terms->collection,
-                $terms->amountMinor, $request->fingerprint(), $this->receiptHash($receipt),
-            ]);
-        }
-        return $planned;
-    }
+    protected const SOURCE_FIELD = 'collection';
 
-    public function assertCompletion(Request $request): void
-    {
-        $this->assertTransaction();
-        [$terms, $receipt] = $this->original($request);
-        if ($receipt === null) {
-            throw new LogicException('The original carrier collection is unavailable for refund completion.');
-        }
-        $slot = $this->query('SELECT * FROM cod_refund_allocations WHERE operation_id = ?', [
-            $request->identity->key(),
-        ])->fetch(PDO::FETCH_ASSOC);
-        if ($slot === false) {
-            throw new LogicException('A COD customer refund lost its original money admission.');
-        }
-        $this->assertAllocation($slot, $request, $terms, $receipt);
-        $budget = $this->reserved($terms, $receipt, $request->identity->key());
-        if ($terms->amountMinor > $receipt->amountMinor - $budget['amount']) {
-            throw new LogicException('COD customer refund completion exceeds the original collected money.');
-        }
-    }
+    protected const ACTION = 'refund-cod';
+
+    protected const TERMS_CLASS = CodRefundTerms::class;
+
+    protected const LABEL = 'COD customer';
+
+    protected const ARTICLE = 'A COD customer';
+
+    protected const MONEY = 'collected';
+
+    protected const COMPLETION_LABEL = 'COD customer';
+
+    protected const MISSING_RECEIPT = 'The original carrier collection is unavailable for refund completion.';
 
     /**
      * @return array{CodRefundTerms, ?CodReceipt}
      */
-    private function original(Request $request): array
+    protected function original(Request $request): array
     {
         $terms = CodRefundTerms::fromArray($request->terms);
         if (! self::handles($request) || $request->target?->toArray() !== $terms->original->identity->toArray()) {
@@ -122,117 +79,5 @@ final readonly class CodRefundLedger
             throw new LogicException('The COD refund collection changed its original owner, point, currency or time.');
         }
         return [$terms, $receipt];
-    }
-
-    /**
-     * @return array{amount: int, count: int, current: bool}
-     */
-    private function reserved(CodRefundTerms $terms, CodReceipt $receipt, string $current): array
-    {
-        $orphan = $this->query('SELECT a.operation_id FROM cod_refund_allocations a
-            LEFT JOIN provider_operations o ON o.id = a.operation_id
-            WHERE a.payment_id = ? AND a.collection_id = ? AND o.id IS NULL LIMIT 1', [
-            $terms->original->identity->key(), $terms->collection,
-        ])->fetchColumn();
-        if ($orphan !== false) {
-            throw new LogicException('A COD customer refund allocation lost its original provider outcome.');
-        }
-        $rows = $this->query("SELECT o.*, a.operation_id AS allocation_id, a.payment_id,
-            a.collection_id, a.amount_minor, a.request_sha256, a.receipt_sha256
-            FROM provider_operations o LEFT JOIN cod_refund_allocations a ON a.operation_id = o.id
-            WHERE (a.payment_id = ? AND a.collection_id = ?)
-            OR (json_extract(o.request, '$.action') = 'refund-cod'
-                AND json_extract(o.request, '$.target') = ? AND json_extract(o.request, '$.terms.collection') = ?)
-            ORDER BY o.id LIMIT 65", [
-            $terms->original->identity->key(), $terms->collection,
-            PortableDescriptor::encode($terms->original->identity->toArray()), $terms->collection,
-        ])->fetchAll(PDO::FETCH_ASSOC);
-        if (count($rows) > 64) {
-            throw new LogicException('The bounded COD customer refund inventory is incomplete.');
-        }
-        $reserved = 0;
-        $hasCurrent = false;
-        foreach ($rows as $row) {
-            [$request, $other] = $this->readOriginalRefund($row, $terms);
-            $active = in_array(
-                Status::from($row['status']),
-                [Status::Confirmed, Status::Processing, Status::Unknown],
-                true
-            );
-            if ($row['allocation_id'] !== null) {
-                $this->assertAllocation($row, $request, $other, $receipt);
-            } elseif ($active) {
-                // An absent target was never admitted; only its definitive NotExecuted
-                // completion can permit a later attempt. Lookup absence grants no money.
-                throw new LogicException('An unresolved COD customer refund has no original money admission.');
-            }
-            $hasCurrent = $hasCurrent || $row['id'] === $current;
-            if (! $active || $row['id'] === $current) {
-                continue;
-            }
-            if ($other->amountMinor > $receipt->amountMinor - $reserved) {
-                throw new LogicException('Stored COD customer refunds exceed the original collected money.');
-            }
-            $reserved += $other->amountMinor;
-        }
-        return [
-            'amount' => $reserved,
-            'count' => count($rows),
-            'current' => $hasCurrent,
-        ];
-    }
-
-    /**
-     * @return array{Request, CodRefundTerms}
-     */
-    private function readOriginalRefund(array $row, CodRefundTerms $expected): array
-    {
-        if (strlen($row['request']) > PortableDescriptor::MAX_BYTES
-            || ! hash_equals(hash('sha256', $row['request']), $row['fingerprint'])) {
-            throw new LogicException('An original COD customer refund command lost its evidence integrity.');
-        }
-        $request = Request::fromArray(json_decode($row['request'], true, flags: JSON_THROW_ON_ERROR));
-        $terms = CodRefundTerms::fromArray($request->terms);
-        if (! self::handles($request) || $request->target?->toArray() !== $terms->original->identity->toArray()
-            || $row['id'] !== $request->identity->key() || $request->fingerprint() !== $row['fingerprint']
-            || $terms->original->fingerprint() !== $expected->original->fingerprint()
-            || $terms->collection !== $expected->collection) {
-            throw new LogicException('The COD customer refund inventory substituted its original terms or owner.');
-        }
-        return [$request, $terms];
-    }
-
-    private function assertAllocation(
-        array $row,
-        Request $request,
-        CodRefundTerms $terms,
-        CodReceipt $receipt
-    ): void {
-        if (($row['operation_id'] ?? $row['allocation_id'] ?? null) !== $request->identity->key()
-            || $row['payment_id'] !== $terms->original->identity->key() || $row['collection_id'] !== $terms->collection
-            || (string) $row['amount_minor'] !== (string) $terms->amountMinor
-            || $row['request_sha256'] !== $request->fingerprint()
-            || $row['receipt_sha256'] !== $this->receiptHash($receipt)) {
-            throw new LogicException('The original COD customer refund allocation or collected money was substituted.');
-        }
-    }
-
-    private function receiptHash(CodReceipt $receipt): string
-    {
-        return hash('sha256', PortableDescriptor::encode($receipt->toArray()));
-    }
-
-    private function query(string $sql, array $values): \PDOStatement
-    {
-        $query = $this->db->prepare($sql);
-        $query->execute($values);
-        return $query;
-    }
-
-    private function assertTransaction(): void
-    {
-        if (! $this->db->inTransaction()) {
-            throw new LogicException('COD customer refund admission requires the provider-owned transaction.');
-        }
     }
 }

@@ -126,21 +126,7 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
 
     public function binding(string $role): BindingIdentity
     {
-        $workflowType = $role === 'payment' ? self::PAYMENT : self::SHIPMENT;
-        if ($role === 'payment' && FinancialCatalogue::selected($this->recipe)) {
-            $workflowType = self::AUTHORIZED_PAYMENT;
-        }
-        if ($role === 'payment' && FundingCatalogue::selected($this->recipe)) {
-            $workflowType = self::FUNDING_PAYMENT;
-        }
-        if ($role === 'payment' && CodFundingPolicy::selected($this->recipe)) {
-            $workflowType = self::COD_PAYMENT;
-        }
-        if ($role === 'shipment' && (FinancialCatalogue::selected($this->recipe) || FundingCatalogue::selected(
-            $this->recipe
-        ))) {
-            $workflowType = self::FULL_SHIPMENT;
-        }
+        $workflowType = $this->workflowType($role);
         $parentStates = $this->recipe === Catalogue::RESERVE_FIRST
             ? [
                 'payment' => 'paid',
@@ -213,5 +199,20 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
             throw new LogicException('The child scope, binding and original business owner must agree.');
         }
         return $this->assertAllowed($identity, $principal, $operation);
+    }
+
+    private function workflowType(string $role): string
+    {
+        return match ($role) {
+            'payment' => match (true) {
+                CodFundingPolicy::selected($this->recipe) => self::COD_PAYMENT,
+                FundingCatalogue::selected($this->recipe) => self::FUNDING_PAYMENT,
+                FinancialCatalogue::selected($this->recipe) => self::AUTHORIZED_PAYMENT,
+                default => self::PAYMENT,
+            },
+            'shipment' => FinancialCatalogue::selected($this->recipe) || FundingCatalogue::selected($this->recipe)
+                ? self::FULL_SHIPMENT : self::SHIPMENT,
+            default => throw new LogicException('The original child role is unavailable.'),
+        };
     }
 }

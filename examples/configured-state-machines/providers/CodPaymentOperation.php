@@ -58,26 +58,11 @@ final readonly class CodPaymentOperation implements ScopedOperation
             static fn (array $receipt): bool => $receipt['kind'] === CodReceipt::COLLECTION
         ));
         if ($this->stage === 'merchant') {
-            if ($closed !== null && $receipts === []) {
-                return Resolution::verified([$closed['evidence']], true);
-            }
             // The original collection-close capability cannot erase or settle carrier/merchant balances.
-            return Resolution::unknown('cod-original-merchant-settlement-open');
+            return $closed !== null && $receipts === [] ? Resolution::verified([$closed['evidence']], true)
+                : Resolution::unknown('cod-original-merchant-settlement-open');
         }
-        $evidence = hash_init('sha256');
-        foreach ($receipts as $value) {
-            $receipt = CodReceipt::fromArray($value);
-            $request = self::refundRequest($context->scope, $context->obligation->key, $original, $receipt);
-            $refund = $this->provider->commands->attempt($request);
-            if ($refund->status !== Status::Confirmed || $refund->effectId === null) {
-                return Resolution::unknown('cod-customer-refund-' . $refund->status->value);
-            }
-            hash_update($evidence, hash('sha256', PortableDescriptor::encode([
-                $receipt->toArray(), $request->toArray(), $refund->effectId,
-            ])));
-        }
-        return $closed === null ? Resolution::unknown('cod-original-collection-admission-open')
-            : Resolution::verified([$closed['evidence'], 'cod-customer-refunds:' . hash_final($evidence)], true);
+        return $this->refundPayer($context, $original, $closed, $receipts);
     }
 
     public static function refundRequest(
@@ -120,5 +105,27 @@ final readonly class CodPaymentOperation implements ScopedOperation
             );
         }
         return [CodDescriptor::fromArray($input['original']), $input['admissionContract']];
+    }
+
+    private function refundPayer(
+        OperationContext $context,
+        CodDescriptor $original,
+        ?array $closed,
+        array $receipts
+    ): Resolution {
+        $evidence = hash_init('sha256');
+        foreach ($receipts as $value) {
+            $receipt = CodReceipt::fromArray($value);
+            $request = self::refundRequest($context->scope, $context->obligation->key, $original, $receipt);
+            $refund = $this->provider->commands->attempt($request);
+            if ($refund->status !== Status::Confirmed || $refund->effectId === null) {
+                return Resolution::unknown('cod-customer-refund-' . $refund->status->value);
+            }
+            hash_update($evidence, hash('sha256', PortableDescriptor::encode([
+                $receipt->toArray(), $request->toArray(), $refund->effectId,
+            ])));
+        }
+        return $closed === null ? Resolution::unknown('cod-original-collection-admission-open')
+            : Resolution::verified([$closed['evidence'], 'cod-customer-refunds:' . hash_final($evidence)], true);
     }
 }

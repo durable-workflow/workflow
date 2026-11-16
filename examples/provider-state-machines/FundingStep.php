@@ -28,27 +28,11 @@ final class FundingStep extends AssessedTransitionStep
     {
         $key = $context->transition->key;
         $cod = CodFundingPolicy::selected($this->recipe);
-        if ($key === 'prepare' && $cod) {
-            $this->duties['merchant']->execute();
-            $this->duties['payer']->execute();
-        } elseif ($key === 'prepare') {
-            $stage = match ($this->recipe) {
-                FundingCatalogue::BANK => 'incoming', FundingCatalogue::IMMEDIATE => 'capture', default => 'authorize',
-            };
-            $this->duties[$stage]->execute();
-        } elseif ($key === 'collect' && FundingCatalogue::requiresAuthorization($this->recipe)) {
-            $this->duties['capture']->execute();
-        } elseif (! in_array($key, ['collect', 'confirm-receipt'], true)) {
-            throw new LogicException('The original funding transition is unavailable.');
-        }
-        $collected = $this->recipe === FundingCatalogue::BANK ? 'incoming_full_amount_confirmed' : 'capture_confirmed';
-        $prepared = FundingCatalogue::requiresAuthorization($this->recipe) ? 'authorization_active' : $collected;
-        if ($cod) {
-            $collected = 'cod_payer_collection_confirmed';
-            $prepared = 'cod_reference_ready';
-        }
-        $target = match ($key) {
-            'prepare' => $prepared, 'collect' => $collected, 'confirm-receipt' => 'merchant_receipt_confirmed',
+        $this->admit($key);
+        $target = $this->target($key);
+        $signal = match ($this->recipe) {
+            CodFundingPolicy::BEFORE, CodFundingPolicy::AFTER => 'cod-observed',
+            FundingCatalogue::BANK => 'incoming-observed', default => 'reconcile-funding',
         };
         for ($wake = 0; $wake < 32; ++$wake) {
             $value = Workflow::activity(FundingHandoffActivity::class, 'read-capture', []);
@@ -64,10 +48,11 @@ final class FundingStep extends AssessedTransitionStep
                     'The original funding deadline expired without its required fact.'
                 );
             }
-            Workflow::await(
-                $cod ? 'cod-observed' : ($this->recipe === FundingCatalogue::BANK ? 'incoming-observed' : 'reconcile-funding'),
-                $waitingForMerchant ? ($value['remittanceWaitSeconds'] ?: null) : $value['waitSeconds']
-            );
+            $remaining = $value['waitSeconds'];
+            if ($waitingForMerchant) {
+                $remaining = $value['remittanceWaitSeconds'] ?: null;
+            }
+            Workflow::await($signal, $remaining);
         }
         throw new LogicException('The bounded original funding observation remains unresolved.');
     }
@@ -80,5 +65,36 @@ final class FundingStep extends AssessedTransitionStep
         foreach (array_reverse($this->duties) as $duty) {
             $duty->compensate();
         }
+    }
+
+    private function admit(string $key): void
+    {
+        $cod = CodFundingPolicy::selected($this->recipe);
+        if ($key === 'prepare' && $cod) {
+            $this->duties['merchant']->execute();
+            $this->duties['payer']->execute();
+        } elseif ($key === 'prepare') {
+            $stage = match ($this->recipe) {
+                FundingCatalogue::BANK => 'incoming', FundingCatalogue::IMMEDIATE => 'capture', default => 'authorize',
+            };
+            $this->duties[$stage]->execute();
+        } elseif ($key === 'collect' && FundingCatalogue::requiresAuthorization($this->recipe)) {
+            $this->duties['capture']->execute();
+        } elseif (! in_array($key, ['collect', 'confirm-receipt'], true)) {
+            throw new LogicException('The original funding transition is unavailable.');
+        }
+    }
+
+    private function target(string $key): string
+    {
+        $collected = $this->recipe === FundingCatalogue::BANK ? 'incoming_full_amount_confirmed' : 'capture_confirmed';
+        $prepared = FundingCatalogue::requiresAuthorization($this->recipe) ? 'authorization_active' : $collected;
+        if (CodFundingPolicy::selected($this->recipe)) {
+            $collected = 'cod_payer_collection_confirmed';
+            $prepared = 'cod_reference_ready';
+        }
+        return match ($key) {
+            'prepare' => $prepared, 'collect' => $collected, 'confirm-receipt' => 'merchant_receipt_confirmed',
+        };
     }
 }
