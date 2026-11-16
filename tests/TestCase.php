@@ -171,11 +171,20 @@ abstract class TestCase extends BaseTestCase
 
     protected function tearDown(): void
     {
+        $database = $this->app !== null && $this->app->bound('db') ? $this->app->make('db') : null;
         try {
             self::stopWorkers();
             self::flushRedis();
         } finally {
-            parent::tearDown();
+            try {
+                parent::tearDown();
+            } finally {
+                // Test owners can retain Connection objects after Testbench destroys their application.
+                // Close their sessions after all application-destroyed callbacks have used the database.
+                foreach ($database?->getConnections() ?? [] as $connection) {
+                    $connection->disconnect();
+                }
+            }
         }
     }
 
