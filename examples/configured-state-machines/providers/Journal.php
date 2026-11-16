@@ -61,6 +61,11 @@ final readonly class Journal
         return new ShipmentJournal($this->db, $this->client, $this->beforePhysicalEvent);
     }
 
+    public function cartInventory(): CartInventory
+    {
+        return new CartInventory($this->db, $this->client, $this->clock);
+    }
+
     /**
      * Select the next attempt's result. This never dispatches an operation or creates an effect.
      */
@@ -91,7 +96,10 @@ final readonly class Journal
             }
             $plan = $this->assertPlan($request);
             $status = Status::from($plan['status']);
-            if (AuthorizationLedger::handles($request)) {
+            if (CartReservationLedger::handles($request)) {
+                $status = $this->cartLedger()
+                    ->admit($request, $status);
+            } elseif (AuthorizationLedger::handles($request)) {
                 $status = $this->authorizationLedger()
                     ->admit($request, $status);
             } elseif (in_array($request->action, ShipmentLedger::ACTIONS, true)) {
@@ -173,6 +181,10 @@ final readonly class Journal
         $this->authorize($request);
         return $this->transaction(function () use ($request): Observation {
             $row = $this->operation($request);
+            if (CartReservationLedger::handles($request) && $request->action === 'reserve') {
+                $this->cartLedger()
+                    ->closeAdmission($request);
+            }
             if ($row === null) {
                 $this->write($request, Status::NotExecuted, true);
             } else {
@@ -213,6 +225,10 @@ final readonly class Journal
                     );
                 }
             }
+            if (CartReservationLedger::handles($request)) {
+                $this->cartLedger()
+                    ->complete($request, $status);
+            }
             $this->write($request, $status, (bool) $row['closed']);
             return $this->observation($request, $this->operation($request));
         });
@@ -228,6 +244,11 @@ final readonly class Journal
     private function authorizationLedger(): AuthorizationLedger
     {
         return new AuthorizationLedger($this->db, $this->clock ?? static fn (): int => time());
+    }
+
+    private function cartLedger(): CartReservationLedger
+    {
+        return new CartReservationLedger($this->db, $this->clock ?? static fn (): int => time());
     }
 
     private function operation(Request $request): ?array
@@ -295,6 +316,10 @@ final readonly class Journal
 
     private function observation(Request $request, ?array $row): Observation
     {
+        if ($row !== null && $row['status'] === Status::Confirmed->value && CartReservationLedger::handles($request)) {
+            $this->cartLedger()
+                ->assertCompletion($request);
+        }
         if ($row !== null && $row['status'] === Status::Confirmed->value && IncomingRefundLedger::handles($request)) {
             (new IncomingRefundLedger($this->db, $this->clock ?? static fn (): int => time()))
                 ->assertCompletion($request);
