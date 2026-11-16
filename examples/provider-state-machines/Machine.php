@@ -81,7 +81,11 @@ final readonly class Machine
         $role = $this->initialization['role'];
         $confirmed = $result->status === TransitionStatus::Committed;
         $outcome = $role === 'payment' ? 'captured' : 'booked';
-        if ($role === 'shipment' && FinancialCatalogue::selected($this->initialization['recipe'] ?? '')
+        if ($role === 'payment' && FundingCatalogue::selected($this->initialization['recipe'] ?? '')) {
+            $outcome = $result->execution->sourceState === 'collected' ? 'paid' : 'unsettled';
+        }
+        if ($role === 'shipment' && (FinancialCatalogue::selected($this->initialization['recipe'] ?? '')
+            || FundingCatalogue::selected($this->initialization['recipe'] ?? ''))
             && $result->execution->sourceState === 'in-transit') {
             $outcome = 'delivered';
         }

@@ -82,16 +82,18 @@ final readonly class ShipmentBoundaryStore
         $reservation = $this->provider->lookup($stock);
         $payment = $this->payment($plan);
         $stage = $plan->recipe === FinancialCatalogue::AFTER_STOCK ? 'capture' : 'authorize';
-        $milestone = app(FinancialHandoffStore::class)->milestone(
-            WorkflowRun::query()->findOrFail($plan->rootRun),
-            $payment->toArray(),
-            $stage
-        );
+        $handoff = FinancialHandoffStore::class;
+        if (FundingCatalogue::selected($plan->recipe)) {
+            $handoff = FundingHandoffStore::class;
+            $stage = $plan->recipe === FundingCatalogue::AFTER_DELIVERY ? 'prepare' : 'confirm-receipt';
+        }
+        $milestone = app($handoff)
+            ->milestone(WorkflowRun::query()->findOrFail($plan->rootRun), $payment->toArray(), $stage);
         $values = $snapshot['facts'];
         $values['booking_confirmed'] = $values['booking_confirmed'] && $row['forward_status'] === 'observed';
         $values['shipment_permitted'] = $reservation->status === Status::Confirmed
             && $reservation->effectId === 'effect-' . $stock->identity->key() && $milestone['confirmed']
-            && ($stage === 'capture' || $milestone['waitSeconds'] > 0);
+            && (in_array($stage, ['capture', 'confirm-receipt'], true) || $milestone['waitSeconds'] > 0);
         $values['stock_deduction_confirmed'] = $values['inventory_accounted'] && $values['deducted_quantity'] === $terms->quantity;
         return [
             'values' => $values,
@@ -156,11 +158,13 @@ final readonly class ShipmentBoundaryStore
         }
         $binding = $this->admitted($plan);
         return $this->publication($plan, $binding) !== null
-            && app(FinancialHandoffStore::class)->milestone(
+            && app(
+                FundingCatalogue::selected($plan->recipe) ? FundingHandoffStore::class : FinancialHandoffStore::class
+            )->milestone(
                 $parent,
                 $this->payment($plan)
                     ->toArray(),
-                'capture'
+                FundingCatalogue::selected($plan->recipe) ? 'confirm-receipt' : 'capture'
             )['confirmed'];
     }
 
@@ -180,7 +184,7 @@ final readonly class ShipmentBoundaryStore
             Catalogue::APPLICATION,
             Authority::subjectName($plan->terms->subjectKey(), 'shipment'),
             $run . '.deliver.3',
-            PhysicalCatalogue::profile($plan->recipe)->fingerprint(),
+            Catalogue::profile('shipment', $plan->recipe)->fingerprint(),
             'in-transit',
             '3'
         );

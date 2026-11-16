@@ -25,6 +25,8 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
 
     public const AUTHORIZED_PAYMENT = 'example.provider.payment.authorized.v1';
 
+    public const FUNDING_PAYMENT = 'example.provider.payment.funding.v1';
+
     public const FULL_SHIPMENT = 'example.provider.shipment.full.v1';
 
     /**
@@ -56,6 +58,10 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
             Catalogue::COMMON_RESERVE_FIRST => 'provider-order-pair-checkout-reserve-v1',
             FinancialCatalogue::AFTER_STOCK => 'provider-order-pair-financial-stock-v1',
             FinancialCatalogue::AFTER_DELIVERY => 'provider-order-pair-financial-delivery-v1',
+            FundingCatalogue::IMMEDIATE => 'provider-order-pair-funding-immediate-v1',
+            FundingCatalogue::AFTER_STOCK => 'provider-order-pair-funding-stock-v1',
+            FundingCatalogue::AFTER_DELIVERY => 'provider-order-pair-funding-delivery-v1',
+            FundingCatalogue::BANK => 'provider-order-pair-funding-bank-v1',
         };
     }
 
@@ -73,7 +79,7 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
     {
         $checkout = $this->recipe !== Catalogue::RESERVE_FIRST;
         $shipment = $checkout ? ['book', 'ready', '2'] : ['book', 'paid', '3'];
-        if (FinancialCatalogue::selected($this->recipe)) {
+        if (FinancialCatalogue::selected($this->recipe) || FundingCatalogue::selected($this->recipe)) {
             $shipment = ['fulfill', 'ready', '2'];
         }
         [$key, $state, $revision] = match ($role) {
@@ -120,7 +126,12 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
         if ($role === 'payment' && FinancialCatalogue::selected($this->recipe)) {
             $workflowType = self::AUTHORIZED_PAYMENT;
         }
-        if ($role === 'shipment' && FinancialCatalogue::selected($this->recipe)) {
+        if ($role === 'payment' && FundingCatalogue::selected($this->recipe)) {
+            $workflowType = self::FUNDING_PAYMENT;
+        }
+        if ($role === 'shipment' && (FinancialCatalogue::selected($this->recipe) || FundingCatalogue::selected(
+            $this->recipe
+        ))) {
             $workflowType = self::FULL_SHIPMENT;
         }
         $parentStates = $this->recipe === Catalogue::RESERVE_FIRST
@@ -133,7 +144,12 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
                 'shipment' => 'booked',
             ];
         $outcome = $role === 'payment' ? 'captured' : 'booked';
-        if ($role === 'shipment' && FinancialCatalogue::selected($this->recipe)) {
+        if ($role === 'payment' && FundingCatalogue::selected($this->recipe)) {
+            $outcome = 'paid';
+        }
+        if ($role === 'shipment' && (FinancialCatalogue::selected($this->recipe) || FundingCatalogue::selected(
+            $this->recipe
+        ))) {
             $parentStates['shipment'] = 'fulfilled';
             $outcome = 'delivered';
         }

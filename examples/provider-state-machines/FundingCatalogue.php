@@ -50,6 +50,12 @@ final class FundingCatalogue
         return in_array($recipe, [self::AFTER_STOCK, self::AFTER_DELIVERY], true);
     }
 
+    public static function deadline(OrderTerms $terms): int
+    {
+        return $terms->authorization?->expiresAt ?? $terms->incomingPayment?->deadline
+            ?? $terms->fulfillmentDeadline ?? throw new LogicException('The original funding deadline is unavailable.');
+    }
+
     public static function payment(string $recipe): PolicyProfile
     {
         self::assertRecipe($recipe);

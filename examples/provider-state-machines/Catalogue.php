@@ -31,7 +31,7 @@ final class Catalogue
     public static function assertRecipe(string $recipe): void
     {
         if (! in_array($recipe, [self::RESERVE_FIRST, self::PAYMENT_FIRST, self::COMMON_RESERVE_FIRST], true)
-            && ! FinancialCatalogue::selected($recipe)) {
+            && ! FinancialCatalogue::selected($recipe) && ! FundingCatalogue::selected($recipe)) {
             throw new LogicException('The trusted provider policy recipe is unavailable.');
         }
     }
@@ -39,6 +39,9 @@ final class Catalogue
     public static function rootClass(string $recipe): string
     {
         self::assertRecipe($recipe);
+        if (FundingCatalogue::selected($recipe)) {
+            return FundingCheckout::class;
+        }
         if (FinancialCatalogue::selected($recipe)) {
             return AuthorizationCheckout::class;
         }
@@ -60,6 +63,13 @@ final class Catalogue
     public static function profile(string $role, string $recipe = self::RESERVE_FIRST): PolicyProfile
     {
         self::assertRecipe($recipe);
+        if (FundingCatalogue::selected($recipe)) {
+            return match ($role) {
+                'order' => FundingCatalogue::order($recipe), 'payment' => FundingCatalogue::payment($recipe),
+                'shipment' => FundingCatalogue::shipment($recipe),
+                default => throw new LogicException('The selected funding machine role is unavailable.'),
+            };
+        }
         if (FinancialCatalogue::selected($recipe)) {
             return match ($role) {
                 'order' => FinancialCatalogue::order($recipe),

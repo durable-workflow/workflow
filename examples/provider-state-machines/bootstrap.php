@@ -9,6 +9,7 @@ require_once __DIR__ . '/../business-state-machines/BusinessCancellationRequeste
 require_once __DIR__ . '/Catalogue.php';
 require_once __DIR__ . '/FinancialCatalogue.php';
 require_once __DIR__ . '/PhysicalCatalogue.php';
+require_once __DIR__ . '/FundingCatalogue.php';
 require_once __DIR__ . '/OrderTerms.php';
 require_once __DIR__ . '/BindingPlan.php';
 foreach ([
@@ -16,6 +17,8 @@ foreach ([
     'FinancialInspectionStore', 'FinancialInspectionActivity', 'FinancialAuthority',
     'IncomingPaymentInspectionStore', 'IncomingPaymentInspectionActivity',
     'FinancialHandoffStore', 'FinancialHandoffActivity', 'FinancialStep', 'FinancialPreparationStep',
+    'FundingAuthority', 'FundingFactsStore', 'FundingHandoffStore', 'FundingHandoffActivity',
+    'FundingStep', 'FundingPreparationStep', 'FundingPayment', 'FundingCheckout', 'FundingFulfillmentStep',
     'BoundaryActivity', 'SnapshotActivity', 'AdmissionActivity', 'CommitActivity',
     'RetainedStep', 'Machine', 'Order', 'CheckoutOrder', 'Payment', 'Booking', 'Cancellation',
     'AuthorizedPayment', 'AuthorizationCheckout',
