@@ -214,8 +214,8 @@ final readonly class AssessmentStore
                 'Stock refusal requires the original checkout and its policy payment prerequisite.'
             );
         }
-        [, $terms] = $this->authority->assignment($actor->root_key);
-        $expected = $this->authority->stockObligation($actor->root_key);
+        $this->authority->assignment($actor->root_key);
+        $expected = $this->authority->cart->stockObligation($actor->root_key);
         $descriptor = $expected->input;
         $scope = (new ScopeRepository())->inspect($plan->rootScope());
         $effect = array_filter(
@@ -419,8 +419,8 @@ final readonly class AssessmentStore
             $values['prepare_confirmed'] = app(FinancialHandoffStore::class)->prepared($actual);
             $evidence['prepare_confirmed'] = 'original-financial-preparation:' . $plan->binding('payment')->key();
         } else {
-            [, $terms] = $this->authority->assignment($actor->root_key);
-            $forward = Request::fromArray($this->authority->stockObligation($actor->root_key)->input['forward']);
+            $this->authority->assignment($actor->root_key);
+            $forward = Request::fromArray($this->authority->cart->stockObligation($actor->root_key)->input['forward']);
             $stock = $this->provider->lookup($forward);
             $values['prepare_confirmed'] = $this->childConfirmed($row, $plan, 'payment')
                 && $stock->status === Status::Confirmed && $stock->effectId === 'effect-' . $forward->identity->key();

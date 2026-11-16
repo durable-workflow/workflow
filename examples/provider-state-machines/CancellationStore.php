@@ -126,7 +126,7 @@ final readonly class CancellationStore
         $proof = (new ScopeRepository())->metadata($plan->rootScope());
         $stockOperation = null;
         if ($plan->recipe !== Catalogue::RESERVE_FIRST) {
-            $obligation = $this->authority->stockObligation($plan->terms->subjectKey());
+            $obligation = $this->authority->cart->stockObligation($plan->terms->subjectKey());
             $stock = Request::fromArray($obligation->input['forward']);
             $stockOperation = $stock->identity->key();
         }
@@ -293,7 +293,7 @@ final readonly class CancellationStore
 
     private function assertOriginalRoot(string $key, string $rootRun, object $assignment): void
     {
-        $class = $this->authority->rootClass($key);
+        $class = $this->authority->cart->rootClass($key);
         $actual = WorkflowRun::query()->where('namespace', Catalogue::NAMESPACE)
             ->where('workflow_class', $class)
             ->where('workflow_instance_id', 'provider-order-' . $key)->findOrFail($rootRun);

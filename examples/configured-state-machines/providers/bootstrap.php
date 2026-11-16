@@ -34,6 +34,7 @@ foreach ([
     'CodRefundLedger',
     'ProviderContext',
     'CartInventory',
+    'CartReservationRecords',
     'CartReservationLedger',
     'Journal',
     'IncomingPaymentProvider',

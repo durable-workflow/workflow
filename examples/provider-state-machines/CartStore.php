@@ -33,7 +33,7 @@ final readonly class CartStore
     public function seedRow(OrderTerms $terms, CartPlan $plan, string $assignmentHash): void
     {
         $key = $terms->subjectKey();
-        if ($this->authority->db->transactionLevel() !== 1 || ! $this->authority->cart(
+        if ($this->authority->db->transactionLevel() !== 1 || ! $this->authority->cart->selected(
             $key
         ) || $this->incoming === null) {
             throw new LogicException('Cart assignment requires its owned purchase bootstrap transaction and provider.');
@@ -289,43 +289,7 @@ final readonly class CartStore
             'paymentPublication' => $publication,
         ]);
         $id = hash('sha256', PortableDescriptor::encode([$terms->client, $plan->orderReference]));
-        $this->locked($key, $row, function (object $current) use ($key, $id, $payload, $publication, $step): void {
-            if ($current->selected !== null && $current->selected !== $step) {
-                throw new LogicException('Checkout changed its originally selected stock lease.');
-            }
-            $paid = $this->authority->db->table('example_machine_publications')
-                ->where('id', $publication['id'])->lockForUpdate()->sole();
-            $expected = $publication;
-            unset($expected['id']);
-            if ($paid->subject_id !== Authority::subjectId($key, 'payment')
-                || PortableDescriptor::encode(
-                    json_decode($paid->payload, true, flags: JSON_THROW_ON_ERROR)
-                ) !== PortableDescriptor::encode($expected)) {
-                throw new LogicException('The original paid publication changed before Order association.');
-            }
-            $existing = $this->authority->db->table('provider_cart_orders')
-                ->where('id', $id)
-                ->first();
-            if ($existing !== null && ($existing->purchase_key !== $key || $existing->receipt !== $payload)) {
-                throw new LogicException('The formal Order reference belongs to another original purchase.');
-            }
-            if ($existing === null) {
-                $this->authority->db->table('provider_cart_orders')
-                    ->insert([
-                        'id' => $id,
-                        'purchase_key' => $key,
-                        'receipt' => $payload,
-                        'receipt_sha256' => hash('sha256', $payload),
-                    ]);
-            }
-            $this->authority->db->table('provider_cart_purchases')
-                ->where('id', $key)
-                ->update([
-                    'selected' => $step,
-                    'order_id' => $id,
-                    'order_sha256' => hash('sha256', $payload),
-                ]);
-        });
+        $this->persistAssociation($key, $row, $id, $payload, $publication, $step);
         return $this->order($key);
     }
 
@@ -351,77 +315,13 @@ final readonly class CartStore
     public function order(string $key): array
     {
         [$row, $plan] = $this->row($key);
-        if ($row->order_id === null) {
-            throw new LogicException('This cart has no formal Order association.');
-        }
-        $order = $this->authority->db->table('provider_cart_orders')
-            ->where('id', $row->order_id)
-            ->sole();
-        if ($order->purchase_key !== $key || strlen($order->receipt) > PortableDescriptor::MAX_BYTES
-            || ! hash_equals($row->order_sha256, hash('sha256', $order->receipt))
-            || ! hash_equals($order->receipt_sha256, $row->order_sha256)) {
-            throw new LogicException('The original formal Order association is unavailable or changed.');
-        }
-        $value = json_decode($order->receipt, true, flags: JSON_THROW_ON_ERROR);
-        if (! is_array($value) || ! is_string($row->selected) || ! is_array($value['paymentBinding'] ?? null)
-            || ! is_array($value['paymentPublication'] ?? null)) {
-            throw new LogicException('The original formal Order receipt is malformed.');
-        }
-        $binding = $this->authority->plan($key);
-        $expectedId = hash(
-            'sha256',
-            PortableDescriptor::encode([$plan->initial->reserve->identity->client, $plan->orderReference])
-        );
-        $expected = [
-            'orderReference' => $plan->orderReference,
-            'cartId' => $plan->initial->terms->cartId,
-            'purchaseKey' => $key,
-            'rootRun' => $binding->rootRun,
-            'scope' => $binding->rootScope()
-                ->toArray(),
-            'planFingerprint' => $plan->fingerprint(),
-            'assignmentFingerprint' => $row->assignment_sha256,
-            'selected' => $row->selected,
-            'reservation' => $plan->lease($row->selected)
-                ->reserve->toArray(),
-            'paymentBinding' => ChildBinding::fromArray($value['paymentBinding'])->toArray(),
-            'paymentPublication' => $value['paymentPublication'],
-        ];
-        if ($row->order_id !== $expectedId || PortableDescriptor::encode($value) !== PortableDescriptor::encode(
-            $expected
-        )
-            || $value['paymentBinding']['identity'] !== PortableDescriptor::snapshot(
-                $binding->binding('payment')
-                    ->toArray()
-            )) {
-            throw new LogicException('The formal Order substituted its original owner, plan or reservation.');
-        }
-        $this->assertOrderPublication($key, $value['paymentPublication']);
-        return $value;
-    }
-
-    private function assertOrderPublication(string $key, array $publication): void
-    {
-        $id = $publication['id'] ?? null;
-        if (! is_string($id)) {
-            throw new LogicException('The original paid publication is unavailable.');
-        }
-        $paid = $this->authority->db->table('example_machine_publications')
-            ->where('id', $id)
-            ->first();
-        unset($publication['id']);
-        if ($paid === null || $paid->subject_id !== Authority::subjectId($key, 'payment')
-            || strlen($paid->payload) > PortableDescriptor::MAX_BYTES
-            || PortableDescriptor::encode(json_decode($paid->payload, true, flags: JSON_THROW_ON_ERROR))
-                !== PortableDescriptor::encode($publication)) {
-            throw new LogicException('The original paid publication is unavailable or changed.');
-        }
+        return (new CartOrderReceipt($this->authority))->read($key, $row, $plan);
     }
 
     private function row(string $key): array
     {
         $this->authority->authorize($key, $this->authority->principal);
-        if (! $this->authority->cart($key)) {
+        if (! $this->authority->cart->selected($key)) {
             throw new LogicException('This purchase has no trusted cart entry contract.');
         }
         $this->authority->subject($key, 'order');
@@ -452,7 +352,7 @@ final readonly class CartStore
     private function actor(WorkflowRun $actual, bool $forward): array
     {
         [$actor, $root, $binding] = $this->authority->actor($actual);
-        if ($actual->workflow_class !== CartCheckout::class || $actor->role !== 'order' || ! $this->authority->cart(
+        if ($actual->workflow_class !== CartCheckout::class || $actor->role !== 'order' || ! $this->authority->cart->selected(
             $actor->root_key
         )) {
             throw new LogicException('Cart work requires its original native purchase actor.');
@@ -528,6 +428,53 @@ final readonly class CartStore
                 throw new LogicException('The original cart was cancelled or changed before its protected write.');
             }
             $body($current);
+        });
+    }
+
+    private function persistAssociation(
+        string $key,
+        object $row,
+        string $id,
+        string $payload,
+        array $publication,
+        string $step
+    ): void {
+        $this->locked($key, $row, function (object $current) use ($key, $id, $payload, $publication, $step): void {
+            if ($current->selected !== null && $current->selected !== $step) {
+                throw new LogicException('Checkout changed its originally selected stock lease.');
+            }
+            $paid = $this->authority->db->table('example_machine_publications')
+                ->where('id', $publication['id'])->lockForUpdate()->sole();
+            $expected = $publication;
+            unset($expected['id']);
+            if ($paid->subject_id !== Authority::subjectId($key, 'payment')
+                || PortableDescriptor::encode(
+                    json_decode($paid->payload, true, flags: JSON_THROW_ON_ERROR)
+                ) !== PortableDescriptor::encode($expected)) {
+                throw new LogicException('The original paid publication changed before Order association.');
+            }
+            $existing = $this->authority->db->table('provider_cart_orders')
+                ->where('id', $id)
+                ->first();
+            if ($existing !== null && ($existing->purchase_key !== $key || $existing->receipt !== $payload)) {
+                throw new LogicException('The formal Order reference belongs to another original purchase.');
+            }
+            if ($existing === null) {
+                $this->authority->db->table('provider_cart_orders')
+                    ->insert([
+                        'id' => $id,
+                        'purchase_key' => $key,
+                        'receipt' => $payload,
+                        'receipt_sha256' => hash('sha256', $payload),
+                    ]);
+            }
+            $this->authority->db->table('provider_cart_purchases')
+                ->where('id', $key)
+                ->update([
+                    'selected' => $step,
+                    'order_id' => $id,
+                    'order_sha256' => hash('sha256', $payload),
+                ]);
         });
     }
 }

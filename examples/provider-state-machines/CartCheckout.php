@@ -37,91 +37,13 @@ final class CartCheckout extends AuthorizationCheckout
             $initial = $machine->scope->register($plan->obligation('initial'));
             $late = $machine->scope->register($plan->obligation('late'));
             $initialObserved = $this->attemptReservation($initial);
-            $child = $machine->initialization['children'][0];
-            $identity = BindingIdentity::fromArray($child['binding']);
-            if ($identity->slot !== 'payment') {
-                throw new LogicException('The cart must retain its original Payment child slot.');
-            }
-            $reservation = $machine->scope->reserveChild(
-                'payment',
-                ScopeIdentity::fromArray($child['scope']),
-                $identity
-            );
-            $started = $reservation->start(...$child['input']);
-            $binding = (new ChildBinding($identity, $started))->toArray();
-            $selectedLate = false;
-            $lateStarted = false;
-            $lateObserved = false;
-            for ($wake = 0; $wake < 32; ++$wake) {
-                $facts = Workflow::activity(CartBoundaryActivity::class, 'observe', [
-                    'binding' => $binding,
-                ]);
-                $stock = $facts['initial'];
-                if (! $initialObserved && $stock['reservationStatus'] !== Status::Unknown->value) {
-                    $initialObserved = $this->attemptReservation($initial);
-                }
-                if ($stock['reservationStatus'] === Status::Refused->value) {
-                    throw new BusinessCancellationRequested('The original cart reservation was definitively refused.');
-                }
-                if ($facts['payment']['confirmed'] && $facts['paidBeforeInitialExpiry'] && ! $stock['released']
-                    && ! $stock['admissionClosed'] && $stock['reservationStatus'] === Status::Confirmed->value
-                    && $stock['heldQuantity'] === $plan->initial->terms->quantity) {
-                    Workflow::activity(CartBoundaryActivity::class, 'associate', [
-                        'binding' => $binding,
-                        'step' => 'initial',
-                    ]);
-                    return $this->checkout($machine, true, new CartPreparationStep());
-                }
-                if ($stock['deadlinePassed'] && ! $selectedLate
-                    && (! $facts['paidBeforeInitialExpiry'] || $stock['admissionClosed'] || $stock['released'])) {
-                    $expired = Workflow::activity(CartBoundaryActivity::class, 'expire', [
-                        'binding' => $binding,
-                    ]);
-                    if ($expired['released']) {
-                        Workflow::activity(CartBoundaryActivity::class, 'select-late', []);
-                        $selectedLate = true;
-                    }
-                }
-                if ($selectedLate && $facts['payment']['confirmed']) {
-                    if (! $lateStarted || (! $lateObserved && $facts['late']['reservationStatus'] !== Status::Unknown->value)) {
-                        $lateObserved = $this->attemptReservation($late);
-                        $lateStarted = true;
-                    }
-                    $facts = Workflow::activity(CartBoundaryActivity::class, 'observe', [
-                        'binding' => $binding,
-                    ]);
-                    if ($facts['late']['reservationStatus'] === Status::Refused->value) {
-                        throw new BusinessCancellationRequested(
-                            'The new post-expiry reservation was definitively refused.'
-                        );
-                    }
-                    if ($facts['late']['reservationStatus'] === Status::Confirmed->value && ! $facts['late']['released']) {
-                        Workflow::activity(CartBoundaryActivity::class, 'associate', [
-                            'binding' => $binding,
-                            'step' => 'late',
-                        ]);
-                        return $this->checkout($machine, true, new CartPreparationStep());
-                    }
-                }
-                $now = max($facts['initial']['observedAt'], $facts['late']['observedAt']);
-                if ($now >= $plan->paymentObservationDeadline) {
-                    throw new BusinessCancellationRequested('The original cart payment observation window expired.');
-                }
-                $next = $selectedLate || $stock['deadlinePassed'] ? $plan->paymentObservationDeadline : min(
-                    $plan->initial->terms->expiresAt,
-                    $plan->paymentObservationDeadline
-                );
-                $wait = max(1, $next - $now);
-                $selected = Workflow::select([
-                    'money' => static fn () => Workflow::await('funding-milestone', $wait),
-                    'stock' => static fn () => Workflow::await('reconcile-stock', $wait),
-                ]);
-                $selected->result();
-                foreach ($selected->remaining() as $handle) {
-                    $handle->cancel();
-                }
-            }
-            throw new LogicException('The bounded original cart reconciliation remains unresolved.');
+            $binding = $this->startPayment($machine);
+            $step = $this->selectReservation($plan, $initial, $late, $initialObserved, $binding);
+            Workflow::activity(CartBoundaryActivity::class, 'associate', [
+                'binding' => $binding,
+                'step' => $step,
+            ]);
+            return $this->checkout($machine, true, new CartPreparationStep());
         } catch (WorkflowCancellationRequestedException|BusinessCancellationRequested $error) {
             Workflow::cancellationShield(static fn () => Workflow::activity(CartBoundaryActivity::class, 'cancel', [
                 'reason' => 'cart-cancelled',
@@ -132,6 +54,130 @@ final class CartCheckout extends AuthorizationCheckout
                 throw $error;
             }
             return Workflow::cancellationShield(static fn () => $machine->transition('cancel')->toArray());
+        }
+    }
+
+    private function startPayment(Machine $machine): array
+    {
+        $child = $machine->initialization['children'][0];
+        $identity = BindingIdentity::fromArray($child['binding']);
+        if ($identity->slot !== 'payment') {
+            throw new LogicException('The cart must retain its original Payment child slot.');
+        }
+        $reservation = $machine->scope->reserveChild(
+            'payment',
+            ScopeIdentity::fromArray($child['scope']),
+            $identity
+        );
+        $started = $reservation->start(...$child['input']);
+        return (new ChildBinding($identity, $started))->toArray();
+    }
+
+    private function selectReservation(
+        CartPlan $plan,
+        RegisteredObligation $initial,
+        RegisteredObligation $late,
+        bool $initialObserved,
+        array $binding
+    ): string {
+        $selectedLate = false;
+        $lateStarted = false;
+        $lateObserved = false;
+        for ($wake = 0; $wake < 32; ++$wake) {
+            [$facts, $initialObserved] = $this->observeInitial($initial, $initialObserved, $binding);
+            $initialDeadlinePassed = $facts['initial']['deadlinePassed'];
+            if ($this->initialReady($plan, $facts)) {
+                return 'initial';
+            }
+            $selectedLate = $this->expireIfDue($facts, $selectedLate, $binding);
+            if ($selectedLate && $facts['payment']['confirmed']) {
+                [$facts, $lateObserved] = $this->observeLate($late, $lateStarted, $lateObserved, $facts, $binding);
+                $lateStarted = true;
+                if ($facts['late']['reservationStatus'] === Status::Confirmed->value && ! $facts['late']['released']) {
+                    return 'late';
+                }
+            }
+            $this->waitForChange($plan, $facts, $selectedLate, $initialDeadlinePassed);
+        }
+        throw new LogicException('The bounded original cart reconciliation remains unresolved.');
+    }
+
+    private function observeInitial(RegisteredObligation $initial, bool $observed, array $binding): array
+    {
+        $facts = Workflow::activity(CartBoundaryActivity::class, 'observe', [
+            'binding' => $binding,
+        ]);
+        $stock = $facts['initial'];
+        if (! $observed && $stock['reservationStatus'] !== Status::Unknown->value) {
+            $observed = $this->attemptReservation($initial);
+        }
+        if ($stock['reservationStatus'] === Status::Refused->value) {
+            throw new BusinessCancellationRequested('The original cart reservation was definitively refused.');
+        }
+        return [$facts, $observed];
+    }
+
+    private function initialReady(CartPlan $plan, array $facts): bool
+    {
+        $stock = $facts['initial'];
+        return $facts['payment']['confirmed'] && $facts['paidBeforeInitialExpiry'] && ! $stock['released']
+            && ! $stock['admissionClosed'] && $stock['reservationStatus'] === Status::Confirmed->value
+            && $stock['heldQuantity'] === $plan->initial->terms->quantity;
+    }
+
+    private function expireIfDue(array $facts, bool $selectedLate, array $binding): bool
+    {
+        $stock = $facts['initial'];
+        if ($stock['deadlinePassed'] && ! $selectedLate
+            && (! $facts['paidBeforeInitialExpiry'] || $stock['admissionClosed'] || $stock['released'])) {
+            $expired = Workflow::activity(CartBoundaryActivity::class, 'expire', [
+                'binding' => $binding,
+            ]);
+            if ($expired['released']) {
+                Workflow::activity(CartBoundaryActivity::class, 'select-late', []);
+                $selectedLate = true;
+            }
+        }
+        return $selectedLate;
+    }
+
+    private function observeLate(
+        RegisteredObligation $late,
+        bool $started,
+        bool $observed,
+        array $facts,
+        array $binding
+    ): array {
+        if (! $started || (! $observed && $facts['late']['reservationStatus'] !== Status::Unknown->value)) {
+            $observed = $this->attemptReservation($late);
+        }
+        $facts = Workflow::activity(CartBoundaryActivity::class, 'observe', [
+            'binding' => $binding,
+        ]);
+        if ($facts['late']['reservationStatus'] === Status::Refused->value) {
+            throw new BusinessCancellationRequested('The new post-expiry reservation was definitively refused.');
+        }
+        return [$facts, $observed];
+    }
+
+    private function waitForChange(CartPlan $plan, array $facts, bool $selectedLate, bool $initialDeadlinePassed): void
+    {
+        $now = max($facts['initial']['observedAt'], $facts['late']['observedAt']);
+        if ($now >= $plan->paymentObservationDeadline) {
+            throw new BusinessCancellationRequested('The original cart payment observation window expired.');
+        }
+        $next = $selectedLate || $initialDeadlinePassed ? $plan->paymentObservationDeadline : min(
+            $plan->initial->terms->expiresAt,
+            $plan->paymentObservationDeadline
+        );
+        $wait = max(1, $next - $now);
+        $selected = Workflow::select([
+            'money' => static fn () => Workflow::await('funding-milestone', $wait),
+            'stock' => static fn () => Workflow::await('reconcile-stock', $wait),
+        ]);
+        $selected->result();
+        foreach ($selected->remaining() as $handle) {
+            $handle->cancel();
         }
     }
 

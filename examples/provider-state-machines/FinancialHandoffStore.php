@@ -460,8 +460,8 @@ readonly class FinancialHandoffStore
         $value = json_decode($row->payload, true, flags: JSON_THROW_ON_ERROR);
         $keys = array_keys($value);
         sort($keys);
-        [, $terms] = $this->authority->assignment($key);
-        $stock = Request::fromArray($this->authority->stockObligation($key)->input['forward']);
+        $this->authority->assignment($key);
+        $stock = Request::fromArray($this->authority->cart->stockObligation($key)->input['forward']);
         $authorization = $this->publication($key, $binding, $this->commonFunding ? 'prepare' : 'authorize');
         $expected = ['authorizationPublication', 'binding', 'kind', 'recipe', 'stockEffect'];
         $kind = $this->commonFunding ? 'funding-capture-instruction-v1' : 'financial-capture-instruction-v1';

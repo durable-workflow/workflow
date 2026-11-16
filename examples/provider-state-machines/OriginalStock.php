@@ -26,7 +26,7 @@ final readonly class OriginalStock
         if ($request === null) {
             return null;
         }
-        if ($this->authority->cart($key) && ! app(CartStore::class)->stockHeld($key)) {
+        if ($this->authority->cart->selected($key) && ! app(CartStore::class)->stockHeld($key)) {
             return null;
         }
         $value = $this->provider->lookup($request);
@@ -36,9 +36,9 @@ final readonly class OriginalStock
 
     public function request(string $key, BindingPlan $plan): ?Request
     {
-        [, $terms] = $this->authority->assignment($key);
+        $this->authority->assignment($key);
         $ledger = (new ScopeRepository())->inspect($plan->rootScope());
-        $expected = $this->authority->stockObligation($key);
+        $expected = $this->authority->cart->stockObligation($key);
         $rows = array_values(array_filter($ledger['obligations'], static fn (array $row): bool =>
             ($row['descriptor']['key'] ?? null) === $expected->key));
         if ($rows === []) {
