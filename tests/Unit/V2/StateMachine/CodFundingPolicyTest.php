@@ -13,7 +13,6 @@ use DurableWorkflow\Examples\ProviderStateMachines\CodFundingPolicy;
 use DurableWorkflow\Examples\ProviderStateMachines\FundingCatalogue;
 use DurableWorkflow\Examples\ProviderStateMachines\OrderTerms;
 use InvalidArgumentException;
-use LogicException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Workflow\V2\StateMachine\Rules\RecordedFacts;
@@ -61,10 +60,17 @@ final class CodFundingPolicyTest extends TestCase
         }
     }
 
-    public function testPureCodPoliciesCannotAdmitNativeWorkBeforeTheirHostAdapterExists(): void
+    public function testBothCodPoliciesUseTheRegisteredCommonFundingDefinitions(): void
     {
-        $this->expectException(LogicException::class);
-        Catalogue::assertRecipe(CodFundingPolicy::BEFORE);
+        foreach (CodFundingPolicy::recipes() as $recipe) {
+            Catalogue::assertRecipe($recipe);
+            foreach (['order', 'payment', 'shipment'] as $role) {
+                $this->assertSame(
+                    CodFundingPolicy::profile($role, $recipe)->fingerprint(),
+                    Catalogue::profile($role, $recipe)->fingerprint()
+                );
+            }
+        }
     }
 
     public function testCodAssignmentRetainsOriginalPurchaseMoneyShipmentAndFixedDeadlines(): void

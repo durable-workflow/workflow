@@ -27,7 +27,11 @@ final class FundingStep extends AssessedTransitionStep
     public function execute(TransitionContext $context): ExecutionReceipt
     {
         $key = $context->transition->key;
-        if ($key === 'prepare') {
+        $cod = CodFundingPolicy::selected($this->recipe);
+        if ($key === 'prepare' && $cod) {
+            $this->duties['merchant']->execute();
+            $this->duties['payer']->execute();
+        } elseif ($key === 'prepare') {
             $stage = match ($this->recipe) {
                 FundingCatalogue::BANK => 'incoming', FundingCatalogue::IMMEDIATE => 'capture', default => 'authorize',
             };
@@ -39,6 +43,10 @@ final class FundingStep extends AssessedTransitionStep
         }
         $collected = $this->recipe === FundingCatalogue::BANK ? 'incoming_full_amount_confirmed' : 'capture_confirmed';
         $prepared = FundingCatalogue::requiresAuthorization($this->recipe) ? 'authorization_active' : $collected;
+        if ($cod) {
+            $collected = 'cod_payer_collection_confirmed';
+            $prepared = 'cod_reference_ready';
+        }
         $target = match ($key) {
             'prepare' => $prepared, 'collect' => $collected, 'confirm-receipt' => 'merchant_receipt_confirmed',
         };
@@ -49,15 +57,16 @@ final class FundingStep extends AssessedTransitionStep
                     'original-funding:' . $context->execution()->executionId,
                 ]);
             }
-            if ($value['waitSeconds'] === 0) {
+            $waitingForMerchant = $cod && $key === 'confirm-receipt';
+            if ($value['waitSeconds'] === 0 && ! $waitingForMerchant) {
                 Workflow::activity(FundingHandoffActivity::class, 'expire', []);
                 throw new BusinessCancellationRequested(
                     'The original funding deadline expired without its required fact.'
                 );
             }
             Workflow::await(
-                $this->recipe === FundingCatalogue::BANK ? 'incoming-observed' : 'reconcile-funding',
-                $value['waitSeconds']
+                $cod ? 'cod-observed' : ($this->recipe === FundingCatalogue::BANK ? 'incoming-observed' : 'reconcile-funding'),
+                $waitingForMerchant ? ($value['remittanceWaitSeconds'] ?: null) : $value['waitSeconds']
             );
         }
         throw new LogicException('The bounded original funding observation remains unresolved.');

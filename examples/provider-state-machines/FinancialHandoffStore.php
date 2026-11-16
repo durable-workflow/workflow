@@ -53,6 +53,10 @@ readonly class FinancialHandoffStore
                 0,
                 ($terms->authorization?->expiresAt ?? $terms->fulfillmentDeadline) - Carbon::now()->getTimestamp()
             ),
+            'remittanceWaitSeconds' => $terms->codPayment === null ? null : max(
+                0,
+                $terms->codPayment->remittanceDeadline - Carbon::now()->getTimestamp()
+            ),
         ];
     }
 
@@ -221,13 +225,19 @@ readonly class FinancialHandoffStore
         }
         $stage = $plan->recipe === FinancialCatalogue::AFTER_STOCK ? 'capture' : 'authorize';
         if ($this->commonFunding) {
-            $stage = $plan->recipe === FundingCatalogue::AFTER_DELIVERY ? 'prepare' : 'confirm-receipt';
+            $stage = $plan->recipe === FundingCatalogue::AFTER_DELIVERY || CodFundingPolicy::selected(
+                $plan->recipe
+            ) ? 'prepare' : 'confirm-receipt';
         }
         [, $terms] = $this->authority->assignment($actor->root_key);
         return $this->publication($actor->root_key, $this->admitted($plan), $stage) !== null
-            && (in_array($stage, ['capture', 'confirm-receipt'], true) || $terms->authorization->canAdmitCaptureAt(
-                Carbon::now()->getTimestamp()
-            ));
+            && (in_array($stage, ['capture', 'confirm-receipt'], true)
+                || (CodFundingPolicy::selected(
+                    $plan->recipe
+                ) && Carbon::now()->getTimestamp() < $terms->codPayment->collectionDeadline)
+                || ($terms->authorization !== null && $terms->authorization->canAdmitCaptureAt(
+                    Carbon::now()->getTimestamp()
+                )));
     }
 
     public function binding(WorkflowRun $parent): array

@@ -85,7 +85,9 @@ final readonly class ShipmentBoundaryStore
         $handoff = FinancialHandoffStore::class;
         if (FundingCatalogue::selected($plan->recipe)) {
             $handoff = FundingHandoffStore::class;
-            $stage = $plan->recipe === FundingCatalogue::AFTER_DELIVERY ? 'prepare' : 'confirm-receipt';
+            $stage = $plan->recipe === FundingCatalogue::AFTER_DELIVERY || CodFundingPolicy::selected(
+                $plan->recipe
+            ) ? 'prepare' : 'confirm-receipt';
         }
         $milestone = app($handoff)
             ->milestone(WorkflowRun::query()->findOrFail($plan->rootRun), $payment->toArray(), $stage);

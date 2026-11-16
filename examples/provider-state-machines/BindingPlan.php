@@ -27,6 +27,8 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
 
     public const FUNDING_PAYMENT = 'example.provider.payment.funding.v1';
 
+    public const COD_PAYMENT = 'example.provider.payment.cod.v1';
+
     public const FULL_SHIPMENT = 'example.provider.shipment.full.v1';
 
     /**
@@ -62,6 +64,8 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
             FundingCatalogue::AFTER_STOCK => 'provider-order-pair-funding-stock-v1',
             FundingCatalogue::AFTER_DELIVERY => 'provider-order-pair-funding-delivery-v1',
             FundingCatalogue::BANK => 'provider-order-pair-funding-bank-v1',
+            CodFundingPolicy::BEFORE => 'provider-order-pair-cod-before-v1',
+            CodFundingPolicy::AFTER => 'provider-order-pair-cod-after-v1',
         };
     }
 
@@ -128,6 +132,9 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
         }
         if ($role === 'payment' && FundingCatalogue::selected($this->recipe)) {
             $workflowType = self::FUNDING_PAYMENT;
+        }
+        if ($role === 'payment' && CodFundingPolicy::selected($this->recipe)) {
+            $workflowType = self::COD_PAYMENT;
         }
         if ($role === 'shipment' && (FinancialCatalogue::selected($this->recipe) || FundingCatalogue::selected(
             $this->recipe

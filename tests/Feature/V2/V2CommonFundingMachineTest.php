@@ -78,7 +78,7 @@ final class V2CommonFundingMachineTest extends TestCase
 
     public static function policies(): array
     {
-        return array_map(static fn (string $recipe): array => [$recipe], FundingCatalogue::recipes());
+        return array_map(static fn (string $recipe): array => [$recipe], FundingCatalogue::baseRecipes());
     }
 
     #[DataProvider('policies')]

@@ -4,18 +4,41 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Examples\ProviderStateMachines;
 
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\CodDescriptor;
 use LogicException;
 use Workflow\V2\StateMachine\Definition\ConditionDefinition;
 use Workflow\V2\StateMachine\Definition\PolicyProfile;
 use Workflow\V2\StateMachine\Definition\RuleReference;
 use Workflow\V2\StateMachine\Definition\TransitionDefinition;
 
-/** COD profile preparation; native admission remains unavailable until its recorded host adapters are wired. */
+/** COD collection and remittance policies retain the common business definitions and routes. */
 final class CodFundingPolicy
 {
     public const BEFORE = 'funding-cod-before-recipient-handover';
 
     public const AFTER = 'funding-cod-after-recipient-handover';
+
+    /**
+     * @return non-empty-list<string>
+     */
+    public static function recipes(): array
+    {
+        return [self::BEFORE, self::AFTER];
+    }
+
+    public static function selected(string $recipe): bool
+    {
+        return in_array($recipe, self::recipes(), true);
+    }
+
+    public static function handover(string $recipe): string
+    {
+        return match ($recipe) {
+            self::BEFORE => CodDescriptor::BEFORE,
+            self::AFTER => CodDescriptor::AFTER,
+            default => throw new LogicException('The original COD handover recipe is unavailable.'),
+        };
+    }
 
     public static function profile(string $role, string $recipe): PolicyProfile
     {

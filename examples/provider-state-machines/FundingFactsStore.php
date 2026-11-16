@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Examples\ProviderStateMachines;
 
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\CodReceipt;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Journal;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Request;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Status;
@@ -31,10 +32,32 @@ final readonly class FundingFactsStore
             'merchant_receipt_confirmed' => false,
             'original_stock_reserved' => false,
             'original_recipient_delivered' => false,
+            'cod_reference_ready' => false,
+            'cod_payer_collection_confirmed' => false,
         ];
         $now = Carbon::now()->getTimestamp();
         $snapshot = null;
-        if ($plan->recipe === FundingCatalogue::BANK) {
+        if (CodFundingPolicy::selected($plan->recipe)) {
+            if ($rows['payment.cod.payer']['forward_status'] === 'observed') {
+                $snapshot = app(CodInspectionStore::class)->inspect(
+                    $actual,
+                    $activityId,
+                    $plan->childScope('payment')
+                        ->toArray(),
+                    $terms->codDescriptor()
+                );
+                $values['cod_reference_ready'] = true;
+                $onTime = 0;
+                foreach ($snapshot['cod']['receipts'] as $receipt) {
+                    if ($receipt['kind'] === CodReceipt::COLLECTION && $receipt['occurredAt'] < $terms->codPayment->collectionDeadline) {
+                        $onTime += $receipt['amountMinor'];
+                    }
+                }
+                $values['cod_payer_collection_confirmed'] = $onTime >= $terms->codPayment->amountMinor;
+                $values['merchant_receipt_confirmed'] = $snapshot['cod']['facts']['merchant_receipt_confirmed'];
+                $now = $snapshot['cod']['observedAt'];
+            }
+        } elseif ($plan->recipe === FundingCatalogue::BANK) {
             // An undispatched reference has no provider facts to read or adopt. Registration precedes every receipt.
             if ($rows['payment.incoming']['forward_status'] === 'observed') {
                 $snapshot = app(IncomingPaymentInspectionStore::class)->inspect(
@@ -87,6 +110,10 @@ final readonly class FundingFactsStore
             'observations' => $snapshot,
             'observedAt' => $now,
             'waitSeconds' => max(0, FundingCatalogue::deadline($terms) - $now),
+            'remittanceWaitSeconds' => $terms->codPayment === null ? null : max(
+                0,
+                $terms->codPayment->remittanceDeadline - $now
+            ),
         ];
     }
 }

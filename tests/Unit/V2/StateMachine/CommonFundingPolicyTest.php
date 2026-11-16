@@ -25,7 +25,7 @@ require_once __DIR__ . '/../../../../examples/provider-state-machines/FundingCat
 /** Definition/guard controls only; native common-route integration remains required. */
 final class CommonFundingPolicyTest extends TestCase
 {
-    public function testAllFourPoliciesShareOneDefinitionAndRouteForEveryMachineType(): void
+    public function testAllSixPoliciesShareOneDefinitionAndRouteForEveryMachineType(): void
     {
         foreach (['order', 'payment', 'shipment'] as $role) {
             $profiles = array_map(
@@ -40,7 +40,7 @@ final class CommonFundingPolicyTest extends TestCase
                 ))
             );
             $this->assertCount(
-                4,
+                6,
                 array_unique(array_map(static fn (PolicyProfile $p): string => $p->fingerprint(), $profiles))
             );
             $routes = array_map(

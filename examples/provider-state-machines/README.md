@@ -328,7 +328,7 @@ acceptance matrix remain unfinished.
 ## Common funding and physical fulfillment
 
 `FundingCheckout` and `FundingPayment` use one new definition per machine type
-across all four recipes in `FundingCatalogue`: immediate direct capture,
+across the four base recipes in `FundingCatalogue::baseRecipes()`: immediate direct capture,
 authorization with capture after stock reservation, authorization with capture
 after recipient delivery, and incoming bank prepayment. Historical definitions
 and profiles above remain available for their original executions.
@@ -369,3 +369,47 @@ Run the native source scenarios with
 `vendor/bin/phpunit tests/Feature/V2/V2CommonFundingMachineTest.php`. They do not
 substitute for the complete customer matrix, cold-process failures, installed
 upgrade/recovery/rollback checks or a published release.
+
+## COD collection and merchant remittance
+
+`CodFundingPolicy::BEFORE` and `CodFundingPolicy::AFTER` extend those same Order,
+Payment and full Shipment definitions and routes. The first requires complete
+on-time payer collection before recipient handover; the second requires actual
+recipient handover before collection. A distinct `CodFundingPayment` workflow
+type declares `cod-observed` without changing historical Payment signal schemas.
+No COD transition authorizes or manufactures a card capture.
+
+The original `OrderTerms` pins a `CodDescriptor`, its complete original Shipment
+graph, collection point, exact money, collection deadline, remittance deadline
+and handover policy. Configure `CodPaymentProvider` with `physicalContract: true`
+on the provider-owned connection. Install `commands`, Shipment support, then COD
+support on a fresh provider database, and pass that exact command journal and
+`cod: $cod` to `MachineStore::configure()`. The host refuses another provider
+assembly or a recipe whose handover policy differs from the original terms.
+
+Payment registers owner, merchant-settlement and payer-reimbursement duties
+before opening collection. Carrier readiness permits stock reservation and
+physical fulfillment; it does not prove payer payment. The provider serializes
+collection and recipient handover under the original carrier contract.
+`cod-observed` is only a wakeup: a recorded, authorized inspection rereads the
+complete original receipt and carrier-order inventory. Partial or spoofed
+payment cannot advance collection. Actual payer collection permits `collected`,
+while `paid` and Order fulfillment require the distinct merchant remittance.
+
+Passing the original remittance deadline preserves the carrier/merchant debt
+and waits for another original observation. It does not reset the deadline,
+invent a refund or claim settlement. The optional original
+`CodJournal::CLOSABLE` simulator contract can atomically fence future payer
+collection. The default open contract cannot acquire that capability during
+cancellation. Original known collections use stable payer-refund keys;
+processing, refusal, uncertainty and lost acknowledgements remain explicit.
+Even confirmed customer refunds do not erase gross collection history or prove
+the independent merchant/carrier balance settled. Those outstanding duties keep
+dependent parent compensation blocked. Physical return still requires original
+warehouse receipt, suitable inspection and restocking before money recovery.
+
+Run `vendor/bin/phpunit tests/Feature/V2/V2CodFundingMachineTest.php` and
+`vendor/bin/phpunit tests/Unit/V2/StateMachine/RetainedCodPaymentOperationTest.php`
+for the native route and direct retained-operation controls. These are synthetic
+source fixtures, not real carrier integrations, cold-process/installed proofs,
+full 33-scenario acceptance or release qualification.

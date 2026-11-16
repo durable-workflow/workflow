@@ -29,6 +29,14 @@ final class FundingCatalogue
      */
     public static function recipes(): array
     {
+        return [...self::baseRecipes(), ...CodFundingPolicy::recipes()];
+    }
+
+    /**
+     * @return non-empty-list<string>
+     */
+    public static function baseRecipes(): array
+    {
         return [self::IMMEDIATE, self::AFTER_STOCK, self::AFTER_DELIVERY, self::BANK];
     }
 
@@ -52,12 +60,15 @@ final class FundingCatalogue
 
     public static function deadline(OrderTerms $terms): int
     {
-        return $terms->authorization?->expiresAt ?? $terms->incomingPayment?->deadline
+        return $terms->authorization?->expiresAt ?? $terms->incomingPayment?->deadline ?? $terms->codPayment?->collectionDeadline
             ?? $terms->fulfillmentDeadline ?? throw new LogicException('The original funding deadline is unavailable.');
     }
 
     public static function profile(string $role, string $recipe): PolicyProfile
     {
+        if (CodFundingPolicy::selected($recipe)) {
+            return CodFundingPolicy::profile($role, $recipe);
+        }
         return match ($role) {
             'order' => self::order($recipe), 'payment' => self::payment($recipe), 'shipment' => self::shipment($recipe),
             default => throw new LogicException('The selected funding machine role is unavailable.'),
@@ -66,6 +77,9 @@ final class FundingCatalogue
 
     public static function payment(string $recipe): PolicyProfile
     {
+        if (CodFundingPolicy::selected($recipe)) {
+            return CodFundingPolicy::profile('payment', $recipe);
+        }
         self::assertRecipe($recipe);
         $definition = new MachineDefinition('provider.payment', '3', [
             new MachineState('received', 'Original payment obligation received'),
@@ -102,6 +116,9 @@ final class FundingCatalogue
 
     public static function order(string $recipe): PolicyProfile
     {
+        if (CodFundingPolicy::selected($recipe)) {
+            return CodFundingPolicy::profile('order', $recipe);
+        }
         self::assertRecipe($recipe);
         $definition = new MachineDefinition('provider.order', '4', [
             new MachineState('received', 'Original purchase received; preparation remains outstanding'),
@@ -139,6 +156,9 @@ final class FundingCatalogue
 
     public static function shipment(string $recipe): PolicyProfile
     {
+        if (CodFundingPolicy::selected($recipe)) {
+            return CodFundingPolicy::profile('shipment', $recipe);
+        }
         self::assertRecipe($recipe);
         $physical = PhysicalCatalogue::profile(FinancialCatalogue::AFTER_STOCK);
         $definition = $physical->definition ?? throw new LogicException(

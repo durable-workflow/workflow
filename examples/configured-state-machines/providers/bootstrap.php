@@ -32,6 +32,7 @@ foreach ([
     'Journal',
     'IncomingPaymentProvider',
     'CodPaymentProvider',
+    'CodPaymentOperation',
     'IncomingPaymentOperation',
     'RetainedOperation',
     'FinancialOperation',
