@@ -32,6 +32,9 @@ use Workflow\V2\WorkflowStub;
 
 final class V2CompensationScopeTest extends TestCase
 {
+    // This suite uses sync execution or its own explicit cold-process task drivers.
+    protected const START_QUEUE_WORKERS = false;
+
     protected function setUp(): void
     {
         parent::setUp();

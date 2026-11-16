@@ -45,6 +45,8 @@ abstract class TestCase extends BaseTestCase
 
     public const NUMBER_OF_WORKERS = 2;
 
+    protected const START_QUEUE_WORKERS = true;
+
     protected const USE_DATABASE_TRUNCATION = true;
 
     private const V1_WATCHDOG_LOOP_THROTTLE_KEY = 'workflow:watchdog:looping';
@@ -166,7 +168,9 @@ abstract class TestCase extends BaseTestCase
             Cache::put(TaskWatchdog::LOOP_THROTTLE_KEY, true, self::WATCHDOG_THROTTLE_TTL_SECONDS);
             Cache::put(self::V1_WATCHDOG_LOOP_THROTTLE_KEY, true, self::WATCHDOG_THROTTLE_TTL_SECONDS);
             self::primeWatchdogThrottle();
-            self::startWorkers();
+            if (static::START_QUEUE_WORKERS) {
+                self::startWorkers();
+            }
         }
     }
 

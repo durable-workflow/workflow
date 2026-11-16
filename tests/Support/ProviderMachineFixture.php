@@ -29,6 +29,9 @@ use Workflow\V2\WorkflowStub;
 
 trait ProviderMachineFixture
 {
+    // These fixtures execute the recorded tasks explicitly and immediately stop automatic workers.
+    protected const START_QUEUE_WORKERS = false;
+
     protected OrderTerms $terms;
 
     protected MachineStore $store;

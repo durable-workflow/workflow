@@ -65,6 +65,9 @@ use Workflow\V2\WorkflowStub;
 
 final class V2FailedRunRedriveTest extends TestCase
 {
+    // Redrive runs synchronously; the two queue-backed controls use Queue::fake().
+    protected const START_QUEUE_WORKERS = false;
+
     protected function setUp(): void
     {
         parent::setUp();
