@@ -96,6 +96,9 @@ final readonly class Journal
             } elseif (IncomingRefundLedger::handles($request)) {
                 $status = (new IncomingRefundLedger($this->db, $this->clock ?? static fn (): int => time()))
                     ->admit($request, $status);
+            } elseif (CodRefundLedger::handles($request)) {
+                $status = (new CodRefundLedger($this->db, $this->clock ?? static fn (): int => time()))
+                    ->admit($request, $status);
             } elseif (! $this->targetConfirmed($request)) {
                 $status = Status::Unknown;
             }
@@ -196,6 +199,9 @@ final readonly class Journal
                         ->assertCompletion($request);
                 } elseif (IncomingRefundLedger::handles($request)) {
                     (new IncomingRefundLedger($this->db, $this->clock ?? static fn (): int => time()))
+                        ->assertCompletion($request);
+                } elseif (CodRefundLedger::handles($request)) {
+                    (new CodRefundLedger($this->db, $this->clock ?? static fn (): int => time()))
                         ->assertCompletion($request);
                 } elseif (! $this->targetConfirmed($request)) {
                     throw new LogicException(
