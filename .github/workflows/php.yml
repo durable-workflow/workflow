@@ -1138,7 +1138,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
 
     services:
       postgres:
@@ -1226,7 +1226,7 @@ jobs:
         php scripts/ci/split-feature-tests.php \
           --dir=tests/Feature \
           --shard=${{ matrix.shard }} \
-          --shards=6 \
+          --shards=8 \
           --weights=.github/feature-test-timings.json \
           --weight-profile=postgresql \
           --summary="build/test-results/pgsql-shard-${{ matrix.shard }}-summary.txt" \
