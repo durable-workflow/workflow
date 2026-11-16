@@ -37,12 +37,10 @@ final class FundingStep extends AssessedTransitionStep
         } elseif (! in_array($key, ['collect', 'confirm-receipt'], true)) {
             throw new LogicException('The original funding transition is unavailable.');
         }
+        $collected = $this->recipe === FundingCatalogue::BANK ? 'incoming_full_amount_confirmed' : 'capture_confirmed';
+        $prepared = FundingCatalogue::requiresAuthorization($this->recipe) ? 'authorization_active' : $collected;
         $target = match ($key) {
-            'prepare' => FundingCatalogue::requiresAuthorization($this->recipe)
-                ? 'authorization_active' : ($this->recipe === FundingCatalogue::BANK
-                    ? 'incoming_full_amount_confirmed' : 'capture_confirmed'),
-            'collect' => $this->recipe === FundingCatalogue::BANK ? 'incoming_full_amount_confirmed' : 'capture_confirmed',
-            'confirm-receipt' => 'merchant_receipt_confirmed',
+            'prepare' => $prepared, 'collect' => $collected, 'confirm-receipt' => 'merchant_receipt_confirmed',
         };
         for ($wake = 0; $wake < 32; ++$wake) {
             $value = Workflow::activity(FundingHandoffActivity::class, 'read-capture', []);

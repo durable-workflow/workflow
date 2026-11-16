@@ -172,6 +172,10 @@ final class V2CommonFundingMachineTest extends TestCase
             $this->progress()
         );
         $this->assertSame(['reserve'], $this->effects());
+        $this->assertSame(
+            'pending',
+            $store->finish($this->terms->subjectKey(), $origin->runId(), 'original-bank-cancellation')['status']
+        );
         $this->provider->resolve($refund, Status::Confirmed);
         $store->request($this->terms->subjectKey(), $origin->runId(), 'original-refund-confirmed');
         $this->pump();
@@ -181,6 +185,9 @@ final class V2CommonFundingMachineTest extends TestCase
             $this->progress()
         );
         $this->assertSame(['reserve', 'refund-incoming', 'release'], $this->effects());
+        $store->finish($this->terms->subjectKey(), $origin->runId(), 'original-bank-cancellation');
+        $this->pump();
+        $this->assertSame('cancelled', $this->state('order'), $this->progress());
         $this->assertSame(
             1499,
             $this->incoming->receipts->inspect($this->terms->incomingPayment)['receivedAmountMinor']
@@ -191,7 +198,16 @@ final class V2CommonFundingMachineTest extends TestCase
     {
         $origin = $this->startFunding(FundingCatalogue::BANK, Status::Unknown);
         $receipt = $this->receive('paid-before-stock', 1499);
-        $this->wakePayment('bank-paid-stock-unknown');
+        $payment = WorkflowStub::loadRun($this->child('payment')->id, Catalogue::NAMESPACE);
+        $payment->withRequestId('bank-paid-stock-unknown')
+            ->signal('incoming-observed');
+        $stock = Request::fromArray($this->terms->descriptor('order')['forward']);
+        // Stop at the original uncertain provider attempt, before the finite native retry policy is exhausted.
+        $this->drain(function () use ($stock): bool {
+            $query = $this->providerDb->prepare('SELECT COUNT(*) FROM provider_operations WHERE id = ? AND status = ?');
+            $query->execute([$stock->identity->key(), Status::Unknown->value]);
+            return (int) $query->fetchColumn() === 1;
+        });
         $this->assertSame('received', $this->state('order'), $this->progress());
         $this->assertSame('paid', $this->state('payment'));
         $this->assertSame([], $this->effects());
@@ -203,13 +219,14 @@ final class V2CommonFundingMachineTest extends TestCase
             $receipt
         );
         $this->provider->plan($refund, Status::Confirmed);
-        $this->provider->resolve(Request::fromArray($this->terms->descriptor('order')['forward']), Status::Refused);
-        $origin->withRequestId('original-stock-refusal')
-            ->signal('reconcile-stock');
+        $this->provider->resolve($stock, Status::Refused);
         $this->pump();
         $this->assertSame(['refund-incoming'], $this->effects(), $this->progress());
         $this->assertSame('verified', (new ScopeRepository())->metadata($plan->rootScope())['status']);
         $this->assertNotSame('ready', $this->state('order'));
+        app(CancellationStore::class)->finish($this->terms->subjectKey(), $origin->runId(), 'stock-refused');
+        $this->pump();
+        $this->assertSame('cancelled', $this->state('order'), $this->progress());
     }
 
     public function testLateOriginalPaymentIsRefundedInsteadOfPromotedToFulfillment(): void

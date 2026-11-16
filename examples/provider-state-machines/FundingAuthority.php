@@ -83,7 +83,7 @@ final readonly class FundingAuthority
         }
     }
 
-    public function inspectFinancial(WorkflowRun $actual, ScopeIdentity $scope, FinancialDescriptor $descriptor): void
+    public function inspect(WorkflowRun $actual, ScopeIdentity $scope, FinancialDescriptor $descriptor): void
     {
         [, $plan, $terms] = $this->rows($actual);
         if (! FundingCatalogue::requiresAuthorization($plan->recipe)
@@ -107,7 +107,7 @@ final readonly class FundingAuthority
         }
     }
 
-    public function financial(OperationContext $context, string $mode, string $stage): void
+    public function operation(OperationContext $context, string $mode, string $stage): void
     {
         if (! in_array($stage, ['authorize', 'capture'], true)) {
             throw new LogicException('The trusted funding financial stage is unavailable.');

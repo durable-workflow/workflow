@@ -18,9 +18,12 @@ use Workflow\V2\Workflow;
 
 final class FinancialPreparationStep extends AssessedTransitionStep
 {
+    private readonly bool $commonFunding;
+
     public function __construct(
         private readonly Machine $machine
     ) {
+        $this->commonFunding = FundingCatalogue::selected($machine->initialization['recipe']);
     }
 
     public function execute(TransitionContext $context): ExecutionReceipt
@@ -42,14 +45,18 @@ final class FinancialPreparationStep extends AssessedTransitionStep
         );
         $started = $reservation->start(...$child['input']);
         $binding = new ChildBinding($identity, $started);
-        $this->awaitMilestone($binding, 'authorize');
+        $stage = $this->commonFunding ? 'prepare' : 'authorize';
+        if ($this->commonFunding && ! FundingCatalogue::requiresAuthorization($init['recipe'])) {
+            $stage = 'confirm-receipt';
+        }
+        $this->awaitMilestone($binding, $stage);
         $reserved = $stock->execute();
         $this->awaitStock();
-        if ($init['recipe'] === FinancialCatalogue::AFTER_STOCK) {
-            Workflow::activity(FinancialHandoffActivity::class, 'request-capture', [
+        if (in_array($init['recipe'], [FinancialCatalogue::AFTER_STOCK, FundingCatalogue::AFTER_STOCK], true)) {
+            Workflow::activity($this->handoff(), 'request-capture', [
                 'binding' => $binding->toArray(),
             ]);
-            $this->awaitMilestone($binding, 'capture');
+            $this->awaitMilestone($binding, $this->commonFunding ? 'confirm-receipt' : 'capture');
         }
         return new ExecutionReceipt($context->execution(), ['original-provider:' . $reserved['operation'],
             'original-child:' . $started->childRunId]);
@@ -64,21 +71,25 @@ final class FinancialPreparationStep extends AssessedTransitionStep
     private function awaitMilestone(ChildBinding $binding, string $stage): void
     {
         for ($wake = 0; $wake < 32; ++$wake) {
-            $value = Workflow::activity(FinancialHandoffActivity::class, 'milestone', [
+            $value = Workflow::activity($this->handoff(), 'milestone', [
                 'binding' => $binding->toArray(),
                 'stage' => $stage,
             ]);
-            if ($value['confirmed'] && ($stage !== 'authorize' || $value['waitSeconds'] > 0)) {
+            if ($value['confirmed'] && (! in_array(
+                $stage,
+                ['authorize', 'prepare'],
+                true
+            ) || $value['waitSeconds'] > 0)) {
                 return;
             }
             if ($value['waitSeconds'] === 0) {
-                Workflow::activity(FinancialHandoffActivity::class, 'expire', []);
+                Workflow::activity($this->handoff(), 'expire', []);
                 throw new BusinessCancellationRequested('The original authorization deadline expired.');
             }
             if (! $value['originOpen']) {
                 throw new LogicException('The original Payment closed without the required business publication.');
             }
-            Workflow::await('financial-milestone', $value['waitSeconds']);
+            Workflow::await($this->commonFunding ? 'funding-milestone' : 'financial-milestone', $value['waitSeconds']);
         }
         throw new LogicException('The bounded original financial milestone wait remains unresolved.');
     }
@@ -86,13 +97,13 @@ final class FinancialPreparationStep extends AssessedTransitionStep
     private function awaitStock(): void
     {
         for ($wake = 0; $wake < 32; ++$wake) {
-            $value = Workflow::activity(FinancialHandoffActivity::class, 'stock', []);
+            $value = Workflow::activity($this->handoff(), 'stock', []);
             if ($value['refused']) {
-                Workflow::activity(FinancialHandoffActivity::class, 'refuse-stock', []);
+                Workflow::activity($this->handoff(), 'refuse-stock', []);
                 throw new BusinessCancellationRequested('The original stock reservation was definitively refused.');
             }
             if ($value['waitSeconds'] === 0) {
-                Workflow::activity(FinancialHandoffActivity::class, 'expire', []);
+                Workflow::activity($this->handoff(), 'expire', []);
                 throw new BusinessCancellationRequested('The original authorization expired while stock reconciled.');
             }
             if ($value['confirmed']) {
@@ -101,5 +112,10 @@ final class FinancialPreparationStep extends AssessedTransitionStep
             Workflow::await('reconcile-stock', $value['waitSeconds']);
         }
         throw new LogicException('The bounded original reservation wait remains unresolved.');
+    }
+
+    private function handoff(): string
+    {
+        return $this->commonFunding ? FundingHandoffActivity::class : FinancialHandoffActivity::class;
     }
 }

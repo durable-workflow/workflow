@@ -64,11 +64,7 @@ final class Catalogue
     {
         self::assertRecipe($recipe);
         if (FundingCatalogue::selected($recipe)) {
-            return match ($role) {
-                'order' => FundingCatalogue::order($recipe), 'payment' => FundingCatalogue::payment($recipe),
-                'shipment' => FundingCatalogue::shipment($recipe),
-                default => throw new LogicException('The selected funding machine role is unavailable.'),
-            };
+            return FundingCatalogue::profile($role, $recipe);
         }
         if (FinancialCatalogue::selected($recipe)) {
             return match ($role) {

@@ -18,10 +18,10 @@ foreach ([
     'IncomingPaymentInspectionStore', 'IncomingPaymentInspectionActivity',
     'FinancialHandoffStore', 'FinancialHandoffActivity', 'FinancialStep', 'FinancialPreparationStep',
     'FundingAuthority', 'FundingFactsStore', 'FundingHandoffStore', 'FundingHandoffActivity',
-    'FundingStep', 'FundingPreparationStep', 'FundingPayment', 'FundingCheckout', 'FundingFulfillmentStep',
+    'FundingStep', 'FundingPayment',
     'BoundaryActivity', 'SnapshotActivity', 'AdmissionActivity', 'CommitActivity',
     'RetainedStep', 'Machine', 'Order', 'CheckoutOrder', 'Payment', 'Booking', 'Cancellation',
-    'AuthorizedPayment', 'AuthorizationCheckout',
+    'AuthorizedPayment', 'AuthorizationCheckout', 'FundingCheckout',
     'ShipmentAuthority', 'ShipmentBoundaryStore', 'ShipmentBoundaryActivity', 'ShipmentStep', 'FullShipment', 'FulfillmentStep',
 ] as $class) {
     require_once __DIR__ . '/' . $class . '.php';

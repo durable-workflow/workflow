@@ -281,43 +281,13 @@ final readonly class AssessmentStore
             ),
         ];
         $evidence = array_fill_keys(array_keys($values), 'business-snapshot:' . $id);
+        $selected = null;
+        $facts = new RecordedFacts($id, $values, $evidence);
         if (FundingCatalogue::selected($plan->recipe)) {
-            foreach (array_unique(['order', $actor->role]) as $role) {
-                $scope = $role === 'order' ? $plan->rootScope() : $plan->childScope($role);
-                $values['forward_open'] = $values['forward_open']
-                    && (new ScopeRepository())->metadata($scope)['status'] === 'open';
-            }
-            if ($actor->role === 'payment') {
-                $snapshot = app(FundingFactsStore::class)->observe($actual, $activityId);
-                foreach ($snapshot['values'] as $fact => $value) {
-                    $values[$fact] = $value;
-                    $evidence[$fact] = 'original-funding-assessment:' . $id;
-                }
-                $values['model_consistent'] = $values['model_consistent']
-                    && ($snapshot['values']['financial_observation_consistent'] ?? true);
-                return new RecordedFacts($id, $values, $evidence);
-            }
-            if ($actor->role === 'shipment') {
-                return $this->physicalFacts($actual, $values, $evidence, $id);
-            }
-            if ($transitionKey === 'prepare') {
-                $values['prepare_confirmed'] = app(FundingHandoffStore::class)->prepared($actual);
-                $evidence['prepare_confirmed'] = 'original-funding-preparation:' . $plan->binding('payment')->key();
-                return new RecordedFacts($id, $values, $evidence);
-            }
-            if ($transitionKey === 'fulfill') {
-                return $this->fulfillmentFacts($actual, $actor, $values, $evidence, $id);
-            }
+            $selected = $this->fundingFacts($actual, $activityId, $actor, $plan, $transitionKey, $facts);
+        } elseif (FinancialCatalogue::selected($plan->recipe)) {
+            $selected = $this->selectedFacts($actual, $activityId, $actor, $plan, $transitionKey, $facts);
         }
-        $selected = FinancialCatalogue::selected($plan->recipe)
-            ? $this->selectedFacts(
-                $actual,
-                $activityId,
-                $actor,
-                $plan,
-                $transitionKey,
-                new RecordedFacts($id, $values, $evidence)
-            ) : null;
         if ($selected !== null) {
             return $selected;
         }
@@ -343,6 +313,44 @@ final readonly class AssessmentStore
                 ?? 'provider-observation:' . $forward->identity->key() . ':' . $observation->status->value;
         }
         return new RecordedFacts($id, $values, $evidence);
+    }
+
+    private function fundingFacts(
+        WorkflowRun $actual,
+        string $activityId,
+        object $actor,
+        BindingPlan $plan,
+        string $transitionKey,
+        RecordedFacts $facts
+    ): ?RecordedFacts {
+        $values = $facts->values;
+        $evidence = $facts->evidence;
+        $id = $facts->snapshotId;
+        foreach (array_unique(['order', $actor->role]) as $role) {
+            $scope = $role === 'order' ? $plan->rootScope() : $plan->childScope($role);
+            $values['forward_open'] = $values['forward_open']
+                && (new ScopeRepository())->metadata($scope)['status'] === 'open';
+        }
+        $result = null;
+        if ($actor->role === 'payment') {
+            $snapshot = app(FundingFactsStore::class)->observe($actual, $activityId);
+            foreach ($snapshot['values'] as $fact => $value) {
+                $values[$fact] = $value;
+                $evidence[$fact] = 'original-funding-assessment:' . $id;
+            }
+            $values['model_consistent'] = $values['model_consistent']
+                && ($snapshot['values']['financial_observation_consistent'] ?? true);
+            $result = new RecordedFacts($id, $values, $evidence);
+        } elseif ($actor->role === 'shipment') {
+            $result = $this->physicalFacts($actual, $values, $evidence, $id);
+        } elseif ($transitionKey === 'prepare') {
+            $values['prepare_confirmed'] = app(FundingHandoffStore::class)->prepared($actual);
+            $evidence['prepare_confirmed'] = 'original-funding-preparation:' . $plan->binding('payment')->key();
+            $result = new RecordedFacts($id, $values, $evidence);
+        } elseif ($transitionKey === 'fulfill') {
+            $result = $this->fulfillmentFacts($actual, $actor, $values, $evidence, $id);
+        }
+        return $result;
     }
 
     private function selectedFacts(

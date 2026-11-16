@@ -56,6 +56,14 @@ final class FundingCatalogue
             ?? $terms->fulfillmentDeadline ?? throw new LogicException('The original funding deadline is unavailable.');
     }
 
+    public static function profile(string $role, string $recipe): PolicyProfile
+    {
+        return match ($role) {
+            'order' => self::order($recipe), 'payment' => self::payment($recipe), 'shipment' => self::shipment($recipe),
+            default => throw new LogicException('The selected funding machine role is unavailable.'),
+        };
+    }
+
     public static function payment(string $recipe): PolicyProfile
     {
         self::assertRecipe($recipe);

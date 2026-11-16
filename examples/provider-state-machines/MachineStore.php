@@ -58,11 +58,8 @@ final readonly class MachineStore
             $authority->db,
             $provider,
             static function (WorkflowRun $actual, ScopeIdentity $scope, $descriptor) use ($financial, $funding): void {
-                if ($actual->workflow_class === FundingPayment::class) {
-                    $funding->inspectFinancial($actual, $scope, $descriptor);
-                } else {
-                    $financial->inspect($actual, $scope, $descriptor);
-                }
+                $selected = $actual->workflow_class === FundingPayment::class ? $funding : $financial;
+                $selected->inspect($actual, $scope, $descriptor);
             },
             static fn (WorkflowRun $actual, ScopeIdentity $scope, $descriptor): array =>
                 $actual->workflow_class === FundingPayment::class
@@ -148,11 +145,8 @@ final readonly class MachineStore
                     string $mode
                 ) use ($financial, $funding, $authority, $stage): void {
                     $key = explode('.', $context->scope->key)[0];
-                    if (FundingCatalogue::selected($authority->recipe($key))) {
-                        $funding->financial($context, $mode, $stage);
-                    } else {
-                        $financial->operation($context, $mode, $stage);
-                    }
+                    $selected = FundingCatalogue::selected($authority->recipe($key)) ? $funding : $financial;
+                    $selected->operation($context, $mode, $stage);
                 }, $stage),
             ];
         }
@@ -395,23 +389,18 @@ final readonly class MachineStore
 
     private function descriptor(OrderTerms $terms, string $role, string $recipe): array
     {
-        if (FundingCatalogue::selected($recipe)) {
+        if ((FinancialCatalogue::selected($recipe) || FundingCatalogue::selected($recipe)) && $role !== 'order') {
             return match ($role) {
-                'payment' => $recipe === FundingCatalogue::BANK ? $terms->incomingDescriptor()
-                    : (FundingCatalogue::requiresAuthorization(
-                        $recipe
-                    ) ? $terms->financialDescriptor() : $terms->descriptor('payment')),
                 'shipment' => $terms->physicalDescriptor(),
+                'payment' => match (true) {
+                    $recipe === FundingCatalogue::BANK => $terms->incomingDescriptor(),
+                    FinancialCatalogue::selected($recipe) || FundingCatalogue::requiresAuthorization(
+                        $recipe
+                    ) => $terms->financialDescriptor(),
+                    default => $terms->descriptor('payment'),
+                },
                 default => $terms->descriptor($role),
             };
-        }
-        if (FinancialCatalogue::selected($recipe)) {
-            if ($role === 'payment') {
-                return $terms->financialDescriptor();
-            }
-            if ($role === 'shipment') {
-                return $terms->physicalDescriptor();
-            }
         }
         return $terms->descriptor($role);
     }
