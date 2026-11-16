@@ -27,6 +27,7 @@ final readonly class Journal
         private PDO $db,
         private string $client,
         private ?Closure $clock = null,
+        private ?Closure $beforePhysicalEvent = null,
     ) {
         PortableDescriptor::identifier($client, 'provider client');
         if ($db->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'sqlite' || $db->inTransaction()) {
@@ -54,7 +55,7 @@ final readonly class Journal
 
     public function shipments(): ShipmentJournal
     {
-        return new ShipmentJournal($this->db, $this->client);
+        return new ShipmentJournal($this->db, $this->client, $this->beforePhysicalEvent);
     }
 
     /**
@@ -95,6 +96,9 @@ final readonly class Journal
                     ->admit($request, $status);
             } elseif (IncomingRefundLedger::handles($request)) {
                 $status = (new IncomingRefundLedger($this->db, $this->clock ?? static fn (): int => time()))
+                    ->admit($request, $status);
+            } elseif (CodRefundLedger::handles($request)) {
+                $status = (new CodRefundLedger($this->db, $this->clock ?? static fn (): int => time()))
                     ->admit($request, $status);
             } elseif (! $this->targetConfirmed($request)) {
                 $status = Status::Unknown;
@@ -196,6 +200,9 @@ final readonly class Journal
                         ->assertCompletion($request);
                 } elseif (IncomingRefundLedger::handles($request)) {
                     (new IncomingRefundLedger($this->db, $this->clock ?? static fn (): int => time()))
+                        ->assertCompletion($request);
+                } elseif (CodRefundLedger::handles($request)) {
+                    (new CodRefundLedger($this->db, $this->clock ?? static fn (): int => time()))
                         ->assertCompletion($request);
                 } elseif (! $this->targetConfirmed($request)) {
                     throw new LogicException(

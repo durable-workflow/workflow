@@ -10,12 +10,14 @@ require_once __DIR__ . '/Catalogue.php';
 require_once __DIR__ . '/FinancialCatalogue.php';
 require_once __DIR__ . '/PhysicalCatalogue.php';
 require_once __DIR__ . '/FundingCatalogue.php';
+require_once __DIR__ . '/CodFundingPolicy.php';
 require_once __DIR__ . '/OrderTerms.php';
 require_once __DIR__ . '/BindingPlan.php';
 foreach ([
     'Authority', 'OwnerOperation', 'MachineStore', 'AssessmentStore', 'CancellationStore',
     'FinancialInspectionStore', 'FinancialInspectionActivity', 'FinancialAuthority',
     'IncomingPaymentInspectionStore', 'IncomingPaymentInspectionActivity',
+    'CodInspectionStore', 'CodFundingPayment',
     'OriginalStock', 'FinancialHandoffStore', 'FinancialHandoffActivity', 'FinancialStep', 'FinancialPreparationStep',
     'FundingAuthority', 'FundingFactsStore', 'FundingHandoffStore', 'FundingHandoffActivity',
     'FundingStep', 'FundingPayment',

@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace DurableWorkflow\Examples\ProviderStateMachines;
 
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\AuthorizationTerms;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\CodDescriptor;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\CodJournal;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Identity;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentDescriptor;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentJournal;
@@ -28,6 +30,8 @@ final readonly class OrderTerms
         public ?int $fulfillmentDeadline = null,
         public ?IncomingPaymentDescriptor $incomingPayment = null,
         public string $incomingAdmissionContract = IncomingPaymentJournal::OPEN,
+        public ?CodDescriptor $codPayment = null,
+        public string $codAdmissionContract = CodJournal::OPEN,
     ) {
         foreach (['client', 'subject', 'generation', 'sku'] as $key) {
             PortableDescriptor::identifier($this->{$key}, $key);
@@ -47,11 +51,17 @@ final readonly class OrderTerms
             throw new InvalidArgumentException('The original fulfillment deadline must be a positive Unix timestamp.');
         }
         $this->assertIncomingPayment();
+        $this->assertCodPayment();
     }
 
     public function toArray(): array
     {
         $value = get_object_vars($this);
+        if ($this->codPayment === null) {
+            unset($value['codPayment'], $value['codAdmissionContract']);
+        } else {
+            $value['codPayment'] = $this->codPayment->toArray();
+        }
         if ($this->incomingPayment === null) {
             unset($value['incomingPayment'], $value['incomingAdmissionContract']);
         } else {
@@ -76,9 +86,20 @@ final readonly class OrderTerms
     public static function fromArray(array $value): self
     {
         [$value, $incomingKeys] = self::decodeIncoming($value);
+        [$value, $codKeys] = self::decodeCod($value);
         $keys = array_keys($value);
         sort($keys);
-        $expected = ['amountMinor', 'client', 'currency', 'generation', 'quantity', 'sku', 'subject', ...$incomingKeys];
+        $expected = [
+            'amountMinor',
+            'client',
+            'currency',
+            'generation',
+            'quantity',
+            'sku',
+            'subject',
+            ...$incomingKeys,
+            ...$codKeys,
+        ];
         sort($expected);
         if (array_key_exists('fulfillmentDeadline', $value)) {
             if (! is_int($value['fulfillmentDeadline'])) {
@@ -124,6 +145,9 @@ final readonly class OrderTerms
         }
         if ($role === 'payment' && $this->incomingPayment !== null) {
             throw new InvalidArgumentException('Incoming payment cannot become an immediate card charge.');
+        }
+        if ($role === 'payment' && $this->codPayment !== null) {
+            throw new InvalidArgumentException('Carrier collection cannot become an immediate card charge.');
         }
         [$forward, $undo, $terms] = match ($role) {
             'order' => [
@@ -219,6 +243,61 @@ final readonly class OrderTerms
             'original' => $this->incomingPayment->toArray(),
             'admissionContract' => $this->incomingAdmissionContract,
         ];
+    }
+
+    public function codDescriptor(): array
+    {
+        if ($this->codPayment === null) {
+            throw new InvalidArgumentException('The original COD payment assignment is unavailable.');
+        }
+        return [
+            'original' => $this->codPayment->toArray(),
+            'admissionContract' => $this->codAdmissionContract,
+        ];
+    }
+
+    private function assertCodPayment(): void
+    {
+        $cod = $this->codPayment;
+        if ($cod === null) {
+            if ($this->codAdmissionContract !== CodJournal::OPEN) {
+                throw new InvalidArgumentException(
+                    'A carrier admission contract requires its original COD descriptor.'
+                );
+            }
+            return;
+        }
+        if ($this->authorization !== null || $this->incomingPayment !== null
+            || $cod->identity->client !== $this->client || $cod->identity->subject !== $this->subject
+            || $cod->identity->generation !== $this->generation
+            || $cod->amountMinor !== $this->amountMinor || $cod->currency !== $this->currency
+            || $cod->shipment->fingerprint() !== ShipmentDescriptor::fromArray(
+                $this->physicalDescriptor()
+            )->fingerprint()) {
+            throw new InvalidArgumentException(
+                'COD must preserve its original purchase, money and full Shipment graph.'
+            );
+        }
+        if (! in_array($this->codAdmissionContract, [CodJournal::OPEN, CodJournal::CLOSABLE], true)) {
+            throw new InvalidArgumentException('The original carrier admission contract is unavailable.');
+        }
+    }
+
+    /**
+     * @return array{array, list<string>}
+     */
+    private static function decodeCod(array $value): array
+    {
+        if (! array_key_exists('codPayment', $value) && ! array_key_exists('codAdmissionContract', $value)) {
+            return [$value, []];
+        }
+        if (! is_array($value['codPayment'] ?? null) || ! is_string($value['codAdmissionContract'] ?? null)) {
+            throw new InvalidArgumentException(
+                'COD assignment requires its original descriptor and provider contract.'
+            );
+        }
+        $value['codPayment'] = CodDescriptor::fromArray($value['codPayment']);
+        return [$value, ['codPayment', 'codAdmissionContract']];
     }
 
     private function assertIncomingPayment(): void

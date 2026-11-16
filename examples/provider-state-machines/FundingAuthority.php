@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Examples\ProviderStateMachines;
 
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\CodDescriptor;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\FinancialDescriptor;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentDescriptor;
 use Illuminate\Support\Carbon;
@@ -25,42 +26,26 @@ final readonly class FundingAuthority
     /**
      * @return array{object, BindingPlan, OrderTerms, array<string, array>}
      */
-    public function rows(WorkflowRun $actual): array
+    public function rows(WorkflowRun $actual, bool $allowCodPrefix = false): array
     {
         [$actor, , $plan] = $this->authority->actor($actual);
-        if ($actual->workflow_class !== FundingPayment::class || $actor->role !== 'payment' || ! FundingCatalogue::selected(
+        $cod = CodFundingPolicy::selected($plan->recipe);
+        if ($actual->workflow_class !== ($cod ? CodFundingPayment::class : FundingPayment::class) || $actor->role !== 'payment' || ! FundingCatalogue::selected(
             $plan->recipe
         )) {
             throw new LogicException('Funding access requires its original policy Payment actor.');
         }
         [, $terms] = $this->authority->assignment($actor->root_key);
-        $expected = [new Obligation('owner', 'provider.owner', '1', [
-            'key' => $actor->root_key,
-            'rootRun' => $plan->rootRun,
-            'nativeRun' => $actual->id,
-            'role' => 'payment',
-        ])];
-        if ($plan->recipe === FundingCatalogue::BANK) {
-            $expected[] = new Obligation('payment.incoming', 'provider.incoming', '1', $terms->incomingDescriptor());
-        } elseif (FundingCatalogue::requiresAuthorization($plan->recipe)) {
-            foreach (['authorize', 'capture'] as $stage) {
-                $expected[] = new Obligation(
-                    'payment.' . $stage,
-                    'provider.financial.' . $stage,
-                    '1',
-                    $terms->financialDescriptor()
-                );
-            }
-        } else {
-            $expected[] = new Obligation('effect', 'provider.effect', '1', $terms->descriptor('payment'));
-        }
+        $expected = $this->expected($actual, $actor, $plan, $terms);
         $scope = $plan->childScope('payment');
         $ledger = (new ScopeRepository())->inspect($scope);
-        if ($ledger['original_run_id'] !== $actual->id || count($ledger['obligations']) !== count($expected)) {
+        $count = count($ledger['obligations']);
+        $prefix = $cod && $allowCodPrefix && $count >= 1 && $count <= count($expected);
+        if ($ledger['original_run_id'] !== $actual->id || (! $prefix && $count !== count($expected))) {
             throw new LogicException('The original complete funding responsibilities must precede provider access.');
         }
         $rows = [];
-        foreach ($expected as $position => $obligation) {
+        foreach (array_slice($expected, 0, $count) as $position => $obligation) {
             $row = $ledger['obligations'][$position];
             if ((int) $row['position'] !== $position + 1 || $row['fingerprint'] !== $obligation->fingerprint()
                 || Obligation::fromArray($row['descriptor'])->fingerprint() !== $obligation->fingerprint()) {
@@ -80,6 +65,36 @@ final readonly class FundingAuthority
         if ($plan->recipe !== FundingCatalogue::BANK || $scope->toArray() !== $plan->childScope('payment')->toArray()
             || $terms->incomingPayment?->fingerprint() !== $descriptor->fingerprint()) {
             throw new LogicException('Incoming facts must retain their original business assignment and native owner.');
+        }
+    }
+
+    public function inspectCod(
+        WorkflowRun $actual,
+        ScopeIdentity $scope,
+        CodDescriptor $descriptor,
+        string $contract
+    ): void {
+        [, $plan, $terms] = $this->rows($actual);
+        if (! CodFundingPolicy::selected($plan->recipe) || $scope->toArray() !== $plan->childScope('payment')->toArray()
+            || $terms->codPayment?->fingerprint() !== $descriptor->fingerprint()
+            || $terms->codAdmissionContract !== $contract) {
+            throw new LogicException(
+                'COD facts must retain their original business, carrier contract and native owner.'
+            );
+        }
+    }
+
+    public function cod(OperationContext $context, string $mode, string $stage): void
+    {
+        if (! in_array($stage, ['merchant', 'payer'], true)) {
+            throw new LogicException('The original COD responsibility is unavailable.');
+        }
+        [$actor, $plan] = $this->context($context, $mode, 'payment.cod.' . $stage, $mode === 'compensate');
+        if (! CodFundingPolicy::selected($plan->recipe)) {
+            throw new LogicException('Only the original COD policy owns this money responsibility.');
+        }
+        if ($mode === 'forward') {
+            $this->assertForward($actor->root_key, 'payment');
         }
     }
 
@@ -172,16 +187,54 @@ final readonly class FundingAuthority
     }
 
     /**
+     * @return non-empty-list<Obligation>
+     */
+    private function expected(WorkflowRun $actual, object $actor, BindingPlan $plan, OrderTerms $terms): array
+    {
+        $cod = CodFundingPolicy::selected($plan->recipe);
+        $expected = [new Obligation('owner', 'provider.owner', '1', [
+            'key' => $actor->root_key,
+            'rootRun' => $plan->rootRun,
+            'nativeRun' => $actual->id,
+            'role' => 'payment',
+        ])];
+        if ($cod) {
+            foreach (['merchant', 'payer'] as $stage) {
+                $expected[] = new Obligation(
+                    'payment.cod.' . $stage,
+                    'provider.cod.' . $stage,
+                    '1',
+                    $terms->codDescriptor()
+                );
+            }
+        } elseif ($plan->recipe === FundingCatalogue::BANK) {
+            $expected[] = new Obligation('payment.incoming', 'provider.incoming', '1', $terms->incomingDescriptor());
+        } elseif (FundingCatalogue::requiresAuthorization($plan->recipe)) {
+            foreach (['authorize', 'capture'] as $stage) {
+                $expected[] = new Obligation(
+                    'payment.' . $stage,
+                    'provider.financial.' . $stage,
+                    '1',
+                    $terms->financialDescriptor()
+                );
+            }
+        } else {
+            $expected[] = new Obligation('effect', 'provider.effect', '1', $terms->descriptor('payment'));
+        }
+        return $expected;
+    }
+
+    /**
      * @return array{object, BindingPlan, OrderTerms, array<string, array>}
      */
-    private function context(OperationContext $context, string $mode, string $key): array
+    private function context(OperationContext $context, string $mode, string $key, bool $allowCodPrefix = false): array
     {
         if (! in_array($mode, ['forward', 'compensate'], true)) {
             throw new LogicException('The funding operation mode is unavailable.');
         }
         $this->authority->authorizeScope($context->scope, $this->authority->principal, $mode);
         $actual = WorkflowRun::query()->findOrFail($context->originalRunId);
-        $value = $this->rows($actual);
+        $value = $this->rows($actual, $allowCodPrefix);
         $row = $value[3][$key] ?? null;
         if ($row === null || $context->scope->toArray() !== $value[1]->childScope('payment')->toArray()
             || $context->operationId !== $row['id'] || $context->obligation->key !== $key

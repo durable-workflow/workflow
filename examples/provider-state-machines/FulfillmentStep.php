@@ -41,12 +41,14 @@ final class FulfillmentStep extends AssessedTransitionStep
                 'binding' => $binding->toArray(),
             ]);
             if ($value['confirmed']) {
-                if (in_array(
+                if (CodFundingPolicy::selected($this->machine->initialization['recipe'])) {
+                    $this->settlePaymentAfterDelivery(false);
+                } elseif (in_array(
                     $this->machine->initialization['recipe'],
                     [FinancialCatalogue::AFTER_DELIVERY, FundingCatalogue::AFTER_DELIVERY],
                     true
                 )) {
-                    $this->captureAfterDelivery();
+                    $this->settlePaymentAfterDelivery();
                 }
                 return new ExecutionReceipt($context->execution(), [
                     'original-delivery:' . $value['publication']['id'],
@@ -71,14 +73,16 @@ final class FulfillmentStep extends AssessedTransitionStep
             ->compensate($context, $originalExecution);
     }
 
-    private function captureAfterDelivery(): void
+    private function settlePaymentAfterDelivery(bool $requestCapture = true): void
     {
         $common = FundingCatalogue::selected($this->machine->initialization['recipe']);
         $handoff = $common ? FundingHandoffActivity::class : FinancialHandoffActivity::class;
         $binding = Workflow::activity($handoff, 'binding', []);
-        Workflow::activity($handoff, 'request-capture', [
-            'binding' => $binding,
-        ]);
+        if ($requestCapture) {
+            Workflow::activity($handoff, 'request-capture', [
+                'binding' => $binding,
+            ]);
+        }
         for ($wake = 0; $wake < 32; ++$wake) {
             $value = Workflow::activity($handoff, 'milestone', [
                 'binding' => $binding,
@@ -87,17 +91,26 @@ final class FulfillmentStep extends AssessedTransitionStep
             if ($value['confirmed']) {
                 return;
             }
-            if ($value['waitSeconds'] === 0) {
-                Workflow::activity($handoff, 'expire', []);
-                throw new BusinessCancellationRequested(
-                    'The original authorization expired before delivery capture settled.'
-                );
-            }
+            $remaining = $this->paymentWait($value, $requestCapture, $handoff);
             if (! $value['originOpen']) {
                 throw new LogicException('The original Payment closed without the required capture publication.');
             }
-            Workflow::await($common ? 'funding-milestone' : 'financial-milestone', $value['waitSeconds']);
+            Workflow::await($common ? 'funding-milestone' : 'financial-milestone', $remaining);
         }
         throw new LogicException('The bounded original delivery-capture wait remains unresolved.');
+    }
+
+    private function paymentWait(array $value, bool $requestCapture, string $handoff): ?int
+    {
+        if (! $requestCapture) {
+            return $value['remittanceWaitSeconds'] ?: null;
+        }
+        if ($value['waitSeconds'] === 0) {
+            Workflow::activity($handoff, 'expire', []);
+            throw new BusinessCancellationRequested(
+                'The original authorization expired before delivery capture settled.'
+            );
+        }
+        return $value['waitSeconds'];
     }
 }

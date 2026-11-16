@@ -108,6 +108,9 @@ final class WorkflowPollingTest extends TestCase
     public function testNonProgressingWorkflowFailsQuicklyWithDurableDiagnostics(): void
     {
         $workflow = WorkflowStub::make(TestAwaitWorkflow::class);
+        $privatePayload = 'private-delayed-payload-' . bin2hex(random_bytes(8));
+        TerminateQueueWorker::dispatch($privatePayload)->delay(60);
+        Cache::put('laravel-workflow-overlap:' . $workflow->id() . ':workflow', 2, 60);
         $startedAt = hrtime(true);
 
         try {
@@ -135,6 +138,19 @@ final class WorkflowPollingTest extends TestCase
             $this->assertStringContainsString('"status":"created"', $failure->getMessage());
             $this->assertStringContainsString('"task":', $failure->getMessage());
             $this->assertStringContainsString('"history":', $failure->getMessage());
+            $diagnostics = json_decode(
+                explode('Durable diagnostics: ', $failure->getMessage(), 2)[1],
+                true,
+                flags: JSON_THROW_ON_ERROR
+            );
+            $this->assertSame([
+                'ready' => 0,
+                'delayed' => 1,
+                'reserved' => 0,
+            ], $diagnostics['task']['queue_state']);
+            $this->assertSame(2, $diagnostics['overlap']['workflow']);
+            $this->assertSame(0, $diagnostics['overlap']['active_activities']);
+            $this->assertStringNotContainsString($privatePayload, $failure->getMessage());
         }
     }
 

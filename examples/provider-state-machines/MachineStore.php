@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace DurableWorkflow\Examples\ProviderStateMachines;
 
 use DurableWorkflow\Examples\BusinessStateMachines\SqlBusinessStore;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\CodPaymentOperation;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\CodPaymentProvider;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\FinancialOperation;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentOperation;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentProvider;
@@ -31,7 +33,8 @@ final readonly class MachineStore
 {
     public function __construct(
         public Authority $authority,
-        private ?IncomingPaymentProvider $incoming = null
+        private ?IncomingPaymentProvider $incoming = null,
+        private ?CodPaymentProvider $cod = null
     ) {
     }
 
@@ -39,12 +42,18 @@ final readonly class MachineStore
         Container $app,
         Authority $authority,
         Journal $provider,
-        ?IncomingPaymentProvider $incoming = null
+        ?IncomingPaymentProvider $incoming = null,
+        ?CodPaymentProvider $cod = null
     ): self {
         if ($incoming !== null && $incoming->commands !== $provider) {
             throw new LogicException('Incoming receipts and refunds must use the same original provider assembly.');
         }
-        $store = new self($authority, $incoming);
+        if ($cod !== null && ($cod->commands !== $provider || ! $cod->physicalContract)) {
+            throw new LogicException(
+                'Native COD requires the same original provider and atomic physical carrier contract.'
+            );
+        }
+        $store = new self($authority, $incoming, $cod);
         $app->instance(self::class, $store);
         $app->instance(AssessmentStore::class, new AssessmentStore($authority, $provider));
         $financial = new FinancialAuthority($authority);
@@ -73,6 +82,12 @@ final readonly class MachineStore
                 $funding->inspectIncoming(...)
             ));
         }
+        if ($cod !== null) {
+            $app->instance(
+                CodInspectionStore::class,
+                new CodInspectionStore($authority->db, $cod, $funding->inspectCod(...))
+            );
+        }
         $app->instance(CancellationStore::class, new CancellationStore($authority));
         $physical = new ShipmentAuthority($authority);
         $app->instance(ShipmentBoundaryStore::class, new ShipmentBoundaryStore($authority, $provider, $physical));
@@ -87,7 +102,13 @@ final readonly class MachineStore
                     )->fingerprint(), FundingCatalogue::recipes()), FullShipment::class),
             ],
             BindingPlan::FUNDING_PAYMENT => array_fill_keys(array_map(static fn (string $recipe): string =>
-                FundingCatalogue::payment($recipe)->fingerprint(), FundingCatalogue::recipes()), FundingPayment::class),
+                FundingCatalogue::payment(
+                    $recipe
+                )->fingerprint(), FundingCatalogue::baseRecipes()), FundingPayment::class),
+            BindingPlan::COD_PAYMENT => array_fill_keys(array_map(static fn (string $recipe): string =>
+                FundingCatalogue::payment(
+                    $recipe
+                )->fingerprint(), CodFundingPolicy::recipes()), CodFundingPayment::class),
             BindingPlan::AUTHORIZED_PAYMENT => [
                 FinancialCatalogue::profile(FinancialCatalogue::AFTER_STOCK)->fingerprint() => AuthorizedPayment::class,
                 FinancialCatalogue::profile(
@@ -112,45 +133,10 @@ final readonly class MachineStore
                 return $this->authority->authorizeScope($scope, $principal, $operation);
             }
         });
-        $handlers = [
-            'provider.owner' => [
-                '1' => new OwnerOperation($authority),
-            ],
-            'provider.effect' => [
-                '1' => new RetainedOperation($provider, static function (
-                    OperationContext $context,
-                    string $operation,
-                ) use ($authority, $funding): void {
-                    $key = explode('.', $context->scope->key)[0];
-                    if (FundingCatalogue::selected($authority->recipe($key))) {
-                        $funding->effect($context, $operation);
-                    } else {
-                        $authority->authorizeOperation($context, $operation);
-                    }
-                }),
-            ],
-            'provider.shipment.full' => [
-                '1' => new ShipmentOperation($provider, $physical->operation(...)),
-            ],
-        ];
-        if ($incoming !== null) {
-            $handlers['provider.incoming'] = [
-                '1' => new IncomingPaymentOperation($incoming, $funding->incoming(...)),
-            ];
-        }
-        foreach (['authorize', 'capture'] as $stage) {
-            $handlers['provider.financial.' . $stage] = [
-                '1' => new FinancialOperation($provider, static function (
-                    OperationContext $context,
-                    string $mode
-                ) use ($financial, $funding, $authority, $stage): void {
-                    $key = explode('.', $context->scope->key)[0];
-                    $selected = FundingCatalogue::selected($authority->recipe($key)) ? $funding : $financial;
-                    $selected->operation($context, $mode, $stage);
-                }, $stage),
-            ];
-        }
-        $app->instance(HandlerRegistry::class, new HandlerRegistry($handlers));
+        $app->instance(
+            HandlerRegistry::class,
+            new HandlerRegistry($store->handlers($provider, $financial, $funding, $physical))
+        );
         return $store;
     }
 
@@ -159,6 +145,13 @@ final readonly class MachineStore
         $key = $terms->subjectKey();
         $this->authority->authorize($key, $this->authority->principal);
         $recipe = $this->authority->recipe($key);
+        if (($terms->codPayment !== null) !== CodFundingPolicy::selected($recipe)
+            || ($terms->codPayment !== null && ($this->cod === null
+                || $terms->codPayment->handoverPolicy !== CodFundingPolicy::handover($recipe)))) {
+            throw new LogicException(
+                'Native COD requires its original provider, recipe and recipient-handover policy.'
+            );
+        }
         if (FundingCatalogue::selected($recipe) && $terms->fulfillmentDeadline === null) {
             throw new LogicException('Common funding checkout requires its original fulfillment deadline.');
         }
@@ -387,12 +380,73 @@ final readonly class MachineStore
         ];
     }
 
+    /**
+     * @return array<string, array<string, \Workflow\V2\Compensation\Execution\ScopedOperation>>
+     */
+    private function handlers(
+        Journal $provider,
+        FinancialAuthority $financial,
+        FundingAuthority $funding,
+        ShipmentAuthority $physical
+    ): array {
+        $authority = $this->authority;
+        $incoming = $this->incoming;
+        $cod = $this->cod;
+        $handlers = [
+            'provider.owner' => [
+                '1' => new OwnerOperation($authority),
+            ],
+            'provider.effect' => [
+                '1' => new RetainedOperation($provider, static function (
+                    OperationContext $context,
+                    string $operation,
+                ) use ($authority, $funding): void {
+                    $key = explode('.', $context->scope->key)[0];
+                    if (FundingCatalogue::selected($authority->recipe($key))) {
+                        $funding->effect($context, $operation);
+                    } else {
+                        $authority->authorizeOperation($context, $operation);
+                    }
+                }),
+            ],
+            'provider.shipment.full' => [
+                '1' => new ShipmentOperation($provider, $physical->operation(...)),
+            ],
+        ];
+        if ($incoming !== null) {
+            $handlers['provider.incoming'] = [
+                '1' => new IncomingPaymentOperation($incoming, $funding->incoming(...)),
+            ];
+        }
+        if ($cod !== null) {
+            foreach (['merchant', 'payer'] as $stage) {
+                $handlers['provider.cod.' . $stage] = [
+                    '1' => new CodPaymentOperation($cod, $funding->cod(...), $stage),
+                ];
+            }
+        }
+        foreach (['authorize', 'capture'] as $stage) {
+            $handlers['provider.financial.' . $stage] = [
+                '1' => new FinancialOperation($provider, static function (
+                    OperationContext $context,
+                    string $mode
+                ) use ($financial, $funding, $authority, $stage): void {
+                    $key = explode('.', $context->scope->key)[0];
+                    $selected = FundingCatalogue::selected($authority->recipe($key)) ? $funding : $financial;
+                    $selected->operation($context, $mode, $stage);
+                }, $stage),
+            ];
+        }
+        return $handlers;
+    }
+
     private function descriptor(OrderTerms $terms, string $role, string $recipe): array
     {
         if ((FinancialCatalogue::selected($recipe) || FundingCatalogue::selected($recipe)) && $role !== 'order') {
             return match ($role) {
                 'shipment' => $terms->physicalDescriptor(),
                 'payment' => match (true) {
+                    CodFundingPolicy::selected($recipe) => $terms->codDescriptor(),
                     $recipe === FundingCatalogue::BANK => $terms->incomingDescriptor(),
                     FinancialCatalogue::selected($recipe) || FundingCatalogue::requiresAuthorization(
                         $recipe
