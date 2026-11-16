@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Replaying a resolved selection restores its recorded winner without advancing
+  older losing signal waits. New signals remain bound to their current wait
+  occurrence, including after an earlier selection member was cancelled.
+
 - Cancellation during embedded workflow replay preserves a signal wait that
   already timed out. Cleanup starts at the original unresolved boundary instead
   of replacing earlier completed work, including when only timer history remains.
