@@ -7,6 +7,7 @@ namespace DurableWorkflow\Examples\ConfiguredStateMachines\Providers;
 use Closure;
 use LogicException;
 use PDO;
+use Workflow\V2\Compensation\Definition\PortableDescriptor;
 
 /** @internal Effect persistence inside the original Journal provider transaction. */
 final readonly class EffectJournal
