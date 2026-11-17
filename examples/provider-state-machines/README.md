@@ -535,3 +535,43 @@ native staged-payment routes and cancellation, and
 for original portion and refund controls. These synthetic source cases do not
 complete PAY-05, its interruption/concurrency coverage, the full customer
 matrix, installed recovery/upgrade acceptance or publication qualification.
+
+### Subscription period contract preparation
+
+`BillingPeriod` pins one original subscription generation, period, amount,
+currency, start, end and payment deadline. A service-only period has no Order
+or Shipment. Where the application has a genuine Order for the period, its
+`OrderTerms` must retain the same client, period generation and money. The
+association is part of the immutable assignment fingerprint; it is not a
+provider payment identity or an admission receipt. This initial period
+profile selects immediate capture. An associated Order cannot substitute an
+authorization, incoming transfer, COD or split-payment policy.
+
+The original period produces distinct capture and refund identities. A later
+period cannot refund an earlier period's charge, and changing the charge terms
+cannot reuse a committed provider key. These are business identities; retries,
+native attempts and worker replacement do not select new ones.
+
+`BillingPeriod::graceDeadline($startsAt)` fixes the example interval at ten
+elapsed UTC days. Configure a different positive integer interval explicitly
+before assignment. The cutoff is exclusive: confirmation exactly at the
+deadline is late. Access during grace is an explicit policy option. This
+example requires a separate decision for late-payment reactivation and never
+automatically enables an expired period. Access ends at the fixed period end.
+Payment-first never grants unpaid grace access. `BillingPeriodPolicy` preserves
+the common `provider.payment` definition and its `received`, `ready`,
+`collected` and `paid` factual meanings for both associations.
+
+This is contract preparation for PAY-06/SUB-01 through SUB-04. The access
+projection takes trusted observations; it is not a recorded host authorization,
+provider receipt, entitlement write or native child admission. The current
+Order-specific `MachineStore` and `Authority` cannot be used to run a
+service-only period. A real period host boundary, authoritative timed payment
+inspection, atomic original-period assignment/admission, cancellation of
+future billing, retained settlement, native replay/process-loss tests and
+installed qualification remain unfinished. Cancelling future billing must
+not be interpreted as refunding previously paid periods.
+
+Run `vendor/bin/phpunit tests/Unit/V2/StateMachine/BillingPeriodTest.php` for the
+fixed-boundary, substitution and independent provider-journal controls. They
+do not complete the subscription scenarios or the full customer matrix.
