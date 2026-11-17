@@ -25,7 +25,7 @@ require_once __DIR__ . '/CartLeaseOperation.php';
 require_once __DIR__ . '/BindingPlan.php';
 foreach ([
     'CartPolicy', 'OrderPeriodPolicy', 'OrderPeriodPaymentReceipt', 'OrderBillingPeriodStore',
-    'RootPolicy', 'RootCancellationStore', 'Authority', 'OwnerOperation', 'CartOrderReceipt', 'CartStore', 'MachineStore', 'AssessmentStore', 'CancellationStore',
+    'RootPolicy', 'RootCancellationStore', 'UnitMoneyPolicy', 'Authority', 'OwnerOperation', 'CartOrderReceipt', 'CartStore', 'MachineStore', 'AssessmentStore', 'CancellationStore',
     'FinancialInspectionStore', 'FinancialInspectionActivity', 'FinancialAuthority',
     'IncomingPaymentInspectionStore', 'IncomingPaymentInspectionActivity',
     'CodInspectionStore', 'FundingPaymentExecution', 'CodFundingPayment', 'AdvanceBalancePayment',

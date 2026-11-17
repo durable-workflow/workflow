@@ -13,6 +13,55 @@ The opt-in [original root entry](original-root.md) retains the original business
 intent before native admission and defines startup cancellation for the original
 reservation-first recipe. Other recipes keep their existing entry contracts.
 
+## Original unit money on the common checkout
+
+The existing `reserve-first-common` and `payment-first` recipes can opt into
+explicit charged-unit amounts through trusted bootstrap, without changing the
+Order, Payment or booking-only Shipment workflow classes:
+
+```php
+$authority = new Authority($businessDb, $workerPrincipal, [$terms->subjectKey()], [
+    $terms->subjectKey() => Catalogue::PAYMENT_FIRST,
+], unitAmounts: [$terms->subjectKey() => [500, 500, 499]]);
+$refunds = new UnitRefundGateway($independentProviderPdo, $terms->client);
+$refunds->install(); // Disposable provider fixture schema, outside business/DW storage.
+$store = MachineStore::configure($app, $authority, $provider, unitRefunds: $refunds);
+$store->seed($terms); // This example requires quantity 3 and original amount 1499.
+```
+
+The quote must cover every original requested unit and sum to the original
+capture amount. It becomes part of the immutable business grant. Changing a
+unit amount, principal, subject or generation cannot substitute another policy
+for an existing execution. The provider journal and refund gateway must share
+their original independent connection and client. Keep the original bootstrap
+grant and handler available to replacement/recovery workers.
+
+The genuine Payment child registers `provider.unit-payment` in its own retained
+scope before capture dispatch. Its host checks the original business grant,
+native actor, scope, operation ID and complete descriptor before provider I/O.
+Cancellation then confirms the original booking cancellation, settles the
+original remaining unit money and only afterward releases the reservation.
+An admitted unknown refund keeps the child and parent unsettled. An explicit
+later observation/recovery uses those original identities and receipts; it does
+not rewrite the completed Payment history. The existing proof-only finalizer
+publishes business cancellation after genuine retained recovery verifies.
+
+The native source controls include a prior provider repayment of 499 followed
+by the remaining 1000 refund, payment-first and reservation-first common routes,
+unknown-result recovery, callback-free replay and ownership substitution. The
+prior repayment is a provider fixture control, not a native partial-stock
+fulfillment scenario. Requested/selected shipment quantities, warehouse stock
+quality, partial fulfillment/return and the full fault/installed/publication
+criteria still need their own integration. The legacy `reserve-first` recipe
+and other payment families retain their original contracts; this opt-in does
+not silently reinterpret them.
+
+```shell
+vendor/bin/phpunit tests/Feature/V2/V2CommonUnitPaymentTest.php
+```
+
+## Authorization and physical fulfillment
+
 The authorization recipes use one Order route (`received -> ready -> fulfilled`),
 one Payment route (`received -> authorized -> captured`) and one full Shipment
 route (`received -> booked -> in-transit -> delivered`). They are experimental

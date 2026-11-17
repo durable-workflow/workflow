@@ -43,7 +43,12 @@ final class RetainedStep extends AssessedTransitionStep
             throw new LogicException('The proof-only cancellation transition cannot dispatch work.');
         }
         $result = $this->scope->execute(
-            new Obligation('effect', 'provider.effect', '1', $this->initialization['descriptor'])
+            new Obligation(
+                'effect',
+                $this->initialization['effectHandler'] ?? 'provider.effect',
+                '1',
+                $this->initialization['descriptor']
+            )
         );
         return new ExecutionReceipt($execution, ['original-provider:' . $result['operation']]);
     }

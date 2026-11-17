@@ -7,6 +7,7 @@ namespace Tests\Support;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Journal;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Request;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Status;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\UnitRefundGateway;
 use DurableWorkflow\Examples\ProviderStateMachines\Authority;
 use DurableWorkflow\Examples\ProviderStateMachines\Catalogue;
 use DurableWorkflow\Examples\ProviderStateMachines\MachineStore;
@@ -39,6 +40,8 @@ trait ProviderMachineFixture
 
     protected ?Journal $provider = null;
 
+    protected ?UnitRefundGateway $unitRefunds = null;
+
     private array $taskTrace = [];
 
     protected function setUp(): void
@@ -66,10 +69,28 @@ trait ProviderMachineFixture
         $this->providerDb = new PDO('sqlite:' . $this->providerPath);
         $this->provider = new Journal($this->providerDb, $this->terms->client, $this->providerClock());
         $this->provider->install();
-        $authority = new Authority(DB::connection(), 'provider-worker', [$this->terms->subjectKey()], [
-            $this->terms->subjectKey() => $this->recipe(),
-        ], reservedRoots: $this->reservedRoot() ? [$this->terms->subjectKey()] : []);
-        $this->store = MachineStore::configure($this->app, $authority, $this->provider);
+        $authority = new Authority(
+            DB::connection(),
+            'provider-worker',
+            [$this->terms->subjectKey()],
+            [
+                $this->terms->subjectKey() => $this->recipe(),
+            ],
+            reservedRoots: $this->reservedRoot() ? [$this->terms->subjectKey()] : [],
+            unitAmounts: $this->unitAmounts() === [] ? [] : [
+                $this->terms->subjectKey() => $this->unitAmounts(),
+            ]
+        );
+        if ($this->unitAmounts() !== []) {
+            $this->unitRefunds = new UnitRefundGateway($this->providerDb, $this->terms->client);
+            $this->unitRefunds->install();
+        }
+        $this->store = MachineStore::configure(
+            $this->app,
+            $authority,
+            $this->provider,
+            unitRefunds: $this->unitRefunds
+        );
         $this->store->seed($this->terms);
     }
 
@@ -92,6 +113,7 @@ trait ProviderMachineFixture
         ] as $table) {
             DB::connection()->getSchemaBuilder()->dropIfExists($table);
         }
+        $this->unitRefunds = null;
         $this->provider = null;
         $this->providerDb = null;
         if (isset($this->providerPath)) {
@@ -119,6 +141,11 @@ trait ProviderMachineFixture
     protected function orderTerms(): OrderTerms
     {
         return new OrderTerms('shop-a', 'purchase-1', 'business-generation-1', 1499, 'USD', 'sku-1', 2);
+    }
+
+    protected function unitAmounts(): array
+    {
+        return [];
     }
 
     protected function providerClock(): ?\Closure
