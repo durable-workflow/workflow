@@ -46,12 +46,9 @@ final readonly class RootReservationStore
         return SqliteTransaction::run(static function () use ($candidate, $identity): RootReservation {
             $root = self::instances()->lockForUpdate()->find($identity->instanceId());
             if ($root !== null) {
-                $state = self::readOwned($root, $identity);
+                $state = RootReservationState::readOwned($root, $identity);
                 $stored = RootReservation::fromArray($state['reservation']);
-                if ($stored->authorizationVersion !== $candidate->authorizationVersion
-                    || $stored->scopeAuthorizationVersion !== $candidate->scopeAuthorizationVersion) {
-                    throw new LogicException('The original root authorization policies must remain pinned.');
-                }
+                self::assertPolicies($stored, $candidate->authorizationVersion, $candidate->scopeAuthorizationVersion);
                 return $stored;
             }
             // Unique insertion chooses one original run even when the first two
@@ -65,22 +62,19 @@ final readonly class RootReservationStore
                 'run_count' => 0,
                 'created_at' => now(),
                 'updated_at' => now(),
-                'native_root_reservation' => json_encode([
+                'native_root_reservation' => RootReservationState::encode([
                     'version' => 1,
                     'reservation' => $candidate->toArray(),
                     'status' => 'reserved',
                     'admission' => null,
                     'closureId' => null,
-                ], JSON_THROW_ON_ERROR),
+                ]),
             ]);
             $root = self::instances()->lockForUpdate()->findOrFail($identity->instanceId());
-            $state = self::readOwned($root, $identity);
+            $state = RootReservationState::readOwned($root, $identity);
             $stored = RootReservation::fromArray($state['reservation']);
             if ($stored->fingerprint() !== $candidate->fingerprint()) {
-                if ($stored->authorizationVersion !== $candidate->authorizationVersion
-                    || $stored->scopeAuthorizationVersion !== $candidate->scopeAuthorizationVersion) {
-                    throw new LogicException('The original root authorization policies must remain pinned.');
-                }
+                self::assertPolicies($stored, $candidate->authorizationVersion, $candidate->scopeAuthorizationVersion);
                 return $stored;
             }
             $database = ConfiguredV2Models::connection();
@@ -116,7 +110,7 @@ final readonly class RootReservationStore
     {
         $this->authorize($identity, $principal, 'load');
         $root = self::instances()->findOrFail($identity->instanceId());
-        return RootReservation::fromArray(self::readOwned($root, $identity)['reservation']);
+        return RootReservation::fromArray(RootReservationState::readOwned($root, $identity)['reservation']);
     }
 
     public function start(
@@ -136,7 +130,7 @@ final readonly class RootReservationStore
         return SqliteTransaction::run(
             static function () use ($reservation): RootBinding|NeverAdmittedRoot {
                 $root = self::instances()->lockForUpdate()->findOrFail($reservation->identity->instanceId());
-                $state = self::matching($root, $reservation);
+                $state = RootReservationState::matching($root, $reservation);
                 if ($state['status'] === 'admitted') {
                     return RootBinding::fromArray($state['admission']);
                 }
@@ -153,7 +147,7 @@ final readonly class RootReservationStore
                     ScopeStorage::append($scope, 'root_never_admitted', [
                         'closureId' => $state['closureId'],
                     ]);
-                    self::write($root, $state);
+                    RootReservationState::write($root, $state);
                 } elseif ($scope['status'] !== 'root_never_admitted') {
                     throw new LogicException('The root closure has no matching permanent scope fence.');
                 }
@@ -183,7 +177,7 @@ final readonly class RootReservationStore
         RootReservation $reservation
     ): RootBinding|NeverAdmittedRoot|null {
         self::assertNativeTransaction($root);
-        $state = self::matching($root, $reservation);
+        $state = RootReservationState::matching($root, $reservation);
         if ($state['status'] === 'admitted') {
             return RootBinding::fromArray($state['admission']);
         }
@@ -214,7 +208,7 @@ final readonly class RootReservationStore
         WorkflowCommand $command,
     ): RootBinding {
         self::assertNativeTransaction($root);
-        $state = self::matching($root, $reservation);
+        $state = RootReservationState::matching($root, $reservation);
         $scope = self::scope($reservation);
         self::assertReservedScope($scope);
         if ($state['status'] !== 'reserved' || $run->id !== $reservation->originalRunId
@@ -242,7 +236,7 @@ final readonly class RootReservationStore
         $binding = new RootBinding($reservation, $command->id);
         $state['status'] = 'admitted';
         $state['admission'] = $binding->toArray();
-        self::write($root, $state);
+        RootReservationState::write($root, $state);
         return $binding;
     }
 
@@ -256,6 +250,11 @@ final readonly class RootReservationStore
     private function authorizeReservation(RootReservation $reservation, string $principal, string $operation): void
     {
         [$version, $scopeVersion] = $this->authorize($reservation->identity, $principal, $operation);
+        self::assertPolicies($reservation, $version, $scopeVersion);
+    }
+
+    private static function assertPolicies(RootReservation $reservation, string $version, string $scopeVersion): void
+    {
         if ($version !== $reservation->authorizationVersion || $scopeVersion !== $reservation->scopeAuthorizationVersion) {
             throw new LogicException('The original root authorization policies must remain pinned.');
         }
@@ -327,68 +326,6 @@ final readonly class RootReservationStore
             || (int) $scope['request_count'] !== 0 || (int) $scope['event_sequence'] !== 1) {
             throw new LogicException('The original root scope is no longer reserved and empty.');
         }
-    }
-
-    private static function matching(WorkflowInstance $root, RootReservation $reservation): array
-    {
-        $state = self::readOwned($root, $reservation->identity);
-        if (PortableDescriptor::encode($state['reservation']) !== PortableDescriptor::encode($reservation->toArray())) {
-            throw new LogicException('The root descriptor differs from its original reservation.');
-        }
-        return $state;
-    }
-
-    private static function readOwned(WorkflowInstance $root, RootIdentity $identity): array
-    {
-        // Owner check precedes decoding protected JSON or resolving any stored class.
-        if ($root->id !== $identity->instanceId() || $root->namespace !== $identity->scope->namespace
-            || $root->workflow_class !== $identity->workflowClass || $root->workflow_type !== $identity->workflowType) {
-            throw new LogicException('The native root reservation does not match the original owner.');
-        }
-        $raw = $root->getRawOriginal('native_root_reservation');
-        if (! is_string($raw) || strlen($raw) > 65_536) {
-            throw new LogicException('The native root has no valid reservation record.');
-        }
-        $state = json_decode($raw, true, 32, JSON_THROW_ON_ERROR);
-        if (! is_array($state)) {
-            throw new LogicException('Malformed native root reservation state.');
-        }
-        RootFormat::keys($state, ['version', 'reservation', 'status', 'admission', 'closureId']);
-        if ($state['version'] !== 1 || ! is_array($state['reservation'])
-            || ! in_array($state['status'], ['reserved', 'admitted', 'closed'], true)) {
-            throw new LogicException('Malformed native root reservation state.');
-        }
-        $reservation = RootReservation::fromArray($state['reservation']);
-        if ($reservation->identity->fingerprint() !== $identity->fingerprint()) {
-            throw new LogicException('The stored root has a different immutable descriptor.');
-        }
-        $state['reservation'] = $reservation->toArray();
-        if ($state['status'] === 'admitted') {
-            if (! is_array($state['admission']) || $state['closureId'] !== null) {
-                throw new LogicException('Malformed native root admission state.');
-            }
-            $binding = RootBinding::fromArray($state['admission']);
-            if ($binding->reservation->fingerprint() !== $reservation->fingerprint()) {
-                throw new LogicException('The root receipt belongs to a different reservation.');
-            }
-            $state['admission'] = $binding->toArray();
-        } elseif ($state['admission'] !== null || ($state['status'] === 'reserved' ? $state['closureId'] !== null
-            : ! is_string($state['closureId']) || trim($state['closureId']) === '')) {
-            throw new LogicException('Malformed native root closure state.');
-        }
-        return $state;
-    }
-
-    private static function write(WorkflowInstance $root, array $state): void
-    {
-        $encoded = json_encode($state, JSON_THROW_ON_ERROR);
-        self::instances()->whereKey($root->id)->toBase()->update([
-            'native_root_reservation' => $encoded,
-        ]);
-        $root->setRawAttributes([
-            ...$root->getAttributes(),
-            'native_root_reservation' => $encoded,
-        ], true);
     }
 
     /**

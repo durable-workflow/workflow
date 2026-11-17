@@ -69,6 +69,31 @@ final class V2RootReservationConcurrencyTest extends TestCase
         $this->assertSame($results[0], $this->operate('close', $reservation));
     }
 
+    public function testBackendRetainsCanonicalNumericAndUnicodeAdmissionMetadata(): void
+    {
+        $scope = new ScopeIdentity('race-app', 'race-tenant', 'order', 'original-generation');
+        $memo = [
+            'amount' => 1.0,
+            'left' => str_repeat('🛒', 1500),
+            'right' => str_repeat('🛒', 1500),
+        ];
+        $identity = RootIdentity::forWorkflow(
+            $scope,
+            TestGreetingWorkflow::class,
+            ['Taylor'],
+            new \Workflow\V2\StartOptions(memo: $memo)
+        );
+        $reservation = $this->store()
+            ->reserve($identity, 'owner');
+        $admitted = $this->store()
+            ->start($reservation, 'owner', ['Taylor']);
+        $this->assertInstanceOf(RootBinding::class, $admitted);
+        $loaded = $this->store()
+            ->load($identity, 'owner');
+        $this->assertSame($memo, $loaded->identity->profile->options->memo);
+        $this->assertSame($admitted->toArray(), $this->store()->close($loaded, 'owner')->toArray());
+    }
+
     private function operate(string $operation, RootReservation $reservation): array
     {
         $outcome = $operation === 'admit'

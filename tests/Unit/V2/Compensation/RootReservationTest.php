@@ -363,6 +363,206 @@ final class RootReservationTest extends TestCase
         $this->assertInstanceOf(NeverAdmittedRoot::class, $this->store()->close($reservation, 'owner'));
     }
 
+    public static function malformedStates(): array
+    {
+        return [['oversized'], ['scalar'], ['version'], ['admission-missing'], ['foreign-receipt'],
+            ['closure-missing'], ['reserved-with-closure'], ['different-input']];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('malformedStates')]
+    public function testMalformedRetainedStateCannotProduceANonAdmissionOrAdmissionReceipt(string $mode): void
+    {
+        $identity = $this->identity();
+        $reservation = $this->store()
+            ->reserve($identity, 'owner');
+        $root = WorkflowInstance::query()->findOrFail($identity->instanceId());
+        $state = json_decode($root->getRawOriginal('native_root_reservation'), true, flags: JSON_THROW_ON_ERROR);
+        if ($mode === 'version') {
+            $state['version'] = 2;
+        }
+        if ($mode === 'admission-missing') {
+            $state['status'] = 'admitted';
+        }
+        if ($mode === 'closure-missing') {
+            $state['status'] = 'closed';
+        }
+        if ($mode === 'reserved-with-closure') {
+            $state['closureId'] = 'unearned-closure';
+        }
+        if ($mode === 'different-input') {
+            $state['reservation']['identity']['inputFingerprint'] = str_repeat('f', 64);
+        }
+        if ($mode === 'foreign-receipt') {
+            $foreign = new RootReservation(
+                $identity,
+                'foreign-run',
+                $reservation->authorizationVersion,
+                $reservation->scopeAuthorizationVersion
+            );
+            $state['status'] = 'admitted';
+            $state['admission'] = (new RootBinding($foreign, 'foreign-command'))->toArray();
+        }
+        $raw = match ($mode) {
+            'oversized' => str_repeat(' ', 65537),
+            'scalar' => '"scalar"',
+            default => json_encode($state, JSON_THROW_ON_ERROR),
+        };
+        WorkflowInstance::query()->whereKey($root->id)->toBase()->update([
+            'native_root_reservation' => $raw,
+        ]);
+        $this->expectException(LogicException::class);
+        $this->store()
+            ->close($reservation, 'owner');
+    }
+
+    public function testAnUnrelatedLedgerCannotBeClosedThroughACorruptedRootState(): void
+    {
+        $reservation = $this->store()
+            ->reserve($this->identity(), 'owner');
+        $root = WorkflowInstance::query()->findOrFail($reservation->identity->instanceId());
+        $state = json_decode($root->getRawOriginal('native_root_reservation'), true, flags: JSON_THROW_ON_ERROR);
+        $state['status'] = 'closed';
+        $state['closureId'] = 'unearned-closure';
+        WorkflowInstance::query()->whereKey($root->id)->toBase()->update([
+            'native_root_reservation' => json_encode($state, JSON_THROW_ON_ERROR),
+        ]);
+        foreach (['close', 'start'] as $operation) {
+            try {
+                $operation === 'close' ? $this->store()
+                    ->close($reservation, 'owner')
+                    : $this->store()
+                        ->start($reservation, 'owner', ['Taylor']);
+                $this->fail('A closure without its permanent scope fence was accepted.');
+            } catch (LogicException $error) {
+                $this->assertStringContainsString('no matching permanent scope fence', $error->getMessage());
+            }
+        }
+    }
+
+    public function testMutatedReservedLedgerCannotBecomeAnUnusedRoot(): void
+    {
+        $reservation = $this->store()
+            ->reserve($this->identity(), 'owner');
+        DB::table(ScopeStorage::SCOPES)->update([
+            'obligation_count' => 1,
+        ]);
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('no longer reserved and empty');
+        $this->store()
+            ->close($reservation, 'owner');
+    }
+
+    public function testSchemaRollbackCannotDiscardThePermanentClosedFence(): void
+    {
+        $reservation = $this->store()
+            ->reserve($this->identity(), 'owner');
+        $this->store()
+            ->close($reservation, 'owner');
+        $migration = require __DIR__ . '/../../../../src/migrations/2026_11_17_000100_add_native_root_reservation_to_workflow_instances.php';
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('cannot be discarded');
+        $migration->down();
+    }
+
+    public function testNativeAdmissionHooksCannotRunWithoutTheirOwningTransaction(): void
+    {
+        $reservation = $this->store()
+            ->reserve($this->identity(), 'owner');
+        $root = WorkflowInstance::query()->findOrFail($reservation->identity->instanceId());
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('must own the native storage transaction');
+        RootReservationStore::prepareAdmission($root, $reservation);
+    }
+
+    public function testTheFirstReservationCannotAuthorizeAnUnavailableOrChangedDefinition(): void
+    {
+        $value = $this->identity()
+            ->toArray();
+        $value['definitionFingerprint'] = 'sha256:' . str_repeat('f', 64);
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('definition differs');
+        $this->store()
+            ->reserve(RootIdentity::fromArray($value), 'owner');
+    }
+
+    public function testAChangedPolicyCannotReinterpretAnExistingOriginalGeneration(): void
+    {
+        $identity = $this->identity();
+        $this->store()
+            ->reserve($identity, 'owner');
+        $changed = $this->store('joint-policy-v2');
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('policies must remain pinned');
+        $changed->reserve($identity, 'owner');
+    }
+
+    public function testBlankHostPolicyIsRefusedBeforeAnyRootCanBeReserved(): void
+    {
+        $identity = $this->identity();
+        $store = $this->store('');
+        $this->expectException(LogicException::class);
+        $this->expectExceptionMessage('bounded immutable policy versions');
+        $store->reserve($identity, 'owner');
+    }
+
+    public function testReservationWithoutItsMigrationDoesNotCreateAnUnfencedNativeInstance(): void
+    {
+        $identity = $this->identity();
+        $schema = DB::connection()->getSchemaBuilder();
+        $schema->table('workflow_instances', static function ($table): void {
+            $table->dropColumn('native_root_reservation');
+        });
+        try {
+            try {
+                $this->store()
+                    ->reserve($identity, 'owner');
+                $this->fail('A root was reserved without durable fence storage.');
+            } catch (LogicException $error) {
+                $this->assertStringContainsString('reservation migration', $error->getMessage());
+            }
+            $this->assertSame(0, WorkflowInstance::query()->count());
+        } finally {
+            $schema->table('workflow_instances', static function ($table): void {
+                $table->json('native_root_reservation')
+                    ->nullable();
+            });
+        }
+    }
+
+    public function testIntegralFloatMetadataRetainsItsOriginalTypeInThePermanentFence(): void
+    {
+        $value = $this->identity()
+            ->toArray();
+        $value['profile']['options']['memo'] = [
+            'amount' => 1.0,
+        ];
+        $identity = RootIdentity::fromArray($value);
+        $reservation = $this->store()
+            ->reserve($identity, 'owner');
+        $this->assertSame($identity->toArray(), $this->store()->load($identity, 'owner')->identity->toArray());
+        $this->assertInstanceOf(NeverAdmittedRoot::class, $this->store()->close($reservation, 'owner'));
+    }
+
+    public function testLargeUnicodeAdmissionRetainsAReadableBoundedPermanentFence(): void
+    {
+        $value = $this->identity()
+            ->toArray();
+        $value['profile']['options']['memo'] = [
+            'left' => str_repeat('🛒', 1500),
+            'right' => str_repeat('🛒', 1500),
+        ];
+        $identity = RootIdentity::fromArray($value);
+        $reservation = $this->store()
+            ->reserve($identity, 'owner');
+        $binding = $this->store()
+            ->start($reservation, 'owner', ['Taylor']);
+        $this->assertSame($binding->toArray(), $this->store()->close($reservation, 'owner')->toArray());
+        $raw = WorkflowInstance::query()->findOrFail($identity->instanceId())->getRawOriginal(
+            'native_root_reservation'
+        );
+        $this->assertLessThanOrEqual(65536, strlen($raw));
+    }
+
     private function identity(): RootIdentity
     {
         $identity = RootIdentity::forWorkflow(
@@ -376,16 +576,21 @@ final class RootReservationTest extends TestCase
         return RootIdentity::fromArray($value);
     }
 
-    private function store(): RootReservationStore
+    private function store(string $jointPolicy = 'joint-root-policy-v1'): RootReservationStore
     {
-        return new RootReservationStore(new class() implements RootAuthorization {
+        return new RootReservationStore(new class($jointPolicy) implements RootAuthorization {
+            public function __construct(
+                private readonly string $version
+            ) {
+            }
+
             public function assertAllowed(RootIdentity $identity, string $principal, string $operation): string
             {
                 if ($principal !== 'owner' || $identity->scope->application !== 'app'
                     || $identity->scope->namespace !== 'tenant-a') {
                     throw new LogicException('root_access_refused');
                 }
-                return 'joint-root-policy-v1';
+                return $this->version;
             }
         }, new class() implements ScopeAuthorization {
             public function assertAllowed(ScopeIdentity $scope, string $principal, string $operation): string

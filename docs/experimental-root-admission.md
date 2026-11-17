@@ -14,6 +14,9 @@ helper. Stored identities use `fromArray()`, which treats historical class names
 as data and does not resolve or autoload them. The scope generation is the
 original business generation. The reserved native run ID is a separate retained
 value; do not replace either after a crash or deployment.
+Durably retain the original identity before the first reservation attempt. If its
+acknowledgement is lost, load with that identity. Rebuilding an identity from a
+new deployed definition is not recovery of the original intent.
 
 Construct `RootReservationStore` with mandatory `RootAuthorization` and
 `ScopeAuthorization` implementations. The trusted principal must come from the

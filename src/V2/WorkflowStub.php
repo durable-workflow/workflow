@@ -1980,25 +1980,29 @@ final class WorkflowStub
 
             $this->seedTypedVisibilityMetadata($run, $memo, $searchAttributes);
 
+            $startContext = null;
+            if ($recoveryAdmission !== null && $recoveryIntent !== null) {
+                $startContext = $recoveryAdmission->context(
+                    CommandContext::system('compensation_recovery'),
+                    $recoveryIntent,
+                    $run,
+                );
+            } elseif ($rootReservation !== null) {
+                $startContext = CommandContext::system('root_scope_admission')->with([
+                    'root_scope_admission' => [
+                        'version' => 1,
+                        'reservationFingerprint' => $rootReservation->fingerprint(),
+                        'originalRunId' => $rootReservation->originalRunId,
+                        'scope' => $rootReservation->identity->scope->toArray(),
+                    ],
+                ]);
+            }
             $command = $this->recordNewStartCommand(
                 $instance,
                 $run,
                 $payloadCodec,
                 $serializedArguments,
-                $recoveryAdmission !== null && $recoveryIntent !== null
-                    ? $recoveryAdmission->context(
-                        CommandContext::system('compensation_recovery'),
-                        $recoveryIntent,
-                        $run
-                    )
-                    : ($rootReservation === null ? null : CommandContext::system('root_scope_admission')->with([
-                        'root_scope_admission' => [
-                            'version' => 1,
-                            'reservationFingerprint' => $rootReservation->fingerprint(),
-                            'originalRunId' => $rootReservation->originalRunId,
-                            'scope' => $rootReservation->identity->scope->toArray(),
-                        ],
-                    ])),
+                $startContext,
             );
             $recoveryAdmission?->bind($command, $run);
             $recoveryLink = null;
