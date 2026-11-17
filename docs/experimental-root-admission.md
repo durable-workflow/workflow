@@ -40,6 +40,16 @@ storage transaction and outside workflow replay.
    start returns that closure, without creating a run or task. If admission wins,
    close returns the original `RootBinding`, even after run-detail pruning.
 
+`closeIntent($identity, $principal)` also closes an original intent that has not
+yet been reserved. It creates the permanent instance and scope fences and closes
+them in the same transaction. First reservation and intent closure use the same
+unique instance and row locks. An already admitted intent returns its original
+binding. The host must authorize the complete durably retained original identity
+with the `close` and `root_close` operations. Closure never resolves its historical
+class or uses the current deployed definition. It refuses existing ordinary
+scopes, uncertain native ownership, changed descriptors and changed policy
+versions. A later deployment cannot turn the closed intent into a new admission.
+
 `load()` recovers the original descriptor without choosing a deployed definition.
 Missing lookup results, missing scopes, technical workflow closure and uncertain
 native pointers never prove non-admission. A constructed or deserialized receipt

@@ -12,6 +12,13 @@ use Workflow\V2\Support\ConfiguredV2Models;
 /** @internal Closed root-fence decoding. Historical classes stay data, never autoload targets. */
 final class RootReservationState
 {
+    public static function assertPolicies(RootReservation $reservation, string $version, string $scopeVersion): void
+    {
+        if ($version !== $reservation->authorizationVersion || $scopeVersion !== $reservation->scopeAuthorizationVersion) {
+            throw new LogicException('The original root authorization policies must remain pinned.');
+        }
+    }
+
     public static function matching(WorkflowInstance $root, RootReservation $reservation): array
     {
         $state = self::readOwned($root, $reservation->identity);

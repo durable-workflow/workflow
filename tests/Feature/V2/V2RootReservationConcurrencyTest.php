@@ -69,6 +69,40 @@ final class V2RootReservationConcurrencyTest extends TestCase
         $this->assertSame($results[0], $this->operate('close', $reservation));
     }
 
+    public static function firstIntentWinners(): array
+    {
+        return [
+            'first reservation wins' => ['reserve', 'intent-close'],
+            'first closure wins' => ['intent-close', 'reserve'],
+        ];
+    }
+
+    #[DataProvider('firstIntentWinners')]
+    public function testFirstReservationAndIntentClosureSerializeWithoutAnExistingNativeRow(
+        string $winner,
+        string $loser
+    ): void {
+        $identity = RootIdentity::forWorkflow(
+            new ScopeIdentity('race-app', 'race-tenant', 'order', 'original-generation'),
+            TestGreetingWorkflow::class,
+            ['Taylor'],
+        );
+        $this->assertSame(0, \Workflow\V2\Models\WorkflowInstance::query()->count());
+        $results = $this->race($identity, $winner, $loser);
+        $loaded = $this->store()
+            ->load($identity, 'owner');
+        $this->assertSame(['reserved', 'closed'], $winner === 'reserve'
+            ? array_column($results, 'kind') : array_reverse(array_column($results, 'kind')));
+        $this->assertSame($results[0]['reservation'], $results[1]['reservation']);
+        $this->assertSame($loaded->toArray(), $results[0]['reservation']);
+        $closed = $this->store()
+            ->closeIntent($identity, 'owner');
+        $this->assertEquals($closed, $this->store()->start($loaded, 'owner', ['Taylor']));
+        $this->assertSame(0, WorkflowRun::query()->count());
+        $this->assertSame(0, WorkflowTask::query()->count());
+        $this->assertSame('root_never_admitted', DB::table(ScopeStorage::SCOPES)->value('status'));
+    }
+
     public function testBackendRetainsCanonicalNumericAndUnicodeAdmissionMetadata(): void
     {
         $scope = new ScopeIdentity('race-app', 'race-tenant', 'order', 'original-generation');
@@ -94,13 +128,26 @@ final class V2RootReservationConcurrencyTest extends TestCase
         $this->assertSame($admitted->toArray(), $this->store()->close($loaded, 'owner')->toArray());
     }
 
-    private function operate(string $operation, RootReservation $reservation): array
+    private function operate(string $operation, RootReservation|RootIdentity $reservation): array
     {
-        $outcome = $operation === 'admit'
-            ? $this->store()
-                ->start($reservation, 'owner', ['Taylor'])
-            : $this->store()
-                ->close($reservation, 'owner');
+        if ($reservation instanceof RootIdentity) {
+            if ($operation === 'reserve') {
+                return [
+                    'kind' => 'reserved',
+                    'reservation' => $this->store()
+                        ->reserve($reservation, 'owner')
+                        ->toArray(),
+                ];
+            }
+            $outcome = $this->store()
+                ->closeIntent($reservation, 'owner');
+        } else {
+            $outcome = $operation === 'admit'
+                ? $this->store()
+                    ->start($reservation, 'owner', ['Taylor'])
+                : $this->store()
+                    ->close($reservation, 'owner');
+        }
         return $outcome instanceof RootBinding
             ? [
                 'kind' => 'admitted',
@@ -109,6 +156,7 @@ final class V2RootReservationConcurrencyTest extends TestCase
             : [
                 'kind' => 'closed',
                 'closureId' => $outcome->closureId,
+                'reservation' => $outcome->reservation->toArray(),
             ];
     }
 
@@ -136,7 +184,7 @@ final class V2RootReservationConcurrencyTest extends TestCase
         });
     }
 
-    private function race(RootReservation $reservation, string $winner, ?string $loser = null): array
+    private function race(RootReservation|RootIdentity $reservation, string $winner, ?string $loser = null): array
     {
         $loser ??= $winner === 'close' ? 'admit' : 'close';
         $lockTable = 'workflow_instances';
@@ -166,7 +214,7 @@ final class V2RootReservationConcurrencyTest extends TestCase
                         if ($index === 0) {
                             $held = false;
                             DB::listen(static function (QueryExecuted $query) use ($root, $winner, &$held): void {
-                                if ($held || ! str_starts_with(strtolower($query->sql), 'update')) {
+                                if ($held || ! preg_match('/^(update|insert)/i', $query->sql)) {
                                     return;
                                 }
                                 if (! str_contains($query->sql, 'native_root_reservation')) {
@@ -174,9 +222,9 @@ final class V2RootReservationConcurrencyTest extends TestCase
                                 }
                                 foreach ($query->bindings as $binding) {
                                     $state = is_string($binding) ? json_decode($binding, true) : null;
-                                    if (is_array(
-                                        $state
-                                    ) && ($state['status'] ?? null) === ($winner === 'close' ? 'closed' : 'admitted')) {
+                                    if (is_array($state) && ($state['status'] ?? null) === (match ($winner) {
+                                        'close', 'intent-close' => 'closed', 'reserve' => 'reserved', default => 'admitted'
+                                    })) {
                                         if ($query->connection->transactionLevel() === 0) {
                                             throw new RuntimeException(
                                                 'The winner did not retain its native transaction.'
@@ -193,7 +241,8 @@ final class V2RootReservationConcurrencyTest extends TestCase
                         }
                         $result = $this->operate(
                             $index === 0 ? $winner : $loser,
-                            RootReservation::fromArray($reservation->toArray())
+                            $reservation instanceof RootIdentity ? RootIdentity::fromArray($reservation->toArray())
+                                : RootReservation::fromArray($reservation->toArray())
                         );
                         file_put_contents($root . '/' . $index . '.json', json_encode([
                             'result' => $result,
@@ -226,8 +275,8 @@ final class V2RootReservationConcurrencyTest extends TestCase
                 foreach ($rows as $row) {
                     $id = (int) ($driver === 'pgsql' ? $row->id : $row->Id);
                     $sql = strtolower((string) ($driver === 'pgsql' ? $row->statement : $row->Info));
-                    $waiting = $id === $backend && str_starts_with($sql, 'select')
-                        && str_contains($sql, $lockTable) && str_contains($sql, 'for update')
+                    $waiting = $id === $backend && (str_starts_with($sql, 'select') && str_contains($sql, 'for update')
+                            || str_starts_with($sql, 'insert')) && str_contains($sql, $lockTable)
                         && ($driver !== 'pgsql' || $row->wait_event_type === 'Lock');
                     if ($waiting) {
                         break;
