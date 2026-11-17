@@ -87,6 +87,11 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                 return;
             }
 
+            if ($instance->getRawOriginal('native_root_reservation') !== null) {
+                $result['reason'] = 'native_root_reservation_requires_original_run';
+                $result['status'] = 409;
+                return;
+            }
             if ($instance->getRawOriginal('native_child_reservation') !== null) {
                 $result['reason'] = 'native_child_reservation_requires_original_run';
                 $result['status'] = 409;

@@ -269,6 +269,7 @@ final class ChildReservationStore
      */
     public static function assertOrdinaryStartAllowed(WorkflowInstance $instance): void
     {
+        \Workflow\V2\Compensation\Admission\RootReservationStore::assertOrdinaryStartAllowed($instance);
         if ($instance->getRawOriginal('native_child_reservation') !== null) {
             throw new LogicException('A reserved native child can only start through its original parent command.');
         }

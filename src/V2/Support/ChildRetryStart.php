@@ -110,7 +110,8 @@ final class ChildRetryStart
             return null;
         }
 
-        if ($childInstance->getRawOriginal('native_child_reservation') !== null) {
+        if ($childInstance->getRawOriginal('native_child_reservation') !== null
+            || $childInstance->getRawOriginal('native_root_reservation') !== null) {
             return null;
         }
 
