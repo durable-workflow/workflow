@@ -15,6 +15,8 @@ use Workflow\V2\Support\WorkflowFiberContext;
 /** Disposable warehouse simulator: physical counters and original command receipts commit together. */
 final readonly class StockWarehouse
 {
+    private const RESERVATION_ROW = 'SELECT * FROM allocation_reservations WHERE id = ?';
+
     public function __construct(
         private PDO $db
     ) {
@@ -61,14 +63,15 @@ final readonly class StockWarehouse
     {
         $this->assertHost();
         $quantity = $original->terms['quantity'] ?? 0;
-        new StockAllocation($original, array_fill(
+        $pending = new StockAllocation($original, array_fill(
             0,
             is_int($quantity) && $quantity > 0 && $quantity <= 1000 ? $quantity : 0,
             'unavailable'
         ));
+        $quantity = count($pending->units);
         $this->assertRelease($original, $release);
         return $this->transaction(function () use ($original, $release, $quantity): array {
-            $old = $this->row('SELECT * FROM allocation_reservations WHERE id = ?', [$original->identity->key()]);
+            $old = $this->row(self::RESERVATION_ROW, [$original->identity->key()]);
             if ($old !== null) {
                 $this->assertOriginal($old, $original);
                 if ($old['release_descriptor'] !== PortableDescriptor::encode($release->toArray())) {
@@ -122,57 +125,7 @@ final readonly class StockWarehouse
         sort($units);
         $id = hash('sha256', PortableDescriptor::encode([$original->identity->client, $eventKey]));
         $hash = hash('sha256', PortableDescriptor::encode([$original->toArray(), $units, $condition]));
-        return $this->transaction(function () use ($original, $units, $condition, $id, $hash): array {
-            $row = $this->original($original);
-            $old = $this->row('SELECT * FROM allocation_events WHERE id = ?', [$id]);
-            if ($old !== null) {
-                if ($old['fingerprint'] !== $hash) {
-                    throw new LogicException('The original warehouse observation changed content or owner.');
-                }
-                if (! hash_equals($old['result_sha256'], hash('sha256', $old['result']))) {
-                    throw new LogicException('The retained warehouse observation result changed.');
-                }
-                $result = json_decode($old['result'], true, 32, JSON_THROW_ON_ERROR);
-                return [
-                    'revision' => $result['revision'],
-                    'closed' => $result['closed'],
-                    'allocation' => StockAllocation::fromArray($result['allocation'])->toArray(),
-                ];
-            }
-            if ((bool) $row['closed']) {
-                throw new LogicException('A closed reservation cannot acquire a later warehouse observation.');
-            }
-            $allocation = StockAllocation::fromArray(json_decode($row['allocation'], true, 32, JSON_THROW_ON_ERROR));
-            $states = $allocation->units;
-            foreach ($units as $unit) {
-                if ($states[$unit] !== 'held') {
-                    throw new LogicException('Only original suitable held units can become damaged or missing.');
-                }
-                $states[$unit] = $condition;
-            }
-            $allocation = new StockAllocation($original, $states);
-            $revision = (int) $row['revision'] + 1;
-            $result = [
-                'revision' => $revision,
-                'closed' => false,
-                'allocation' => $allocation->toArray(),
-            ];
-            $this->query('UPDATE allocation_reservations SET allocation = ?, revision = ? WHERE id = ?', [
-                PortableDescriptor::encode($allocation->toArray()), $revision, $original->identity->key(),
-            ]);
-            $sql = $condition === 'damaged'
-                ? 'UPDATE allocation_stock SET damaged = damaged + ? WHERE id = ?'
-                : 'UPDATE allocation_stock SET missing = missing + ? WHERE id = ?';
-            $this->query($sql, [
-                count($units), self::stockKey($original->identity->client, $original->terms['sku']),
-            ]);
-            $payload = PortableDescriptor::encode($result);
-            $this->query(
-                'INSERT INTO allocation_events VALUES (?, ?, ?, ?)',
-                [$id, $hash, $payload, hash('sha256', $payload)]
-            );
-            return $result;
-        });
+        return $this->transaction(fn (): array => $this->recordDisposition($original, $units, $condition, $id, $hash));
     }
 
     public function release(Request $release): array
@@ -182,7 +135,7 @@ final readonly class StockWarehouse
             throw new InvalidArgumentException('Only the pinned original release operation may close a reservation.');
         }
         return $this->transaction(function () use ($release): array {
-            $row = $this->row('SELECT * FROM allocation_reservations WHERE id = ?', [$release->target->key()]);
+            $row = $this->row(self::RESERVATION_ROW, [$release->target->key()]);
             if ($row === null || $row['release_descriptor'] !== PortableDescriptor::encode($release->toArray())) {
                 throw new LogicException('The release differs from its pinned original compensation.');
             }
@@ -225,6 +178,62 @@ final readonly class StockWarehouse
         return $this->readInventory($client, $sku);
     }
 
+    private function recordDisposition(
+        Request $original,
+        array $units,
+        string $condition,
+        string $id,
+        string $hash
+    ): array {
+        $row = $this->original($original);
+        $old = $this->row('SELECT * FROM allocation_events WHERE id = ?', [$id]);
+        if ($old !== null) {
+            if ($old['fingerprint'] !== $hash) {
+                throw new LogicException('The original warehouse observation changed content or owner.');
+            }
+            if (! hash_equals($old['result_sha256'], hash('sha256', $old['result']))) {
+                throw new LogicException('The retained warehouse observation result changed.');
+            }
+            $result = json_decode($old['result'], true, 32, JSON_THROW_ON_ERROR);
+            return [
+                'revision' => $result['revision'],
+                'closed' => $result['closed'],
+                'allocation' => StockAllocation::fromArray($result['allocation'])->toArray(),
+            ];
+        }
+        if ((bool) $row['closed']) {
+            throw new LogicException('A closed reservation cannot acquire a later warehouse observation.');
+        }
+        $allocation = StockAllocation::fromArray(json_decode($row['allocation'], true, 32, JSON_THROW_ON_ERROR));
+        $states = $allocation->units;
+        foreach ($units as $unit) {
+            if ($states[$unit] !== 'held') {
+                throw new LogicException('Only original suitable held units can become damaged or missing.');
+            }
+            $states[$unit] = $condition;
+        }
+        $allocation = new StockAllocation($original, $states);
+        $revision = (int) $row['revision'] + 1;
+        $result = [
+            'revision' => $revision,
+            'closed' => false,
+            'allocation' => $allocation->toArray(),
+        ];
+        $this->query('UPDATE allocation_reservations SET allocation = ?, revision = ? WHERE id = ?', [
+            PortableDescriptor::encode($allocation->toArray()), $revision, $original->identity->key(),
+        ]);
+        $sql = $condition === 'damaged'
+            ? 'UPDATE allocation_stock SET damaged = damaged + ? WHERE id = ?'
+            : 'UPDATE allocation_stock SET missing = missing + ? WHERE id = ?';
+        $this->query($sql, [count($units), self::stockKey($original->identity->client, $original->terms['sku'])]);
+        $payload = PortableDescriptor::encode($result);
+        $this->query(
+            'INSERT INTO allocation_events VALUES (?, ?, ?, ?)',
+            [$id, $hash, $payload, hash('sha256', $payload)]
+        );
+        return $result;
+    }
+
     private function readInventory(string $client, string $sku): array
     {
         $row = $this->row('SELECT * FROM allocation_stock WHERE id = ?', [self::stockKey($client, $sku)]);
@@ -233,7 +242,7 @@ final readonly class StockWarehouse
         }
         $values = array_intersect_key($row, array_flip(['initial_quantity', 'available', 'damaged', 'missing']));
         foreach ($values as $value) {
-            if (preg_match('/\A[0-9]{1,10}\z/D', (string) $value) !== 1 || (int) $value > 1_000_000_000) {
+            if (preg_match('/\A\d{1,10}\z/D', (string) $value) !== 1 || (int) $value > 1_000_000_000) {
                 throw new LogicException('The warehouse inventory has an invalid physical quantity.');
             }
         }
@@ -246,7 +255,7 @@ final readonly class StockWarehouse
 
     private function original(Request $original): array
     {
-        $row = $this->row('SELECT * FROM allocation_reservations WHERE id = ?', [$original->identity->key()]);
+        $row = $this->row(self::RESERVATION_ROW, [$original->identity->key()]);
         if ($row === null) {
             throw new LogicException('The original warehouse reservation is unavailable.');
         }
