@@ -25,6 +25,8 @@ final readonly class Journal
 
     public ProviderContext $context;
 
+    private EffectJournal $effects;
+
     private AuthorizationLedger $authorization;
 
     private CartReservationLedger $cart;
@@ -44,6 +46,7 @@ final readonly class Journal
         $this->context = new ProviderContext($db, $client, $clock);
         $this->authorization = new AuthorizationLedger($db, $clock ?? static fn (): int => time());
         $this->cart = new CartReservationLedger($db, $clock ?? static fn (): int => time());
+        $this->effects = new EffectJournal($db, $clock, $captureEffectTimes, $this->authorization, $this->cart);
     }
 
     public function install(): void
@@ -77,12 +80,12 @@ final readonly class Journal
             ])->fetch(PDO::FETCH_ASSOC);
             $row = $this->operation($request);
             $this->recordRequest($request, 'timed-lookup');
-            $observation = $this->observation($request, $row);
+            $observation = $this->effects->observation($request, $row);
             if ($observation->effectId === null && $timing !== false) {
                 throw new LogicException('A provider timestamp cannot stand in for a missing committed effect.');
             }
             return new TimedObservation($request, $observation, $observation->effectId === null
-                ? null : $this->effectTime($request, $observation->effectId));
+                ? null : $this->effects->effectTime($request, $observation->effectId));
         });
     }
 
@@ -130,7 +133,7 @@ final readonly class Journal
             $row = $this->operation($request);
             $this->recordRequest($request, 'command');
             if ($row !== null && ((bool) $row['closed'] || $row['status'] !== Status::NotExecuted->value)) {
-                return [$this->observation($request, $row), false];
+                return [$this->effects->observation($request, $row), false];
             }
             $plan = $this->assertPlan($request);
             $status = Status::from($plan['status']);
@@ -152,10 +155,10 @@ final readonly class Journal
             } elseif (! $this->targetConfirmed($request)) {
                 $status = Status::Unknown;
             }
-            $this->write($request, $status, false);
+            $this->effects->write($request, $status, false);
             $lose = (bool) $plan['lose_ack'];
             $this->query('UPDATE provider_plans SET lose_ack = 0 WHERE id = ?', [$request->identity->key()]);
-            return [$this->observation($request, $this->operation($request)), $lose];
+            return [$this->effects->observation($request, $this->operation($request)), $lose];
         });
         // Deliberately outside the provider transaction: rolling back a DW Activity cannot undo this effect.
         if ($lose) {
@@ -173,7 +176,7 @@ final readonly class Journal
         return $this->transaction(function () use ($request): Observation {
             $row = $this->operation($request);
             $this->recordRequest($request, 'lookup');
-            return $this->observation($request, $row);
+            return $this->effects->observation($request, $row);
         });
     }
 
@@ -188,7 +191,7 @@ final readonly class Journal
         return $this->transaction(function () use ($descriptor): FinancialSnapshot {
             $observations = [];
             foreach ($descriptor->requests() as $key => $request) {
-                $observations[$key] = $this->observation($request, $this->operation($request));
+                $observations[$key] = $this->effects->observation($request, $this->operation($request));
             }
             $state = $this->authorization
                 ->inspectCapture($descriptor);
@@ -224,11 +227,11 @@ final readonly class Journal
                     ->closeAdmission($request);
             }
             if ($row === null) {
-                $this->write($request, Status::NotExecuted, true);
+                $this->effects->write($request, Status::NotExecuted, true);
             } else {
                 $this->query('UPDATE provider_operations SET closed = 1 WHERE id = ?', [$request->identity->key()]);
             }
-            return $this->observation($request, $this->operation($request));
+            return $this->effects->observation($request, $this->operation($request));
         });
     }
 
@@ -267,8 +270,8 @@ final readonly class Journal
                 $this->cart
                     ->complete($request, $status);
             }
-            $this->write($request, $status, (bool) $row['closed']);
-            return $this->observation($request, $this->operation($request));
+            $this->effects->write($request, $status, (bool) $row['closed']);
+            return $this->effects->observation($request, $this->operation($request));
         });
     }
 
@@ -325,87 +328,6 @@ final readonly class Journal
             throw new LogicException('Compensation targets another original provider action.');
         }
         return $row['status'] === Status::Confirmed->value;
-    }
-
-    private function write(Request $request, Status $status, bool $closed): void
-    {
-        $this->query('INSERT INTO provider_operations (id, fingerprint, request, status, closed) VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET status = excluded.status, closed = excluded.closed', [
-            $request->identity->key(), $request->fingerprint(), PortableDescriptor::encode($request->toArray()),
-            $status->value, (int) $closed,
-        ]);
-        if ($status === Status::Confirmed) {
-            $created = $this->query(
-                'INSERT INTO provider_effects (operation_id, effect_id) VALUES (?, ?) ON CONFLICT DO NOTHING',
-                [$request->identity->key(), 'effect-' . $request->identity->key()]
-            );
-            if ($this->captureEffectTimes && $created->rowCount() === 1) {
-                $at = ($this->clock ?? static fn (): int => time())();
-                if (! is_int($at) || $at <= 0) {
-                    throw new LogicException('The original provider commit time must be a positive integer.');
-                }
-                // Same independent provider transaction as both the operation and the committed effect.
-                $this->query(
-                    'INSERT INTO provider_effect_times (operation_id, fingerprint, effect_id, confirmed_at) VALUES (?, ?, ?, ?)',
-                    [
-                        $request->identity->key(), $request->fingerprint(), 'effect-' . $request->identity->key(), $at,
-                    ]
-                );
-            }
-            if ($this->captureEffectTimes) {
-                $this->effectTime($request, 'effect-' . $request->identity->key());
-            }
-        }
-    }
-
-    private function effectTime(Request $request, string $effect): int
-    {
-        $row = $this->query('SELECT * FROM provider_effect_times WHERE operation_id = ?', [
-            $request->identity->key(),
-        ])->fetch(PDO::FETCH_ASSOC);
-        if ($row === false || $row['fingerprint'] !== $request->fingerprint() || $row['effect_id'] !== $effect
-            || ! is_int($row['confirmed_at']) || $row['confirmed_at'] <= 0) {
-            throw new LogicException('The original provider commit timestamp is missing or substituted.');
-        }
-        return $row['confirmed_at'];
-    }
-
-    private function observation(Request $request, ?array $row): Observation
-    {
-        if ($row !== null && $row['status'] === Status::Confirmed->value && CartReservationLedger::handles($request)) {
-            $this->cart
-                ->assertCompletion($request);
-        }
-        if ($row !== null && $row['status'] === Status::Confirmed->value && IncomingRefundLedger::handles($request)) {
-            (new IncomingRefundLedger($this->db, $this->clock ?? static fn (): int => time()))
-                ->assertCompletion($request);
-        }
-        if ($row !== null && $row['status'] === Status::Confirmed->value && AuthorizationLedger::handles($request)) {
-            $this->authorization
-                ->assertCompletion($request);
-        }
-        if ($row !== null && $row['status'] === Status::Confirmed->value && in_array(
-            $request->action,
-            ShipmentLedger::ACTIONS,
-            true
-        )) {
-            (new ShipmentLedger($this->db))
-                ->assertCompletion($request);
-        }
-        $effect = $this->query('SELECT effect_id FROM provider_effects WHERE operation_id = ?', [
-            $request->identity->key(),
-        ])->fetchColumn();
-        if ($effect !== false && $effect !== 'effect-' . $request->identity->key()) {
-            throw new LogicException('The provider evidence belongs to another original operation.');
-        }
-        if ($this->captureEffectTimes && $effect !== false) {
-            $this->effectTime($request, $effect);
-        }
-        return new Observation(
-            $row === null ? Status::Unknown : Status::from($row['status']),
-            $effect === false ? null : $effect,
-            $row !== null && (bool) $row['closed'],
-        );
     }
 
     private function recordRequest(Request $request, string $kind): void

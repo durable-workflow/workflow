@@ -37,6 +37,7 @@ foreach ([
     'CartInventory',
     'CartReservationRecords',
     'CartReservationLedger',
+    'EffectJournal',
     'Journal',
     'IncomingPaymentProvider',
     'CodPaymentProvider',

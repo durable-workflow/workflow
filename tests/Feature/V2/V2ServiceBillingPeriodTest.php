@@ -75,7 +75,11 @@ final class V2ServiceBillingPeriodTest extends TestCase
         Carbon::setTestNow(Carbon::createFromTimestampUTC($deadline));
         $this->pumpBilling();
         $this->assertFalse($this->periodStore->access($this->period->subjectKey())['access']);
-        $this->assertSame($deadline, $this->periodStore->period($this->period->subjectKey())->paymentDeadline);
+        $this->assertSame(
+            $deadline,
+            $this->periodStore->assignments->period($this->period->subjectKey())
+->paymentDeadline
+        );
         $this->assertSame('waiting', $run->fresh()->status->value, $this->billingProgress());
         Carbon::setTestNow(Carbon::createFromTimestampUTC($this->period->endsAt));
         $this->pumpBilling();
@@ -107,9 +111,10 @@ final class V2ServiceBillingPeriodTest extends TestCase
         );
     }
 
-    public function testCancellingFutureBillingDoesNotRefundThePaidPeriodOrAdmitTheNextOne(): void
+    #[DataProvider('policies')]
+    public function testCancellingFutureBillingDoesNotRefundThePaidPeriodOrAdmitTheNextOne(string $policy): void
     {
-        $run = $this->configurePeriod(BillingPeriod::PAYMENT_FIRST, Status::Confirmed);
+        $run = $this->configurePeriod($policy, Status::Confirmed);
         $this->assertSame('paid', $run->fresh()->workflowOutput()['paymentState'], $this->billingProgress());
         $cutoff = $this->nextPeriod->startsAt;
         $this->periodStore->cancelFuture($this->period->subjectKey(), 'do-not-renew', $cutoff);
@@ -118,6 +123,7 @@ final class V2ServiceBillingPeriodTest extends TestCase
         $next = $this->periodStore->admit($this->nextPeriod->subjectKey());
         $this->assertFalse($next['accepted']);
         $this->assertNull($next['runId']);
+        $this->assertFalse($this->periodStore->access($this->nextPeriod->subjectKey())['access']);
         $this->periodStore->cancelFuture($this->period->subjectKey(), 'do-not-renew', $cutoff);
         $this->assertSame(1, WorkflowRun::query()->count());
         $this->assertSame(
@@ -277,6 +283,29 @@ final class V2ServiceBillingPeriodTest extends TestCase
             $this->fail('A changed protected paid decision cannot authorize service access.');
         } catch (LogicException $error) {
             $this->assertSame('The paid period has no matching immutable payment assessment.', $error->getMessage());
+        }
+        $this->assertSame(
+            $before,
+            $this->billingProviderDb->query('SELECT COUNT(*) FROM provider_requests')
+                ->fetchColumn()
+        );
+    }
+
+    public function testGraceAccessAlsoRefusesASubstitutedNativeAdmissionReceipt(): void
+    {
+        $this->configurePeriod(BillingPeriod::GRACE);
+        $this->assertTrue($this->periodStore->access($this->period->subjectKey())['access']);
+        $before = $this->billingProviderDb->query('SELECT COUNT(*) FROM provider_requests')
+            ->fetchColumn();
+        DB::connection()->table('provider_billing_periods')->where('id', $this->period->subjectKey())->update([
+            'admission_receipt' => '{}',
+            'admission_sha256' => hash('sha256', '{}'),
+        ]);
+        try {
+            $this->periodStore->access($this->period->subjectKey());
+            $this->fail('Grace access requires the same original native admission as paid access.');
+        } catch (LogicException $error) {
+            $this->assertSame('The original native period admission receipt changed.', $error->getMessage());
         }
         $this->assertSame(
             $before,

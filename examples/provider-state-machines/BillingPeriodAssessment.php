@@ -102,7 +102,7 @@ final readonly class BillingPeriodAssessment
         $id = hash('sha256', PortableDescriptor::encode($execution->toArray()));
         $hash = hash('sha256', PortableDescriptor::encode($request));
         return $this->store->db->transaction(function () use ($period, $context, $execution, $id, $hash): array {
-            $current = $this->store->subject($period->subjectKey(), $period, true);
+            $current = $this->store->assignments->subject($period->subjectKey(), $period, true);
             $old = $this->store->db->table('provider_billing_admissions')
                 ->where('id', $id)
                 ->first();
@@ -111,10 +111,7 @@ final readonly class BillingPeriodAssessment
             }
             $allowed = ! (bool) $current->cancellation_requested && $current->state === $execution->sourceState
                 && (string) $current->revision === $execution->sourceRevision && $context->snapshot->permission->satisfied();
-            // A late acknowledgement of an original confirmed effect may commit its fact.
-            // An unexecuted charge cannot first be dispatched after the original deadline.
-            $allowed = $allowed && ($context->transition->key !== 'prepare' || $context->snapshot->target->satisfied()
-                || Carbon::now()->getTimestamp() < $period->paymentDeadline);
+            $allowed = $allowed && $this->chargeDeadlinePermits($period, $context);
             if ($allowed && $old !== null) {
                 return json_decode($old->decision, true, flags: JSON_THROW_ON_ERROR);
             }
@@ -153,7 +150,7 @@ final readonly class BillingPeriodAssessment
                 || ! $execution->equals($context->execution()) || ! $context->snapshot->target->satisfied()) {
                 throw new LogicException('A period commit requires its original satisfied recorded assessment.');
             }
-            return $this->store->version($period);
+            return $this->store->assignments->version($period);
         });
         $result = $host->commit($context, $this->store->principal);
         return [
@@ -255,5 +252,12 @@ final readonly class BillingPeriodAssessment
             throw new LogicException('The immutable original period assessment was corrupted.');
         }
         return json_decode($row->payload, true, flags: JSON_THROW_ON_ERROR);
+    }
+
+    private function chargeDeadlinePermits(BillingPeriod $period, TransitionContext $context): bool
+    {
+        // A delayed acknowledgement may commit an original confirmed fact; new dispatch stays bounded.
+        return $context->transition->key !== 'prepare' || $context->snapshot->target->satisfied()
+            || Carbon::now()->getTimestamp() < $period->paymentDeadline;
     }
 }

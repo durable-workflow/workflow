@@ -15,7 +15,7 @@ require_once __DIR__ . '/AdvanceBalancePolicy.php';
 require_once __DIR__ . '/OrderTerms.php';
 require_once __DIR__ . '/BillingPeriod.php';
 require_once __DIR__ . '/BillingPeriodPolicy.php';
-foreach (['BillingPeriodStore', 'BillingPeriodAssessment', 'BillingPeriodOwner',
+foreach (['BillingPeriodAssignments', 'BillingPeriodStore', 'BillingPeriodAssessment', 'BillingPeriodOwner',
     'BillingPeriodBoundaryActivity', 'BillingPeriodSnapshotActivity', 'BillingPeriodAdmissionActivity',
     'BillingPeriodCommitActivity', 'BillingPeriodStep', 'ServicePeriodPayment'] as $billingClass) {
     require_once __DIR__ . '/' . $billingClass . '.php';

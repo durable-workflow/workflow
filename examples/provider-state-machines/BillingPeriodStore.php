@@ -28,8 +28,6 @@ use Workflow\V2\StateMachine\Execution\ExecutionReference;
 use Workflow\V2\StateMachine\Rules\Decision;
 use Workflow\V2\StateMachine\Rules\MachineAssessment;
 use Workflow\V2\StateMachine\Rules\Verdict;
-use Workflow\V2\Support\ConfiguredV2Models;
-use Workflow\V2\Support\WorkflowFiberContext;
 use Workflow\V2\WorkflowStub;
 
 /** Recorded host authority for service periods. A genuine per-period Order uses its separate binding adapter. */
@@ -39,24 +37,18 @@ final readonly class BillingPeriodStore
 
     public const NAMESPACE = 'provider-periods';
 
+    public BillingPeriodAssignments $assignments;
+
     /**
      * @param list<BillingPeriod> $grants Immutable assignments authorized by trusted application bootstrap.
      */
     public function __construct(
         public Connection $db,
         public string $principal,
-        private array $grants,
+        array $grants,
         public Journal $provider,
     ) {
-        PortableDescriptor::identifier($principal, 'authenticated billing principal');
-        if ($db !== ConfiguredV2Models::connection() || ! array_is_list($grants)) {
-            throw new LogicException('Period admission needs an explicit grant list and the native SQL connection.');
-        }
-        foreach ($grants as $grant) {
-            if (! $grant instanceof BillingPeriod) {
-                throw new LogicException('Billing grants must pin original typed period assignments.');
-            }
-        }
+        $this->assignments = new BillingPeriodAssignments($db, $principal, $grants);
     }
 
     public static function configure(Application $app, self $store): void
@@ -90,67 +82,38 @@ final readonly class BillingPeriodStore
         $app->instance(BillingPeriodAssessment::class, new BillingPeriodAssessment($store));
     }
 
-    public function grant(string $key): BillingPeriod
-    {
-        if ($this->db->transactionLevel() !== 0 || WorkflowFiberContext::active()) {
-            throw new LogicException('Billing host authorization must precede its owned SQL transaction.');
-        }
-        foreach ($this->grants as $period) {
-            if ($period->subjectKey() === $key) {
-                return $period;
-            }
-        }
-        throw new LogicException('The original period is outside this authenticated host grant.');
-    }
-
-    public function version(BillingPeriod $period): string
-    {
-        return hash('sha256', 'billing.period.host.v1:' . $this->principal . ':' . $period->fingerprint()
-            . ':' . $this->profile($period)->fingerprint());
-    }
-
-    public function period(string $key): BillingPeriod
-    {
-        $expected = $this->grant($key);
-        $row = $this->db->table('provider_billing_periods')
-            ->where('id', $key)
-            ->sole();
-        $this->assertAssignment($row, $expected);
-        return $expected;
-    }
-
     public function seed(BillingPeriod $period): void
     {
-        $expected = $this->grant($period->subjectKey());
+        $expected = $this->assignments->grant($period->subjectKey());
         if ($expected->fingerprint() !== $period->fingerprint() || $period->order !== null) {
             throw new LogicException('The standalone service adapter cannot manufacture or adopt an Order.');
         }
         $key = $period->subjectKey();
         $this->db->transaction(function () use ($period, $key): void {
-            $subscription = $this->subscriptionId($period);
+            $subscription = $this->assignments->subscriptionId($period);
             $this->db->table('provider_billing_subscriptions')
                 ->insertOrIgnore([
                     'id' => $subscription,
                     'principal' => $this->principal,
-                    'authority_version' => $this->subscriptionVersion($period),
+                    'authority_version' => $this->assignments->subscriptionVersion($period),
                 ]);
-            $this->subscription($period);
+            $this->assignments->subscription($period);
             $this->db->table('provider_billing_periods')
                 ->insert([
                     'id' => $key,
                     'subscription_id' => $subscription,
                     'principal' => $this->principal,
-                    'authority_version' => $this->version($period),
+                    'authority_version' => $this->assignments->version($period),
                     'assignment' => PortableDescriptor::encode($period->toArray()),
                     'assignment_sha256' => $period->fingerprint(),
                 ]);
             $this->db->table('example_machine_subjects')
                 ->insert([
-                    'id' => self::subjectId($key),
+                    'id' => BillingPeriodAssignments::subjectId($key),
                     'scope' => self::APPLICATION,
                     'subject' => $key,
                     'principal' => $this->principal,
-                    'authority_version' => $this->version($period),
+                    'authority_version' => $this->assignments->version($period),
                     'state' => 'received',
                     'revision' => 1,
                     'cancellation_requested' => false,
@@ -163,18 +126,18 @@ final readonly class BillingPeriodStore
      */
     public function admit(string $key): array
     {
-        $period = $this->period($key);
+        $period = $this->assignments->period($key);
         return $this->db->transaction(function () use ($key, $period): array {
-            $subscription = $this->subscription($period);
-            $subject = $this->subject($key, $period, true);
+            $subscription = $this->assignments->subscription($period);
+            $subject = $this->assignments->subject($key, $period, true);
             $row = $this->db->table('provider_billing_periods')
                 ->where('id', $key)
                 ->lockForUpdate()
                 ->sole();
-            $this->assertAssignment($row, $period);
+            $this->assignments->assertAssignment($row, $period);
             if ($row->native_run !== null) {
                 $actual = WorkflowRun::query()->findOrFail($row->native_run);
-                $this->assertRun($actual, $period, $row);
+                $this->assignments->assertRun($actual, $period, $row);
                 return [
                     'accepted' => true,
                     'runId' => $actual->id,
@@ -190,7 +153,11 @@ final readonly class BillingPeriodStore
                     'reason' => 'original_period_not_admissible',
                 ];
             }
-            $result = WorkflowStub::make(ServicePeriodPayment::class, self::instance($key), self::NAMESPACE)
+            $result = WorkflowStub::make(
+                ServicePeriodPayment::class,
+                BillingPeriodAssignments::instance($key),
+                self::NAMESPACE
+            )
                 ->attemptStart($key, StartOptions::rejectDuplicate());
             if (! $result->accepted() || ! is_string($result->runId())) {
                 throw new LogicException('Native period admission refused; an existing foreign run cannot be adopted.');
@@ -198,7 +165,7 @@ final readonly class BillingPeriodStore
             $receipt = PortableDescriptor::encode([
                 'period' => $period->fingerprint(),
                 'namespace' => self::NAMESPACE,
-                'instance' => self::instance($key),
+                'instance' => BillingPeriodAssignments::instance($key),
                 'run' => $result->runId(),
                 'class' => ServicePeriodPayment::class,
             ]);
@@ -219,10 +186,10 @@ final readonly class BillingPeriodStore
 
     public function cancelFuture(string $key, string $requestKey, int $cutoff): void
     {
-        $period = $this->period($key);
+        $period = $this->assignments->period($key);
         PortableDescriptor::identifier($requestKey, 'future billing cancellation request');
         $this->db->transaction(function () use ($period, $requestKey, $cutoff): void {
-            $subscription = $this->subscription($period);
+            $subscription = $this->assignments->subscription($period);
             $id = hash('sha256', PortableDescriptor::encode([$subscription->id, $requestKey]));
             $hash = hash(
                 'sha256',
@@ -269,12 +236,12 @@ final readonly class BillingPeriodStore
         if (count($args) !== 1 || ! is_string($args[0])) {
             throw new LogicException('The period native arguments are malformed.');
         }
-        $period = $this->period($args[0]);
+        $period = $this->assignments->period($args[0]);
         $row = $this->db->table('provider_billing_periods')
             ->where('id', $period->subjectKey())
             ->sole();
-        $this->assertRun($actual, $period, $row);
-        return [$period, $this->subject($period->subjectKey(), $period), $row];
+        $this->assignments->assertRun($actual, $period, $row);
+        return [$period, $this->assignments->subject($period->subjectKey(), $period), $row];
     }
 
     public function initialize(WorkflowRun $actual): array
@@ -291,16 +258,16 @@ final readonly class BillingPeriodStore
 
     public function scope(string $key): ScopeIdentity
     {
-        $this->period($key);
+        $this->assignments->period($key);
         $row = $this->db->table('provider_billing_periods')
             ->where('id', $key)
             ->sole();
         if (! is_string($row->native_run)) {
             throw new LogicException('The original period has no native admission receipt.');
         }
-        $period = $this->period($key);
+        $period = $this->assignments->period($key);
         $actual = WorkflowRun::query()->where('namespace', self::NAMESPACE)->findOrFail($row->native_run);
-        $this->assertRun($actual, $period, $row);
+        $this->assignments->assertRun($actual, $period, $row);
         return new ScopeIdentity(self::APPLICATION, self::NAMESPACE, $key, $row->native_run);
     }
 
@@ -325,19 +292,19 @@ final readonly class BillingPeriodStore
 
     public function observation(WorkflowRun $actual): array
     {
-        [$period, $subject] = $this->actor($actual);
+        [$period] = $this->actor($actual);
         $charge = Request::fromArray($period->paymentDescriptor()['forward']);
         $receipt = $this->provider->timedLookup($charge);
         // Decoding is also used on history values; never accept another period's receipt.
         TimedObservation::fromArray($receipt->toArray(), $charge);
         $projection = BillingPeriodPolicy::access($period, Carbon::now()->getTimestamp(), $receipt->confirmedAt);
         $cancelled = $this->db->transaction(function () use ($period, $receipt): bool {
-            $currentSubject = $this->subject($period->subjectKey(), $period, true);
+            $currentSubject = $this->assignments->subject($period->subjectKey(), $period, true);
             $current = $this->db->table('provider_billing_periods')
                 ->where('id', $period->subjectKey())
                 ->lockForUpdate()
                 ->sole();
-            $this->assertAssignment($current, $period);
+            $this->assignments->assertAssignment($current, $period);
             if ($current->confirmed_at !== null && ($receipt->confirmedAt !== (int) $current->confirmed_at
                 || $receipt->observation->effectId !== $current->effect_id)) {
                 throw new LogicException('The original confirmed period payment cannot change its receipt.');
@@ -367,11 +334,19 @@ final readonly class BillingPeriodStore
      */
     public function access(string $key): array
     {
-        $period = $this->period($key);
-        $subject = $this->subject($key, $period);
+        $period = $this->assignments->period($key);
+        $subject = $this->assignments->subject($key, $period);
         $row = $this->db->table('provider_billing_periods')
             ->where('id', $key)
             ->sole();
+        if ($row->native_run === null) {
+            $value = BillingPeriodPolicy::access($period, Carbon::now()->getTimestamp(), null);
+            $value['access'] = false;
+            $value['state'] = 'not-admitted';
+            return $value;
+        }
+        // Grace access also needs the exact original admission; seeded future terms grant no access.
+        $this->scope($key);
         $confirmedAt = $subject->state === 'paid' ? $this->paidTime($period, $row) : null;
         $value = BillingPeriodPolicy::access($period, Carbon::now()->getTimestamp(), $confirmedAt);
         $value['access'] = $value['access'] && ! (bool) $subject->cancellation_requested;
@@ -388,11 +363,11 @@ final readonly class BillingPeriodStore
             )) {
             throw new LogicException('The billing scope is outside current host authority.');
         }
-        $period = $this->period($scope->key);
+        $period = $this->assignments->period($scope->key);
         if ($scope->toArray() !== $this->scope($scope->key)->toArray()) {
             throw new LogicException('The billing scope substituted its original native period.');
         }
-        return $this->version($period);
+        return $this->assignments->version($period);
     }
 
     public function authorizeEffect(OperationContext $context, string $mode, bool $owner = false): array
@@ -434,7 +409,7 @@ final readonly class BillingPeriodStore
 
     public function cancel(string $key, string $requestKey): array
     {
-        $period = $this->period($key);
+        $period = $this->assignments->period($key);
         PortableDescriptor::identifier($requestKey, 'original period cancellation request');
         $row = $this->db->table('provider_billing_periods')
             ->where('id', $key)
@@ -449,11 +424,11 @@ final readonly class BillingPeriodStore
             $key,
             $period
         ): string {
-            $this->period($key);
+            $this->assignments->period($key);
             if ($principal !== $this->principal || $reference->subject !== $key || $reference->scope !== self::APPLICATION) {
                 throw new LogicException('The cancellation belongs to another original period.');
             }
-            return $this->version($period);
+            return $this->assignments->version($period);
         });
         $store->requestCancellation($execution, $requestKey, $this->principal);
         if ($actual === null) {
@@ -478,29 +453,6 @@ final readonly class BillingPeriodStore
                 'reason' => 'original_scope_not_initialized',
             ];
         }
-    }
-
-    public function subject(string $key, BillingPeriod $period, bool $lock = false): object
-    {
-        $query = $this->db->table('example_machine_subjects')
-            ->where('id', self::subjectId($key));
-        $row = ($lock ? $query->lockForUpdate() : $query)
-            ->sole();
-        if ($row->scope !== self::APPLICATION || $row->subject !== $key || $row->principal !== $this->principal
-            || $row->authority_version !== $this->version($period)) {
-            throw new LogicException('The original billing subject authority changed.');
-        }
-        return $row;
-    }
-
-    public static function subjectId(string $key): string
-    {
-        return hash('sha256', json_encode([self::APPLICATION, $key], JSON_THROW_ON_ERROR));
-    }
-
-    public static function instance(string $key): string
-    {
-        return 'billing-period-' . $key;
     }
 
     private function paidTime(BillingPeriod $period, object $row): int
@@ -528,7 +480,7 @@ final readonly class BillingPeriodStore
             'state' => 'paid',
             'revision' => '4',
         ];
-        if ($publication->subject_id !== self::subjectId(
+        if ($publication->subject_id !== BillingPeriodAssignments::subjectId(
             $period->subjectKey()
         ) || $decisionRow->subject_id !== $publication->subject_id
             || $decisionRow->status !== 'committed' || strlen($publication->payload) > PortableDescriptor::MAX_BYTES
@@ -585,59 +537,5 @@ final readonly class BillingPeriodStore
             return $receipt->confirmedAt;
         }
         throw new LogicException('The paid period has no matching immutable payment assessment.');
-    }
-
-    private function assertAssignment(object $row, BillingPeriod $period): void
-    {
-        if ($row->principal !== $this->principal || $row->authority_version !== $this->version($period)
-            || $row->id !== $period->subjectKey() || $row->subscription_id !== $this->subscriptionId($period)
-            || $row->assignment_sha256 !== $period->fingerprint()
-            || $row->assignment !== PortableDescriptor::encode($period->toArray())) {
-            throw new LogicException('The original period assignment, money, policy or owner changed.');
-        }
-    }
-
-    private function assertRun(WorkflowRun $actual, BillingPeriod $period, object $row): void
-    {
-        $expected = PortableDescriptor::encode([
-            'period' => $period->fingerprint(),
-            'namespace' => self::NAMESPACE,
-            'instance' => self::instance($period->subjectKey()),
-            'run' => $actual->id,
-            'class' => ServicePeriodPayment::class,
-        ]);
-        if ($actual->namespace !== self::NAMESPACE || $actual->workflow_class !== ServicePeriodPayment::class
-            || $actual->workflow_instance_id !== self::instance(
-                $period->subjectKey()
-            ) || $row->native_run !== $actual->id
-            || $actual->workflowArguments() !== [$period->subjectKey()] || $row->admission_receipt !== $expected
-            || $row->admission_sha256 !== hash('sha256', $expected)) {
-            throw new LogicException('The original native period admission receipt changed.');
-        }
-    }
-
-    private function subscription(BillingPeriod $period): object
-    {
-        $row = $this->db->table('provider_billing_subscriptions')
-            ->where('id', $this->subscriptionId($period))
-            ->lockForUpdate()
-            ->sole();
-        if ($row->principal !== $this->principal || $row->authority_version !== $this->subscriptionVersion($period)) {
-            throw new LogicException('The original subscription authority changed.');
-        }
-        return $row;
-    }
-
-    private function subscriptionId(BillingPeriod $period): string
-    {
-        return hash(
-            'sha256',
-            PortableDescriptor::encode([$period->client, $period->subscription, $period->generation])
-        );
-    }
-
-    private function subscriptionVersion(BillingPeriod $period): string
-    {
-        return hash('sha256', 'billing.subscription.v1:' . $this->principal . ':' . $this->subscriptionId($period));
     }
 }
