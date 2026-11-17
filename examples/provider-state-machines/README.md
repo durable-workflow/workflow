@@ -542,8 +542,8 @@ matrix, installed recovery/upgrade acceptance or publication qualification.
 currency, start, end and payment deadline. A service-only period has no Order
 or Shipment. Where the application has a genuine Order for the period, its
 `OrderTerms` must retain the same client, period generation and money. The
-association is part of the immutable assignment fingerprint; it is not a
-provider payment identity or an admission receipt. This initial period
+association is part of the immutable assignment fingerprint; it does not by
+itself prove native admission. This initial period
 profile selects immediate capture. An associated Order cannot substitute an
 authorization, incoming transfer, COD or split-payment policy.
 
@@ -578,7 +578,47 @@ connection, authenticated principal, explicit `BillingPeriod` grant list and
 that provider; call `BillingPeriodStore::configure($app, $store)` in both client
 and worker bootstrap. Seed each fixed assignment once, then use
 `$store->admit($period->subjectKey())`. A non-null Order assignment is refused
-by this adapter; the genuine Order-per-period integration remains unfinished.
+by this service-only adapter; use the genuine Order adapter below instead.
+
+For an Order-per-period application, install the business, provider and billing
+schemas and allow the existing `provider-machines` namespace. Construct each
+period with its genuine `OrderTerms`, selecting the common IMMEDIATE funding
+recipe and a separate physical `fulfillmentDeadline` later than its payment
+deadline. Give `Authority` the original Order subject keys, their IMMEDIATE
+recipes and the explicit `orderPeriods: [$period, ...]` list. Configure
+`MachineStore` normally in both client and worker bootstrap. It automatically
+assembles `OrderBillingPeriodStore` and pins the immutable period policy in
+the existing subject authority, so a replacement cannot omit that policy and
+still load the protected Order. Seed the genuine Order with
+`$machineStore->seed($period->order)`, then obtain the period adapter from the
+container and call `admit($period->subjectKey())`.
+
+This admission atomically records the original period receipt and starts the
+existing `FundingCheckout`; its actual `FundingPayment` and `FullShipment`
+children retain the common routes, reservations and verified scope ownership.
+The associated period's payment descriptor is that genuine Order's capture
+and refund descriptor. It never creates a second service-only charge. Repeated
+admission returns the original Order run rather than adopting a foreign run.
+
+`OrderBillingPeriodStore::access()` projects service entitlement separately
+from the physical Order. Grace access does not reserve stock or authorize
+Shipment. Only the original authoritative on-time provider capture can admit
+those forward effects; protected `paid` publication additionally gates paid
+access. A charge first dispatched at or after the original payment cutoff is
+refused. Inspection of an already uncertain charge still reconciles that
+original provider outcome. An on-time commit acknowledged after the cutoff
+keeps its original time; genuinely late money remains factual paid money but
+cannot reactivate access or start fulfillment. Physical fulfillment of an
+on-time paid Order retains its separate original budget after the payment
+cutoff.
+
+The Order adapter shares subscription/future-cancellation metadata with the
+service-only adapter. `cancelFuture()` fences affected later periods without
+refunding the paid current Order. `cancel()` addresses the original actual
+Order's retained recovery, not a fabricated period scope. Cancellation before
+genuine root initialization preserves the existing unresolved boundary until
+that recorded owner initializes. These example adapters do not establish the
+full customer matrix or installed-process/release qualification.
 
 The original owner and Payment duties are registered before provider dispatch.
 `payment-observed` is only a wake-up: recorded provider inspection determines

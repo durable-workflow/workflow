@@ -35,7 +35,7 @@ final class BillingPeriodTest extends TestCase
         $this->assertSame($period->fingerprint(), BillingPeriod::fromArray($period->toArray())->fingerprint());
     }
 
-    public function testEachPeriodCanPinAGenuineDistinctOrderWithoutChangingItsPaymentIdentity(): void
+    public function testAnAssociatedPeriodUsesItsGenuineOrderPaymentInsteadOfASecondServiceCharge(): void
     {
         $period = $this->period();
         $order = new OrderTerms('shop-a', 'actual-order-2026-11', $period->ownerGeneration(), 1499, 'USD', 'sku-a', 2);
@@ -43,7 +43,8 @@ final class BillingPeriodTest extends TestCase
         $value['order'] = $order->toArray();
         $associated = BillingPeriod::fromArray($value);
         $this->assertSame('actual-order-2026-11', $associated->order->subject);
-        $this->assertSame($period->paymentDescriptor(), $associated->paymentDescriptor());
+        $this->assertSame($order->descriptor('payment'), $associated->paymentDescriptor());
+        $this->assertNotSame($period->paymentDescriptor(), $associated->paymentDescriptor());
         $this->assertNotSame($period->fingerprint(), $associated->fingerprint());
     }
 
