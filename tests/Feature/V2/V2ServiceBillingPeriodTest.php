@@ -313,4 +313,39 @@ final class V2ServiceBillingPeriodTest extends TestCase
                 ->fetchColumn()
         );
     }
+
+    public static function foreignAssignmentReads(): array
+    {
+        return [['subject'], ['subscription']];
+    }
+
+    #[DataProvider('foreignAssignmentReads')]
+    public function testAssignmentRepositoryRefusesAnUnassignedPeriodBeforeProtectedSql(string $operation): void
+    {
+        $this->configurePeriod(BillingPeriod::GRACE, pump: false);
+        $foreign = $this->terms('2026-03', $this->nextPeriod->endsAt, BillingPeriod::GRACE);
+        $otherHost = new \DurableWorkflow\Examples\ProviderStateMachines\BillingPeriodStore(
+            DB::connection(),
+            'period-worker',
+            [$foreign],
+            $this->billingProvider
+        );
+        $otherHost->seed($foreign);
+        $queries = [];
+        DB::connection()->listen(static function ($query) use (&$queries): void {
+            $queries[] = $query->sql;
+        });
+        try {
+            $assigned = $this->periodStore->assignments;
+            if ($operation === 'subject') {
+                $assigned->subject($foreign->subjectKey(), $foreign);
+            } else {
+                $assigned->subscription($foreign);
+            }
+            $this->fail('Same-principal storage does not grant this host an unassigned period.');
+        } catch (LogicException $error) {
+            $this->assertSame('The original period is outside this authenticated host grant.', $error->getMessage());
+        }
+        $this->assertSame([], $queries);
+    }
 }

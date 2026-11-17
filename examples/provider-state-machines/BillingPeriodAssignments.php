@@ -64,6 +64,7 @@ final readonly class BillingPeriodAssignments
 
     public function subject(string $key, BillingPeriod $period, bool $lock = false): object
     {
+        $this->assertGranted($period);
         $query = $this->db->table('example_machine_subjects')
             ->where('id', self::subjectId($key));
         $row = ($lock ? $query->lockForUpdate() : $query)
@@ -87,6 +88,7 @@ final readonly class BillingPeriodAssignments
 
     public function assertAssignment(object $row, BillingPeriod $period): void
     {
+        $this->assertGranted($period);
         if ($row->principal !== $this->principal || $row->authority_version !== $this->version($period)
             || $row->id !== $period->subjectKey() || $row->subscription_id !== $this->subscriptionId($period)
             || $row->assignment_sha256 !== $period->fingerprint()
@@ -97,6 +99,7 @@ final readonly class BillingPeriodAssignments
 
     public function assertRun(WorkflowRun $actual, BillingPeriod $period, object $row): void
     {
+        $this->assertGranted($period);
         $expected = PortableDescriptor::encode([
             'period' => $period->fingerprint(),
             'namespace' => BillingPeriodStore::NAMESPACE,
@@ -116,6 +119,7 @@ final readonly class BillingPeriodAssignments
 
     public function subscription(BillingPeriod $period): object
     {
+        $this->assertGranted($period);
         $row = $this->db->table('provider_billing_subscriptions')
             ->where('id', $this->subscriptionId($period))
             ->lockForUpdate()
@@ -137,5 +141,18 @@ final readonly class BillingPeriodAssignments
     public function subscriptionVersion(BillingPeriod $period): string
     {
         return hash('sha256', 'billing.subscription.v1:' . $this->principal . ':' . $this->subscriptionId($period));
+    }
+
+    private function assertGranted(BillingPeriod $period): void
+    {
+        if (WorkflowFiberContext::active()) {
+            throw new LogicException('Billing host storage is unavailable inside workflow replay.');
+        }
+        foreach ($this->grants as $grant) {
+            if ($grant->fingerprint() === $period->fingerprint()) {
+                return;
+            }
+        }
+        throw new LogicException('The original period is outside this authenticated host grant.');
     }
 }
