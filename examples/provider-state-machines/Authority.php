@@ -25,6 +25,8 @@ final readonly class Authority implements ChildScopeBindingAuthorization
 
     public OrderPeriodPolicy $periods;
 
+    public RootPolicy $roots;
+
     /**
      * @param list<string> $subjects Canonical OrderTerms::subjectKey() grants.
      */
@@ -35,6 +37,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
         private array $recipes = [],
         array $cartPurchases = [],
         array $orderPeriods = [],
+        array $reservedRoots = [],
     ) {
         PortableDescriptor::identifier($principal, 'authenticated principal');
         if (! array_is_list($subjects)) {
@@ -63,6 +66,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
         }
         $this->cart = new CartPolicy($this, $cartPurchases);
         $this->periods = new OrderPeriodPolicy($this, $orderPeriods);
+        $this->roots = new RootPolicy($this, $reservedRoots);
     }
 
     public function recipe(string $key): string
@@ -80,7 +84,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
         return hash(
             'sha256',
             BindingPlan::versionFor($this->recipe($key)) . ($this->cart->selected($key) ? '.cart-v1' : '')
-                . $this->periods->version($key)
+                . $this->periods->version($key) . $this->roots->version($key)
                 . ':' . $this->profile($key, $role)->fingerprint()
         );
     }
@@ -120,18 +124,23 @@ final readonly class Authority implements ChildScopeBindingAuthorization
         if (! is_string($row->root_run) || $row->root_run === '') {
             throw new LogicException('The original root owner has not initialized.');
         }
-        return new BindingPlan($terms, $row->root_run, $this->principal, function (
-            BindingIdentity $identity,
-            string $operation,
-        ) use ($key): void {
-            [$current] = $this->assignment($key);
-            $root = $this->subject($key, 'order');
-            if ($current->root_run !== $identity->parentRunId || ($operation === 'reserve'
-                && ((bool) $root->cancellation_requested || $root->state !== $identity->parentExecution->sourceState
-                    || (string) $root->revision !== $identity->parentExecution->sourceRevision))) {
-                throw new LogicException('The live original owner refused this child admission.');
-            }
-        }, $this->recipe($key), $this->cart->selected($key));
+        return new BindingPlan(
+            $terms,
+            $row->root_run,
+            $this->principal,
+            function (BindingIdentity $identity, string $operation) use ($key): void {
+                [$current] = $this->assignment($key);
+                $root = $this->subject($key, 'order');
+                if ($current->root_run !== $identity->parentRunId || ($operation === 'reserve'
+                    && ((bool) $root->cancellation_requested || $root->state !== $identity->parentExecution->sourceState
+                        || (string) $root->revision !== $identity->parentExecution->sourceRevision))) {
+                    throw new LogicException('The live original owner refused this child admission.');
+                }
+            },
+            $this->recipe($key),
+            $this->cart->selected($key),
+            $this->roots->selected($key) ? $this->roots->reservationFor($key, $row->root_run) : null
+        );
     }
 
     public function subject(string $key, string $role): object
@@ -185,6 +194,9 @@ final readonly class Authority implements ChildScopeBindingAuthorization
 
     public function authorizeScope(ScopeIdentity $scope, string $principal, string $operation): string
     {
+        if (str_starts_with($operation, 'root_')) {
+            return $this->roots->authorizeScope($scope, $principal, $operation);
+        }
         $key = explode('.', $scope->key)[0];
         $this->authorize($key, $principal);
         if ($scope->application !== Catalogue::APPLICATION || $scope->namespace !== Catalogue::NAMESPACE
@@ -194,6 +206,14 @@ final readonly class Authority implements ChildScopeBindingAuthorization
                 true
             )) {
             throw new LogicException('The retained scope is outside the selected host boundary.');
+        }
+        if ($this->roots->selected($key) && in_array($operation, ['request', 'inspect', 'compensate'], true)
+            && $scope->toArray() === $this->roots->identity($key)
+                ->scope->toArray()) {
+            [$assignment] = $this->assignment($key);
+            if ($operation !== 'compensate' || $assignment->root_run === null) {
+                return $this->roots->authorizeRecoveryScope($scope, $principal, $operation);
+            }
         }
         $plan = $this->plan($key);
         $scopes = [$plan->rootScope(), $plan->childScope('payment')];
@@ -324,8 +344,10 @@ final readonly class Authority implements ChildScopeBindingAuthorization
             return true;
         }
         $input = $role === 'order' ? [$key] : $plan->childInput($role);
-        $instance = $role === 'order' ? 'provider-order-' . $key : 'dw-bound-child-' . $plan->binding($role)->key();
-        if (($role === 'order' && $actual->workflow_class !== $this->cart->rootClass($key))
+        $instance = $role === 'order' ? $plan->rootInstanceId() : 'dw-bound-child-' . $plan->binding($role)->key();
+        if (($role === 'order' && $actual->workflow_class !== ($plan->rootReservation?->identity->workflowClass ?? $this->cart->rootClass(
+            $key
+        )))
             || PortableDescriptor::encode($args) !== PortableDescriptor::encode($input)
             || $actual->workflow_instance_id !== $instance || ($role === 'order' && $actual->id !== $plan->rootRun)) {
             throw new LogicException('The native actor differs from the pinned original admission.');

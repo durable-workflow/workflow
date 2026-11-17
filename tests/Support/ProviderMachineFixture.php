@@ -57,6 +57,10 @@ trait ProviderMachineFixture
             $schema = require __DIR__ . '/../../examples/' . $example . '/schema.php';
             $schema(DB::connection()->getSchemaBuilder());
         }
+        if ($this->reservedRoot()) {
+            $schema = require __DIR__ . '/../../examples/provider-state-machines/root-schema.php';
+            $schema(DB::connection()->getSchemaBuilder());
+        }
         $this->terms = $this->orderTerms();
         $this->providerPath = tempnam(sys_get_temp_dir(), 'machine-provider-');
         $this->providerDb = new PDO('sqlite:' . $this->providerPath);
@@ -64,7 +68,7 @@ trait ProviderMachineFixture
         $this->provider->install();
         $authority = new Authority(DB::connection(), 'provider-worker', [$this->terms->subjectKey()], [
             $this->terms->subjectKey() => $this->recipe(),
-        ]);
+        ], reservedRoots: $this->reservedRoot() ? [$this->terms->subjectKey()] : []);
         $this->store = MachineStore::configure($this->app, $authority, $this->provider);
         $this->store->seed($this->terms);
     }
@@ -73,9 +77,19 @@ trait ProviderMachineFixture
     {
         Carbon::setTestNow();
         $this->app->forgetInstance(HandlerRegistry::class);
-        foreach (['provider_machine_cancellations', 'provider_machine_milestones', 'provider_machine_admissions',
-            'provider_machine_assessments', 'provider_machine_actors', 'provider_machine_assignments',
-            'example_machine_publications', 'example_machine_decisions', 'example_machine_subjects'] as $table) {
+        foreach ([
+            'provider_root_cancellations',
+            'provider_machine_cancellations',
+            'provider_machine_milestones',
+            'provider_machine_admissions',
+            'provider_machine_assessments',
+            'provider_machine_actors',
+            'provider_machine_root_intents',
+            'provider_machine_assignments',
+            'example_machine_publications',
+            'example_machine_decisions',
+            'example_machine_subjects',
+        ] as $table) {
             DB::connection()->getSchemaBuilder()->dropIfExists($table);
         }
         $this->provider = null;
@@ -88,6 +102,11 @@ trait ProviderMachineFixture
 
     // These fixtures execute the recorded tasks explicitly and immediately stop automatic workers.
     protected function startQueueWorkersAutomatically(): bool
+    {
+        return false;
+    }
+
+    protected function reservedRoot(): bool
     {
         return false;
     }

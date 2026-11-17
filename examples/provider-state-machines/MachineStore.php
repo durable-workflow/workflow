@@ -147,6 +147,15 @@ final readonly class MachineStore
                 return $this->authority->authorizeScope($scope, $principal, $operation);
             }
         });
+        if ($authority->roots->grants() !== []) {
+            $app->instance(RootCancellationStore::class, new RootCancellationStore($authority));
+            $app->instance(
+                \Workflow\V2\Compensation\Admission\RootReservationStore::class,
+                new \Workflow\V2\Compensation\Admission\RootReservationStore($authority->roots, $app->make(
+                    ScopeAuthorization::class
+                ))
+            );
+        }
         $app->instance(
             HandlerRegistry::class,
             new HandlerRegistry($store->handlers($provider, $financial, $funding, $physical))
@@ -165,8 +174,9 @@ final readonly class MachineStore
         $cart?->assertOrder($terms);
         $this->assertAdvanceBalance($terms, $recipe);
         $this->assertFundingProviders($terms, $recipe);
+        $rootIntent = $this->authority->roots->createIntent($terms);
         $payload = PortableDescriptor::encode($terms->toArray());
-        $this->authority->db->transaction(function () use ($key, $payload, $terms, $cart): void {
+        $this->authority->db->transaction(function () use ($key, $payload, $terms, $cart, $rootIntent): void {
             $this->authority->db->table('provider_machine_assignments')
                 ->insert([
                     'id' => $key,
@@ -175,6 +185,7 @@ final readonly class MachineStore
                     'root_run' => null,
                 ]);
             $this->createSubject($key, 'order', false);
+            $this->authority->roots->seedRow($terms, $rootIntent);
             $this->periods?->seedRow($terms);
             if ($cart !== null) {
                 app(CartStore::class)->seedRow($terms, $cart, hash('sha256', $payload));
@@ -484,16 +495,21 @@ final readonly class MachineStore
         object $assignment,
         OrderTerms $terms
     ): BindingPlan {
+        $reservation = $this->authority->roots->selected($key)
+            ? $this->authority->roots->reservationFor($key, $actual->id) : null;
+        $expectedInstance = $reservation?->identity->instanceId() ?? 'provider-order-' . $key;
         $instance = WorkflowInstance::query()->findOrFail($actual->workflow_instance_id);
-        if ($actual->workflow_class !== $this->authority->cart->rootClass($key)
-            || $args !== [$key] || $actual->workflow_instance_id !== 'provider-order-' . $key
+        if ($actual->workflow_class !== ($reservation?->identity->workflowClass ?? $this->authority->cart->rootClass(
+            $key
+        ))
+            || $args !== [$key] || $actual->workflow_instance_id !== $expectedInstance
             || (int) $instance->run_count !== 1 || $instance->current_run_id !== $actual->id
             || ($assignment->root_run !== null && $assignment->root_run !== $actual->id)) {
             throw new LogicException('This example does not transfer its original Order to a successor.');
         }
         return new BindingPlan($terms, $actual->id, $this->authority->principal, static function (): void {
             throw new LogicException('Initialization does not authorize child admission.');
-        }, $this->authority->recipe($key), $this->authority->cart->selected($key));
+        }, $this->authority->recipe($key), $this->authority->cart->selected($key), $reservation);
     }
 
     private function childPlan(WorkflowRun $actual, array $args, string $key, string $role): BindingPlan
@@ -535,6 +551,10 @@ final readonly class MachineStore
                 ->where('id', $key)
                 ->sole();
             if ($role === 'order') {
+                if ($this->authority->roots->selected($key) && $assignment->root_run === null
+                    && $current->state === 'cancelled' && (bool) $current->cancellation_requested) {
+                    throw new LogicException('The original startup cancellation is already committed.');
+                }
                 if ($assignment->root_run !== null && $assignment->root_run !== $actual->id) {
                     throw new LogicException('The original business generation has another native owner.');
                 }

@@ -9,6 +9,10 @@ source increment. This directory remains experimental
 source, not an installed-package guide.
 Published Workflow 2.28.1 does not contain these retained-scope or StateMachine APIs.
 
+The opt-in [original root entry](original-root.md) retains the original business
+intent before native admission and defines startup cancellation for the original
+reservation-first recipe. Other recipes keep their existing entry contracts.
+
 The authorization recipes use one Order route (`received -> ready -> fulfilled`),
 one Payment route (`received -> authorized -> captured`) and one full Shipment
 route (`received -> booked -> in-transit -> delivered`). They are experimental
