@@ -27,6 +27,7 @@ foreach ([
     'UnitRefundState',
     'UnitRefundRecords',
     'UnitRefundGateway',
+    'UnitPaymentOperation',
     'TimedObservation',
     'FinancialSnapshot',
     'ShipmentSnapshot',

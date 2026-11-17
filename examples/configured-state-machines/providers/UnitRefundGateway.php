@@ -34,6 +34,12 @@ final readonly class UnitRefundGateway
         $this->transaction(fn () => $this->records->install());
     }
 
+    public function assertProvider(Journal $provider): void
+    {
+        $this->assertHost();
+        $provider->assertUnitRefundConnection($this->db, $this->client);
+    }
+
     public function register(OriginalUnitAmounts $original): void
     {
         $this->authorize($original);
@@ -96,6 +102,25 @@ final readonly class UnitRefundGateway
         $this->authorize($command->original);
         return $this->transaction(function () use ($command): array {
             $this->records->quote($command->original);
+            return $this->observation($command);
+        });
+    }
+
+    /**
+     * Provider-side fence; an already admitted uncertain payout retains its original unresolved fate.
+     */
+    public function closeAdmission(UnitRefundCommand $command): array
+    {
+        $this->authorize($command->original);
+        return $this->transaction(function () use ($command): array {
+            $this->records->quote($command->original);
+            $row = $this->records->command($command);
+            if ($row === null || (! (bool) $row['admitted'] && ! (bool) $row['closed'])) {
+                $this->records->write($command, Status::NotExecuted, false, [
+                    'claimed' => [],
+                    'covered' => [],
+                ]);
+            }
             return $this->observation($command);
         });
     }

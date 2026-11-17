@@ -291,6 +291,18 @@ final readonly class Journal
         });
     }
 
+    /**
+     * Same external-provider assembly; this identity check performs no storage access.
+     */
+    public function assertUnitRefundConnection(PDO $connection, string $client): void
+    {
+        if ($this->db !== $connection || $this->client !== $client) {
+            throw new LogicException(
+                'Unit payment and refunds require the same original provider connection and client.'
+            );
+        }
+    }
+
     private function authorize(Request $request): void
     {
         if ($request->identity->client !== $this->client) {
