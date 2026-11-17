@@ -34,8 +34,13 @@ final readonly class MachineStore
     public function __construct(
         public Authority $authority,
         private ?IncomingPaymentProvider $incoming = null,
-        private ?CodPaymentProvider $cod = null
+        private ?CodPaymentProvider $cod = null,
+        private ?OrderBillingPeriodStore $periods = null,
     ) {
+        if (($authority->periods->grants() !== [] && $periods === null)
+            || ($periods !== null && $periods->authority !== $authority)) {
+            throw new LogicException('Order-period workers must retain their original policy and admission assembly.');
+        }
     }
 
     public static function configure(
@@ -53,8 +58,12 @@ final readonly class MachineStore
                 'Native COD requires the same original provider and atomic physical carrier contract.'
             );
         }
-        $store = new self($authority, $incoming, $cod);
+        $periods = $authority->periods->grants() === [] ? null : new OrderBillingPeriodStore($authority, $provider);
+        $store = new self($authority, $incoming, $cod, $periods);
         $app->instance(self::class, $store);
+        if ($periods !== null) {
+            $app->instance(OrderBillingPeriodStore::class, $periods);
+        }
         $app->instance(CartStore::class, new CartStore($authority, $provider, $incoming));
         $app->instance(AssessmentStore::class, new AssessmentStore($authority, $provider));
         $financial = new FinancialAuthority($authority);
@@ -166,6 +175,7 @@ final readonly class MachineStore
                     'root_run' => null,
                 ]);
             $this->createSubject($key, 'order', false);
+            $this->periods?->seedRow($terms);
             if ($cart !== null) {
                 app(CartStore::class)->seedRow($terms, $cart, hash('sha256', $payload));
             }
@@ -187,6 +197,7 @@ final readonly class MachineStore
             throw new LogicException('The native initialization has no authorized business subject.');
         }
         $this->authority->authorize($key, $this->authority->principal);
+        $this->periods?->assertActor($actual, $key);
         [$assignment, $terms] = $this->authority->assignment($key);
         $root = $this->authority->subject($key, 'order');
         $plan = $role === 'order' ? $this->rootPlan($actual, $args, $key, $assignment, $terms)
@@ -383,6 +394,7 @@ final readonly class MachineStore
         $authority = $this->authority;
         $incoming = $this->incoming;
         $cod = $this->cod;
+        $periods = $this->periods;
         $handlers = [
             'provider.owner' => [
                 '1' => new OwnerOperation($authority),
@@ -391,20 +403,27 @@ final readonly class MachineStore
                 '1' => new RetainedOperation($provider, static function (
                     OperationContext $context,
                     string $operation,
-                ) use ($authority, $funding): void {
+                ) use ($authority, $funding, $periods): void {
                     $key = explode('.', $context->scope->key)[0];
                     if (FundingCatalogue::selected($authority->recipe($key))) {
                         $funding->effect($context, $operation);
                     } else {
                         $authority->authorizeOperation($context, $operation);
                     }
+                    $periods?->authorizeEffect($context, $operation);
                 }),
             ],
             'provider.cart' => [
                 '1' => new CartLeaseOperation($provider, app(CartStore::class)->operation(...)),
             ],
             'provider.shipment.full' => [
-                '1' => new ShipmentOperation($provider, $physical->operation(...)),
+                '1' => new ShipmentOperation($provider, static function (
+                    OperationContext $context,
+                    string $mode,
+                ) use ($physical, $periods): void {
+                    $physical->operation($context, $mode);
+                    $periods?->authorizeEffect($context, $mode);
+                }),
             ],
         ];
         if ($incoming !== null) {

@@ -90,6 +90,22 @@ final readonly class Journal
     }
 
     /**
+     * Admission of the optional timing capability; reads schema metadata without observing a business operation.
+     */
+    public function requireEffectTimeSupport(): void
+    {
+        if (! $this->captureEffectTimes) {
+            throw new LogicException('The provider did not admit original effect timestamps.');
+        }
+        $this->transaction(function (): void {
+            $this->query(
+                'SELECT operation_id, fingerprint, effect_id, confirmed_at FROM provider_effect_times LIMIT 0',
+                []
+            );
+        });
+    }
+
+    /**
      * Explicit optional provider support; install() keeps the original four-table fixtures unchanged.
      */
     public function installAuthorizationSupport(): void

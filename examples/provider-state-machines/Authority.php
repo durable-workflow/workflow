@@ -23,6 +23,8 @@ final readonly class Authority implements ChildScopeBindingAuthorization
 {
     public CartPolicy $cart;
 
+    public OrderPeriodPolicy $periods;
+
     /**
      * @param list<string> $subjects Canonical OrderTerms::subjectKey() grants.
      */
@@ -32,6 +34,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
         private array $subjects,
         private array $recipes = [],
         array $cartPurchases = [],
+        array $orderPeriods = [],
     ) {
         PortableDescriptor::identifier($principal, 'authenticated principal');
         if (! array_is_list($subjects)) {
@@ -59,6 +62,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
             }
         }
         $this->cart = new CartPolicy($this, $cartPurchases);
+        $this->periods = new OrderPeriodPolicy($this, $orderPeriods);
     }
 
     public function recipe(string $key): string
@@ -76,6 +80,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
         return hash(
             'sha256',
             BindingPlan::versionFor($this->recipe($key)) . ($this->cart->selected($key) ? '.cart-v1' : '')
+                . $this->periods->version($key)
                 . ':' . $this->profile($key, $role)->fingerprint()
         );
     }
