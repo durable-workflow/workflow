@@ -47,6 +47,8 @@ final class V2ConfiguredStateMachineExampleTest extends TestCase
         parent::setUp();
         self::stopWorkers();
         Queue::fake();
+        // drain() advances task time explicitly; SQL latency must not advance it too.
+        Carbon::setTestNow('2026-01-01T00:00:00Z');
         config([
             'workflows.v2.namespaces' => [Ownership::NAMESPACE],
             'workflows.v2.task_dispatch_mode' => 'queue',
@@ -193,6 +195,10 @@ final class V2ConfiguredStateMachineExampleTest extends TestCase
         $request = $this->store->requestCancellation(self::SUBJECT, $stub->runId(), 'waiting-order-cancel');
         $this->assertSame('origin', $request['route']['route']);
         $this->drain();
+        // An unresolved child can finish after the original parent has closed.
+        // Resume the same host intent so its retained parent recovery can proceed.
+        $this->store->requestCancellation(self::SUBJECT, $stub->runId(), 'waiting-order-cancel');
+        $this->drain();
         $this->assertSame(
             'verified',
             (new ScopeRepository())->metadata(Ownership::scope(self::SUBJECT, $stub->runId()))['status'],
@@ -206,6 +212,47 @@ final class V2ConfiguredStateMachineExampleTest extends TestCase
         $this->drain();
         $this->assertSame('cancelled', $this->root()->state, $this->progress());
         $this->assertSame(1, DB::table('example_machine_bindings')->count());
+    }
+
+    public function testChildRecoveryAfterOriginFailureResumesTheSameParentWithoutRepeatingAnyUndo(): void
+    {
+        $stub = $this->start('prepare');
+        $reservation = \Workflow\V2\StateMachine\Binding\ChildReservation::fromArray(json_decode(
+            DB::table('example_machine_bindings')->sole()->reservation,
+            true,
+            flags: JSON_THROW_ON_ERROR
+        ));
+        $childScope = Ownership::childScope($reservation->identity->parentExecution);
+        $parentScope = Ownership::scope(self::SUBJECT, $stub->runId());
+        $request = $this->store->requestCancellation(self::SUBJECT, $stub->runId(), 'delayed-original-child');
+        $this->assertSame('origin', $request['route']['route']);
+        $this->drain(
+            static fn (): bool => WorkflowRun::query()->findOrFail($stub->runId())->status->isTerminal(),
+            $childScope->recoveryInstanceId()
+        );
+        $this->assertSame(
+            RunStatus::Failed,
+            WorkflowRun::query()->findOrFail($stub->runId())->status,
+            $this->progress()
+        );
+        $history = $this->history($stub->runId());
+        $this->assertSame('requested', (new ScopeRepository())->metadata($parentScope)['status']);
+        $this->assertSame([], DB::table('example_machine_compensation_log')->pluck('action')->all());
+        $this->drain();
+        $this->assertSame('verified', (new ScopeRepository())->metadata($childScope)['status']);
+        $this->assertSame('requested', (new ScopeRepository())->metadata($parentScope)['status']);
+        $resume = $this->store->requestCancellation(self::SUBJECT, $stub->runId(), 'delayed-original-child');
+        $this->assertSame('recovery', $resume['route']['route']);
+        $this->assertNotSame($stub->runId(), $resume['route']['runId']);
+        $this->drain();
+        $this->assertSame('verified', (new ScopeRepository())->metadata($parentScope)['status'], $this->progress());
+        $this->assertSame(
+            ['deliver', 'prepare', 'reserve'],
+            DB::table('example_machine_compensation_log')->orderBy('sequence')->pluck('action')->all()
+        );
+        $this->assertSame($history, $this->history($stub->runId()));
+        $this->assertSame(1, DB::table('example_machine_bindings')->count());
+        $this->assertSame($request['requestId'], $resume['requestId']);
     }
 
     public function testAlreadySatisfiedImportedTargetSkipsActionsAndChildAdmission(): void
@@ -575,12 +622,16 @@ final class V2ConfiguredStateMachineExampleTest extends TestCase
         ], JSON_THROW_ON_ERROR);
     }
 
-    private function drain(?callable $stopWhen = null): void
+    private function drain(?callable $stopWhen = null, ?string $pausedInstance = null): void
     {
         for ($i = 0; $i < 250; ++$i) {
-            $task = WorkflowTask::query()->where('status', TaskStatus::Ready)->orderBy('available_at')->orderBy(
-                'created_at'
-            )->orderBy('id')
+            $tasks = WorkflowTask::query()->where('status', TaskStatus::Ready);
+            if ($pausedInstance !== null) {
+                $tasks->whereRelation('run', 'workflow_instance_id', '<>', $pausedInstance);
+            }
+            $task = $tasks->orderBy('available_at')
+                ->orderBy('created_at')
+                ->orderBy('id')
                 ->first();
             if ($task === null) {
                 return;
