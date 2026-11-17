@@ -34,6 +34,7 @@ final readonly class Journal
         private string $client,
         private ?Closure $clock = null,
         private ?Closure $beforePhysicalEvent = null,
+        private bool $captureEffectTimes = false,
     ) {
         PortableDescriptor::identifier($client, 'provider client');
         if ($db->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'sqlite' || $db->inTransaction()) {
@@ -51,6 +52,37 @@ final readonly class Journal
             foreach (self::SCHEMA as $sql) {
                 $this->db->exec($sql);
             }
+            if ($this->captureEffectTimes) {
+                $this->db->exec(
+                    'CREATE TABLE provider_effect_times (operation_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, effect_id TEXT NOT NULL UNIQUE, confirmed_at INTEGER NOT NULL)'
+                );
+            }
+        });
+    }
+
+    /**
+     * Optional provider capability, selected before installation/first effect. Missing support is a refusal,
+     * not an empty payment result. Reading never backfills timestamps for historical effects.
+     */
+    public function timedLookup(Request $request): TimedObservation
+    {
+        $this->authorize($request);
+        if (! $this->captureEffectTimes) {
+            throw new LogicException('The provider did not admit original effect timestamps.');
+        }
+        return $this->transaction(function () use ($request): TimedObservation {
+            // Require the selected capability's actual schema even for an empty lookup.
+            $timing = $this->query('SELECT * FROM provider_effect_times WHERE operation_id = ?', [
+                $request->identity->key(),
+            ])->fetch(PDO::FETCH_ASSOC);
+            $row = $this->operation($request);
+            $this->recordRequest($request, 'timed-lookup');
+            $observation = $this->observation($request, $row);
+            if ($observation->effectId === null && $timing !== false) {
+                throw new LogicException('A provider timestamp cannot stand in for a missing committed effect.');
+            }
+            return new TimedObservation($request, $observation, $observation->effectId === null
+                ? null : $this->effectTime($request, $observation->effectId));
         });
     }
 
@@ -303,11 +335,39 @@ final readonly class Journal
             $status->value, (int) $closed,
         ]);
         if ($status === Status::Confirmed) {
-            $this->query(
+            $created = $this->query(
                 'INSERT INTO provider_effects (operation_id, effect_id) VALUES (?, ?) ON CONFLICT DO NOTHING',
                 [$request->identity->key(), 'effect-' . $request->identity->key()]
             );
+            if ($this->captureEffectTimes && $created->rowCount() === 1) {
+                $at = ($this->clock ?? static fn (): int => time())();
+                if (! is_int($at) || $at <= 0) {
+                    throw new LogicException('The original provider commit time must be a positive integer.');
+                }
+                // Same independent provider transaction as both the operation and the committed effect.
+                $this->query(
+                    'INSERT INTO provider_effect_times (operation_id, fingerprint, effect_id, confirmed_at) VALUES (?, ?, ?, ?)',
+                    [
+                        $request->identity->key(), $request->fingerprint(), 'effect-' . $request->identity->key(), $at,
+                    ]
+                );
+            }
+            if ($this->captureEffectTimes) {
+                $this->effectTime($request, 'effect-' . $request->identity->key());
+            }
         }
+    }
+
+    private function effectTime(Request $request, string $effect): int
+    {
+        $row = $this->query('SELECT * FROM provider_effect_times WHERE operation_id = ?', [
+            $request->identity->key(),
+        ])->fetch(PDO::FETCH_ASSOC);
+        if ($row === false || $row['fingerprint'] !== $request->fingerprint() || $row['effect_id'] !== $effect
+            || ! is_int($row['confirmed_at']) || $row['confirmed_at'] <= 0) {
+            throw new LogicException('The original provider commit timestamp is missing or substituted.');
+        }
+        return $row['confirmed_at'];
     }
 
     private function observation(Request $request, ?array $row): Observation
@@ -337,6 +397,9 @@ final readonly class Journal
         ])->fetchColumn();
         if ($effect !== false && $effect !== 'effect-' . $request->identity->key()) {
             throw new LogicException('The provider evidence belongs to another original operation.');
+        }
+        if ($this->captureEffectTimes && $effect !== false) {
+            $this->effectTime($request, $effect);
         }
         return new Observation(
             $row === null ? Status::Unknown : Status::from($row['status']),

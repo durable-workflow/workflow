@@ -22,6 +22,7 @@ foreach ([
     'IncomingRefundTerms',
     'Status',
     'Observation',
+    'TimedObservation',
     'FinancialSnapshot',
     'ShipmentSnapshot',
     'LostAcknowledgement',

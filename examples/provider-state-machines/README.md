@@ -536,7 +536,7 @@ for original portion and refund controls. These synthetic source cases do not
 complete PAY-05, its interruption/concurrency coverage, the full customer
 matrix, installed recovery/upgrade acceptance or publication qualification.
 
-### Subscription period contract preparation
+### Subscription periods
 
 `BillingPeriod` pins one original subscription generation, period, amount,
 currency, start, end and payment deadline. A service-only period has no Order
@@ -562,16 +562,62 @@ Payment-first never grants unpaid grace access. `BillingPeriodPolicy` preserves
 the common `provider.payment` definition and its `received`, `ready`,
 `collected` and `paid` factual meanings for both associations.
 
-This is contract preparation for PAY-06/SUB-01 through SUB-04. The access
-projection takes trusted observations; it is not a recorded host authorization,
-provider receipt, entitlement write or native child admission. The current
-Order-specific `MachineStore` and `Authority` cannot be used to run a
-service-only period. A real period host boundary, authoritative timed payment
-inspection, atomic original-period assignment/admission, cancellation of
-future billing, retained settlement, native replay/process-loss tests and
-installed qualification remain unfinished. Cancelling future billing must
-not be interpreted as refunding previously paid periods.
+`ServicePeriodPayment` implements the service-only association through recorded
+activities, the common Payment state machine, native retained obligations and
+protected SQL commits. It creates neither Order nor Shipment. `BillingPeriodStore`
+requires explicit trusted typed assignments, pins the original native admission
+receipt atomically with the period row, and refuses foreign runs or changed
+policy/money/generation. Repeated admission returns the original run even after
+technical completion, rather than creating a new charge.
 
-Run `vendor/bin/phpunit tests/Unit/V2/StateMachine/BillingPeriodTest.php` for the
-fixed-boundary, substitution and independent provider-journal controls. They
-do not complete the subscription scenarios or the full customer matrix.
+For a disposable service-billing application, load `bootstrap.php`, allow the
+`provider-periods` namespace, and install `../business-state-machines/schema.php`
+followed by `billing-schema.php`. Use a separate fresh provider file with the
+timing capability below. Configure `BillingPeriodStore` with the native SQL
+connection, authenticated principal, explicit `BillingPeriod` grant list and
+that provider; call `BillingPeriodStore::configure($app, $store)` in both client
+and worker bootstrap. Seed each fixed assignment once, then use
+`$store->admit($period->subjectKey())`. A non-null Order assignment is refused
+by this adapter; the genuine Order-per-period integration remains unfinished.
+
+The original owner and Payment duties are registered before provider dispatch.
+`payment-observed` is only a wake-up: recorded provider inspection determines
+whether the same original charge confirmed. Independent provider commit time,
+not acknowledgement time or a signal payload, determines whether payment was
+on time. Live `access()` rechecks the fixed deadline, protected paid publication,
+original receipt and cancellation even while a worker is stopped. At period end,
+an unresolved payment remains unsettled; technical completion is not settlement.
+
+`cancelFuture()` records an absolute subscription cutoff and blocks admission
+of affected later periods. It leaves admitted current periods and their charges
+alone. `cancel()` fences the selected original period and requests its retained
+native refund. An uncertain provider outcome remains unresolved. Cancellation
+before genuine owner initialization records the business fence but cannot
+invent the missing root scope; it stays unresolved until the recorded owner
+actually initializes. Recovery for an older period preserves the next period's
+separate charge, native owner and access.
+
+Run `vendor/bin/phpunit tests/Feature/V2/V2ServiceBillingPeriodTest.php` for the
+native service-only source scenarios, and
+`vendor/bin/phpunit tests/Unit/V2/StateMachine/BillingPeriodTest.php tests/Unit/V2/StateMachine/BillingPeriodReceiptTest.php`
+for contract and provider-receipt controls. These are synthetic source tests.
+The Order variants, complete crash/race/process-loss matrix, installed recovery,
+upgrade/rollback and publication acceptance remain unfinished. This source
+increment does not complete PAY-06, SUB-01 through SUB-04 or the full matrix.
+
+For period adapters, a fresh synthetic `Journal` can explicitly select
+`captureEffectTimes: true` before `install()`. The optional capability stores
+each original effect time atomically with the provider effect, before a lost
+acknowledgement can occur. `timedLookup()` returns a typed receipt bound to the
+complete original request. Retry, later lookup and admission closure preserve
+that time. A later refund has its own timestamp and never changes the original
+capture fact. The default four-table provider and existing observations remain
+unchanged.
+
+Unavailable timing support, a missing original timestamp and a foreign receipt
+are refusals. They cannot become an unpaid/empty result, acquire a timestamp at
+recovery or satisfy another subscription period. This capability does not
+retroactively migrate old provider databases. The simulator's independent
+provider clock is a business-fixture input; it is not installed elapsed-time
+or SDK/Server timer qualification. The native service adapter consumes these receipts only through its recorded,
+authorized host boundary described above.
