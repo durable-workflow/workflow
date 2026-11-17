@@ -27,10 +27,13 @@ final readonly class CancellationStore
     ) {
     }
 
-    public function request(string $key, string $rootRun, string $requestKey): array
+    public function request(string $key, string $rootRun, string $requestKey, ?string $recoveryRequestKey = null): array
     {
         $this->authority->authorize($key, $this->authority->principal);
         PortableDescriptor::identifier($requestKey, 'original cancellation request');
+        if ($recoveryRequestKey !== null) {
+            PortableDescriptor::identifier($recoveryRequestKey, 'original compensation recovery request');
+        }
         [$assignment] = $this->authority->assignment($key);
         $root = $this->authority->subject($key, 'order');
         $this->assertOriginalRoot($key, $rootRun, $assignment);
@@ -93,7 +96,7 @@ final readonly class CancellationStore
             $route = app(ScopeRecovery::class)->request(
                 $this->authority->plan($key)
                     ->rootScope(),
-                $requestKey,
+                $recoveryRequestKey ?? $requestKey,
                 $this->authority->principal,
                 'business-cancellation'
             );
@@ -293,13 +296,17 @@ final readonly class CancellationStore
 
     private function assertOriginalRoot(string $key, string $rootRun, object $assignment): void
     {
-        $class = $this->authority->cart->rootClass($key);
+        $reservation = $this->authority->roots->selected($key)
+            ? $this->authority->roots->reservationFor($key, $rootRun) : null;
+        $class = $reservation?->identity->workflowClass ?? $this->authority->cart->rootClass($key);
+        $instanceId = $reservation?->identity->instanceId() ?? 'provider-order-' . $key;
         $actual = WorkflowRun::query()->where('namespace', Catalogue::NAMESPACE)
             ->where('workflow_class', $class)
-            ->where('workflow_instance_id', 'provider-order-' . $key)->findOrFail($rootRun);
+            ->where('workflow_instance_id', $instanceId)
+            ->findOrFail($rootRun);
         $instance = WorkflowInstance::query()->findOrFail($actual->workflow_instance_id);
         if ($actual->workflow_class !== $class || $actual->namespace !== Catalogue::NAMESPACE
-            || $actual->workflowArguments() !== [$key] || $actual->workflow_instance_id !== 'provider-order-' . $key
+            || $actual->workflowArguments() !== [$key] || $actual->workflow_instance_id !== $instanceId
             || (int) $instance->run_count !== 1 || $instance->current_run_id !== $rootRun
             || ($assignment->root_run !== null && $assignment->root_run !== $rootRun)) {
             throw new LogicException(
