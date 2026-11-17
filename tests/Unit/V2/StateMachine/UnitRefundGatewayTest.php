@@ -152,6 +152,29 @@ final class UnitRefundGatewayTest extends TestCase
         $gateway->register($original);
     }
 
+    public function testALateLegacyRefundCompletionCannotBypassPinnedUnitAccounting(): void
+    {
+        [$db, $journal, $gateway, $original] = $this->unfunded();
+        $legacy = new Request(new Identity(
+            'shop-a',
+            'purchase-a',
+            'generation-a',
+            'legacy-pending-whole-refund'
+        ), 'refund', $original->capture->terms, $original->capture->identity);
+        $journal->plan($legacy, Status::Processing);
+        $this->assertSame(Status::Unknown, $journal->attempt($legacy)->status);
+        $gateway->register($original);
+        $journal->plan($original->capture, Status::Confirmed);
+        $journal->attempt($original->capture);
+        $partial = new UnitRefundCommand($original, 'partial-before-legacy-completion', [2]);
+        $gateway->plan($partial, Status::Confirmed);
+        $this->assertSame(499, $gateway->attempt($partial)['ownPayoutMinor']);
+        $this->assertRefused(static fn () => $journal->resolve($legacy, Status::Confirmed), 'unit refund gateway');
+        $this->assertSame(Status::Unknown, $journal->lookup($legacy)->status);
+        $this->assertSame(1, (int) $db->query('SELECT COUNT(*) FROM provider_effects')->fetchColumn());
+        $this->assertSame(499, (int) $db->query('SELECT SUM(amount_minor) FROM unit_refund_payouts')->fetchColumn());
+    }
+
     public function testAQueuedRefundCanBeRefusedWithoutTakingAnotherUnresolvedCommandsUnits(): void
     {
         [$db, , $gateway, $original] = $this->funded();
