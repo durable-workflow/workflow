@@ -4,7 +4,7 @@ This experimental application example composes the existing `TransitionRunner`,
 `ActivityTransitionRuntime`, rule registry, native child reservations and retained
 compensation scopes. It is a repository source example rather than an installed-package guide.
 The complete [business-state-machine feature](https://github.com/durable-workflow/workflow/issues/1069)
-remains unfinished. The retained-scope additions are absent from published 2.28.1.
+remains unfinished. The retained-scope additions first ship, experimentally, in 2.29.0.
 
 The application assigns each Order a pinned `prepare` or `imported` profile before
 starting its native workflow. Both profiles share the same state catalogue and

@@ -7,7 +7,7 @@ routing correction and controlled-clock fixture passed the complete source
 backend cycle in #1161. The common checkout policies below are a subsequent
 source increment. This directory remains experimental
 source, not an installed-package guide.
-Published Workflow 2.28.1 does not contain these retained-scope or StateMachine APIs.
+The retained-scope and StateMachine APIs it uses first ship, experimentally, in Workflow 2.29.0.
 
 The opt-in [original root entry](original-root.md) retains the original business
 intent before native admission and defines startup cancellation for the original

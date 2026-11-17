@@ -2,7 +2,7 @@
 
 The optional embedded V2 transition protocol provides a four-method step contract, recorded assessments, shared machine definitions and versioned integration profiles. It uses existing native activities, children and Saga. Existing workflows and `Workflow\States\StateMachine` are unchanged. Symfony Workflow is not a dependency.
 
-**Experimental.** The `Workflow\V2\StateMachine` API is under review and may change in a minor release; it carries no backward-compatibility promise yet. The [recorded Order/Shipment example](../examples/configured-state-machines/README.md) connects two integration profiles to retained compensation and protected SQL decisions. Optional definition and forward-execution budgets are described below. Provider integration and published-package recovery qualification remain unfinished. There is no in-flight profile migration API. These additions are not present in the published 2.28.1 package. This does not complete the proposal.
+**Experimental.** The `Workflow\V2\StateMachine` API is under review and may change in a minor release; it carries no backward-compatibility promise yet. The [recorded Order/Shipment example](../examples/configured-state-machines/README.md) connects two integration profiles to retained compensation and protected SQL decisions. Optional definition and forward-execution budgets are described below. Provider integration and published-package recovery qualification remain unfinished. There is no in-flight profile migration API. These experimental additions first ship in 2.29.0. This does not complete the proposal.
 
 ## Responsibilities and flow
 
