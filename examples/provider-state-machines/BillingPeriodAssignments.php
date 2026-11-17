@@ -65,6 +65,9 @@ final readonly class BillingPeriodAssignments
     public function subject(string $key, BillingPeriod $period, bool $lock = false): object
     {
         $this->assertGranted($period);
+        if ($key !== $period->subjectKey()) {
+            throw new LogicException('The billing subject does not belong to its granted period.');
+        }
         $query = $this->db->table('example_machine_subjects')
             ->where('id', self::subjectId($key));
         $row = ($lock ? $query->lockForUpdate() : $query)

@@ -148,9 +148,12 @@ trait BillingPeriodMachineFixture
         $this->pumpBilling();
     }
 
-    private function pumpBilling(): void
+    private function pumpBilling(?callable $stop = null): void
     {
         for ($i = 0; $i < 400; ++$i) {
+            if ($stop !== null && $stop()) {
+                return;
+            }
             $task = WorkflowTask::query()->whereRelation('run', 'namespace', BillingPeriodStore::NAMESPACE)
                 ->where('status', TaskStatus::Ready)->where(static function ($query): void {
                     $query->whereNull('available_at')

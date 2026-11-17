@@ -391,6 +391,10 @@ final readonly class BillingPeriodStore
         if ($mode === 'forward' && ! $owner && (bool) $subject->cancellation_requested) {
             throw new LogicException('The original period forward path is closed.');
         }
+        if ($mode === 'forward' && ! $owner && ! $context->uncertainForward
+            && Carbon::now()->getTimestamp() >= $period->paymentDeadline) {
+            throw new LogicException('The original period first-charge deadline has elapsed.');
+        }
         return [$period, $subject];
     }
 

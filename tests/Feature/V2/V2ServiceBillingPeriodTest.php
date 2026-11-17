@@ -235,7 +235,7 @@ final class V2ServiceBillingPeriodTest extends TestCase
             (int) $this->billingProviderDb->query('SELECT COUNT(*) FROM provider_effects')
                 ->fetchColumn()
         );
-        Carbon::setTestNow(Carbon::createFromTimestampUTC($this->billingStart + 60));
+        Carbon::setTestNow(Carbon::createFromTimestampUTC($this->period->paymentDeadline + 60));
         $this->pumpBilling();
         $this->assertSame('completed', $run->fresh()->status->value, $this->billingProgress());
         $this->assertTrue($this->periodStore->access($this->period->subjectKey())['access']);
@@ -316,12 +316,14 @@ final class V2ServiceBillingPeriodTest extends TestCase
 
     public static function foreignAssignmentReads(): array
     {
-        return [['subject'], ['subscription']];
+        return [['subject', false], ['subscription', false], ['subject', true]];
     }
 
     #[DataProvider('foreignAssignmentReads')]
-    public function testAssignmentRepositoryRefusesAnUnassignedPeriodBeforeProtectedSql(string $operation): void
-    {
+    public function testAssignmentRepositoryRefusesAnUnassignedPeriodBeforeProtectedSql(
+        string $operation,
+        bool $substituteKey
+    ): void {
         $this->configurePeriod(BillingPeriod::GRACE, pump: false);
         $foreign = $this->terms('2026-03', $this->nextPeriod->endsAt, BillingPeriod::GRACE);
         $otherHost = new \DurableWorkflow\Examples\ProviderStateMachines\BillingPeriodStore(
@@ -338,14 +340,46 @@ final class V2ServiceBillingPeriodTest extends TestCase
         try {
             $assigned = $this->periodStore->assignments;
             if ($operation === 'subject') {
-                $assigned->subject($foreign->subjectKey(), $foreign);
+                $assigned->subject($foreign->subjectKey(), $substituteKey ? $this->period : $foreign);
             } else {
                 $assigned->subscription($foreign);
             }
             $this->fail('Same-principal storage does not grant this host an unassigned period.');
         } catch (LogicException $error) {
-            $this->assertSame('The original period is outside this authenticated host grant.', $error->getMessage());
+            $this->assertSame(
+                $substituteKey ? 'The billing subject does not belong to its granted period.' : 'The original period is outside this authenticated host grant.',
+                $error->getMessage()
+            );
         }
         $this->assertSame([], $queries);
+    }
+
+    public function testAChargeQueuedBeforeTheDeadlineCannotFirstDispatchAfterIt(): void
+    {
+        $this->configurePeriod(BillingPeriod::PAYMENT_FIRST, Status::Confirmed, pump: false);
+        $this->pumpBilling(static fn (): bool => DB::connection()->table('provider_billing_admissions')->count() > 0);
+        $this->assertSame(1, DB::connection()->table('provider_billing_admissions')->count());
+        $this->assertSame(
+            0,
+            (int) $this->billingProviderDb->query('SELECT COUNT(*) FROM provider_operations')
+                ->fetchColumn()
+        );
+        Carbon::setTestNow(Carbon::createFromTimestampUTC($this->period->paymentDeadline));
+        $this->pumpBilling();
+        $this->assertSame(
+            0,
+            (int) $this->billingProviderDb->query('SELECT COUNT(*) FROM provider_operations')
+                ->fetchColumn()
+        );
+        $this->assertSame(
+            0,
+            (int) $this->billingProviderDb->query('SELECT COUNT(*) FROM provider_effects')
+                ->fetchColumn()
+        );
+        $this->assertFalse($this->periodStore->access($this->period->subjectKey())['access']);
+        $this->assertNotSame(
+            'verified',
+            (new ScopeRepository())->inspect($this->periodStore->scope($this->period->subjectKey()))['status']
+        );
     }
 }
