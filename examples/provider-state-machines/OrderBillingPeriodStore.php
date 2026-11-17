@@ -31,6 +31,7 @@ final readonly class OrderBillingPeriodStore
             throw new LogicException('Order periods require the original configured native SQL connection.');
         }
         $this->assignments = new BillingPeriodAssignments($db, $authority->principal, $authority->periods->grants());
+        $provider->requireEffectTimeSupport();
         $this->receipts = new OrderPeriodPaymentReceipt($authority, $provider);
     }
 

@@ -22,9 +22,11 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use LogicException;
 use PDO;
+use PDOException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\CommonFundingMachineFixture;
 use Tests\TestCase;
+use Throwable;
 use Workflow\V2\Compensation\Persistence\ScopeRepository;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\WorkflowReplayer;
@@ -83,6 +85,40 @@ final class V2OrderBillingPeriodTest extends TestCase
     public static function policies(): array
     {
         return [[BillingPeriod::PAYMENT_FIRST], [BillingPeriod::GRACE]];
+    }
+
+    public static function unsupportedTimingProfiles(): array
+    {
+        return [['not-selected', LogicException::class], ['schema-missing', PDOException::class]];
+    }
+
+    /**
+     * @param class-string<Throwable> $exception
+     */
+    #[DataProvider('unsupportedTimingProfiles')]
+    public function testMissingOriginalTimingCapabilityRefusesBootstrapBeforeNativeAdmission(
+        string $case,
+        string $exception
+    ): void {
+        if ($case === 'not-selected') {
+            $this->provider = new Journal($this->providerDb, 'shop-a', static fn (): int => Carbon::now()->getTimestamp());
+        } else {
+            $this->providerDb->exec('DROP TABLE provider_effect_times');
+        }
+        $refusal = null;
+        try {
+            $this->startPeriodOrder(BillingPeriod::PAYMENT_FIRST, pump: false);
+        } catch (Throwable $error) {
+            $refusal = $error;
+        }
+        if ($refusal === null) {
+            // The predecessor admitted this unsupported configuration and could
+            // reach money dispatch before discovering the missing time contract.
+            $this->pump();
+        }
+        $this->assertSame([], $this->effects(), 'Missing original timing must refuse before money dispatch.');
+        $this->assertSame(0, WorkflowRun::query()->count(), 'Capability admission must precede native admission.');
+        $this->assertInstanceOf($exception, $refusal);
     }
 
     #[DataProvider('policies')]

@@ -593,6 +593,12 @@ still load the protected Order. Seed the genuine Order with
 `$machineStore->seed($period->order)`, then obtain the period adapter from the
 container and call `admit($period->subjectKey())`.
 
+The Order adapter requires the provider's original effect-time capability and
+its actual schema during bootstrap, before native admission or money dispatch.
+`Journal::requireEffectTimeSupport()` checks that metadata without recording a
+provider request or observing a payment. Existing journal operations and default
+four-table installations retain their original behavior.
+
 This admission atomically records the original period receipt and starts the
 existing `FundingCheckout`; its actual `FundingPayment` and `FullShipment`
 children retain the common routes, reservations and verified scope ownership.
