@@ -15,6 +15,11 @@ require_once __DIR__ . '/AdvanceBalancePolicy.php';
 require_once __DIR__ . '/OrderTerms.php';
 require_once __DIR__ . '/BillingPeriod.php';
 require_once __DIR__ . '/BillingPeriodPolicy.php';
+foreach (['BillingPeriodAssignments', 'BillingPeriodStore', 'BillingPeriodAssessment', 'BillingPeriodOwner',
+    'BillingPeriodBoundaryActivity', 'BillingPeriodSnapshotActivity', 'BillingPeriodAdmissionActivity',
+    'BillingPeriodCommitActivity', 'BillingPeriodStep', 'ServicePeriodPayment'] as $billingClass) {
+    require_once __DIR__ . '/' . $billingClass . '.php';
+}
 require_once __DIR__ . '/CartPlan.php';
 require_once __DIR__ . '/CartLeaseOperation.php';
 require_once __DIR__ . '/BindingPlan.php';
