@@ -12,6 +12,7 @@ use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Status;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\UnitPaymentOperation;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\UnitRefundCommand;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\UnitRefundGateway;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\UnitRefundOperation;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
 use LogicException;
@@ -21,8 +22,11 @@ use Tests\TestCase;
 use Workflow\V2\Compensation\Definition\Obligation;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
+use Workflow\V2\Compensation\Execution\ForwardResult;
 use Workflow\V2\Compensation\Execution\HandlerRegistry;
 use Workflow\V2\Compensation\Execution\OperationContext;
+use Workflow\V2\Compensation\Execution\Resolution;
+use Workflow\V2\Compensation\Execution\ScopedOperation;
 use Workflow\V2\Compensation\Persistence\ScopeRepository;
 use Workflow\V2\Compensation\Recovery\ScopeRecovery;
 use Workflow\V2\Compensation\Security\ScopeAuthorization;
@@ -54,6 +58,10 @@ final class V2UnitPaymentScopeTest extends TestCase
     private ?string $originalRun = null;
 
     private int $authorizations = 0;
+
+    private bool $refundOnly = false;
+
+    private bool $failBeforeProvider = false;
 
     protected function setUp(): void
     {
@@ -92,9 +100,38 @@ final class V2UnitPaymentScopeTest extends TestCase
                 return 'unit-money-host-v1';
             }
         });
+        $refund = new UnitRefundOperation($this->provider, $this->refunds, $this->authorize(...));
+        $injectedFailure = new class($refund, fn (): bool => $this->failBeforeProvider) implements ScopedOperation {
+            public function __construct(
+                private readonly ScopedOperation $delegate,
+                private readonly \Closure $fail
+            ) {
+            }
+
+            public function assertInput(array $input): void
+            {
+                $this->delegate->assertInput($input);
+            }
+
+            public function execute(OperationContext $context): ForwardResult
+            {
+                if (($this->fail)()) {
+                    throw new \RuntimeException('Injected failure after native admission before provider dispatch.');
+                }
+                return $this->delegate->execute($context);
+            }
+
+            public function compensate(OperationContext $context): Resolution
+            {
+                return $this->delegate->compensate($context);
+            }
+        };
         $this->app->instance(HandlerRegistry::class, new HandlerRegistry([
             'test.unit-payment' => [
                 '1' => new UnitPaymentOperation($this->provider, $this->refunds, $this->authorize(...)),
+            ],
+            'test.unit-refund' => [
+                '1' => $injectedFailure,
             ],
         ]));
     }
@@ -216,6 +253,57 @@ final class V2UnitPaymentScopeTest extends TestCase
         );
     }
 
+    public function testNativeShortageCompensationRetainsTheOriginalCustomerRepayment(): void
+    {
+        $this->startRefund(Status::Confirmed);
+        $history = $this->history();
+        $this->assertSame(499, $this->paidBack());
+        $this->recover('retain-original-shortage-refund');
+        $this->assertSame('verified', $this->ledger()['status']);
+        $this->assertSame(499, $this->paidBack());
+        $this->assertSame(1, $this->payoutCount());
+        $this->assertSame($history, $this->history());
+    }
+
+    public function testNativeShortageScopeWaitsForItsOriginalInFlightRefund(): void
+    {
+        $this->startRefund(Status::Processing);
+        $this->recover('shortage-refund-still-processing');
+        $this->assertSame('requested', $this->ledger()['status']);
+        $this->assertSame(0, $this->payoutCount());
+        $this->refunds->resolve($this->cancellation, Status::Confirmed);
+        $this->recover('shortage-refund-confirmed');
+        $this->assertSame('verified', $this->ledger()['status']);
+        $this->assertSame(499, $this->paidBack());
+        $this->assertSame(1, $this->payoutCount());
+    }
+
+    public function testNativeCancellationClosesAnUnstartedResponsibilityWithoutProviderDispatch(): void
+    {
+        $this->startRefund(Status::Confirmed, false);
+        $this->assertSame(0, $this->payoutCount());
+        $calls = $this->authorizations;
+        $this->recover('shortage-not-admitted');
+        $this->assertSame('verified', $this->ledger()['status']);
+        $this->assertSame($calls, $this->authorizations);
+        $this->assertSame(0, (int) $this->moneyDb->query('SELECT COUNT(*) FROM unit_refund_commands')->fetchColumn());
+        $this->assertSame(0, $this->payoutCount());
+        $this->assertSame(Status::Confirmed, $this->provider->lookup($this->original->capture)->status);
+    }
+
+    public function testNativeRecoveryFencesFailureAfterForwardAdmissionBeforeProviderDispatch(): void
+    {
+        $this->failBeforeProvider = true;
+        $origin = $this->startRefund(Status::Confirmed);
+        $this->assertSame('failed', $origin->refresh()->status());
+        $this->assertNotSame('registered', $this->ledger()['obligations'][0]['forward_status']);
+        $this->assertSame(0, (int) $this->moneyDb->query('SELECT COUNT(*) FROM unit_refund_commands')->fetchColumn());
+        $this->recover('fence-original-uncertain-refund');
+        $this->assertSame('verified', $this->ledger()['status']);
+        $this->assertSame('not-executed', $this->refunds->attempt($this->cancellation)['status']);
+        $this->assertSame(0, $this->payoutCount());
+    }
+
     private function authorize(OperationContext $context, string $mode): void
     {
         if ($context->scope->toArray() !== $this->identity()->toArray() || $context->originalRunId !== $this->originalRun
@@ -243,7 +331,7 @@ final class V2UnitPaymentScopeTest extends TestCase
 
     private function obligation(): Obligation
     {
-        return new Obligation('payment.capture', 'test.unit-payment', '1', [
+        return new Obligation($this->refundOnly ? 'payment.shortage' : 'payment.capture', $this->refundOnly ? 'test.unit-refund' : 'test.unit-payment', '1', [
             'version' => 1,
             'refund' => $this->cancellation->toArray(),
         ]);
@@ -257,8 +345,32 @@ final class V2UnitPaymentScopeTest extends TestCase
     private function start(Status $status): WorkflowStub
     {
         $this->provider->plan($this->original->capture, $status);
+        return $this->startObligation();
+    }
+
+    private function startRefund(Status $status, bool $execute = true): WorkflowStub
+    {
+        $this->refundOnly = true;
+        $this->cancellation = new UnitRefundCommand($this->original, 'original-shortage-refund', [2]);
+        $this->refunds->register($this->original);
+        $this->provider->plan($this->original->capture, Status::Confirmed);
+        $this->provider->attempt($this->original->capture);
+        $this->refunds->plan($this->cancellation, $status);
+        return $this->startObligation($execute);
+    }
+
+    private function startObligation(bool $execute = true): WorkflowStub
+    {
         $stub = WorkflowStub::make(TestUnitPaymentScopeWorkflow::class, 'unit-money-origin', 'unit-money-tests');
-        $stub->start($this->identity()->toArray(), $this->obligation()->input);
+        $stub->start(
+            $this->identity()
+                ->toArray(),
+            $this->obligation()
+->input,
+            $this->obligation()
+->handlerType,
+            $execute
+        );
         $this->originalRun = $stub->runId();
         $this->drain();
         return $stub;

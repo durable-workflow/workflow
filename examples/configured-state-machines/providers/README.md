@@ -153,6 +153,48 @@ vendor/bin/phpunit tests/Feature/V2/V2FinancialRetainedScopeTest.php
 
 ## Native retained-operation boundary
 
+### Original per-unit capture and repayment
+
+`OriginalUnitAmounts` pins the original capture, currency and amount of every
+charged unit. `UnitPaymentOperation` retains a cancellation command covering all
+those units. The host must authorize that exact descriptor together with its
+original native scope/run, business owner/generation, handler version and ledger
+position before provider access. The payment journal and `UnitRefundGateway`
+must use the same independent provider connection and trusted client.
+
+Register the quote before capture admission. A shortage repayment can cover only
+the original unavailable units; later cancellation pays only the remaining
+unrepaid units. For example, an original `[500, 500, 499]` charge can repay the
+last unit for 499, then repay the other two for 1000. Each payout keeps its own
+original command receipt. Unknown claims block overlapping money, and a refused
+command stays refused even when another authorized repayment later satisfies
+the original financial responsibility.
+
+`UnitRefundOperation` supplies a separate retained responsibility for a customer
+repayment. Compensation never takes that repayment back. It either verifies the
+original payout receipts or permanently closes a genuinely unadmitted command.
+An admitted processing/unknown command remains unresolved. A responsibility
+registered but never admitted for native forward execution can instead settle
+through the library's original forward-admission fence without provider I/O.
+If native admission already occurred, recovery must use the provider's positive
+non-admission fence or confirmed payout evidence; missing rows alone do not
+settle it.
+
+`V2UnitPaymentScopeTest` executes recorded native tasks for partial repayment,
+remaining cancellation, acknowledgement loss, late capture/refund completion,
+refusal, callback-free replay, registered-only cancellation and an injected
+failure after native admission but before provider dispatch. That injected
+failure is not a process-kill test. The fixture does not qualify common
+Order/Payment/Shipment quantity selection, physical fulfillment, installed
+recovery or the complete customer scenario matrix.
+
+```shell
+vendor/bin/phpunit tests/Unit/V2/StateMachine/UnitRefundGatewayTest.php
+vendor/bin/phpunit tests/Feature/V2/V2UnitPaymentScopeTest.php
+```
+
+### Original single-operation adapter
+
 `RetainedOperation` implements the existing `ScopedOperation` contract. Register
 it in the trusted handler registry and invoke it through a `DurableScope`; all
 provider I/O then belongs in recorded native activities. Its portable descriptor

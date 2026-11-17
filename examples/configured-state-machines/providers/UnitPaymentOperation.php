@@ -74,12 +74,7 @@ final readonly class UnitPaymentOperation implements ScopedOperation
 
     private function command(array $input): UnitRefundCommand
     {
-        $keys = array_keys($input);
-        sort($keys);
-        if ($keys !== ['refund', 'version'] || $input['version'] !== 1 || ! is_array($input['refund'])) {
-            throw new InvalidArgumentException('The retained unit-payment descriptor is malformed.');
-        }
-        $command = UnitRefundCommand::fromArray($input['refund']);
+        $command = UnitRefundCommand::fromObligation($input);
         if ($command->units !== array_keys($command->original->amounts)) {
             throw new InvalidArgumentException('Payment compensation must retain every original charged unit.');
         }
