@@ -8,7 +8,6 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Str;
 use LogicException;
 use Workflow\Serializers\CodecRegistry;
-use Workflow\V2\Compensation\Definition\PortableDescriptor;
 use Workflow\V2\Compensation\Persistence\ScopeStorage;
 use Workflow\V2\Compensation\Security\ScopeAuthorization;
 use Workflow\V2\Models\WorkflowCommand;
@@ -38,69 +37,14 @@ final readonly class RootReservationStore
     {
         [$version, $scopeVersion] = $this->authorize($identity, $principal, 'reserve');
         self::assertDefinition($identity);
-        $connection = self::instances()->getModel()->getConnection();
-        if (! $connection->getSchemaBuilder()->hasColumn('workflow_instances', 'native_root_reservation')) {
-            throw new LogicException('Native root reservations require the reservation migration.');
-        }
+        $connection = self::connection();
         $candidate = new RootReservation($identity, (string) Str::ulid(), $version, $scopeVersion);
-        return SqliteTransaction::run(static function () use ($candidate, $identity): RootReservation {
-            $root = self::instances()->lockForUpdate()->find($identity->instanceId());
-            if ($root !== null) {
-                $state = RootReservationState::readOwned($root, $identity);
-                $stored = RootReservation::fromArray($state['reservation']);
-                self::assertPolicies($stored, $candidate->authorizationVersion, $candidate->scopeAuthorizationVersion);
-                return $stored;
-            }
-            // Unique insertion chooses one original run even when the first two
-            // reservations overlap. A database deadlock retries this pure SQL body.
-            self::instances()->insertOrIgnore([
-                'id' => $identity->instanceId(),
-                'workflow_class' => $identity->workflowClass,
-                'workflow_type' => $identity->workflowType,
-                'namespace' => $identity->scope->namespace,
-                'reserved_at' => now(),
-                'run_count' => 0,
-                'created_at' => now(),
-                'updated_at' => now(),
-                'native_root_reservation' => RootReservationState::encode([
-                    'version' => 1,
-                    'reservation' => $candidate->toArray(),
-                    'status' => 'reserved',
-                    'admission' => null,
-                    'closureId' => null,
-                ]),
-            ]);
-            $root = self::instances()->lockForUpdate()->findOrFail($identity->instanceId());
-            $state = RootReservationState::readOwned($root, $identity);
-            $stored = RootReservation::fromArray($state['reservation']);
-            if ($stored->fingerprint() !== $candidate->fingerprint()) {
-                self::assertPolicies($stored, $candidate->authorizationVersion, $candidate->scopeAuthorizationVersion);
-                return $stored;
-            }
-            $database = ConfiguredV2Models::connection();
-            $existing = $database->table(ScopeStorage::SCOPES)->where('id', $identity->scope->id())
-                ->lockForUpdate()
-                ->first();
-            if ($existing !== null) {
-                throw new LogicException('An existing scope cannot become a new root reservation.');
-            }
-            $created = $database->table(ScopeStorage::SCOPES)->insertOrIgnore([
-                'id' => $identity->scope->id(),
-                'identity' => PortableDescriptor::encode($identity->scope->toArray()),
-                'recovery_instance_id' => $identity->scope->recoveryInstanceId(),
-                'original_run_id' => $stored->originalRunId,
-                'status' => 'root_reserved',
-            ]);
-            if ($created !== 1) {
-                throw new LogicException('An ordinary scope opening won the root reservation race.');
-            }
-            ScopeStorage::append(self::scope($stored), 'root_reserved', [
-                'reservationFingerprint' => $stored->fingerprint(),
-            ]);
-            return $stored;
-        }, attempts: 3, admission: static fn () => self::acquireWriter(
-            $identity->instanceId()
-        ), connection: $connection);
+        return SqliteTransaction::run(
+            static fn (): RootReservation => RootReservationRows::reserve($candidate),
+            attempts: 3,
+            admission: static fn () => self::acquireWriter($identity->instanceId()),
+            connection: $connection
+        );
     }
 
     /**
@@ -128,33 +72,29 @@ final readonly class RootReservationStore
     {
         $this->authorizeReservation($reservation, $principal, 'close');
         return SqliteTransaction::run(
-            static function () use ($reservation): RootBinding|NeverAdmittedRoot {
-                $root = self::instances()->lockForUpdate()->findOrFail($reservation->identity->instanceId());
-                $state = RootReservationState::matching($root, $reservation);
-                if ($state['status'] === 'admitted') {
-                    return RootBinding::fromArray($state['admission']);
-                }
-                self::assertUnused($root);
-                $scope = self::scope($reservation);
-                if ($state['status'] === 'reserved') {
-                    self::assertReservedScope($scope);
-                    $state['status'] = 'closed';
-                    $state['closureId'] = (string) Str::ulid();
-                    ConfiguredV2Models::connection()->table(ScopeStorage::SCOPES)
-                        ->where('id', $scope['id'])->update([
-                            'status' => 'root_never_admitted',
-                        ]);
-                    ScopeStorage::append($scope, 'root_never_admitted', [
-                        'closureId' => $state['closureId'],
-                    ]);
-                    RootReservationState::write($root, $state);
-                } elseif ($scope['status'] !== 'root_never_admitted') {
-                    throw new LogicException('The root closure has no matching permanent scope fence.');
-                }
-                return new NeverAdmittedRoot($reservation, $state['closureId']);
-            },
+            static fn (): RootBinding|NeverAdmittedRoot => RootReservationRows::close($reservation),
             admission: static fn () => self::acquireWriter($reservation->identity->instanceId()),
-            connection: self::instances()->getModel()->getConnection()
+            connection: self::connection()
+        );
+    }
+
+    /**
+     * Permanently close the authorized original intent even before its first reservation.
+     * The retained definition stays data; no deployed class is required for non-admission.
+     */
+    public function closeIntent(RootIdentity $identity, string $principal): RootBinding|NeverAdmittedRoot
+    {
+        [$version, $scopeVersion] = $this->authorize($identity, $principal, 'close');
+        $connection = self::connection();
+        $candidate = new RootReservation($identity, (string) Str::ulid(), $version, $scopeVersion);
+        return SqliteTransaction::run(
+            static function () use ($candidate): RootBinding|NeverAdmittedRoot {
+                $reservation = RootReservationRows::reserve($candidate);
+                return RootReservationRows::close($reservation);
+            },
+            attempts: 3,
+            admission: static fn () => self::acquireWriter($identity->instanceId()),
+            connection: $connection
         );
     }
 
@@ -181,15 +121,15 @@ final readonly class RootReservationStore
         if ($state['status'] === 'admitted') {
             return RootBinding::fromArray($state['admission']);
         }
-        self::assertUnused($root);
-        $scope = self::scope($reservation);
+        RootReservationRows::assertUnused($root);
+        $scope = RootReservationRows::scope($reservation);
         if ($state['status'] === 'closed') {
             if ($scope['status'] !== 'root_never_admitted') {
                 throw new LogicException('The root closure has no matching permanent scope fence.');
             }
             return new NeverAdmittedRoot($reservation, $state['closureId']);
         }
-        self::assertReservedScope($scope);
+        RootReservationRows::assertReservedScope($scope);
         self::assertDefinition($reservation->identity);
         if (CodecRegistry::defaultCodec() !== $reservation->identity->profile->codec
             || \Workflow\V2\Support\WorkerCompatibility::current() !== $reservation->identity->profile->compatibility) {
@@ -209,8 +149,8 @@ final readonly class RootReservationStore
     ): RootBinding {
         self::assertNativeTransaction($root);
         $state = RootReservationState::matching($root, $reservation);
-        $scope = self::scope($reservation);
-        self::assertReservedScope($scope);
+        $scope = RootReservationRows::scope($reservation);
+        RootReservationRows::assertReservedScope($scope);
         if ($state['status'] !== 'reserved' || $run->id !== $reservation->originalRunId
             || $run->workflow_instance_id !== $root->id || $root->current_run_id !== $run->id
             || (int) $root->run_count !== 1 || $command->workflow_run_id !== $run->id
@@ -250,14 +190,7 @@ final readonly class RootReservationStore
     private function authorizeReservation(RootReservation $reservation, string $principal, string $operation): void
     {
         [$version, $scopeVersion] = $this->authorize($reservation->identity, $principal, $operation);
-        self::assertPolicies($reservation, $version, $scopeVersion);
-    }
-
-    private static function assertPolicies(RootReservation $reservation, string $version, string $scopeVersion): void
-    {
-        if ($version !== $reservation->authorizationVersion || $scopeVersion !== $reservation->scopeAuthorizationVersion) {
-            throw new LogicException('The original root authorization policies must remain pinned.');
-        }
+        RootReservationState::assertPolicies($reservation, $version, $scopeVersion);
     }
 
     private function authorize(RootIdentity $identity, string $principal, string $operation): array
@@ -298,34 +231,14 @@ final readonly class RootReservationStore
         }
     }
 
-    private static function assertUnused(WorkflowInstance $root): void
+    private static function connection(): \Illuminate\Database\Connection
     {
-        if ((int) $root->run_count !== 0 || $root->current_run_id !== null || $root->runs()->exists()
-            || $root->getRawOriginal('native_child_reservation') !== null) {
-            throw new LogicException('An uncertain root cannot be certified never admitted.');
+        $model = self::instances()->getModel();
+        $connection = $model->getConnection();
+        if (! $connection->getSchemaBuilder()->hasColumn($model->getTable(), 'native_root_reservation')) {
+            throw new LogicException('Native root reservations require the reservation migration.');
         }
-    }
-
-    private static function scope(RootReservation $reservation): array
-    {
-        $identity = $reservation->identity->scope;
-        $scope = ConfiguredV2Models::connection()->table(ScopeStorage::SCOPES)->where('id', $identity->id())
-            ->lockForUpdate()
-            ->first();
-        if ($scope === null || $scope->identity !== PortableDescriptor::encode($identity->toArray())
-            || $scope->original_run_id !== $reservation->originalRunId
-            || $scope->recovery_instance_id !== $identity->recoveryInstanceId()) {
-            throw new LogicException('The exact original root scope fence is unavailable.');
-        }
-        return (array) $scope;
-    }
-
-    private static function assertReservedScope(array $scope): void
-    {
-        if ($scope['status'] !== 'root_reserved' || (int) $scope['obligation_count'] !== 0
-            || (int) $scope['request_count'] !== 0 || (int) $scope['event_sequence'] !== 1) {
-            throw new LogicException('The original root scope is no longer reserved and empty.');
-        }
+        return $connection;
     }
 
     /**

@@ -563,6 +563,145 @@ final class RootReservationTest extends TestCase
         $this->assertLessThanOrEqual(65536, strlen($raw));
     }
 
+    public function testOriginalIntentCanCloseBeforeAnyReservationAndReplayItsLostAcknowledgement(): void
+    {
+        $identity = $this->identity();
+        $outcome = $this->store()
+            ->closeIntent($identity, 'owner');
+        $this->assertInstanceOf(NeverAdmittedRoot::class, $outcome);
+        $loaded = $this->store()
+            ->load(RootIdentity::fromArray($identity->toArray()), 'owner');
+        $this->assertSame($outcome->reservation->toArray(), $loaded->toArray());
+        $this->assertEquals($outcome, $this->store()->closeIntent($identity, 'owner'));
+        $this->assertEquals($outcome, $this->store()->start($loaded, 'owner', ['Taylor']));
+        $this->assertSame($loaded->toArray(), $this->store()->reserve($identity, 'owner')->toArray());
+        $this->assertSame(0, WorkflowRun::query()->count());
+        $this->assertSame(0, WorkflowTask::query()->count());
+        $this->assertSame(['root_reserved', 'root_never_admitted'], DB::table(ScopeStorage::JOURNAL)
+            ->orderBy('event_sequence')
+            ->pluck('kind')
+            ->all());
+    }
+
+    public function testFirstIntentClosureDoesNotResolveAnUnavailableHistoricalDefinition(): void
+    {
+        $value = $this->identity()
+            ->toArray();
+        $value['workflowClass'] = 'Tests\\UnavailableOriginalRootBeforeReservation';
+        $identity = RootIdentity::fromArray($value);
+        $autoloaded = [];
+        $loader = static function (string $class) use (&$autoloaded): void {
+            $autoloaded[] = $class;
+        };
+        spl_autoload_register($loader);
+        try {
+            $closed = $this->store()
+                ->closeIntent($identity, 'owner');
+            $this->assertInstanceOf(NeverAdmittedRoot::class, $closed);
+            $this->assertEquals($closed, $this->store()->closeIntent($identity, 'owner'));
+            $this->assertSame($identity->toArray(), $this->store()->load($identity, 'owner')->identity->toArray());
+            $this->assertSame(0, WorkflowRun::query()->count());
+        } finally {
+            spl_autoload_unregister($loader);
+        }
+        $this->assertNotContains($identity->workflowClass, $autoloaded);
+    }
+
+    public function testIntentClosureReturnsAnAlreadyAdmittedOriginalWithoutCreatingAnotherRun(): void
+    {
+        $identity = $this->identity();
+        $reservation = $this->store()
+            ->reserve($identity, 'owner');
+        $binding = $this->store()
+            ->start($reservation, 'owner', ['Taylor']);
+        $this->assertSame($binding->toArray(), $this->store()->closeIntent($identity, 'owner')->toArray());
+        $this->assertSame(1, WorkflowRun::query()->count());
+        $this->assertSame('open', DB::table(ScopeStorage::SCOPES)->value('status'));
+    }
+
+    public function testIntentClosureCannotReplaceThePinnedDescriptorOrPolicy(): void
+    {
+        $identity = $this->identity();
+        $closed = $this->store()
+            ->closeIntent($identity, 'owner');
+        $value = $identity->toArray();
+        $value['inputFingerprint'] = str_repeat('f', 64);
+        foreach (['input', 'policy'] as $change) {
+            try {
+                $change === 'input'
+                    ? $this->store()
+                        ->closeIntent(RootIdentity::fromArray($value), 'owner')
+                    : $this->store('different-policy')
+                        ->closeIntent($identity, 'owner');
+                $this->fail('A successor replaced the original intent authority.');
+            } catch (LogicException $error) {
+                $this->assertStringContainsString(
+                    $change === 'input' ? 'immutable descriptor' : 'policies must remain pinned',
+                    $error->getMessage()
+                );
+            }
+        }
+        $this->assertEquals($closed, $this->store()->closeIntent($identity, 'owner'));
+    }
+
+    public function testFirstIntentClosureRequiresHostAuthorizationBeforeAnyProtectedQuery(): void
+    {
+        $identity = $this->identity();
+        $queries = [];
+        DB::listen(static function ($event) use (&$queries): void {
+            $queries[] = $event->sql;
+        });
+        try {
+            $this->store()
+                ->closeIntent($identity, 'foreign');
+            $this->fail('A foreign principal closed the original intent.');
+        } catch (LogicException $error) {
+            $this->assertSame('root_access_refused', $error->getMessage());
+        }
+        $this->assertSame([], $queries);
+    }
+
+    public function testFirstIntentClosureCannotAdoptAnExistingOrdinaryScope(): void
+    {
+        $identity = $this->identity();
+        (new ScopeRepository())->open($identity->scope, 'original-ordinary-run');
+        try {
+            $this->store()
+                ->closeIntent($identity, 'owner');
+            $this->fail('An ordinary ledger was converted to non-admission evidence.');
+        } catch (LogicException $error) {
+            $this->assertStringContainsString('existing scope', $error->getMessage());
+        }
+        $this->assertSame(0, WorkflowInstance::query()->count());
+        $this->assertSame('original-ordinary-run', DB::table(ScopeStorage::SCOPES)->value('original_run_id'));
+    }
+
+    public function testFirstIntentClosureRollsBackItsInstanceAndScopeWhenTheFinalFenceWriteFails(): void
+    {
+        $identity = $this->identity();
+        // Inject at the actual final SQL update, after both rows and journal writes.
+        $armed = true;
+        DB::connection()->beforeExecuting(static function (string $query) use (&$armed): void {
+            if ($armed && str_starts_with(strtolower($query), 'update') && str_contains(
+                $query,
+                'native_root_reservation'
+            )) {
+                $armed = false;
+                throw new LogicException('injected_root_closure_write_failure');
+            }
+        });
+        try {
+            $this->store()
+                ->closeIntent($identity, 'owner');
+            $this->fail('The injected closure write failure was ignored.');
+        } catch (LogicException $error) {
+            $this->assertSame('injected_root_closure_write_failure', $error->getMessage());
+        }
+        $this->assertSame(0, WorkflowInstance::query()->count());
+        $this->assertSame(0, DB::table(ScopeStorage::SCOPES)->count());
+        $this->assertSame(0, DB::table(ScopeStorage::JOURNAL)->count());
+    }
+
     private function identity(): RootIdentity
     {
         $identity = RootIdentity::forWorkflow(
