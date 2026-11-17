@@ -324,6 +324,17 @@ final readonly class Journal
         if ($request->target === null) {
             return true;
         }
+        if ($request->action === 'refund'
+            && $this->query(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'unit_money_quotes'",
+                []
+            )->fetchColumn() !== false
+            && $this->query(
+                'SELECT id FROM unit_money_quotes WHERE id = ?',
+                [$request->target->key()]
+            )->fetchColumn() !== false) {
+            throw new LogicException('A unit-accounted capture requires its original unit refund gateway.');
+        }
         $row = $this->query('SELECT * FROM provider_operations WHERE id = ?', [$request->target->key()])
             ->fetch(PDO::FETCH_ASSOC);
         if ($row === false) {
