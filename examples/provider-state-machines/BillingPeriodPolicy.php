@@ -42,7 +42,17 @@ final class BillingPeriodPolicy
             'paidOnTime' => $paidOnTime,
             'latePayment' => $confirmedAt !== null && ! $paidOnTime,
             'access' => $inPeriod && ($paidOnTime || ($grace && $period->accessDuringGrace)),
-            'state' => ! $inPeriod ? 'outside-period' : ($paidOnTime ? 'paid' : ($grace ? 'grace' : 'unpaid')),
+            'state' => self::state($inPeriod, $paidOnTime, $grace),
         ];
+    }
+
+    private static function state(bool $inPeriod, bool $paidOnTime, bool $grace): string
+    {
+        return match (true) {
+            ! $inPeriod => 'outside-period',
+            $paidOnTime => 'paid',
+            $grace => 'grace',
+            default => 'unpaid',
+        };
     }
 }
