@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+## 2.29.0 - 2026-11-17
+
+**Run migrations.** Seven migrations add the compensation scope/obligation
+and schedule occurrence tables, nullable `workflow_runs.timeout_cleanup_work_deadline_at`,
+nullable `workflow_instances.native_child_reservation` and
+`native_root_reservation`, and two MariaDB-only timestamp corrections. All are
+additive and do not rewrite retained rows. The experimental APIs below (compensation
+scopes, deadline-triggered cleanup, child-start receipts, entity references and
+the `Workflow\V2\StateMachine` transition protocol) carry no backward-compatibility
+promise yet; see `docs/api-stability.md`.
+
+- Experimental `Workflow\V2\StateMachine` additions (#1069): shared machine
+  definitions, policy profiles, recorded rule assessments, execution references
+  and budgets, run through native activities, children and retained
+  compensation. Provider integration and published-package recovery
+  qualification remain unfinished; there is no in-flight profile migration API.
+  See `docs/business-state-machines.md`.
+
 - Replaying a resolved selection restores its recorded winner without advancing
   older losing signal waits. New signals remain bound to their current wait
   occurrence, including after an earlier selection member was cancelled.
@@ -49,9 +67,6 @@
   migration. Worker-protocol execution refuses the new calls. State-bound
   business bindings and retained compensation remain separate #1069 work.
 
-- Require patched Laravel 12.72 or 13.41 minimums for the current Composer
-  security advisories. Keep existing application audits enabled and update
-  application lockfiles before upgrading Workflow (#1133).
 - Failed-run redrive preserves fractional seconds in replay clocks for the
   original run start and reused steps. Repeated redrive keeps previously
   recorded clock strings unchanged.
@@ -93,6 +108,12 @@
   its index without blocking writes. Poll-mode and service starts refuse this
   option until their capability admission is implemented (server#1201). Bridge
   workers cannot claim an opted-in embedded run. Service mode follows separately.
+
+## 2.28.1 - 2026-11-13
+
+- Require patched Laravel 12.72 or 13.41 minimums for the current Composer
+  security advisories. Keep existing application audits enabled and update
+  application lockfiles before upgrading Workflow (#1133).
 
 ## 2.28.0 - 2026-11-13
 

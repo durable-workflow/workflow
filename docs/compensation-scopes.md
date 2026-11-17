@@ -340,6 +340,6 @@ test database; SQLite does not qualify those race orderings.
 The example is an integration starting point for these experimental APIs. The
 complete StateMachine transition/rule adapter, policy migration and remaining
 [business state-machine criteria](https://github.com/durable-workflow/workflow/issues/1069)
-are separate. These APIs are absent from the published 2.28.1 package; a supported
-package, upgrade/recovery qualification and versioned consumer documentation are
-still publication milestones.
+are separate. These experimental APIs first ship in 2.29.0; installed upgrade/recovery
+qualification and versioned consumer documentation remain milestones before
+they are supported.
