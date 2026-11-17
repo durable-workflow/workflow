@@ -989,6 +989,31 @@ final class WorkflowStub
         return $result;
     }
 
+    /**
+     * @internal Host-authorized original-root admission, outside workflow replay.
+     */
+    public static function startReservedRoot(
+        \Workflow\V2\Compensation\Admission\RootReservationStore $store,
+        \Workflow\V2\Compensation\Admission\RootReservation $reservation,
+        string $principal,
+        array $arguments,
+    ): \Workflow\V2\Compensation\Admission\RootBinding|\Workflow\V2\Compensation\Admission\NeverAdmittedRoot {
+        $store->authorizeStart($reservation, $principal, $arguments);
+        $profile = $reservation->identity->profile;
+        TimeoutCleanup::assertEmbeddedAdmission($profile->options->timeoutCleanupSeconds);
+        $stub = self::load($reservation->identity->instanceId(), $reservation->identity->scope->namespace);
+        $metadata = new WorkflowMetadata($arguments, new \Workflow\WorkflowOptions(
+            connection: $profile->connection,
+            queue: $profile->queue,
+        ));
+        $result = $stub->admitStart($metadata, $profile->options, null, rootReservation: $reservation);
+        if (! $result instanceof \Workflow\V2\Compensation\Admission\RootBinding
+            && ! $result instanceof \Workflow\V2\Compensation\Admission\NeverAdmittedRoot) {
+            throw new LogicException('Root admission did not retain its original binding.');
+        }
+        return $result;
+    }
+
     public function attemptStart(...$arguments): StartResult
     {
         [$arguments, $startOptions] = $this->extractStartArguments($arguments);
@@ -1002,12 +1027,12 @@ final class WorkflowStub
             $observabilityContext = TraceCarrier::admissionParent($diagnostic);
         }
         if (! $tracing) {
-            return $this->admitStart($metadata, $startOptions, $observabilityContext);
+            return $this->admitOrdinaryStart($metadata, $startOptions, $observabilityContext);
         }
 
         return ExecutionTracing::admission(
             $this->instance,
-            fn () => $this->admitStart($metadata, $startOptions, $observabilityContext),
+            fn () => $this->admitOrdinaryStart($metadata, $startOptions, $observabilityContext),
             enabled: true,
             diagnostic: $diagnostic
         );
@@ -1026,7 +1051,7 @@ final class WorkflowStub
         }
         TimeoutCleanup::assertEmbeddedAdmission($admission->profile->timeoutCleanupSeconds);
 
-        return $this->admitStart(
+        return $this->admitOrdinaryStart(
             WorkflowMetadata::fromStartArguments([$admission->scope->toArray()]),
             $admission->profile,
             null,
@@ -1747,29 +1772,47 @@ final class WorkflowStub
         return new CommandResult($command);
     }
 
+    private function admitOrdinaryStart(
+        WorkflowMetadata $metadata,
+        StartOptions $options,
+        ?array $context,
+        ?RecoveryRunAdmission $recovery = null,
+    ): StartResult {
+        $result = $this->admitStart($metadata, $options, $context, $recovery);
+        if (! $result instanceof StartResult) {
+            throw new LogicException('Ordinary admission returned a reserved root result.');
+        }
+        return $result;
+    }
+
     private function admitStart(
         WorkflowMetadata $metadata,
         StartOptions $startOptions,
         ?array $observabilityContext,
         ?RecoveryRunAdmission $recoveryAdmission = null,
-    ): StartResult {
+        ?\Workflow\V2\Compensation\Admission\RootReservation $rootReservation = null,
+    ): StartResult|\Workflow\V2\Compensation\Admission\RootBinding|\Workflow\V2\Compensation\Admission\NeverAdmittedRoot {
         /** @var WorkflowCommand|null $command */
         $command = null;
         $task = null;
         $startedRun = null;
+        $rootOutcome = null;
 
         SqliteTransaction::run(function () use (
             $metadata,
             $startOptions,
             $observabilityContext,
             $recoveryAdmission,
+            $rootReservation,
             &$task,
             &$command,
             &$startedRun,
+            &$rootOutcome,
         ): void {
             $task = null;
             $command = null;
             $startedRun = null;
+            $rootOutcome = null;
 
             /** @var WorkflowInstance $instance */
             $instance = self::instanceQuery()
@@ -1777,7 +1820,20 @@ final class WorkflowStub
                 ->findOrFail($this->instance->id);
 
             $recoveryIntent = null;
-            \Workflow\V2\StateMachine\Binding\ChildReservationStore::assertOrdinaryStartAllowed($instance);
+            if ($rootReservation === null) {
+                \Workflow\V2\StateMachine\Binding\ChildReservationStore::assertOrdinaryStartAllowed($instance);
+            } else {
+                if ($recoveryAdmission !== null || $instance->getRawOriginal('native_child_reservation') !== null) {
+                    throw new LogicException('Root admission cannot reuse a child or recovery admission.');
+                }
+                $rootOutcome = \Workflow\V2\Compensation\Admission\RootReservationStore::prepareAdmission(
+                    $instance,
+                    $rootReservation,
+                );
+                if ($rootOutcome !== null) {
+                    return;
+                }
+            }
             if ($recoveryAdmission !== null) {
                 $workflowClass = TypeRegistry::resolveWorkflowClass(
                     $instance->workflow_class,
@@ -1829,6 +1885,9 @@ final class WorkflowStub
             }
 
             $workflowClass = TypeRegistry::resolveWorkflowClass($instance->workflow_class, $instance->workflow_type);
+            if ($rootReservation !== null && $workflowClass !== $rootReservation->identity->workflowClass) {
+                throw new LogicException('A root reservation cannot be retargeted through a deployed type alias.');
+            }
             $commandContract = RunCommandContract::snapshot($workflowClass);
             [$businessKey, $visibilityLabels, $memo, $searchAttributes] = $this->initialVisibilityMetadata(
                 $instance,
@@ -1846,6 +1905,9 @@ final class WorkflowStub
             $queue = RoutingResolver::workflowQueue($workflowClass, $metadata);
             $command = $this->rejectIncompatibleStart($instance, $metadata->arguments, $connection, $queue);
             if ($command instanceof WorkflowCommand) {
+                if ($rootReservation !== null) {
+                    throw new LogicException('The reserved root is incompatible with the available worker fleet.');
+                }
                 return;
             }
 
@@ -1877,6 +1939,9 @@ final class WorkflowStub
 
             /** @var WorkflowRun $run */
             $run = self::runQuery()->create([
+                ...($rootReservation === null ? [] : [
+                    'id' => $rootReservation->originalRunId,
+                ]),
                 'workflow_instance_id' => $instance->id,
                 'run_number' => $instance->run_count + 1,
                 'observability_context' => $observabilityContext,
@@ -1915,18 +1980,29 @@ final class WorkflowStub
 
             $this->seedTypedVisibilityMetadata($run, $memo, $searchAttributes);
 
+            $startContext = null;
+            if ($recoveryAdmission !== null && $recoveryIntent !== null) {
+                $startContext = $recoveryAdmission->context(
+                    CommandContext::system('compensation_recovery'),
+                    $recoveryIntent,
+                    $run,
+                );
+            } elseif ($rootReservation !== null) {
+                $startContext = CommandContext::system('root_scope_admission')->with([
+                    'root_scope_admission' => [
+                        'version' => 1,
+                        'reservationFingerprint' => $rootReservation->fingerprint(),
+                        'originalRunId' => $rootReservation->originalRunId,
+                        'scope' => $rootReservation->identity->scope->toArray(),
+                    ],
+                ]);
+            }
             $command = $this->recordNewStartCommand(
                 $instance,
                 $run,
                 $payloadCodec,
                 $serializedArguments,
-                $recoveryAdmission !== null && $recoveryIntent !== null
-                    ? $recoveryAdmission->context(
-                        CommandContext::system('compensation_recovery'),
-                        $recoveryIntent,
-                        $run
-                    )
-                    : null,
+                $startContext,
             );
             $recoveryAdmission?->bind($command, $run);
             $recoveryLink = null;
@@ -1963,6 +2039,9 @@ final class WorkflowStub
                     'workflow_link_id' => $recoveryLink->id,
                     'recovery_kind' => 'compensation_recovery_restart',
                 ]),
+                ...($rootReservation === null ? [] : [
+                    'root_scope_admission' => $command->context['root_scope_admission'],
+                ]),
                 TimeoutCleanup::STARTED_KEY => TimeoutCleanup::startedPayload(
                     $startOptions->timeoutCleanupSeconds,
                     $executionDeadlineAt,
@@ -1970,6 +2049,14 @@ final class WorkflowStub
                 ),
             ]);
 
+            if ($rootReservation !== null) {
+                $rootOutcome = \Workflow\V2\Compensation\Admission\RootReservationStore::recordAdmission(
+                    $instance,
+                    $rootReservation,
+                    $run,
+                    $command,
+                );
+            }
             $task = $this->createInitialWorkflowTask($run);
 
             self::projectRun($run, ['instance', 'tasks', 'activityExecutions', 'failures', 'historyEvents']);
@@ -1989,6 +2076,9 @@ final class WorkflowStub
             TaskDispatcher::dispatch($task);
         }
 
+        if ($rootReservation !== null && $rootOutcome !== null) {
+            return $rootOutcome;
+        }
         if (! $command instanceof WorkflowCommand) {
             throw new LogicException(sprintf(
                 'Workflow instance [%s] failed to record a start command.',
@@ -2210,6 +2300,9 @@ final class WorkflowStub
             'run_deadline_at' => $startMetadata['run_deadline_at']?->toIso8601String(),
             ...(isset($startMetadata['compensation_recovery']) ? [
                 'compensation_recovery' => $startMetadata['compensation_recovery'],
+            ] : []),
+            ...(isset($startMetadata['root_scope_admission']) ? [
+                'root_scope_admission' => $startMetadata['root_scope_admission'],
             ] : []),
             ...(isset($startMetadata['continued_from_run_id']) ? [
                 'continued_from_run_id' => $startMetadata['continued_from_run_id'],

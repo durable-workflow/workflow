@@ -124,6 +124,7 @@ final class HistoryEventPayloadContract
             'resume_step_sequence',
             'recovery_kind',
             'compensation_recovery',
+            'root_scope_admission',
             'definition_changed_from',
             'replayed_started_at',
             'retry_attempt',

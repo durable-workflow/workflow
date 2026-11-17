@@ -47,7 +47,8 @@ final class ScopeStorage
     {
         $row = ConfiguredV2Models::connection()->table(self::SCOPES)->where('id', $identity->id())->lockForUpdate()
             ->first();
-        if ($row === null || $row->identity !== PortableDescriptor::encode($identity->toArray())) {
+        if ($row === null || $row->identity !== PortableDescriptor::encode($identity->toArray())
+            || in_array($row->status, ['root_reserved', 'root_never_admitted'], true)) {
             throw new LogicException('The exact compensation scope generation is unavailable.');
         }
         return (array) $row;
