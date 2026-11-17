@@ -27,22 +27,10 @@ final readonly class OrderPeriodPaymentReceipt
     {
         $terms = $period->order ?? throw new LogicException('An original Order is required.');
         $key = $terms->subjectKey();
-        [$assignment, $original] = $this->authority->assignment($key);
-        if (PortableDescriptor::encode($original->toArray()) !== PortableDescriptor::encode($terms->toArray())) {
-            throw new LogicException('The period substituted its original Order terms.');
-        }
-        if ($assignment->root_run === null) {
+        $payment = $this->originalPayment($terms, $root);
+        if ($payment === null) {
             return null;
         }
-        if ($assignment->root_run !== $root->id) {
-            throw new LogicException('The period substituted its original Order owner.');
-        }
-        $actor = $this->authority->db->table('provider_machine_actors')
-            ->where('id', Authority::subjectId($key, 'payment'))->first();
-        if ($actor === null) {
-            return null;
-        }
-        $payment = WorkflowRun::query()->findOrFail($actor->native_run);
         [$actualActor, $subject, $plan] = $this->authority->actor($payment);
         if ($actualActor->role !== 'payment' || $payment->workflow_class !== FundingPayment::class
             || $plan->rootRun !== $root->id || $plan->recipe !== FundingCatalogue::IMMEDIATE) {
@@ -68,6 +56,24 @@ final readonly class OrderPeriodPaymentReceipt
             $this->assertPublication($key, $payment, $subject);
         }
         return $receipt->confirmedAt;
+    }
+
+    private function originalPayment(OrderTerms $terms, WorkflowRun $root): ?WorkflowRun
+    {
+        $key = $terms->subjectKey();
+        [$assignment, $original] = $this->authority->assignment($key);
+        if (PortableDescriptor::encode($original->toArray()) !== PortableDescriptor::encode($terms->toArray())) {
+            throw new LogicException('The period substituted its original Order terms.');
+        }
+        if ($assignment->root_run === null) {
+            return null;
+        }
+        if ($assignment->root_run !== $root->id) {
+            throw new LogicException('The period substituted its original Order owner.');
+        }
+        $actor = $this->authority->db->table('provider_machine_actors')
+            ->where('id', Authority::subjectId($key, 'payment'))->first();
+        return $actor === null ? null : WorkflowRun::query()->findOrFail($actor->native_run);
     }
 
     private function assertPublication(string $key, WorkflowRun $payment, object $subject): void

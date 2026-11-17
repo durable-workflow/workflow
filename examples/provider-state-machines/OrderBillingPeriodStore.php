@@ -106,15 +106,7 @@ final readonly class OrderBillingPeriodStore
                 throw new LogicException('The original Order assignment changed during period admission.');
             }
             if ($row->native_run !== null) {
-                $run = $this->assertRun($period, $row);
-                if ($current->root_run !== null && $current->root_run !== $run->id) {
-                    throw new LogicException('The original Order acquired a different native owner.');
-                }
-                return [
-                    'accepted' => true,
-                    'runId' => $run->id,
-                    'existing' => true,
-                ];
+                return $this->existingAdmission($period, $row, $current);
             }
             if ($current->root_run !== null) {
                 throw new LogicException('A foreign existing Order cannot become this period admission.');
@@ -254,6 +246,19 @@ final readonly class OrderBillingPeriodStore
         $this->authority->authorize($terms->subjectKey(), $this->authority->principal);
         $this->assignments->period($key);
         return $period;
+    }
+
+    private function existingAdmission(BillingPeriod $period, object $row, object $assignment): array
+    {
+        $run = $this->assertRun($period, $row);
+        if ($assignment->root_run !== null && $assignment->root_run !== $run->id) {
+            throw new LogicException('The original Order acquired a different native owner.');
+        }
+        return [
+            'accepted' => true,
+            'runId' => $run->id,
+            'existing' => true,
+        ];
     }
 
     private function row(BillingPeriod $period): object

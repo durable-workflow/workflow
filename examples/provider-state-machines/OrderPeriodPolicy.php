@@ -13,7 +13,7 @@ final readonly class OrderPeriodPolicy
      * @param list<BillingPeriod> $grants
      */
     public function __construct(
-        private Authority $authority,
+        Authority $authority,
         private array $grants = [],
     ) {
         if (! array_is_list($grants)) {
