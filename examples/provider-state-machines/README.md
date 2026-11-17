@@ -596,8 +596,10 @@ container and call `admit($period->subjectKey())`.
 This admission atomically records the original period receipt and starts the
 existing `FundingCheckout`; its actual `FundingPayment` and `FullShipment`
 children retain the common routes, reservations and verified scope ownership.
-The associated period's payment descriptor is that genuine Order's capture
-and refund descriptor. It never creates a second service-only charge. Repeated
+The adapter uses that genuine Order's capture and refund descriptor directly.
+The existing `BillingPeriod::paymentDescriptor()` service identity remains
+unchanged and is not used to charge an associated Order. No second service
+charge is created. Repeated
 admission returns the original Order run rather than adopting a foreign run.
 
 `OrderBillingPeriodStore::access()` projects service entitlement separately

@@ -99,7 +99,7 @@ final class V2OrderBillingPeriodTest extends TestCase
         $this->assertSame(1, WorkflowRun::query()->where('workflow_class', FundingCheckout::class)->count());
         $this->assertSame(1, WorkflowRun::query()->where('workflow_class', FundingPayment::class)->count());
         $this->assertSame(0, WorkflowRun::query()->where('workflow_class', ServicePeriodPayment::class)->count());
-        $this->assertSame($this->terms->descriptor('payment'), $this->period->paymentDescriptor());
+        $this->assertNotSame($this->terms->descriptor('payment'), $this->period->paymentDescriptor());
         $before = $this->periodStore->admit($this->period->subjectKey());
         $this->assertTrue($before['existing']);
         $this->assertSame($root->runId(), $before['runId']);
@@ -193,7 +193,7 @@ final class V2OrderBillingPeriodTest extends TestCase
     public function testAnOnTimeCommitAcknowledgedAfterGraceKeepsTheOriginalOrder(string $policy): void
     {
         $root = $this->startPeriodOrder($policy, Status::Processing);
-        $charge = Request::fromArray($this->period->paymentDescriptor()['forward']);
+        $charge = Request::fromArray($this->period->order->descriptor('payment')['forward']);
         Carbon::setTestNow(Carbon::createFromTimestampUTC($this->period->paymentDeadline - 1));
         $this->provider->resolve($charge, Status::Confirmed);
         // Rebuild the host's policy/handlers while no native task is executing.
@@ -220,7 +220,7 @@ final class V2OrderBillingPeriodTest extends TestCase
     {
         $this->startPeriodOrder($policy, Status::Processing);
         Carbon::setTestNow(Carbon::createFromTimestampUTC($this->period->paymentDeadline));
-        $charge = Request::fromArray($this->period->paymentDescriptor()['forward']);
+        $charge = Request::fromArray($this->period->order->descriptor('payment')['forward']);
         $this->provider->resolve($charge, Status::Confirmed);
         $this->signalPayment('late-original-money');
         $this->assertSame('paid', $this->state('payment'), $this->progress());
@@ -285,7 +285,7 @@ final class V2OrderBillingPeriodTest extends TestCase
             $this->store->authority->subject($this->nextPeriod->order->subjectKey(), 'payment')
 ->state
         );
-        $nextCharge = Request::fromArray($this->nextPeriod->paymentDescriptor()['forward']);
+        $nextCharge = Request::fromArray($this->nextPeriod->order->descriptor('payment')['forward']);
         $this->assertFalse($this->provider->timedLookup($nextCharge)->observation->admissionClosed);
         $this->assertSame(
             2,

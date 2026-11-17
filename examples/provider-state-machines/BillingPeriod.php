@@ -81,9 +81,6 @@ final readonly class BillingPeriod
      */
     public function paymentDescriptor(): array
     {
-        if ($this->order !== null) {
-            return $this->order->descriptor('payment');
-        }
         $identity = fn (string $operation): Identity => new Identity(
             $this->client,
             $this->subscription,
