@@ -52,4 +52,14 @@ final readonly class UnitRefundCommand
         }
         return new self(OriginalUnitAmounts::fromArray($value['original']), $value['requestKey'], $value['units']);
     }
+
+    public static function fromObligation(array $input): self
+    {
+        $keys = array_keys($input);
+        sort($keys);
+        if ($keys !== ['refund', 'version'] || $input['version'] !== 1 || ! is_array($input['refund'])) {
+            throw new \InvalidArgumentException('The retained unit-refund descriptor is malformed.');
+        }
+        return self::fromArray($input['refund']);
+    }
 }

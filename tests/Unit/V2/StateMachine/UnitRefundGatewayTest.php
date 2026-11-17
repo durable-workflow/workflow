@@ -113,6 +113,55 @@ final class UnitRefundGatewayTest extends TestCase
         $this->assertSame(1, (int) $db->query('SELECT COUNT(*) FROM unit_refund_payouts')->fetchColumn());
     }
 
+    public function testClosingAnUnstartedRefundPositivelyPreventsItsLaterAdmission(): void
+    {
+        [$db, , $gateway, $original] = $this->funded();
+        $command = new UnitRefundCommand($original, 'unstarted-shortage', [2]);
+        $gateway->plan($command, Status::Confirmed);
+        $closed = $gateway->closeAdmission($command);
+        $this->assertSame('not-executed', $closed['status']);
+        $this->assertTrue($closed['admissionClosed']);
+        $this->assertSame($closed, $gateway->attempt($command));
+        $this->assertRefused(
+            static fn () => $gateway->resolve($command, Status::Confirmed),
+            'Only an original unresolved'
+        );
+        $this->assertSame(0, (int) $db->query('SELECT COUNT(*) FROM unit_refund_payouts')->fetchColumn());
+    }
+
+    public function testClosingAnAdmittedProcessingRefundDoesNotInventNonExecution(): void
+    {
+        [, , $gateway, $original] = $this->funded();
+        $command = new UnitRefundCommand($original, 'admitted-original-shortage', [2]);
+        $gateway->plan($command, Status::Processing);
+        $gateway->attempt($command);
+        $pending = $gateway->closeAdmission($command);
+        $this->assertSame('processing', $pending['status']);
+        $this->assertFalse($pending['admissionClosed']);
+        $this->assertSame([], $pending['confirmedUnits']);
+        $this->assertSame(499, $gateway->resolve($command, Status::Confirmed)['ownPayoutMinor']);
+        $this->assertSame('confirmed', $gateway->closeAdmission($command)['status']);
+    }
+
+    public function testAnUnadmittedQueuedRefundCanCloseWithoutTakingAnotherCommandsUnits(): void
+    {
+        [$db, , $gateway, $original] = $this->funded();
+        $first = new UnitRefundCommand($original, 'first-admitted-shortage', [2]);
+        $gateway->plan($first, Status::Processing);
+        $gateway->attempt($first);
+        $queued = new UnitRefundCommand($original, 'queued-full-refund', [0, 1, 2]);
+        $gateway->plan($queued, Status::Confirmed);
+        $gateway->attempt($queued);
+        $this->assertSame('not-executed', $gateway->closeAdmission($queued)['status']);
+        $this->assertSame(1, (int) $db->query('SELECT COUNT(*) FROM unit_refund_claims')->fetchColumn());
+        $this->assertSame(499, $gateway->resolve($first, Status::Confirmed)['ownPayoutMinor']);
+        $this->assertRefused(
+            static fn () => $gateway->resolve($queued, Status::Confirmed),
+            'Only an original unresolved'
+        );
+        $this->assertSame(499, (int) $db->query('SELECT SUM(amount_minor) FROM unit_refund_payouts')->fetchColumn());
+    }
+
     public function testTheSameBusinessRequestCannotChangeItsOriginalUnitSet(): void
     {
         [, , $gateway, $original] = $this->funded();

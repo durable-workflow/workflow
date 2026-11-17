@@ -13,6 +13,8 @@ use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentPr
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Journal;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\RetainedOperation;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\ShipmentOperation;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\UnitPaymentOperation;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\UnitRefundGateway;
 use Illuminate\Contracts\Container\Container;
 use LogicException;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
@@ -36,7 +38,11 @@ final readonly class MachineStore
         private ?IncomingPaymentProvider $incoming = null,
         private ?CodPaymentProvider $cod = null,
         private ?OrderBillingPeriodStore $periods = null,
+        private ?UnitRefundGateway $unitRefunds = null,
     ) {
+        if (($authority->unitMoney->grants() !== []) !== ($unitRefunds !== null)) {
+            throw new LogicException('Unit-money workers require their exact original refund-provider assembly.');
+        }
         if (($authority->periods->grants() !== [] && $periods === null)
             || ($periods !== null && $periods->authority !== $authority)) {
             throw new LogicException('Order-period workers must retain their original policy and admission assembly.');
@@ -48,8 +54,10 @@ final readonly class MachineStore
         Authority $authority,
         Journal $provider,
         ?IncomingPaymentProvider $incoming = null,
-        ?CodPaymentProvider $cod = null
+        ?CodPaymentProvider $cod = null,
+        ?UnitRefundGateway $unitRefunds = null
     ): self {
+        $unitRefunds?->assertProvider($provider);
         if ($incoming !== null && $incoming->commands !== $provider) {
             throw new LogicException('Incoming receipts and refunds must use the same original provider assembly.');
         }
@@ -59,7 +67,7 @@ final readonly class MachineStore
             );
         }
         $periods = $authority->periods->grants() === [] ? null : new OrderBillingPeriodStore($authority, $provider);
-        $store = new self($authority, $incoming, $cod, $periods);
+        $store = new self($authority, $incoming, $cod, $periods, $unitRefunds);
         $app->instance(self::class, $store);
         if ($periods !== null) {
             $app->instance(OrderBillingPeriodStore::class, $periods);
@@ -174,6 +182,9 @@ final readonly class MachineStore
         $cart?->assertOrder($terms);
         $this->assertAdvanceBalance($terms, $recipe);
         $this->assertFundingProviders($terms, $recipe);
+        if ($this->authority->unitMoney->selected($key)) {
+            $this->authority->unitMoney->original($terms);
+        }
         $rootIntent = $this->authority->roots->createIntent($terms);
         $payload = PortableDescriptor::encode($terms->toArray());
         $this->authority->db->transaction(function () use ($key, $payload, $terms, $cart, $rootIntent): void {
@@ -437,6 +448,11 @@ final readonly class MachineStore
                 }),
             ],
         ];
+        if ($this->unitRefunds !== null) {
+            $handlers['provider.unit-payment'] = [
+                '1' => new UnitPaymentOperation($provider, $this->unitRefunds, $authority->unitMoney->operation(...)),
+            ];
+        }
         if ($incoming !== null) {
             $handlers['provider.incoming'] = [
                 '1' => new IncomingPaymentOperation($incoming, $funding->incoming(...)),
@@ -466,6 +482,10 @@ final readonly class MachineStore
 
     private function descriptor(OrderTerms $terms, string $role, string $recipe): array
     {
+        if ($role === 'payment' && $this->authority->unitMoney->selected($terms->subjectKey())) {
+            return $this->authority->unitMoney->obligation($terms->subjectKey())
+->input;
+        }
         if ($role === 'order' && $this->authority->cart->selected($terms->subjectKey())) {
             return $this->authority->cart->stockObligation($terms->subjectKey())
 ->input;
@@ -611,6 +631,9 @@ final readonly class MachineStore
 
     private function withRecipe(array $initialization, string $key): array
     {
+        if ($initialization['role'] === 'payment' && $this->authority->unitMoney->selected($key)) {
+            $initialization['effectHandler'] = 'provider.unit-payment';
+        }
         $recipe = $this->authority->recipe($key);
         if ($recipe !== Catalogue::RESERVE_FIRST) {
             $initialization['recipe'] = $recipe;
