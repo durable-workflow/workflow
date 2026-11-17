@@ -43,10 +43,20 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
         private Closure $authorizeOriginalOwner,
         public string $recipe = Catalogue::RESERVE_FIRST,
         public bool $cart = false,
+        public ?\Workflow\V2\Compensation\Admission\RootReservation $rootReservation = null,
     ) {
         PortableDescriptor::identifier($rootRun, 'original root run');
         PortableDescriptor::identifier($principal, 'authenticated principal');
         Catalogue::assertRecipe($recipe);
+        if ($rootReservation !== null && ($rootReservation->originalRunId !== $rootRun
+            || $rootReservation->identity->scope->toArray() !== (new ScopeIdentity(
+                Catalogue::APPLICATION,
+                Catalogue::NAMESPACE,
+                $terms->subjectKey(),
+                $terms->generation
+            ))->toArray())) {
+            throw new LogicException('The reserved root plan belongs to another original business owner.');
+        }
         if ($cart && $recipe !== FundingCatalogue::BANK) {
             throw new LogicException('The cart contract requires its original bank funding profile.');
         }
@@ -54,7 +64,8 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
 
     public function version(): string
     {
-        return self::versionFor($this->recipe) . ($this->cart ? '.cart-v1' : '');
+        return self::versionFor($this->recipe) . ($this->cart ? '.cart-v1' : '')
+            . ($this->rootReservation === null ? '' : '.root-v1');
     }
 
     public static function versionFor(string $recipe): string
@@ -79,12 +90,17 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
 
     public function rootScope(): ScopeIdentity
     {
-        return new ScopeIdentity(
+        return $this->rootReservation?->identity->scope ?? new ScopeIdentity(
             Catalogue::APPLICATION,
             Catalogue::NAMESPACE,
             $this->terms->subjectKey(),
             $this->rootRun
         );
+    }
+
+    public function rootInstanceId(): string
+    {
+        return $this->rootReservation?->identity->instanceId() ?? 'provider-order-' . $this->terms->subjectKey();
     }
 
     public function execution(string $role): ExecutionReference
@@ -157,7 +173,7 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
         $binding = new BindingIdentity(
             $this->execution($role),
             Catalogue::NAMESPACE,
-            'provider-order-' . $this->terms->subjectKey(),
+            $this->rootInstanceId(),
             $this->rootRun,
             $role,
             $this->execution($role)
