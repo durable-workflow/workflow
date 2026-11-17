@@ -48,19 +48,39 @@ final readonly class RootCancellationStore
                 'closureId' => $outcome->closureId,
             ]);
         }
+        return $this->requestAdmitted($outcome, $requestKey, $scopeRequestKey, $id, $requestHash);
+    }
+
+    private function requestAdmitted(
+        RootBinding $binding,
+        string $requestKey,
+        string $scopeRequestKey,
+        string $id,
+        string $requestHash,
+    ): array {
+        $identity = $binding->reservation->identity;
+        $key = $identity->scope->key;
+        // Preserve one business request even when a failed scope recovery needs
+        // an explicitly authorized successor. An initializer can win at any read.
+        $request = app(CancellationStore::class)->request(
+            $key,
+            $binding->reservation->originalRunId,
+            $requestKey,
+            $scopeRequestKey
+        );
         [$assignment] = $this->authority->assignment($key);
         if ($assignment->root_run !== null) {
-            return $this->delegate($outcome, $scopeRequestKey, $assignment);
+            return $this->delegate($binding, $requestKey, $assignment, $request);
         }
         $route = app(ScopeRecovery::class)->request(
             $identity->scope,
             $scopeRequestKey,
             $this->authority->principal,
-            'business-startup-cancellation'
+            'business-cancellation'
         );
         app(ScopeAuthorization::class)->assertAllowed($identity->scope, $this->authority->principal, 'inspect');
         $scope = (new ScopeRepository())->metadata($identity->scope);
-        if ($scope['original_run_id'] !== $outcome->reservation->originalRunId || $scope['status'] !== 'verified') {
+        if ($scope['original_run_id'] !== $binding->reservation->originalRunId || $scope['status'] !== 'verified') {
             return [
                 'status' => 'requested',
                 'requestId' => $id,
@@ -69,14 +89,11 @@ final readonly class RootCancellationStore
         }
         $result = $this->settleStartup($identity, $id, $requestHash, [
             'kind' => 'verified_original_scope',
-            'binding' => $outcome->toArray(),
+            'binding' => $binding->toArray(),
             'scope' => $identity->scope->toArray(),
         ]);
-        if ($result['status'] === 'original_actor_initialized') {
-            [$assignment] = $this->authority->assignment($key);
-            return $this->delegate($outcome, $scopeRequestKey, $assignment);
-        }
-        return $result;
+        return $result['status'] === 'original_actor_initialized'
+            ? $this->requestAdmitted($binding, $requestKey, $scopeRequestKey, $id, $requestHash) : $result;
     }
 
     private function recordIntent(RootIdentity $identity, string $id, string $requestKey, string $requestHash): void
@@ -240,15 +257,88 @@ final readonly class RootCancellationStore
         }
     }
 
-    private function delegate(RootBinding $binding, string $requestKey, object $assignment): array
+    private function delegate(RootBinding $binding, string $requestKey, object $assignment, array $request): array
     {
         if ($assignment->root_run !== $binding->reservation->originalRunId) {
             throw new LogicException('The initialized business owner differs from its original root admission.');
         }
-        return app(CancellationStore::class)->request(
-            $binding->reservation->identity->scope->key,
-            $binding->reservation->originalRunId,
-            $requestKey
+        $scope = $binding->reservation->identity->scope;
+        app(ScopeAuthorization::class)->assertAllowed($scope, $this->authority->principal, 'inspect');
+        $metadata = (new ScopeRepository())->metadata($scope);
+        $committed = $this->committed($binding, $requestKey, $metadata);
+        if ($committed !== null) {
+            return $committed;
+        }
+        $origin = \Workflow\V2\Models\WorkflowRun::query()->findOrFail($binding->reservation->originalRunId);
+        if ($metadata['original_run_id'] === $origin->id && $metadata['status'] === 'verified'
+            && $origin->status->isTerminal()) {
+            $request['finalizer'] = app(CancellationStore::class)->finish($scope->key, $origin->id, $requestKey);
+        }
+        return $request;
+    }
+
+    private function committed(RootBinding $binding, string $requestKey, array $metadata): ?array
+    {
+        $identity = $binding->reservation->identity;
+        $root = $this->authority->subject($identity->scope->key, 'order');
+        if ($root->state !== 'cancelled') {
+            return null;
+        }
+        if (! (bool) $root->cancellation_requested || $metadata['original_run_id'] !== $binding->reservation->originalRunId
+            || $metadata['status'] !== 'verified') {
+            throw new LogicException('The original cancellation has no verified compensation proof.');
+        }
+        app(CancellationStore::class)->intent($identity->scope->key, $binding->reservation->originalRunId, $requestKey);
+        $publications = $this->authority->db->table('example_machine_publications as p')
+            ->join('example_machine_decisions as d', 'd.id', '=', 'p.id')
+            ->where('p.subject_id', $root->id)
+            ->where('d.subject_id', $root->id)
+            ->where('d.status', 'committed')
+            ->where('d.reason', 'verified_business_cancellation_committed')
+            ->limit(2)
+            ->get(['p.id', 'p.payload']);
+        if ($publications->count() !== 1) {
+            throw new LogicException('The original cancellation needs exactly one committed business publication.');
+        }
+        $row = $publications->sole();
+        $publication = json_decode($row->payload, true, 32, JSON_THROW_ON_ERROR);
+        $execution = Authority::reference($publication['execution'] ?? []);
+        if (($publication['transitionKey'] ?? null) !== 'cancel' || ($publication['state'] ?? null) !== 'cancelled'
+            || ($publication['revision'] ?? null) !== (string) $root->revision
+            || ($publication['originalRunId'] ?? null) !== $binding->reservation->originalRunId
+            || \Workflow\V2\Compensation\Definition\ScopeIdentity::fromArray(
+                $publication['scope'] ?? []
+            )->toArray() !== $identity->scope->toArray()
+            || $execution->scope !== $root->scope || $execution->subject !== $root->subject
+            || $execution->sourceRevision !== (string) ((int) $root->revision - 1)
+            || $row->id !== \DurableWorkflow\Examples\BusinessStateMachines\SqlBusinessStore::decisionId(
+                $execution,
+                'transition',
+                $execution->executionId
+            )) {
+            throw new LogicException('The committed cancellation publication changed its original business proof.');
+        }
+        $suffix = '.cancel.' . $execution->sourceRevision;
+        if (! str_ends_with($execution->executionId, $suffix)) {
+            throw new LogicException('The committed cancellation has no original transition identity.');
+        }
+        $actual = \Workflow\V2\Models\WorkflowRun::query()->findOrFail(
+            substr($execution->executionId, 0, -strlen($suffix))
         );
+        $this->authority->actor($actual, $execution);
+        return [
+            'status' => 'cancelled',
+            'requestId' => hash('sha256', PortableDescriptor::encode([self::VERSION, $identity->scope->key])),
+            'businessSubject' => $identity->scope->key,
+            'businessGeneration' => $identity->scope->generation,
+            'state' => 'cancelled',
+            'revision' => (string) $root->revision,
+            'proof' => [
+                'kind' => 'verified_original_scope',
+                'binding' => $binding->toArray(),
+                'scope' => $identity->scope->toArray(),
+                'publicationId' => $row->id,
+            ],
+        ];
     }
 }

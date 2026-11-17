@@ -27,10 +27,13 @@ final readonly class CancellationStore
     ) {
     }
 
-    public function request(string $key, string $rootRun, string $requestKey): array
+    public function request(string $key, string $rootRun, string $requestKey, ?string $recoveryRequestKey = null): array
     {
         $this->authority->authorize($key, $this->authority->principal);
         PortableDescriptor::identifier($requestKey, 'original cancellation request');
+        if ($recoveryRequestKey !== null) {
+            PortableDescriptor::identifier($recoveryRequestKey, 'original compensation recovery request');
+        }
         [$assignment] = $this->authority->assignment($key);
         $root = $this->authority->subject($key, 'order');
         $this->assertOriginalRoot($key, $rootRun, $assignment);
@@ -93,7 +96,7 @@ final readonly class CancellationStore
             $route = app(ScopeRecovery::class)->request(
                 $this->authority->plan($key)
                     ->rootScope(),
-                $requestKey,
+                $recoveryRequestKey ?? $requestKey,
                 $this->authority->principal,
                 'business-cancellation'
             );

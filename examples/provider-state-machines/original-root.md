@@ -64,8 +64,12 @@ first receives cooperative cancellation. Reevaluate the same business request
 after the reported native route progresses. A closed root can then use the normal
 retained recovery workflow. Startup settlement requires that exact original ledger
 to be verified; any registered work must finish compensation first. If the owner
-initialized, the existing StateMachine cancellation and proof-only finalizer own
-the decision. A late initializer cannot overwrite a committed startup cancellation.
+initialized, the existing StateMachine cancellation owns the decision. When the
+original native owner has closed and its original scope is verified, reevaluating
+the request starts or adopts the canonical proof-only finalizer. It cannot take
+over provider work. A completed business result requires the original matching
+decision and publication, original scope, revision and native transition identity;
+a mutable cancelled flag alone is insufficient. A late initializer cannot overwrite a committed startup cancellation.
 
 A failed recovery reports `submit_fresh_authorized_request`. After addressing the
 failure, the host can explicitly select another scope recovery request while

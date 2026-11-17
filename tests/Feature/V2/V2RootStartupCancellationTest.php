@@ -194,14 +194,29 @@ final class V2RootStartupCancellationTest extends TestCase
         $this->assertSame([], $queries);
     }
 
-    public function testRecoveryFailureNeedsAnExplicitFreshScopeKeyWhileKeepingTheOriginalBusinessIntent(): void
+    public static function initializationStages(): array
     {
+        return [[false], [true]];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('initializationStages')]
+    public function testRecoveryFailureNeedsAnExplicitFreshScopeKeyWhileKeepingTheOriginalBusinessIntent(
+        bool $initialized
+    ): void {
         $key = $this->terms->subjectKey();
         $identity = $this->store->authority->roots->identity($key);
         $roots = app(RootReservationStore::class);
         $reservation = $roots->reserve($identity, 'provider-worker');
         $binding = $roots->start($reservation, 'provider-worker', [$key]);
         $this->assertInstanceOf(RootBinding::class, $binding);
+        if ($initialized) {
+            $this->drain(static fn (): bool => DB::table('provider_machine_actors')->exists());
+            $this->assertSame(0, DB::table('workflow_compensation_obligations')->count());
+            $this->assertTrue(\Workflow\V2\WorkflowStub::loadRun($reservation->originalRunId)
+                ->terminate('Stop after initialization before owner registration.')
+                ->accepted());
+            $this->drain();
+        }
         $inner = app(\Workflow\V2\Compensation\Security\ScopeAuthorization::class);
         $policy = new class($inner) implements \Workflow\V2\Compensation\Security\ScopeAuthorization {
             public bool $refuseRecovery = true;
@@ -248,10 +263,26 @@ final class V2RootStartupCancellationTest extends TestCase
 
         $this->drain();
         $result = app(RootCancellationStore::class)->request($key, 'fixed-business-request', 'scope-attempt-2');
+        if ($initialized) {
+            $this->assertSame('started', $result['finalizer']['status'], $this->progress());
+            $this->drain();
+            $result = app(RootCancellationStore::class)->request($key, 'fixed-business-request', 'scope-attempt-2');
+        }
         $this->assertSame('cancelled', $result['status'], $this->progress());
         $this->assertSame($binding->toArray(), $result['proof']['binding']);
-        $this->assertSame(3, WorkflowRun::query()->count());
-        $this->assertCancelledOnce($result);
+        $this->assertSame($initialized ? 4 : 3, WorkflowRun::query()->count());
+        $this->assertSame(1, DB::table('provider_machine_cancellations')->count());
+        if ($initialized) {
+            $this->assertSame('cancelled', $this->store->authority->subject($key, 'order')->state);
+            $this->assertSame(1, DB::table('example_machine_publications')->count());
+            $this->assertSame([], $this->effects());
+            $this->assertSame(
+                $result,
+                app(RootCancellationStore::class)->request($key, 'fixed-business-request', 'scope-attempt-2')
+            );
+        } else {
+            $this->assertCancelledOnce($result);
+        }
     }
 
     public static function uncertainBusiness(): array

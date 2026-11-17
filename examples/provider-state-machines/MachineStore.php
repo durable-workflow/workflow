@@ -551,18 +551,7 @@ final readonly class MachineStore
                 ->where('id', $key)
                 ->sole();
             if ($role === 'order') {
-                if ($this->authority->roots->selected($key) && $assignment->root_run === null
-                    && $current->state === 'cancelled' && (bool) $current->cancellation_requested) {
-                    throw new LogicException('The original startup cancellation is already committed.');
-                }
-                if ($assignment->root_run !== null && $assignment->root_run !== $actual->id) {
-                    throw new LogicException('The original business generation has another native owner.');
-                }
-                $this->authority->db->table('provider_machine_assignments')
-                    ->where('id', $key)
-                    ->update([
-                        'root_run' => $actual->id,
-                    ]);
+                $this->assignOriginalRoot($key, $actual, $current, $assignment);
             }
             $id = Authority::subjectId($key, $role);
             $existing = $this->authority->db->table('provider_machine_actors')
@@ -587,6 +576,22 @@ final readonly class MachineStore
                     'scope' => PortableDescriptor::encode($scope->toArray()),
                 ]);
         });
+    }
+
+    private function assignOriginalRoot(string $key, WorkflowRun $actual, object $current, object $assignment): void
+    {
+        if ($this->authority->roots->selected($key) && $assignment->root_run === null
+            && $current->state === 'cancelled' && (bool) $current->cancellation_requested) {
+            throw new LogicException('The original startup cancellation is already committed.');
+        }
+        if ($assignment->root_run !== null && $assignment->root_run !== $actual->id) {
+            throw new LogicException('The original business generation has another native owner.');
+        }
+        $this->authority->db->table('provider_machine_assignments')
+            ->where('id', $key)
+            ->update([
+                'root_run' => $actual->id,
+            ]);
     }
 
     private function createSubject(string $key, string $role, bool $cancelled): void
