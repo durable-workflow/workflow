@@ -24,3 +24,19 @@ different operations. These execution and accounting requirements are unfinished
 The detailed per-unit source representation is bounded to 1,000 requested units.
 Larger or multi-line allocations require an explicit extension; units are never
 silently dropped or truncated.
+
+## Disposable warehouse provider
+
+`StockWarehouse` is a separate SQLite simulator for original reservation and
+release commands. It pins the complete original reserve/release pair, records
+per-unit damage or missing-stock observations, and commits physical counters with
+receipts in its owned transaction. Duplicate commands do not consume or return
+stock again. An observation key cannot move to another unit or reservation.
+
+Releasing a damaged or partly missing reservation returns only suitable held units
+to the available counter. Damaged and missing counters remain separate. A receipt
+write failure rolls back the counter update, and a new PHP process can replay the
+committed original release from stored rows without reseeding inventory. Reads
+and writes refuse workflow replay and caller-owned transactions. This is a
+disposable provider source component; it is not connected to the business
+StateMachine, a real warehouse or a native fulfillment admission boundary yet.
