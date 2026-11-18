@@ -1,0 +1,627 @@
+{
+    "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+    "fixture_schema": "durable-workflow.replay-regression/v1",
+    "id": "compensation-recovery-lost-attempt-lease-retry",
+    "protocol_version": "1.20",
+    "bindings": [
+        "php"
+    ],
+    "workflow": {
+        "type": "Workflow\\V2\\Compensation\\Recovery\\RecoveryWorkflow",
+        "arguments": [
+            {
+                "version": 1,
+                "application": "example.fulfilment",
+                "namespace": "business-example",
+                "key": "item-aaaaaaaaaaaaaaaa.child",
+                "generation": "01m7qt2h73c4gp5383pmat2dwj"
+            }
+        ],
+        "payload_codec": "avro"
+    },
+    "history": [
+        {
+            "sequence": 1,
+            "event_type": "WorkflowStarted",
+            "payload": {
+                "workflow_type": "dw.compensation.recovery.v1"
+            },
+            "recorded_at": "2026-11-18 17:08:09"
+        },
+        {
+            "sequence": 2,
+            "event_type": "VersionMarkerRecorded",
+            "payload": {
+                "sequence": 1,
+                "change_id": "dw.compensation.recovery-activities",
+                "version": 1,
+                "min_supported": 1,
+                "max_supported": 1
+            },
+            "recorded_at": "2026-11-18 17:08:09"
+        },
+        {
+            "sequence": 3,
+            "event_type": "ActivityScheduled",
+            "payload": {
+                "activity_execution_id": "01m7qt2mp6gjge9grf42w8m5v3",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\PrepareRecoveryActivity",
+                "activity_type": "dw.compensation.prepare-recovery.v1",
+                "sequence": 2,
+                "activity": {
+                    "id": "01m7qt2mp6gjge9grf42w8m5v3",
+                    "idempotency_key": "01m7qt2mp6gjge9grf42w8m5v3",
+                    "sequence": 2,
+                    "type": "dw.compensation.prepare-recovery.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\PrepareRecoveryActivity",
+                    "local_activity": false,
+                    "status": "pending",
+                    "payload_codec": "avro",
+                    "attempt_count": 0,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 3,
+                        "backoff_seconds": [
+                            1,
+                            2,
+                            5,
+                            10,
+                            15,
+                            30,
+                            60,
+                            120
+                        ],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "connection": "redis",
+                    "queue": "default",
+                    "created_at": "2026-11-18T17:08:09.542576Z",
+                    "arguments": "wwHioz3/VYAiNwwCDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCiRleGFtcGxlLmZ1bGZpbG1lbnQSbmFtZXNwYWNlCiBidXNpbmVzcy1leGFtcGxlBmtleQo2aXRlbS1hYWFhYWFhYWFhYWFhYWFhLmNoaWxkFGdlbmVyYXRpb24KNDAxbTdxdDJoNzNjNGdwNTM4M3BtYXQyZHdqAAA="
+                }
+            },
+            "recorded_at": "2026-11-18 17:08:09"
+        },
+        {
+            "sequence": 4,
+            "event_type": "ActivityStarted",
+            "payload": {
+                "activity_execution_id": "01m7qt2mp6gjge9grf42w8m5v3",
+                "activity_attempt_id": "01M7QT2MQ23BXQYV556RH5X4KJ",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\PrepareRecoveryActivity",
+                "activity_type": "dw.compensation.prepare-recovery.v1",
+                "sequence": 2,
+                "attempt_number": 1,
+                "activity": {
+                    "id": "01m7qt2mp6gjge9grf42w8m5v3",
+                    "idempotency_key": "01m7qt2mp6gjge9grf42w8m5v3",
+                    "sequence": 2,
+                    "type": "dw.compensation.prepare-recovery.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\PrepareRecoveryActivity",
+                    "local_activity": false,
+                    "attempt_id": "01M7QT2MQ23BXQYV556RH5X4KJ",
+                    "status": "running",
+                    "payload_codec": "avro",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 3,
+                        "backoff_seconds": [
+                            1,
+                            2,
+                            5,
+                            10,
+                            15,
+                            30,
+                            60,
+                            120
+                        ],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "connection": "redis",
+                    "queue": "default",
+                    "created_at": "2026-11-18T17:08:09.542576Z",
+                    "started_at": "2026-11-18T17:08:09.570104Z",
+                    "arguments": "wwHioz3/VYAiNwwCDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCiRleGFtcGxlLmZ1bGZpbG1lbnQSbmFtZXNwYWNlCiBidXNpbmVzcy1leGFtcGxlBmtleQo2aXRlbS1hYWFhYWFhYWFhYWFhYWFhLmNoaWxkFGdlbmVyYXRpb24KNDAxbTdxdDJoNzNjNGdwNTM4M3BtYXQyZHdqAAA="
+                }
+            },
+            "recorded_at": "2026-11-18 17:08:09"
+        },
+        {
+            "sequence": 5,
+            "event_type": "ActivityCompleted",
+            "payload": {
+                "activity_execution_id": "01m7qt2mp6gjge9grf42w8m5v3",
+                "activity_attempt_id": "01M7QT2MQ23BXQYV556RH5X4KJ",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\PrepareRecoveryActivity",
+                "activity_type": "dw.compensation.prepare-recovery.v1",
+                "sequence": 2,
+                "attempt_number": 1,
+                "result": "wwHioz3/VYAiNwwCCoABNzAzMDgwNjcxNzQyYTBlNzBkOTZiNDE3NGEzY2ZmZGYyMzU2MThiNjIyNWViN2NlMzg0ZDc4YTgxNjI1YTk5YwA=",
+                "payload_codec": "avro",
+                "activity": {
+                    "id": "01m7qt2mp6gjge9grf42w8m5v3",
+                    "idempotency_key": "01m7qt2mp6gjge9grf42w8m5v3",
+                    "sequence": 2,
+                    "type": "dw.compensation.prepare-recovery.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\PrepareRecoveryActivity",
+                    "local_activity": false,
+                    "attempt_id": "01M7QT2MQ23BXQYV556RH5X4KJ",
+                    "status": "completed",
+                    "payload_codec": "avro",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 3,
+                        "backoff_seconds": [
+                            1,
+                            2,
+                            5,
+                            10,
+                            15,
+                            30,
+                            60,
+                            120
+                        ],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "connection": "redis",
+                    "queue": "default",
+                    "created_at": "2026-11-18T17:08:09.542576Z",
+                    "started_at": "2026-11-18T17:08:09.570104Z",
+                    "closed_at": "2026-11-18T17:08:09.691685Z",
+                    "arguments": "wwHioz3/VYAiNwwCDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCiRleGFtcGxlLmZ1bGZpbG1lbnQSbmFtZXNwYWNlCiBidXNpbmVzcy1leGFtcGxlBmtleQo2aXRlbS1hYWFhYWFhYWFhYWFhYWFhLmNoaWxkFGdlbmVyYXRpb24KNDAxbTdxdDJoNzNjNGdwNTM4M3BtYXQyZHdqAAA=",
+                    "result": "wwHioz3/VYAiNwwCCoABNzAzMDgwNjcxNzQyYTBlNzBkOTZiNDE3NGEzY2ZmZGYyMzU2MThiNjIyNWViN2NlMzg0ZDc4YTgxNjI1YTk5YwA="
+                }
+            },
+            "recorded_at": "2026-11-18 17:08:09"
+        },
+        {
+            "sequence": 6,
+            "event_type": "ActivityScheduled",
+            "payload": {
+                "activity_execution_id": "01m7qt2mvztapm25q4q96755ct",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
+                "activity_type": "dw.compensation.compensate-obligation.v1",
+                "sequence": 3,
+                "activity": {
+                    "id": "01m7qt2mvztapm25q4q96755ct",
+                    "idempotency_key": "01m7qt2mvztapm25q4q96755ct",
+                    "sequence": 3,
+                    "type": "dw.compensation.compensate-obligation.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
+                    "local_activity": false,
+                    "status": "pending",
+                    "payload_codec": "avro",
+                    "attempt_count": 0,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 3,
+                        "backoff_seconds": [
+                            1,
+                            2,
+                            5,
+                            10,
+                            15,
+                            30,
+                            60,
+                            120
+                        ],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "connection": "redis",
+                    "queue": "default",
+                    "created_at": "2026-11-18T17:08:09.727121Z",
+                    "arguments": "wwHioz3/VYAiNwwEDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCiRleGFtcGxlLmZ1bGZpbG1lbnQSbmFtZXNwYWNlCiBidXNpbmVzcy1leGFtcGxlBmtleQo2aXRlbS1hYWFhYWFhYWFhYWFhYWFhLmNoaWxkFGdlbmVyYXRpb24KNDAxbTdxdDJoNzNjNGdwNTM4M3BtYXQyZHdqAAqAATcwMzA4MDY3MTc0MmEwZTcwZDk2YjQxNzRhM2NmZmRmMjM1NjE4YjYyMjVlYjdjZTM4NGQ3OGE4MTYyNWE5OWMA"
+                }
+            },
+            "recorded_at": "2026-11-18 17:08:09"
+        },
+        {
+            "sequence": 7,
+            "event_type": "ActivityStarted",
+            "payload": {
+                "activity_execution_id": "01m7qt2mvztapm25q4q96755ct",
+                "activity_attempt_id": "01M7QT2N29EKQ458QB44B35QPM",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
+                "activity_type": "dw.compensation.compensate-obligation.v1",
+                "sequence": 3,
+                "attempt_number": 1,
+                "activity": {
+                    "id": "01m7qt2mvztapm25q4q96755ct",
+                    "idempotency_key": "01m7qt2mvztapm25q4q96755ct",
+                    "sequence": 3,
+                    "type": "dw.compensation.compensate-obligation.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
+                    "local_activity": false,
+                    "attempt_id": "01M7QT2N29EKQ458QB44B35QPM",
+                    "status": "running",
+                    "payload_codec": "avro",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 3,
+                        "backoff_seconds": [
+                            1,
+                            2,
+                            5,
+                            10,
+                            15,
+                            30,
+                            60,
+                            120
+                        ],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "connection": "redis",
+                    "queue": "default",
+                    "created_at": "2026-11-18T17:08:09.727121Z",
+                    "started_at": "2026-11-18T17:08:09.928934Z",
+                    "arguments": "wwHioz3/VYAiNwwEDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCiRleGFtcGxlLmZ1bGZpbG1lbnQSbmFtZXNwYWNlCiBidXNpbmVzcy1leGFtcGxlBmtleQo2aXRlbS1hYWFhYWFhYWFhYWFhYWFhLmNoaWxkFGdlbmVyYXRpb24KNDAxbTdxdDJoNzNjNGdwNTM4M3BtYXQyZHdqAAqAATcwMzA4MDY3MTc0MmEwZTcwZDk2YjQxNzRhM2NmZmRmMjM1NjE4YjYyMjVlYjdjZTM4NGQ3OGE4MTYyNWE5OWMA"
+                }
+            },
+            "recorded_at": "2026-11-18 17:08:09"
+        },
+        {
+            "sequence": 8,
+            "event_type": "ActivityRetryScheduled",
+            "payload": {
+                "activity_execution_id": "01m7qt2mvztapm25q4q96755ct",
+                "activity_attempt_id": "01M7QT2N29EKQ458QB44B35QPM",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
+                "activity_type": "dw.compensation.compensate-obligation.v1",
+                "sequence": 3,
+                "retry_task_id": "01m7qt2nem73apkm7xptt0yxkw",
+                "retry_of_task_id": "01m7qt2mw1tzbrw3nne2acpqyw",
+                "retry_available_at": "2026-11-18T17:13:16.500386Z",
+                "retry_backoff_seconds": 1,
+                "retry_after_attempt_id": "01M7QT2N29EKQ458QB44B35QPM",
+                "retry_after_attempt": 1,
+                "retry_reason": "lease_expired",
+                "max_attempts": 3,
+                "retry_policy": {
+                    "snapshot_version": 1,
+                    "max_attempts": 3,
+                    "backoff_seconds": [
+                        1,
+                        2,
+                        5,
+                        10,
+                        15,
+                        30,
+                        60,
+                        120
+                    ],
+                    "start_to_close_timeout": null,
+                    "schedule_to_start_timeout": null,
+                    "schedule_to_close_timeout": null,
+                    "heartbeat_timeout": null,
+                    "non_retryable_error_types": []
+                },
+                "message": "Activity dw.compensation.compensate-obligation.v1 lost its original task lease before the attempt settled.",
+                "activity": {
+                    "id": "01m7qt2mvztapm25q4q96755ct",
+                    "idempotency_key": "01m7qt2mvztapm25q4q96755ct",
+                    "sequence": 3,
+                    "type": "dw.compensation.compensate-obligation.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
+                    "local_activity": false,
+                    "attempt_id": "01M7QT2N29EKQ458QB44B35QPM",
+                    "status": "pending",
+                    "payload_codec": "avro",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 3,
+                        "backoff_seconds": [
+                            1,
+                            2,
+                            5,
+                            10,
+                            15,
+                            30,
+                            60,
+                            120
+                        ],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "connection": "redis",
+                    "queue": "default",
+                    "created_at": "2026-11-18T17:08:09.727121Z",
+                    "started_at": "2026-11-18T17:08:09.928934Z",
+                    "arguments": "wwHioz3/VYAiNwwEDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCiRleGFtcGxlLmZ1bGZpbG1lbnQSbmFtZXNwYWNlCiBidXNpbmVzcy1leGFtcGxlBmtleQo2aXRlbS1hYWFhYWFhYWFhYWFhYWFhLmNoaWxkFGdlbmVyYXRpb24KNDAxbTdxdDJoNzNjNGdwNTM4M3BtYXQyZHdqAAqAATcwMzA4MDY3MTc0MmEwZTcwZDk2YjQxNzRhM2NmZmRmMjM1NjE4YjYyMjVlYjdjZTM4NGQ3OGE4MTYyNWE5OWMA"
+                },
+                "failure_reason": "lease_expired",
+                "lease_expires_at": "2026-11-18T17:13:10.040234Z",
+                "lease_owner": "01m7qt2mw1tzbrw3nne2acpqyw"
+            },
+            "recorded_at": "2026-11-18 17:13:15"
+        },
+        {
+            "sequence": 9,
+            "event_type": "ActivityStarted",
+            "payload": {
+                "activity_execution_id": "01m7qt2mvztapm25q4q96755ct",
+                "activity_attempt_id": "01M7QT2NG7EFTD9ZH2DGEC5KH0",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
+                "activity_type": "dw.compensation.compensate-obligation.v1",
+                "sequence": 3,
+                "attempt_number": 2,
+                "activity": {
+                    "id": "01m7qt2mvztapm25q4q96755ct",
+                    "idempotency_key": "01m7qt2mvztapm25q4q96755ct",
+                    "sequence": 3,
+                    "type": "dw.compensation.compensate-obligation.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
+                    "local_activity": false,
+                    "attempt_id": "01M7QT2NG7EFTD9ZH2DGEC5KH0",
+                    "status": "running",
+                    "payload_codec": "avro",
+                    "attempt_count": 2,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 3,
+                        "backoff_seconds": [
+                            1,
+                            2,
+                            5,
+                            10,
+                            15,
+                            30,
+                            60,
+                            120
+                        ],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "connection": "redis",
+                    "queue": "default",
+                    "created_at": "2026-11-18T17:08:09.727121Z",
+                    "started_at": "2026-11-18T17:13:17.500386Z",
+                    "arguments": "wwHioz3/VYAiNwwEDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCiRleGFtcGxlLmZ1bGZpbG1lbnQSbmFtZXNwYWNlCiBidXNpbmVzcy1leGFtcGxlBmtleQo2aXRlbS1hYWFhYWFhYWFhYWFhYWFhLmNoaWxkFGdlbmVyYXRpb24KNDAxbTdxdDJoNzNjNGdwNTM4M3BtYXQyZHdqAAqAATcwMzA4MDY3MTc0MmEwZTcwZDk2YjQxNzRhM2NmZmRmMjM1NjE4YjYyMjVlYjdjZTM4NGQ3OGE4MTYyNWE5OWMA"
+                }
+            },
+            "recorded_at": "2026-11-18 17:13:17"
+        },
+        {
+            "sequence": 10,
+            "event_type": "ActivityCompleted",
+            "payload": {
+                "activity_execution_id": "01m7qt2mvztapm25q4q96755ct",
+                "activity_attempt_id": "01M7QT2NG7EFTD9ZH2DGEC5KH0",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
+                "activity_type": "dw.compensation.compensate-obligation.v1",
+                "sequence": 3,
+                "attempt_number": 2,
+                "result": "wwHioz3/VYAiNwA=",
+                "payload_codec": "avro",
+                "activity": {
+                    "id": "01m7qt2mvztapm25q4q96755ct",
+                    "idempotency_key": "01m7qt2mvztapm25q4q96755ct",
+                    "sequence": 3,
+                    "type": "dw.compensation.compensate-obligation.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
+                    "local_activity": false,
+                    "attempt_id": "01M7QT2NG7EFTD9ZH2DGEC5KH0",
+                    "status": "completed",
+                    "payload_codec": "avro",
+                    "attempt_count": 2,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 3,
+                        "backoff_seconds": [
+                            1,
+                            2,
+                            5,
+                            10,
+                            15,
+                            30,
+                            60,
+                            120
+                        ],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "connection": "redis",
+                    "queue": "default",
+                    "created_at": "2026-11-18T17:08:09.727121Z",
+                    "started_at": "2026-11-18T17:13:17.500386Z",
+                    "closed_at": "2026-11-18T17:13:17.500386Z",
+                    "arguments": "wwHioz3/VYAiNwwEDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCiRleGFtcGxlLmZ1bGZpbG1lbnQSbmFtZXNwYWNlCiBidXNpbmVzcy1leGFtcGxlBmtleQo2aXRlbS1hYWFhYWFhYWFhYWFhYWFhLmNoaWxkFGdlbmVyYXRpb24KNDAxbTdxdDJoNzNjNGdwNTM4M3BtYXQyZHdqAAqAATcwMzA4MDY3MTc0MmEwZTcwZDk2YjQxNzRhM2NmZmRmMjM1NjE4YjYyMjVlYjdjZTM4NGQ3OGE4MTYyNWE5OWMA",
+                    "result": "wwHioz3/VYAiNwA="
+                }
+            },
+            "recorded_at": "2026-11-18 17:13:17"
+        },
+        {
+            "sequence": 11,
+            "event_type": "ActivityScheduled",
+            "payload": {
+                "activity_execution_id": "01m7qt2njnx8mep2y8p5m0k1t5",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\VerifyScopeActivity",
+                "activity_type": "dw.compensation.verify-scope.v1",
+                "sequence": 4,
+                "activity": {
+                    "id": "01m7qt2njnx8mep2y8p5m0k1t5",
+                    "idempotency_key": "01m7qt2njnx8mep2y8p5m0k1t5",
+                    "sequence": 4,
+                    "type": "dw.compensation.verify-scope.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\VerifyScopeActivity",
+                    "local_activity": false,
+                    "status": "pending",
+                    "payload_codec": "avro",
+                    "attempt_count": 0,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 3,
+                        "backoff_seconds": [
+                            1,
+                            2,
+                            5,
+                            10,
+                            15,
+                            30,
+                            60,
+                            120
+                        ],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "connection": "redis",
+                    "queue": "default",
+                    "created_at": "2026-11-18T17:13:17.500386Z",
+                    "arguments": "wwHioz3/VYAiNwwCDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCiRleGFtcGxlLmZ1bGZpbG1lbnQSbmFtZXNwYWNlCiBidXNpbmVzcy1leGFtcGxlBmtleQo2aXRlbS1hYWFhYWFhYWFhYWFhYWFhLmNoaWxkFGdlbmVyYXRpb24KNDAxbTdxdDJoNzNjNGdwNTM4M3BtYXQyZHdqAAA="
+                }
+            },
+            "recorded_at": "2026-11-18 17:13:17"
+        },
+        {
+            "sequence": 12,
+            "event_type": "ActivityStarted",
+            "payload": {
+                "activity_execution_id": "01m7qt2njnx8mep2y8p5m0k1t5",
+                "activity_attempt_id": "01M7QT2NKVYP79BETNTX9PQB7S",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\VerifyScopeActivity",
+                "activity_type": "dw.compensation.verify-scope.v1",
+                "sequence": 4,
+                "attempt_number": 1,
+                "activity": {
+                    "id": "01m7qt2njnx8mep2y8p5m0k1t5",
+                    "idempotency_key": "01m7qt2njnx8mep2y8p5m0k1t5",
+                    "sequence": 4,
+                    "type": "dw.compensation.verify-scope.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\VerifyScopeActivity",
+                    "local_activity": false,
+                    "attempt_id": "01M7QT2NKVYP79BETNTX9PQB7S",
+                    "status": "running",
+                    "payload_codec": "avro",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 3,
+                        "backoff_seconds": [
+                            1,
+                            2,
+                            5,
+                            10,
+                            15,
+                            30,
+                            60,
+                            120
+                        ],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "connection": "redis",
+                    "queue": "default",
+                    "created_at": "2026-11-18T17:13:17.500386Z",
+                    "started_at": "2026-11-18T17:13:17.500386Z",
+                    "arguments": "wwHioz3/VYAiNwwCDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCiRleGFtcGxlLmZ1bGZpbG1lbnQSbmFtZXNwYWNlCiBidXNpbmVzcy1leGFtcGxlBmtleQo2aXRlbS1hYWFhYWFhYWFhYWFhYWFhLmNoaWxkFGdlbmVyYXRpb24KNDAxbTdxdDJoNzNjNGdwNTM4M3BtYXQyZHdqAAA="
+                }
+            },
+            "recorded_at": "2026-11-18 17:13:17"
+        },
+        {
+            "sequence": 13,
+            "event_type": "ActivityCompleted",
+            "payload": {
+                "activity_execution_id": "01m7qt2njnx8mep2y8p5m0k1t5",
+                "activity_attempt_id": "01M7QT2NKVYP79BETNTX9PQB7S",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\VerifyScopeActivity",
+                "activity_type": "dw.compensation.verify-scope.v1",
+                "sequence": 4,
+                "attempt_number": 1,
+                "result": "wwHioz3/VYAiNw4EDnNjb3BlSWQKgAE5YjIzMmY1YmI0Y2Q2YzJlNjMxMmFlOGExMThhMzQ2NjBiZWQwMGFiOTJmZWRiYmVlODUyMmVlMDQ2ODczMTBlDHN0YXR1cwoQdmVyaWZpZWQA",
+                "payload_codec": "avro",
+                "activity": {
+                    "id": "01m7qt2njnx8mep2y8p5m0k1t5",
+                    "idempotency_key": "01m7qt2njnx8mep2y8p5m0k1t5",
+                    "sequence": 4,
+                    "type": "dw.compensation.verify-scope.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\VerifyScopeActivity",
+                    "local_activity": false,
+                    "attempt_id": "01M7QT2NKVYP79BETNTX9PQB7S",
+                    "status": "completed",
+                    "payload_codec": "avro",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 3,
+                        "backoff_seconds": [
+                            1,
+                            2,
+                            5,
+                            10,
+                            15,
+                            30,
+                            60,
+                            120
+                        ],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "connection": "redis",
+                    "queue": "default",
+                    "created_at": "2026-11-18T17:13:17.500386Z",
+                    "started_at": "2026-11-18T17:13:17.500386Z",
+                    "closed_at": "2026-11-18T17:13:17.500386Z",
+                    "arguments": "wwHioz3/VYAiNwwCDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCiRleGFtcGxlLmZ1bGZpbG1lbnQSbmFtZXNwYWNlCiBidXNpbmVzcy1leGFtcGxlBmtleQo2aXRlbS1hYWFhYWFhYWFhYWFhYWFhLmNoaWxkFGdlbmVyYXRpb24KNDAxbTdxdDJoNzNjNGdwNTM4M3BtYXQyZHdqAAA=",
+                    "result": "wwHioz3/VYAiNw4EDnNjb3BlSWQKgAE5YjIzMmY1YmI0Y2Q2YzJlNjMxMmFlOGExMThhMzQ2NjBiZWQwMGFiOTJmZWRiYmVlODUyMmVlMDQ2ODczMTBlDHN0YXR1cwoQdmVyaWZpZWQA"
+                }
+            },
+            "recorded_at": "2026-11-18 17:13:17"
+        }
+    ],
+    "expected": {
+        "completed": true,
+        "result": {
+            "scopeId": "9b232f5bb4cd6c2e6312ae8a118a34660bed00ab92fedbbee8522ee04687310e",
+            "status": "verified"
+        },
+        "commands": [
+            {
+                "type": "complete_workflow",
+                "result": "wwHioz3/VYAiNw4EDnNjb3BlSWQKgAE5YjIzMmY1YmI0Y2Q2YzJlNjMxMmFlOGExMThhMzQ2NjBiZWQwMGFiOTJmZWRiYmVlODUyMmVlMDQ2ODczMTBlDHN0YXR1cwoQdmVyaWZpZWQA",
+                "payload_codec": "avro"
+            }
+        ]
+    }
+}

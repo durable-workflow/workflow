@@ -2,10 +2,13 @@
 
 ## Unreleased
 
-- Webhook `token` authentication with no token configured, and `signature`
-  authentication with no secret configured, now refuse every request with
-  `503` instead of accepting requests without the header (token) or failing
-  with a type error (signature). Use the `none` method for webhooks without
+## 2.30.0 - 2026-11-18
+
+- **Security fix:** webhook `token` authentication with no token configured
+  accepted requests that omitted the token header. It now refuses every
+  request with `503` and logs a warning naming the missing setting. `signature`
+  authentication with no secret configured, which failed with a type error, now
+  refuses the same way. Use the `none` method for webhooks without
   authentication. Deployments using `none`, a custom authenticator, or a
   configured token or secret are unaffected.
 - Workflow code can read the schedule fire that started its run with
@@ -45,6 +48,25 @@
   cancellation that arrived before such a wait opened made query-state replay
   report a history shape mismatch, though the run itself replayed and completed
   correctly. A new replay fixture pins the signal-wait history.
+- The experimental provider state-machine example's common payment-first
+  checkout can opt into one partial-stock policy (`fulfill-partial`,
+  `wait-complete` or `cancel-all`) through trusted bootstrap (#1069). The
+  policy is part of the business grant; workflow arguments and signals cannot
+  change it. The example's unit refund no longer records a confirmed refund as
+  unknown because of an over-long evidence reference. See
+  `examples/provider-state-machines/README.md`.
+
+- A refused schema rollback no longer leaves part of its batch rolled back
+  (#1063). Before the migrator runs any `down()`, the package now checks every
+  guarded migration in the rollback or reset: the compensation ledger, the
+  child and root reservation fences, and the schedule occurrence receipts.
+  Previously, newer migrations in the same batch, such as the reservation
+  columns, were already dropped when the guard refused.
+- The Order/Shipment compensation example covers a compensation worker killed
+  after its SQL void commits, and a dispatched delivery whose compensation
+  fails after native retries. The operator sees the failure through
+  `cancellationOutcome()` and resolves it with `resubmitCancellation()`. Three
+  replay fixtures recorded from these runs pin the recovery histories.
 
 ## 2.29.1 - 2026-11-18
 

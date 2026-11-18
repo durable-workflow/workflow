@@ -46,6 +46,18 @@ Shipment can finish while Order remains open. Order completion additionally chec
 
 `NestedCompensationExample::requestCancellation()` first commits the application's forward-work fence, then calls the existing `ScopeRecovery` API. While Order is active, its native Saga compensates the registered child before earlier Order operations. After both runs close, native recovery uses the same original ledgers and preserves both terminal histories. The tests assert SQL compensation order, retained scope verification, no duplicated effects and cold replay without application writes. They also reject a different original parent generation.
 
+### Worker restart and failed compensation
+
+`testCompensationResumesAfterTheWorkerDiesHavingVoidedTheDelivery` runs the Shipment's recovery compensation in a separate PHP worker. That worker is killed with `SIGKILL` after the SQL void commits but before the activity records its outcome. Until its 5-minute activity lease expires, the attempt stays stranded. The Order's native retries for the Shipment participant run out much sooner than that, so the Order request ends visibly failed and asks for a fresh authorized request. Earlier Order work is not compensated meanwhile. After the lease expires, a restarted worker reclaims the attempt. The SQL service reconciles the committed void from its receipt instead of voiding or logging it twice, and the Shipment scope is verified. The operator then resubmits with `NestedCompensationExample::resubmitCancellation()`, and Order compensation finishes in child-first order.
+
+`testDispatchedShipmentFailsCompensationVisiblyUntilTheOperatorResubmits` hands the parcel to the carrier with `recordCarrierHandoff()` before a late cancellation. A dispatched delivery cannot be verified as voided, so the SQL service returns an unknown resolution with reason `effect_dispatched`. The three native attempts are recorded and the Shipment recovery run fails. `cancellationOutcome()` repeats the original request key, which starts nothing. It reports `recoveryStatus: failed`, `scopeStatus: requested`, `nextAction: submit_fresh_authorized_request`, and every unresolved obligation with its reason. The Order's earlier work stays uncompensated. After `recordCarrierReturn()`, `resubmitCancellation()` submits fresh keys, first for the Shipment and then for the Order, because a failed child is never re-requested implicitly. Both scopes then verify.
+
+Replay fixtures recorded from these runs pin three Shipment recovery histories:
+
+- `compensation-recovery-lost-attempt-lease-retry`: the lease-expired attempt and its retry.
+- `compensation-recovery-unknown-retry-pending`: two unknown attempts with the third in flight.
+- `compensation-recovery-redrive-after-unknown-exhaustion`: the redriven successor that reuses the verified prefix.
+
 The startup-window test stops after recorded application initialization but before root scope registration. Cancellation persists, yet recovery explicitly refuses the absent ledger. Resuming the genuine original owner registers its obligation through the normal recorded activity, observes the SQL cancellation fence and verifies non-admission. If that owner closes before initialization/registration can complete, the missing scope remains unresolved; the example never creates a synthetic empty scope.
 
 The application retains `cancellation_requested` and scope resolution separately from the earlier business completion record. A successful technical cancellation or a queued recovery request is not a final business `Cancelled` decision. An application must retain its business policy for that final decision and for external uncertainty.
