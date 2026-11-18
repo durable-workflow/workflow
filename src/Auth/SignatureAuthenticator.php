@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\Auth;
 
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class SignatureAuthenticator implements WebhookAuthenticator
 {
@@ -15,6 +16,7 @@ class SignatureAuthenticator implements WebhookAuthenticator
         // Signature auth with no secret configured refuses every request
         // instead of signing with an empty key.
         if (! is_string($secret) || $secret === '') {
+            Log::warning('Webhook signature authentication is selected but DW_WEBHOOKS_SECRET is not set; refusing webhook requests. Set it, or use the none method for webhooks without authentication.');
             abort(503, 'Webhook signature authentication is not configured.');
         }
 
