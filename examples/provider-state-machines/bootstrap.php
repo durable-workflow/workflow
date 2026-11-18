@@ -38,6 +38,7 @@ foreach ([
     'AuthorizedPayment', 'AuthorizationCheckout', 'FundingCheckout', 'CartBoundaryActivity', 'CartPreparationStep', 'CartCheckout',
     'ShipmentAuthority', 'ShipmentBoundaryStore', 'ShipmentBoundaryActivity', 'ShipmentStep', 'FullShipment', 'FulfillmentStep',
     'ReturnStore', 'ReturnBoundaryActivity', 'ReturnWait', 'UnitReturn',
+    'ExchangeStore', 'ExchangeBoundaryActivity', 'ExchangeWait', 'UnitExchange',
 ] as $class) {
     require_once __DIR__ . '/' . $class . '.php';
 }

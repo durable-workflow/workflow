@@ -59,6 +59,9 @@ final readonly class ReturnStore
     public function request(string $key, string $returnKey, array $units): array
     {
         $this->authority->authorize($key, $this->authority->principal);
+        if (str_starts_with($returnKey, ExchangeStore::RETURN_PREFIX)) {
+            throw new LogicException('Return keys under the exchange prefix belong to exchanges.');
+        }
         [$original, $booking] = $this->original($key);
         $return = UnitReturnTerms::request($booking, $returnKey, $original->ordinals($units));
         $assignment = PortableDescriptor::encode([
@@ -357,6 +360,24 @@ final readonly class ReturnStore
         return $this->command($this->assignment($this->row($key, $returnKey)), $units);
     }
 
+    /**
+     * @return array{OriginalUnitAmounts, Request}
+     */
+    public function original(string $key): array
+    {
+        [, $terms] = $this->authority->assignment($key);
+        if ($this->authority->recipe($key) !== FinancialCatalogue::AFTER_STOCK
+            || ! $this->authority->unitMoney->authorized($key)) {
+            throw new LogicException(
+                'Unit returns need the original stock-triggered capture with explicit unit money.'
+            );
+        }
+        return [
+            $this->authority->unitMoney->original($terms),
+            Request::fromArray($terms->physicalDescriptor()['booking']),
+        ];
+    }
+
     private function actor(WorkflowRun $actual): array
     {
         $args = $actual->workflowArguments();
@@ -406,28 +427,13 @@ final readonly class ReturnStore
         ];
     }
 
-    /**
-     * @return array{OriginalUnitAmounts, Request}
-     */
-    private function original(string $key): array
-    {
-        [, $terms] = $this->authority->assignment($key);
-        if ($this->authority->recipe($key) !== FinancialCatalogue::AFTER_STOCK
-            || ! $this->authority->unitMoney->authorized($key)) {
-            throw new LogicException(
-                'Unit returns need the original stock-triggered capture with explicit unit money.'
-            );
-        }
-        return [
-            $this->authority->unitMoney->original($terms),
-            Request::fromArray($terms->physicalDescriptor()['booking']),
-        ];
-    }
-
     private function admissible(string $key, object $root, bool $delivered, array $units): void
     {
         if ($root->state !== 'fulfilled' || (bool) $root->cancellation_requested || ! $delivered) {
             throw new LogicException('A unit return requires its original fulfilled and delivered Order generation.');
+        }
+        if (array_intersect(ExchangeStore::claimed($this->authority->db, $key), $units) !== []) {
+            throw new LogicException('An original unit already belongs to an exchange, not another return.');
         }
         foreach ($this->authority->db->table('provider_machine_returns')->where('root_key', $key)->get() as $other) {
             $claimed = json_decode($other->assignment, true, flags: JSON_THROW_ON_ERROR)['units'];

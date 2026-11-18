@@ -261,9 +261,10 @@ A unit can belong to only one return. Once a unit return exists, a later
 business cancellation of that Order cannot use the full-parcel return: the
 provider refuses the full return, nothing is restocked or refunded again, and
 the cancellation stays unsettled rather than reporting `cancelled`. Settling the
-remaining units of such an Order, return expiry/windows, replacement shipments,
-carrier return labels and a real warehouse remain outside this synthetic source
-example. `V2PartialReturnMachineTest` covers the delivered three-unit return,
+remaining units of such an Order, return expiry/windows, carrier return labels
+and a real warehouse remain outside this synthetic source example; a replacement for another size is the separate
+[same-price exchange](#same-price-exchange-for-another-size).
+`V2PartialReturnMachineTest` covers the delivered three-unit return,
 discrepancies, early and substituted requests, later returns and cancellation;
 `V2PartialReturnProcessLossTest` kills a real worker after the return request,
 restock and refund commit. They are synthetic recorded-task fixtures, not
@@ -271,6 +272,84 @@ installed-package or real-provider qualification.
 
 ```shell
 vendor/bin/phpunit tests/Feature/V2/V2PartialReturnMachineTest.php
+```
+
+## Same-price exchange for another size
+
+The same opted-in delivered Order (authorization-after-stock with explicit
+unit money) can exchange one delivered unit for another SKU at the same price.
+Install `exchange-schema.php` after `return-schema.php`; `ExchangeStore` is
+bound by `configure()` next to `ReturnStore`, so no new grant field is needed
+and legacy recipes, initializations and histories are unchanged:
+
+```php
+app(ExchangeStore::class)->request($terms->subjectKey(), 'swap-1', 2, 'sku-1-size-l', 499);
+```
+
+Selected example decision: the replacement stays linked to the original Order
+generation instead of a new Order. A separate native `UnitExchange` workflow
+owns its own retained scope; the Order stays `fulfilled`, the original
+Shipment stays `delivered` and neither history is rewritten. The request pins
+one immutable assignment: the exchange key, one original unit ordinal, the
+replacement SKU and a price that must equal the original unit amount. A price
+difference, the original SKU, an unknown unit, a unit already in a return or
+another exchange, an undelivered or cancelled Order and changed terms for the
+same key are refused before provider access; repeating the same request
+returns the original native run. Customer returns cannot use the reserved
+`exchange.` return-key prefix.
+
+1. `provider.exchange.request` requests the return of the original unit under
+   the return key `exchange.<key>`, through the same provider unit-return
+   ledger as `UnitReturn`. It is not receipt or acceptance.
+2. A recorded observation waits with `exchange-milestone` hints for warehouse
+   receipt and inspection. The first inspection-based plan is stored and never
+   changes; an accepted original pins the replacement shipment graph at the
+   provider before any replacement effect.
+3. `provider.exchange.restock` restocks the original unit only if it was
+   accepted and saleable.
+4. `provider.exchange.reserve` confirms availability with an authoritative
+   provider reservation of one replacement unit (`exchange.<key>.reserve`, with
+   its own `release`). It is not a stock lookup.
+5. `provider.exchange.book` books the replacement through the full-shipment
+   handler with its own graph (`exchange.<key>.book`, `cancel`, `return`,
+   `restock`). A recorded observation then waits for the replacement's carrier
+   handover and recipient delivery. Replacement stock deduction is not modelled;
+   the confirmed reservation is the replacement's stock hold.
+6. A recorded, immutable outcome keeps the original booking, the return and the
+   replacement reservation and booking as four distinct identities, plus the
+   received, accepted, saleable, discrepancy and restocked units.
+
+| Branch | Selected outcome |
+| --- | --- |
+| Replacement delivered | `settled` / `replaced`. No money moves. |
+| Original rejected at inspection | `settled` / `original-rejected`. No restock, reservation, replacement or refund; the unit is a discrepancy. |
+| Replacement reservation refused | `settled` / `refunded-replacement-unavailable`. `provider.exchange.refund` repays exactly the original unit amount through the unit gateway with request key `unit-exchange-<key>`. |
+| Replacement booking refused | `compensated` / `replacement-dispatch-refused`. The exchange compensates its own scope: it fences the replacement booking and releases the replacement reservation. The returned original stays returned. The outcome records the unit amount as `refundOwedMinor`; it is not paid. |
+| Unknown reservation or booking outcome | The same operation is reconciled by native recovery (lookup of the same identity). It is never treated as a refusal. |
+
+Handlers check the native exchange run, its scope, the exact registered
+obligation and the stored assignment and plan before provider I/O. A booking
+requires the recorded confirmed reservation, and a refund requires the
+recorded refusal. Substituted keys, units, SKUs, bookings, owners and runs
+are refused. The exchange and the original Order compensate disjoint graphs.
+A later business cancellation of the original Order cannot cancel, return,
+restock or refund the replacement. The provider also refuses an original-owner
+cancellation that names the replacement booking, and the exchanged unit cannot
+enter a customer return.
+
+`V2ExchangeMachineTest` covers each branch, the old-compensation boundary,
+substitution and idempotent requests. `V2ExchangeProcessLossTest` kills a real
+worker after the exchange return request, replacement reservation, replacement
+booking and fallback refund commit; a fresh process recovers each effect
+exactly once. These are synthetic recorded-task fixtures, not installed-package,
+real-carrier or real-warehouse qualification. Price-difference exchanges,
+paying the owed amount after a refused booking, a lost or damaged replacement,
+exchange windows/deadlines, replacement stock deduction, exchanging several
+units at once and replacement returns remain open policy. The exchange has no
+admission deadline, so no deadline can restart.
+
+```shell
+vendor/bin/phpunit tests/Feature/V2/V2ExchangeMachineTest.php
 ```
 
 ## Disposable application assembly
