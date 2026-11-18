@@ -16,6 +16,14 @@
   (server#1143). The successor keeps the same schedule origin. Runs not
   started by a schedule record nothing new, and existing histories replay
   unchanged.
+- Rolling back the compensation-scope migration now refuses while the ledger
+  holds any scope (#1063). In 2.29.0 and 2.29.1, `migrate:rollback` dropped
+  those tables, discarding unresolved obligations and the released tombstones
+  that keep old generations and request keys from being accepted again. Empty
+  ledgers still roll back. To downgrade with retained scopes, restore a
+  database backup taken before the upgrade. Two new replay fixtures pin the
+  2.29 histories of a completed parent with a child participant and of
+  in-origin Saga cleanup after a lost forward result.
 
 ## 2.29.1 - 2026-11-18
 

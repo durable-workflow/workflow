@@ -907,6 +907,60 @@ final class V2CompensationScopeTest extends TestCase
         app(ScopeRecovery::class)->request($scope, 'cancel-2', 'operator-a', 'order-cancelled');
     }
 
+    public function testSchemaRollbackCannotDiscardUnresolvedRetainedObligations(): void
+    {
+        [$scope] = $this->completedOrigin();
+        $before = (new ScopeRepository())->inspect($scope);
+        try {
+            $this->compensationMigration()
+                ->down();
+            $this->fail('A schema rollback discarded unresolved retained obligations.');
+        } catch (\LogicException $error) {
+            $this->assertStringContainsString('cannot be discarded by a schema rollback', $error->getMessage());
+        }
+        $this->assertTrue(\Illuminate\Support\Facades\Schema::hasTable('workflow_compensation_journal'));
+        $this->assertSame($before, (new ScopeRepository())->inspect($scope));
+
+        app(ScopeRecovery::class)->request($scope, 'cancel-1', 'operator-a', 'order-cancelled');
+        $this->assertSame('verified', (new ScopeRepository())->inspect($scope)['status']);
+        $this->assertSame(['second', 'first'], Cache::get('test:scope:undo-log'));
+    }
+
+    public function testSchemaRollbackCannotDiscardReleasedScopeTombstones(): void
+    {
+        [$scope] = $this->completedOrigin();
+        app(ScopeRecovery::class)->request($scope, 'cancel-1', 'operator-a', 'order-cancelled');
+        app(ScopeRetention::class)->release($scope, 'operator-a');
+        try {
+            $this->compensationMigration()
+                ->down();
+            $this->fail('A schema rollback discarded released scope tombstones.');
+        } catch (\LogicException $error) {
+            $this->assertStringContainsString('cannot be discarded by a schema rollback', $error->getMessage());
+        }
+        $this->assertSame('released', (new ScopeRepository())->inspect($scope)['status']);
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage('has been released');
+        app(ScopeRecovery::class)->request($scope, 'cancel-2', 'operator-a', 'order-cancelled');
+    }
+
+    public function testEmptyCompensationLedgerCanRollBackAndMigrateAgain(): void
+    {
+        $migration = $this->compensationMigration();
+        try {
+            $migration->down();
+            $this->assertFalse(\Illuminate\Support\Facades\Schema::hasTable('workflow_compensation_scopes'));
+            $this->assertFalse(\Illuminate\Support\Facades\Schema::hasTable('workflow_compensation_journal'));
+            $migration->down();
+        } finally {
+            if (! \Illuminate\Support\Facades\Schema::hasTable('workflow_compensation_scopes')) {
+                $migration->up();
+            }
+        }
+        [$scope] = $this->completedOrigin();
+        $this->assertSame('open', (new ScopeRepository())->inspect($scope)['status']);
+    }
+
     public function testDefaultEmbeddedNamespaceIsPreservedWithoutInventingAnAlias(): void
     {
         config([
@@ -1231,6 +1285,11 @@ final class V2CompensationScopeTest extends TestCase
         $workflow->start($scope->toArray(), 'complete');
         $this->assertTrue($workflow->refresh()->completed());
         return [$scope, $workflow];
+    }
+
+    private function compensationMigration(): \Workflow\Support\WorkflowMigration
+    {
+        return require __DIR__ . '/../../../src/migrations/2026_11_11_000100_create_compensation_scopes.php';
     }
 
     private function identity(): ScopeIdentity
