@@ -221,7 +221,8 @@ final class V2ExchangeMachineTest extends TestCase
         $this->assertSame($history, $this->history($origin->runId()));
         $this->assertSame($childHistory, $this->history($shipment->id));
         $root = (new ScopeRepository())->metadata(
-            $this->store->authority->plan($this->terms->subjectKey())->rootScope()
+            $this->store->authority->plan($this->terms->subjectKey())
+                ->rootScope()
         );
         $this->assertNotSame('verified', $root['status']);
     }
