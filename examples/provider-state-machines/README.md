@@ -96,8 +96,10 @@ assignment and never changes. A wait observation is not stored.
 | `wait-complete` | Do not book. A goods receipt plus `reconcile-stock` allocates new stock to the original unavailable units. At the original deadline the plan becomes a recorded full cancellation. Neither replay nor worker replacement extends that deadline. |
 | `cancel-all` | Record a cancellation plan and request business cancellation. Native compensation repays every original unit and then releases only the suitable held units. |
 
-Damaged or missing reserved units cancel under every policy. Cancellation that
-starts before a plan exists wins; no fulfilment plan is recorded afterwards.
+Damaged or missing reserved units cancel under every policy; only the suitable
+held units return to saleable stock. Cancellation that starts before a plan
+exists wins; no fulfilment plan, shortage repayment or booking follows. Both are
+native cases in `V2PartialStockSelectionTest`.
 A later cancellation of a partially fulfilled Order cancels the booking. It then
 repays only the original units not already repaid (1000 after an earlier 499)
 and releases the held reservation. The shortage repayment is monotonic: its
@@ -295,6 +297,44 @@ payment, subscription, partial-stock, physical return or replacement variants in
 the [consumer acceptance matrix](https://github.com/durable-workflow/workflow/issues/1069#issuecomment-6889952106).
 Those requirements remain open. These source fixtures do not qualify a release,
 installed upgrade, rollback, real provider operation or production readiness.
+
+### Worker loss on the common payment-first checkout
+
+`V2CheckoutProcessLossTest` covers TECH-01, TECH-03 and TECH-06 on the
+payment-first checkout with unit money and the partial-stock policy. A real
+worker process stops with `SIGKILL` inside the selected native operation, after
+its provider effect commits and before DW records the outcome. Cuts:
+
+- capture, warehouse allocation, shortage repayment or carrier booking committed
+  during forward work;
+- cancellation requested while the capture or booking worker is lost;
+- booking cancellation, remaining repayment or reservation release committed
+  during compensation.
+
+A new process starts after the abandoned activity lease expires. The production
+`TaskWatchdog` repairs the lease and the original operation reconciles through
+its uncertain-forward lookup or idempotent compensation.
+
+Losing the worker during a closed child's retained compensation (booking
+cancellation or remaining repayment) behaves differently. The child's native
+recovery run retries after the lease repair, but the Order's finite
+compensation attempts expire first. The Order's technical run closes unsettled:
+its business state stays `booked`, its root scope stays `requested`, and the
+reservation is not released. A fresh authorized recovery request
+(`CancellationStore::request()` with a new recovery key) then resumes the same
+obligations, and `CancellationStore::finish()` starts the proof-only finalizer.
+Replay of that original root reproduces its recorded compensation failure.
+
+Every case ends in verified business cancellation of the same original
+obligation. Each provider effect is committed once, and repayments total the
+original 1499: 499 + 1000, or a single 1499 refund when the capture race closes
+forward work first. Both warehouse units return to stock. Request attempts may
+repeat across processes; effects do not. Replay of the root performs no
+provider I/O.
+
+These are source process-loss controls on synthetic providers. They need a
+shared application database and POSIX signals, and skip otherwise. Installed
+queue workers, host loss and real providers still need their own qualification.
 
 ## One checkout route, two prerequisite policies
 
