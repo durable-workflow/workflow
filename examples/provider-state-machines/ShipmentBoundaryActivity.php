@@ -24,6 +24,8 @@ final class ShipmentBoundaryActivity extends Activity
             'notify' => $store->notify($this->run),
             'expire' => $store->expire($this->run),
             'milestone' => $store->milestone($this->run, $input['binding']),
+            'incident' => app(IncidentStore::class)->admit($this->run),
+            'remedy' => app(IncidentStore::class)->remedy($this->run),
             default => throw new LogicException('The physical boundary operation is unavailable.'),
         };
     }

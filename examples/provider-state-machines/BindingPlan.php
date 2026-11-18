@@ -44,6 +44,7 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
         public string $recipe = Catalogue::RESERVE_FIRST,
         public bool $cart = false,
         public ?\Workflow\V2\Compensation\Admission\RootReservation $rootReservation = null,
+        public bool $transitRemedy = false,
     ) {
         PortableDescriptor::identifier($rootRun, 'original root run');
         PortableDescriptor::identifier($principal, 'authenticated principal');
@@ -119,7 +120,7 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
             Catalogue::APPLICATION,
             $this->terms->subjectKey(),
             $this->rootRun . '.' . $key . '.' . $revision,
-            Catalogue::profile('order', $this->recipe)->fingerprint(),
+            Catalogue::profile('order', $this->recipe, $this->transitRemedy)->fingerprint(),
             $state,
             $revision,
         );
@@ -184,7 +185,7 @@ final readonly class BindingPlan implements ChildScopeBindingAuthorization
             $outcome,
             ChildReservation::inputFingerprint($this->childInput($role)),
         );
-        $parent = Catalogue::profile('order', $this->recipe);
+        $parent = Catalogue::profile('order', $this->recipe, $this->transitRemedy);
         $parent->definition->assertBinding($parent, $binding, Catalogue::profile($role, $this->recipe));
         return $binding;
     }

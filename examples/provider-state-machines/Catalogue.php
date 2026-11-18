@@ -60,15 +60,24 @@ final class Catalogue
         };
     }
 
-    public static function profile(string $role, string $recipe = self::RESERVE_FIRST): PolicyProfile
-    {
+    /**
+     * @param bool $transitRemedy Only an opted-in trusted transit remedy grant selects the remedied Order route.
+     */
+    public static function profile(
+        string $role,
+        string $recipe = self::RESERVE_FIRST,
+        bool $transitRemedy = false
+    ): PolicyProfile {
         self::assertRecipe($recipe);
         if (FundingCatalogue::selected($recipe)) {
             return FundingCatalogue::profile($role, $recipe);
         }
         if (FinancialCatalogue::selected($recipe)) {
             return match ($role) {
-                'order' => FinancialCatalogue::order($recipe),
+                'order' => FinancialCatalogue::order(
+                    $recipe,
+                    $transitRemedy && $recipe === FinancialCatalogue::AFTER_STOCK
+                ),
                 'payment' => FinancialCatalogue::profile($recipe),
                 'shipment' => PhysicalCatalogue::profile($recipe),
                 default => throw new LogicException('The selected financial machine role is unavailable.'),
@@ -80,9 +89,10 @@ final class Catalogue
     public static function transition(
         string $role,
         string $key,
-        string $recipe = self::RESERVE_FIRST
+        string $recipe = self::RESERVE_FIRST,
+        bool $transitRemedy = false
     ): TransitionDefinition {
-        foreach (self::profile($role, $recipe)->transitions as $transition) {
+        foreach (self::profile($role, $recipe, $transitRemedy)->transitions as $transition) {
             if ($transition->key === $key) {
                 return $transition;
             }

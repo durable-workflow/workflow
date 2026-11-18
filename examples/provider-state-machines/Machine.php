@@ -55,7 +55,8 @@ final readonly class Machine
             'key' => $key,
         ]));
         $recipe = $this->initialization['recipe'] ?? Catalogue::RESERVE_FIRST;
-        $profile = Catalogue::profile($this->initialization['role'], $recipe);
+        $remedy = isset($this->initialization['transitPolicy']);
+        $profile = Catalogue::profile($this->initialization['role'], $recipe, $remedy);
         $step = $selectedStep ?? new RetainedStep($this->scope, $this->identity, $this->initialization);
         $handlers = [];
         foreach ($profile->transitions as $transition) {
@@ -65,7 +66,7 @@ final readonly class Machine
             $this->workflow,
             $profile,
             $execution,
-            Catalogue::transition($this->initialization['role'], $key, $recipe)->event,
+            Catalogue::transition($this->initialization['role'], $key, $recipe, $remedy)->event,
             new ActivityTransitionRuntime(
                 SnapshotActivity::class,
                 AdmissionActivity::class,
@@ -104,7 +105,8 @@ final readonly class Machine
     public function observe(string $key): FactSnapshot
     {
         $recipe = $this->initialization['recipe'] ?? Catalogue::RESERVE_FIRST;
-        $profile = Catalogue::profile($this->initialization['role'], $recipe);
+        $remedy = isset($this->initialization['transitPolicy']);
+        $profile = Catalogue::profile($this->initialization['role'], $recipe, $remedy);
         $execution = Authority::reference(Workflow::activity(BoundaryActivity::class, 'execution', [
             'key' => $key,
         ]));
@@ -115,7 +117,7 @@ final readonly class Machine
             $profile->definition
         ))->snapshot(
             $execution,
-            Catalogue::transition($this->initialization['role'], $key, $recipe),
+            Catalogue::transition($this->initialization['role'], $key, $recipe, $remedy),
             SnapshotPhase::Before
         );
     }
