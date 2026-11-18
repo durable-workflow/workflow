@@ -293,3 +293,37 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+
+  compensation-upgrade:
+    name: Laravel ${{ matrix.laravel }} / PHP ${{ matrix.php }} published compensation scope upgrade
+    needs: published-package
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.published-package.outputs.laravel_published_matrix) }}
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+
+      - name: Disable APT download retries (CVE-2026-109518)
+        run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+        with:
+          php-version: ${{ matrix.php }}
+          tools: composer
+
+      - name: Run the published 2.28.1 to release compensation journey
+        env:
+          LARAVEL_VERSION: ${{ matrix.laravel }}
+          RELEASE_TAG: ${{ needs.published-package.outputs.release_tag }}
+        run: |
+          # Compensation scopes first shipped in 2.29.0; earlier tags have no ledger.
+          if php -r 'exit(version_compare(getenv("RELEASE_TAG"), "2.29.0", "<") ? 0 : 1);'; then
+            echo "Release ${RELEASE_TAG} predates compensation scopes; nothing to qualify."
+            exit 0
+          fi
+          WORKFLOW_CANDIDATE_VERSION="$RELEASE_TAG" scripts/ci/compensation-scope-upgrade-smoke.sh

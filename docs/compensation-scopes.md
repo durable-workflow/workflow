@@ -169,13 +169,32 @@ runs. Explicit release removes the hold; ordinary forward-origin details can be
 pruned independently. Release authorization runs outside replay and SQL
 transactions, before the atomic retirement mutation.
 
+### Upgrade, schema rollback and downgrade
+
 A schema rollback refuses while the ledger holds any scope, including a released
-tombstone. Dropping those tables would discard unresolved obligations, and
-releasing them would let an old generation or request key be accepted again. To
+tombstone. Dropping those tables would discard unresolved obligations. Dropping
+the tombstones would let an old generation or request key be accepted again. To
 return to a release without these tables, restore a database backup taken before
-the upgrade. Package downgrade without a schema rollback leaves the ledger in
-place but cannot run recovery: keep the version that recorded those histories
-until their scopes are verified.
+the upgrade. An empty ledger rolls back normally.
+
+The refusal stops `migrate:rollback` at the ledger migration. Migrations later in
+the same batch have already rolled back by then, for example the reservation
+columns. Run `php artisan migrate` to restore them; the retained rows are not
+changed.
+
+Downgrading only the package (to 2.28.x or earlier) leaves the ledger tables and
+rows in place. The older engine keeps running ordinary workflows on the upgraded
+schema, but it has no recovery classes, so retained scopes cannot be recovered
+or released. Its `migrate:rollback` cannot reach the newer migrations, because
+their files are absent. Upgrading again resumes from the same ledger: a recovery
+request then verifies the obligations the closed origin left behind, and the
+origin's terminal history is unchanged. Do not downgrade while a recovery run is
+open, because the older workers cannot load it.
+
+`scripts/ci/compensation-scope-upgrade-smoke.sh` installs published 2.28.1 into a
+new Laravel application and checks each of these steps against the candidate. It
+runs on pull requests that change migrations or compensation code, and on every
+stable release tag against the published package.
 
 ## Continue-as-new and originating-run redrive
 
