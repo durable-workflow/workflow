@@ -15,6 +15,7 @@ use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\RetainedOperation
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\ShipmentOperation;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\UnitPaymentOperation;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\UnitRefundGateway;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\UnitRefundOperation;
 use Illuminate\Contracts\Container\Container;
 use LogicException;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
@@ -39,9 +40,13 @@ final readonly class MachineStore
         private ?CodPaymentProvider $cod = null,
         private ?OrderBillingPeriodStore $periods = null,
         private ?UnitRefundGateway $unitRefunds = null,
+        private ?StockWarehouse $warehouse = null,
     ) {
         if (($authority->unitMoney->grants() !== []) !== ($unitRefunds !== null)) {
             throw new LogicException('Unit-money workers require their exact original refund-provider assembly.');
+        }
+        if (($authority->stock->grants() !== []) !== ($warehouse !== null)) {
+            throw new LogicException('Partial-stock workers require their exact original warehouse assembly.');
         }
         if (($authority->periods->grants() !== [] && $periods === null)
             || ($periods !== null && $periods->authority !== $authority)) {
@@ -55,7 +60,8 @@ final readonly class MachineStore
         Journal $provider,
         ?IncomingPaymentProvider $incoming = null,
         ?CodPaymentProvider $cod = null,
-        ?UnitRefundGateway $unitRefunds = null
+        ?UnitRefundGateway $unitRefunds = null,
+        ?StockWarehouse $warehouse = null
     ): self {
         $unitRefunds?->assertProvider($provider);
         if ($incoming !== null && $incoming->commands !== $provider) {
@@ -67,8 +73,14 @@ final readonly class MachineStore
             );
         }
         $periods = $authority->periods->grants() === [] ? null : new OrderBillingPeriodStore($authority, $provider);
-        $store = new self($authority, $incoming, $cod, $periods, $unitRefunds);
+        $store = new self($authority, $incoming, $cod, $periods, $unitRefunds, $warehouse);
         $app->instance(self::class, $store);
+        if ($warehouse !== null && $unitRefunds !== null) {
+            $app->instance(
+                StockSelectionStore::class,
+                new StockSelectionStore($authority, $provider, $warehouse, $unitRefunds)
+            );
+        }
         if ($periods !== null) {
             $app->instance(OrderBillingPeriodStore::class, $periods);
         }
@@ -184,6 +196,12 @@ final readonly class MachineStore
         $this->assertFundingProviders($terms, $recipe);
         if ($this->authority->unitMoney->selected($key)) {
             $this->authority->unitMoney->original($terms);
+        }
+        if ($this->authority->stock->selected($key)
+            && $this->authority->stock->policy(
+                $key
+            ) === StockAllocation::WAIT && $terms->fulfillmentDeadline === null) {
+            throw new LogicException('Waiting for the complete order requires its original fixed deadline.');
         }
         $rootIntent = $this->authority->roots->createIntent($terms);
         $payload = PortableDescriptor::encode($terms->toArray());
@@ -385,7 +403,7 @@ final readonly class MachineStore
         }
         $obligations = $actor->role === 'order' ? match ($key) {
             'reserve' => ['effect'], 'pay' => ['payment'], 'book' => ['shipment'],
-            'prepare' => ['payment', 'effect'],
+            'prepare' => ['payment', 'effect', StockPolicy::SHORTAGE_KEY],
             'fulfill' => ['shipment'],
             default => throw new LogicException('The proof-only transition cannot own provider work.'),
         } : ['effect'];
@@ -453,6 +471,15 @@ final readonly class MachineStore
                 '1' => new UnitPaymentOperation($provider, $this->unitRefunds, $authority->unitMoney->operation(...)),
             ];
         }
+        if ($this->warehouse !== null && $this->unitRefunds !== null) {
+            $selection = app(StockSelectionStore::class);
+            $handlers[StockPolicy::HANDLER] = [
+                '1' => new StockOperation($provider, $this->warehouse, $selection->operation(...)),
+            ];
+            $handlers[StockPolicy::SHORTAGE_HANDLER] = [
+                '1' => new UnitRefundOperation($provider, $this->unitRefunds, $selection->refund(...)),
+            ];
+        }
         if ($incoming !== null) {
             $handlers['provider.incoming'] = [
                 '1' => new IncomingPaymentOperation($incoming, $funding->incoming(...)),
@@ -485,6 +512,9 @@ final readonly class MachineStore
         if ($role === 'payment' && $this->authority->unitMoney->selected($terms->subjectKey())) {
             return $this->authority->unitMoney->obligation($terms->subjectKey())
 ->input;
+        }
+        if ($role === 'shipment' && $this->authority->stock->selected($terms->subjectKey())) {
+            return $this->authority->stock->descriptor($terms, $role);
         }
         if ($role === 'order' && $this->authority->cart->selected($terms->subjectKey())) {
             return $this->authority->cart->stockObligation($terms->subjectKey())
@@ -633,6 +663,11 @@ final readonly class MachineStore
     {
         if ($initialization['role'] === 'payment' && $this->authority->unitMoney->selected($key)) {
             $initialization['effectHandler'] = 'provider.unit-payment';
+        }
+        if ($initialization['role'] === 'order' && $this->authority->stock->selected($key)) {
+            // Legacy initializations lack both fields and keep their original recorded command sequence.
+            $initialization['stockHandler'] = StockPolicy::HANDLER;
+            $initialization['stockPolicy'] = $this->authority->stock->policy($key);
         }
         $recipe = $this->authority->recipe($key);
         if ($recipe !== Catalogue::RESERVE_FIRST) {

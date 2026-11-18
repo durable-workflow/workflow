@@ -305,7 +305,7 @@ final readonly class AssessmentStore
             $evidence['cancel_confirmed'] = 'retained-scope:' . $plan->rootScope()->id() . ':' . $scope['status'];
         } else {
             [, $terms] = $this->authority->assignment($actor->root_key);
-            $forward = Request::fromArray($terms->descriptor($actor->role)['forward']);
+            $forward = Request::fromArray($this->authority->stock->descriptor($terms, $actor->role)['forward']);
             $observation = $this->provider->lookup($forward);
             // False means "not confirmed", never "the operation did not execute".
             $values[$transitionKey . '_confirmed'] = $observation->status === Status::Confirmed

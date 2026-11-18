@@ -25,14 +25,15 @@ require_once __DIR__ . '/CartLeaseOperation.php';
 require_once __DIR__ . '/BindingPlan.php';
 foreach ([
     'CartPolicy', 'OrderPeriodPolicy', 'OrderPeriodPaymentReceipt', 'OrderBillingPeriodStore',
-    'RootPolicy', 'RootCancellationStore', 'UnitMoneyPolicy', 'Authority', 'OwnerOperation', 'CartOrderReceipt', 'CartStore', 'MachineStore', 'AssessmentStore', 'CancellationStore',
+    'RootPolicy', 'RootCancellationStore', 'UnitMoneyPolicy', 'StockAllocation', 'StockWarehouse', 'StockPolicy',
+    'Authority', 'OwnerOperation', 'CartOrderReceipt', 'CartStore', 'MachineStore', 'AssessmentStore', 'CancellationStore',
     'FinancialInspectionStore', 'FinancialInspectionActivity', 'FinancialAuthority',
     'IncomingPaymentInspectionStore', 'IncomingPaymentInspectionActivity',
     'CodInspectionStore', 'FundingPaymentExecution', 'CodFundingPayment', 'AdvanceBalancePayment',
     'OriginalStock', 'FinancialHandoffStore', 'FinancialHandoffActivity', 'FinancialStep', 'FinancialPreparationStep',
     'FundingAuthority', 'FundingFactsStore', 'FundingHandoffStore', 'FundingHandoffActivity',
     'FundingStep', 'FundingPayment',
-    'BoundaryActivity', 'SnapshotActivity', 'AdmissionActivity', 'CommitActivity',
+    'StockOperation', 'StockSelectionStore', 'StockSelectionWait', 'BoundaryActivity', 'SnapshotActivity', 'AdmissionActivity', 'CommitActivity',
     'RetainedStep', 'Machine', 'Order', 'CheckoutOrder', 'Payment', 'Booking', 'Cancellation',
     'AuthorizedPayment', 'AuthorizationCheckout', 'FundingCheckout', 'CartBoundaryActivity', 'CartPreparationStep', 'CartCheckout',
     'ShipmentAuthority', 'ShipmentBoundaryStore', 'ShipmentBoundaryActivity', 'ShipmentStep', 'FullShipment', 'FulfillmentStep',

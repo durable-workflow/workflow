@@ -37,8 +37,10 @@ final readonly class UnitRefundOperation implements ScopedOperation
         if ($result['status'] === Status::Unknown->value && $result['confirmedUnits'] !== $command->units) {
             return ForwardResult::unknown('original-unit-refund-unknown');
         }
+        // Two bounded references: each evidence identifier is limited to 128 bytes.
         return ForwardResult::observed($result, [
-            'original-unit-refund:' . $command->id() . ':' . $result['receiptsSha256'],
+            'original-unit-refund:' . $command->id(),
+            'original-unit-refund-receipts:' . $result['receiptsSha256'],
         ]);
     }
 
