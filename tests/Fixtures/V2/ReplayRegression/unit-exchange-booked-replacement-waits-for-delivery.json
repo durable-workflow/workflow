@@ -1,0 +1,54 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "unit-exchange-booked-replacement-waits-for-delivery",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestUnitExchangeReplayWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-18T12:00:00+00:00"
+    },
+    {
+      "sequence": 2,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "example.provider.exchange.boundary.v1",
+        "result": "wwHioz3/VYAiNw4YDGFjdGlvbgoMc2V0dGxlCHVuaXQEBBpyZWNlaXZlZFVuaXRzDAIEBAAaYWNjZXB0ZWRVbml0cwwCBAQAGnNhbGVhYmxlVW5pdHMMAgQEACBkaXNjcmVwYW5jeVVuaXRzDAAScmVjZWlwdElkCmZzaGlwbWVudC5mdWxsLnJldHVybi11bml0cy5leGNoYW5nZS5zd2FwLTEucmVjZWl2ZWQYaW5zcGVjdGlvbklkCmhzaGlwbWVudC5mdWxsLnJldHVybi11bml0cy5leGNoYW5nZS5zd2FwLTEuaW5zcGVjdGVkDnJlc3RvY2sOBAZrZXkKIGV4Y2hhbmdlLnJlc3RvY2sWaGFuZGxlclR5cGUKMnByb3ZpZGVyLmV4Y2hhbmdlLnJlc3RvY2sADnJlc2VydmUOBAZrZXkKIGV4Y2hhbmdlLnJlc2VydmUWaGFuZGxlclR5cGUKMnByb3ZpZGVyLmV4Y2hhbmdlLnJlc2VydmUACGJvb2sOBAZrZXkKGmV4Y2hhbmdlLmJvb2sWaGFuZGxlclR5cGUKLHByb3ZpZGVyLmV4Y2hhbmdlLmJvb2sADHJlZnVuZA4EBmtleQoeZXhjaGFuZ2UucmVmdW5kFmhhbmRsZXJUeXBlCjBwcm92aWRlci5leGNoYW5nZS5yZWZ1bmQAAA==",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-18T12:00:00+00:00"
+    },
+    {
+      "sequence": 3,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 2,
+        "activity_type": "example.provider.exchange.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgASZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-18T12:00:00+00:00"
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "open_signal_wait",
+        "signal_name": "exchange-milestone"
+      }
+    ]
+  }
+}
