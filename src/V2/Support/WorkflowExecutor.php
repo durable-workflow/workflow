@@ -4272,6 +4272,19 @@ final class WorkflowExecutor
             'parent_sequence' => $parentReference['parent_sequence'] ?? null,
         ], null, $startCommand);
 
+        // .github#243: a scheduled run's continuation is the same scheduled
+        // execution, so it keeps the schedule origin. The successor records the
+        // predecessor's ScheduleTriggered unchanged right after its start, as
+        // native Server does (server#1143).
+        $scheduleOrigin = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ScheduleTriggered->value)
+            ->orderBy('sequence')
+            ->first();
+
+        if ($scheduleOrigin !== null && is_array($scheduleOrigin->payload)) {
+            WorkflowHistoryEvent::record($continuedRun, HistoryEventType::ScheduleTriggered, $scheduleOrigin->payload);
+        }
+
         ContinuedRunMessageHandoff::closePredecessor($run, $continuedRun, $task, $sequence, $link->id, $now);
 
         /** @var WorkflowTask $continuedTask */

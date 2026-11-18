@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Workflow code can read the schedule fire that started its run with
+  `$this->scheduleOrigin()` (durable-workflow/.github#243). It returns a
+  `Workflow\V2\Support\ScheduleOrigin` with `scheduleId`, `occurrenceTime`
+  and `triggerNumber`, or `null` for a run no schedule started.
+  `occurrenceTime` is the time the scheduler evaluated: the jittered fire
+  time for a tick, the enumerated time for a backfill. It is `null` for a
+  manual trigger. The value comes from the run's `ScheduleTriggered` history
+  event, which is committed with the run's start. So it is available on the
+  first workflow task and identical on replay.
+- A scheduled run's continue-as-new successor now records its predecessor's
+  `ScheduleTriggered` event right after its start, as native Server does
+  (server#1143). The successor keeps the same schedule origin. Runs not
+  started by a schedule record nothing new, and existing histories replay
+  unchanged.
+
 ## 2.29.1 - 2026-11-18
 
 - A condition wait with a timeout now returns `true` when an update accepted

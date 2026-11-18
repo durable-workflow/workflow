@@ -1,0 +1,59 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "schedule-origin-continue-as-new-successor",
+  "protocol_version": "1.22",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestScheduleOriginWindowWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "StartAccepted",
+      "payload": {
+        "outcome": "started_new"
+      },
+      "recorded_at": "2026-11-18T12:00:00+00:00"
+    },
+    {
+      "sequence": 2,
+      "event_type": "WorkflowStarted",
+      "payload": {
+        "continued_from_run_id": "regression-corpus-predecessor-run"
+      },
+      "recorded_at": "2026-11-18T12:00:00+00:00"
+    },
+    {
+      "sequence": 3,
+      "event_type": "ScheduleTriggered",
+      "payload": {
+        "schedule_id": "daily-report",
+        "schedule_ulid": "01M7QGVVBM0CFHKK6WDZ1X9W3Q",
+        "cron_expression": "0 0 * * *",
+        "timezone": "UTC",
+        "overlap_policy": "allow_all",
+        "trigger_number": 2,
+        "occurrence_time": "2026-11-02T00:00:00.000000+00:00"
+      },
+      "recorded_at": "2026-11-18T12:00:00+00:00"
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "schedule_id": "daily-report",
+      "window_end": "2026-11-02T00:00:00.000000+00:00",
+      "trigger_number": 2
+    },
+    "commands": [
+      {
+        "type": "complete_workflow"
+      }
+    ]
+  }
+}
