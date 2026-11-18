@@ -7,6 +7,8 @@ namespace Tests\Support;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Journal;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\UnitRefundGateway;
 use DurableWorkflow\Examples\ProviderStateMachines\Authority;
+use DurableWorkflow\Examples\ProviderStateMachines\CancellationFinalizer;
+use DurableWorkflow\Examples\ProviderStateMachines\CancellationStore;
 use DurableWorkflow\Examples\ProviderStateMachines\Catalogue;
 use DurableWorkflow\Examples\ProviderStateMachines\MachineStore;
 use DurableWorkflow\Examples\ProviderStateMachines\StockWarehouse;
@@ -107,13 +109,16 @@ final class CheckoutProcessLossProcessTest extends TestCase
         ], stockPolicies: [
             $key => $input['policy'],
         ]);
-        return MachineStore::configure(
+        $store = MachineStore::configure(
             $this->app,
             $authority,
             $provider,
             unitRefunds: new UnitRefundGateway($db, 'shop-a'),
             warehouse: new StockWarehouse($db)
         );
+        // The worker application finalizes verified cancellations itself (recommended pattern).
+        CancellationFinalizer::register(app('events'), $authority, app(CancellationStore::class));
+        return $store;
     }
 
     private function armCut(array $input): void

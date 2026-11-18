@@ -79,6 +79,10 @@
     and recorded maximum.
   - **Unchanged.** A persistent failure still fails the recovery run
     explicitly.
+  - **Example finalizer.** The business `cancelled` commit stays the
+    application's `CancellationStore::finish()`. The provider state-machine
+    example adds `CancellationFinalizer` as the recommended pattern: it calls
+    `finish()` when the Order's recovery verifies.
 
 ## 2.29.1 - 2026-11-18
 

@@ -263,6 +263,17 @@ requires the original parent scope to be verified; a completed child recovery
 alone cannot settle the Order. `CancellationStore::finish()` remains the
 application's step after verification.
 
+**Recommended: finalize automatically.** DW settles compensation. The business
+`cancelled` commit is the application's decision. Register
+`CancellationFinalizer::register($events, $authority, $cancellations)` in the
+worker application. When a canonical recovery run completes for an Order's root
+scope, it calls `CancellationStore::finish()` with the earliest original request,
+so the Order reaches `cancelled` with no operator step. `finish()` refuses an
+unverified scope and is idempotent, so a repeated or early call changes nothing.
+`V2CheckoutProcessLossTest` runs its replacement worker with the finalizer
+registered. The cuts that lose a closed child's compensation worker end
+`cancelled` without any operator request.
+
 If the native root closes before genuine recorded owner registration, a missing
 scope stays unresolved. A host lookup, cancellation flag or terminal technical
 status never manufactures an empty scope or proves non-execution.
