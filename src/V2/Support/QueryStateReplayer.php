@@ -2149,12 +2149,13 @@ final class QueryStateReplayer
                 continue;
             }
             $commandId = $event->payload['workflow_command_id'] ?? $event->workflow_command_id;
+            $sequence = $this->intValue($event->payload['sequence'] ?? null);
             if ($event->event_type === HistoryEventType::CooperativeCancellationRequested
                 && is_array($event->payload['cancellation'] ?? null)) {
                 $contexts[$commandId] = CancellationContext::fromArray($event->payload['cancellation']);
             } elseif ($event->event_type === HistoryEventType::CooperativeCancellationDelivered
                 && in_array($event->payload['call_kind'] ?? null, self::DELIVERED_CALL_KINDS, true)
-                && ($sequence = $this->intValue($event->payload['sequence'] ?? null)) !== null) {
+                && $sequence !== null) {
                 $delivered[$sequence] = [$event, $commandId];
             }
         }
