@@ -69,6 +69,16 @@ trait CodFundingMachineFixture
 
     protected function startCod(string $recipe): WorkflowStub
     {
+        $origin = $this->beginCod($recipe);
+        $this->pump();
+        return $origin;
+    }
+
+    /**
+     * Seeds and starts the original Order without running any of its tasks.
+     */
+    protected function beginCod(string $recipe): WorkflowStub
+    {
         $now = now()
             ->getTimestamp();
         $base = new OrderTerms('shop-a', 'purchase-cod', 'g1', 1499, 'USD', 'sku-1', 2);
@@ -111,7 +121,6 @@ trait CodFundingMachineFixture
             Catalogue::NAMESPACE
         );
         $origin->start($this->terms->subjectKey());
-        $this->pump();
         return $origin;
     }
 

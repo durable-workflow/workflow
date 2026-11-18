@@ -241,25 +241,6 @@ final class V2CheckoutProcessLossTest extends TestCase
         return $stub;
     }
 
-    /**
-     * Queue-worker semantics: a recorded activity failure (for example a child scope not yet verified) is
-     * retried by the engine; the worker keeps draining instead of stopping.
-     */
-    private function drainLikeAWorker(): void
-    {
-        for ($pass = 0; $pass < 16; ++$pass) {
-            try {
-                $this->drain();
-                return;
-            } catch (\RuntimeException $error) {
-                if ($error->getMessage() !== 'scope_compensation_unknown') {
-                    throw $error;
-                }
-            }
-        }
-        $this->fail('The fresh retained recovery did not settle within its bounded worker passes.');
-    }
-
     private function obligation(array $cut): array
     {
         $ledger = (new ScopeRepository())->inspect(ScopeIdentity::fromArray($cut['scope']));
