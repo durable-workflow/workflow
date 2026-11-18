@@ -48,7 +48,10 @@ final class UnitReturnTermsTest extends TestCase
         $this->assertSame($booking->identity->toArray(), $return->target?->toArray());
         $this->assertSame($return->identity->toArray(), $restock->target?->toArray());
         $this->assertSame('shipment.full.return-units.rma-1', $return->identity->operation);
-        $this->assertNotSame($return->identity->key(), UnitReturnTerms::request($booking, 'rma-2', [0, 2])->identity->key());
+        $this->assertNotSame(
+            $return->identity->key(),
+            UnitReturnTerms::request($booking, 'rma-2', [0, 2])->identity->key()
+        );
         $this->assertSame(
             $return->fingerprint(),
             Request::fromArray($return->toArray())->fingerprint(),
@@ -79,13 +82,25 @@ final class UnitReturnTermsTest extends TestCase
             'refund' => (new UnitRefundCommand($original, 'original-order-payment-cancellation', [0, 1, 2]))->toArray(),
         ];
         $this->assertSame($original->fingerprint(), UnitCaptureOperation::decode($valid)[1]->original->fingerprint());
-        $partial = [...$valid, 'refund' => (new UnitRefundCommand($original, 'original-order-payment-cancellation', [2]))->toArray()];
+        $partial = [
+            ...$valid,
+            'refund' => (new UnitRefundCommand($original, 'original-order-payment-cancellation', [2]))->toArray(),
+        ];
         $foreign = new OriginalUnitAmounts(Request::fromArray([
             ...$financial['capture'],
-            'identity' => [...$financial['capture']['identity'], 'generation' => 'g2'],
-            'target' => [...$financial['capture']['target'], 'generation' => 'g2'],
+            'identity' => [
+                ...$financial['capture']['identity'],
+                'generation' => 'g2',
+            ],
+            'target' => [
+                ...$financial['capture']['target'],
+                'generation' => 'g2',
+            ],
         ]), [500, 500, 499]);
-        $substituted = [...$valid, 'refund' => (new UnitRefundCommand($foreign, 'original-order-payment-cancellation', [0, 1, 2]))->toArray()];
+        $substituted = [
+            ...$valid,
+            'refund' => (new UnitRefundCommand($foreign, 'original-order-payment-cancellation', [0, 1, 2]))->toArray(),
+        ];
         foreach ([$partial, $substituted] as $input) {
             try {
                 UnitCaptureOperation::decode($input);
