@@ -25,9 +25,9 @@ final readonly class UnitMoneyPolicy
             if (! in_array($key, $subjects, true) || ! is_array($amounts) || ! array_is_list($amounts)
                 || $amounts === [] || count($amounts) > 1000
                 || ! in_array($authority->recipe($key), [Catalogue::PAYMENT_FIRST,
-                    Catalogue::COMMON_RESERVE_FIRST], true)) {
+                    Catalogue::COMMON_RESERVE_FIRST, FinancialCatalogue::AFTER_STOCK], true)) {
                 throw new LogicException(
-                    'Unit money needs an existing direct-capture grant and explicit original amounts.'
+                    'Unit money needs an existing direct or stock-triggered capture grant and explicit original amounts.'
                 );
             }
             foreach ($amounts as $amount) {
@@ -41,6 +41,14 @@ final readonly class UnitMoneyPolicy
     public function selected(string $key): bool
     {
         return array_key_exists($key, $this->amounts);
+    }
+
+    /**
+     * The authorization-after-stock Payment captures the original authorization; its capture owns the quote.
+     */
+    public function authorized(string $key): bool
+    {
+        return $this->selected($key) && FinancialCatalogue::selected($this->authority->recipe($key));
     }
 
     public function grants(): array
@@ -61,7 +69,9 @@ final readonly class UnitMoneyPolicy
             throw new LogicException('Unit money must retain every original requested order unit.');
         }
         return new OriginalUnitAmounts(Request::fromArray(
-            $terms->descriptor('payment')['forward']
+            $this->authorized($key) ? $terms->financialDescriptor()['capture'] : $terms->descriptor(
+                'payment'
+            )['forward']
         ), $this->amounts[$key]);
     }
 
@@ -72,6 +82,14 @@ final readonly class UnitMoneyPolicy
         $command = new UnitRefundCommand($original, 'original-order-payment-cancellation', array_keys(
             $original->amounts
         ));
+        if ($this->authorized($key)) {
+            // Same registered capture position; only its compensation settles through the unit gateway.
+            return new Obligation('payment.capture', 'provider.financial.unit-capture', '1', [
+                'version' => 1,
+                'financial' => $terms->financialDescriptor(),
+                'refund' => $command->toArray(),
+            ]);
+        }
         return new Obligation('effect', 'provider.unit-payment', '1', [
             'version' => 1,
             'refund' => $command->toArray(),
@@ -82,6 +100,9 @@ final readonly class UnitMoneyPolicy
     {
         $this->authority->authorizeScope($context->scope, $this->authority->principal, $mode);
         $key = explode('.', $context->scope->key)[0];
+        if ($this->authorized($key)) {
+            throw new LogicException('Authorized unit capture uses its original financial authority.');
+        }
         $plan = $this->authority->plan($key);
         $expected = $this->obligation($key);
         $actor = $this->authority->db->table('provider_machine_actors')

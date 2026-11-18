@@ -224,6 +224,9 @@ final readonly class Authority implements ChildScopeBindingAuthorization
                 return $this->roots->authorizeRecoveryScope($scope, $principal, $operation);
             }
         }
+        if (str_starts_with($scope->key, $key . ReturnStore::SCOPE_INFIX)) {
+            return app(ReturnStore::class)->authorizeScope($scope, $principal, $operation);
+        }
         $plan = $this->plan($key);
         $scopes = [$plan->rootScope(), $plan->childScope('payment')];
         $scopes[] = $plan->childScope('shipment');
