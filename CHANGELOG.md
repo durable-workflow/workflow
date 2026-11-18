@@ -2,43 +2,18 @@
 
 ## Unreleased
 
-- Webhook `token` authentication with no token configured, and `signature`
-  authentication with no secret configured, now refuse every request with
-  `503` instead of accepting requests without the header (token) or failing
-  with a type error (signature). Use the `none` method for webhooks without
-  authentication. Deployments using `none`, a custom authenticator, or a
-  configured token or secret are unaffected.
-- Workflow code can read the schedule fire that started its run with
-  `$this->scheduleOrigin()` (durable-workflow/.github#243). It returns a
-  `Workflow\V2\Support\ScheduleOrigin` with `scheduleId`, `occurrenceTime`
-  and `triggerNumber`, or `null` for a run no schedule started.
-  `occurrenceTime` is the time the scheduler evaluated: the jittered fire
-  time for a tick, the enumerated time for a backfill. It is `null` for a
-  manual trigger. The value comes from the run's `ScheduleTriggered` history
-  event, which is committed with the run's start. So it is available on the
-  first workflow task and identical on replay.
-- A scheduled run's continue-as-new successor now records its predecessor's
-  `ScheduleTriggered` event right after its start, as native Server does
-  (server#1143). The successor keeps the same schedule origin. Runs not
-  started by a schedule record nothing new, and existing histories replay
-  unchanged.
-- Rolling back the compensation-scope migration now refuses while the ledger
-  holds any scope (#1063). In 2.29.0 and 2.29.1, `migrate:rollback` dropped
-  those tables, discarding unresolved obligations and the released tombstones
-  that keep old generations and request keys from being accepted again. Empty
-  ledgers still roll back. To downgrade with retained scopes, restore a
-  database backup taken before the upgrade. Two new replay fixtures pin the
-  2.29 histories of a completed parent with a child participant and of
-  in-origin Saga cleanup after a lost forward result.
+- A refused schema rollback no longer leaves part of its batch rolled back
+  (#1063). Before the migrator runs any `down()`, the package now checks every
+  guarded migration in the rollback or reset: the compensation ledger, the
+  child and root reservation fences, and the schedule occurrence receipts.
+  Previously, newer migrations in the same batch, such as the reservation
+  columns, were already dropped when the guard refused.
+- The Order/Shipment compensation example covers a compensation worker killed
+  after its SQL void commits, and a dispatched delivery whose compensation
+  fails after native retries. The operator sees the failure through
+  `cancellationOutcome()` and resolves it with `resubmitCancellation()`. Three
+  replay fixtures recorded from these runs pin the recovery histories.
 
-- CI now installs published 2.28.1 into a new Laravel application, upgrades
-  it and checks retained compensation scopes (#1063). The job covers recovery
-  after the origin run closes and schema rollback with an empty and a
-  populated ledger. It also checks a package downgrade that keeps the ledger,
-  followed by an upgrade that recovers it. It runs on pull requests that
-  change migrations or compensation code, and on stable release tags against
-  the published package. `docs/compensation-scopes.md` describes the rollback
-  and downgrade behavior it checks.
 - A workflow task completion now counts every row it inserts, updates or
   deletes against a new limit, `completion_rows`
   (`DW_V2_LIMIT_COMPLETION_ROWS`) (#1116). Task, run, timer, activity,
@@ -89,6 +64,60 @@
   selects runs it cannot close yet, such as a pending cooperative
   cancellation with an open workflow task, so they cannot starve other
   runs.
+
+## 2.30.0 - 2026-11-18
+
+- **Security fix:** webhook `token` authentication with no token configured
+  accepted requests that omitted the token header. It now refuses every
+  request with `503` and logs a warning naming the missing setting. `signature`
+  authentication with no secret configured, which failed with a type error, now
+  refuses the same way. Use the `none` method for webhooks without
+  authentication. Deployments using `none`, a custom authenticator, or a
+  configured token or secret are unaffected.
+- Workflow code can read the schedule fire that started its run with
+  `$this->scheduleOrigin()` (durable-workflow/.github#243). It returns a
+  `Workflow\V2\Support\ScheduleOrigin` with `scheduleId`, `occurrenceTime`
+  and `triggerNumber`, or `null` for a run no schedule started.
+  `occurrenceTime` is the time the scheduler evaluated: the jittered fire
+  time for a tick, the enumerated time for a backfill. It is `null` for a
+  manual trigger. The value comes from the run's `ScheduleTriggered` history
+  event, which is committed with the run's start. So it is available on the
+  first workflow task and identical on replay.
+- A scheduled run's continue-as-new successor now records its predecessor's
+  `ScheduleTriggered` event right after its start, as native Server does
+  (server#1143). The successor keeps the same schedule origin. Runs not
+  started by a schedule record nothing new, and existing histories replay
+  unchanged.
+- Rolling back the compensation-scope migration now refuses while the ledger
+  holds any scope (#1063). In 2.29.0 and 2.29.1, `migrate:rollback` dropped
+  those tables, discarding unresolved obligations and the released tombstones
+  that keep old generations and request keys from being accepted again. Empty
+  ledgers still roll back. To downgrade with retained scopes, restore a
+  database backup taken before the upgrade. Two new replay fixtures pin the
+  2.29 histories of a completed parent with a child participant and of
+  in-origin Saga cleanup after a lost forward result.
+
+- CI now installs published 2.28.1 into a new Laravel application, upgrades
+  it and checks retained compensation scopes (#1063). The job covers recovery
+  after the origin run closes and schema rollback with an empty and a
+  populated ledger. It also checks a package downgrade that keeps the ledger,
+  followed by an upgrade that recovers it. It runs on pull requests that
+  change migrations or compensation code, and on stable release tags against
+  the published package. `docs/compensation-scopes.md` describes the rollback
+  and downgrade behavior it checks.
+- Query-state replay (queries and `WorkflowReplayer`) now delivers a recorded
+  cooperative cancellation to an activity, timer, signal or condition call that
+  never opened, at the same position the executor used (#1069). Previously a
+  cancellation that arrived before such a wait opened made query-state replay
+  report a history shape mismatch, though the run itself replayed and completed
+  correctly. A new replay fixture pins the signal-wait history.
+- The experimental provider state-machine example's common payment-first
+  checkout can opt into one partial-stock policy (`fulfill-partial`,
+  `wait-complete` or `cancel-all`) through trusted bootstrap (#1069). The
+  policy is part of the business grant; workflow arguments and signals cannot
+  change it. The example's unit refund no longer records a confirmed refund as
+  unknown because of an over-long evidence reference. See
+  `examples/provider-state-machines/README.md`.
 
 ## 2.29.1 - 2026-11-18
 

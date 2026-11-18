@@ -71,9 +71,12 @@ final class RetainedStep extends AssessedTransitionStep
         }
         // Register stock before Payment in both policies. Forward dispatch may happen later,
         // while native reverse compensation still requires refund before reservation release.
-        $reservation = $this->scope->register(
-            new Obligation('effect', 'provider.effect', '1', $this->initialization['descriptor'])
-        );
+        $reservation = $this->scope->register(new Obligation(
+            'effect',
+            $this->initialization['stockHandler'] ?? 'provider.effect',
+            '1',
+            $this->initialization['descriptor']
+        ));
         $operations = [];
         foreach (Catalogue::preparation($this->initialization['recipe']) as $action) {
             $next = match ($action) {
@@ -84,7 +87,45 @@ final class RetainedStep extends AssessedTransitionStep
             };
             $operations = [...$operations, ...$next];
         }
+        if (isset($this->initialization['stockPolicy'])) {
+            $operations = [...$operations, ...$this->selectStock()];
+        }
         return new ExecutionReceipt($context->execution(), $operations);
+    }
+
+    /**
+     * Apply the trusted original partial-stock policy inside this one admitted preparation.
+     * Every allocation, deadline and refund observation is a recorded host result.
+     */
+    private function selectStock(): array
+    {
+        $plan = StockSelectionWait::plan($this->initialization['fulfillmentDeadline'] ?? null);
+        return [
+            'original-stock-plan:' . $plan['reservationFingerprint'] . ':' . $plan['allocationRevision'],
+            ...$this->repayShortage($plan),
+        ];
+    }
+
+    private function repayShortage(array $plan): array
+    {
+        if ($plan['requiredRefundUnits'] === []) {
+            return [];
+        }
+        $obligation = Obligation::fromArray(Workflow::activity(BoundaryActivity::class, 'stock-shortage', [
+            'observe' => false,
+        ]));
+        $result = $this->scope->execute($obligation);
+        // Booking waits for confirmed repayment; processing, unknown and refused outcomes stay outstanding.
+        for ($wake = 0; ($result['confirmedUnits'] ?? null) !== $plan['requiredRefundUnits']; ++$wake) {
+            if ($wake >= 32) {
+                throw new LogicException('The bounded original shortage repayment wait remains unresolved.');
+            }
+            Workflow::await('reconcile-stock');
+            $result = Workflow::activity(BoundaryActivity::class, 'stock-shortage', [
+                'observe' => true,
+            ]);
+        }
+        return ['original-shortage-repayment:' . $obligation->fingerprint()];
     }
 
     private function reserveOriginal(RegisteredObligation $reservation): string

@@ -289,6 +289,98 @@ final readonly class NestedCompensationExample
         return app(ScopeRecovery::class)->request($scope, $requestId, self::PRINCIPAL, 'business_cancellation');
     }
 
+    /**
+     * Operator view of a cancellation. Repeating the original request key never starts new work.
+     */
+    public function cancellationOutcome(string $subject, string $parentRun, string $requestId): array
+    {
+        $receipt = app(ScopeRecovery::class)->request(
+            ExampleOwnershipPolicy::scope($subject, $parentRun, 'parent'),
+            $requestId,
+            self::PRINCIPAL,
+            'business_cancellation',
+        );
+        $unresolved = [];
+        foreach (['child', 'parent'] as $role) {
+            $ledger = (new ScopeRepository())->inspect(ExampleOwnershipPolicy::scope($subject, $parentRun, $role));
+            foreach ($ledger['obligations'] as $obligation) {
+                if ($obligation['compensation_status'] === 'verified') {
+                    continue;
+                }
+                $evidence = $obligation['evidence'] === null ? null
+                    : json_decode($obligation['evidence'], true, flags: JSON_THROW_ON_ERROR);
+                $unresolved[] = [
+                    'role' => $role,
+                    'key' => $obligation['descriptor']['key'],
+                    'status' => $obligation['compensation_status'],
+                    'reason' => $evidence['reason'] ?? null,
+                ];
+            }
+        }
+        return [
+            'recoveryStatus' => $receipt['recoveryStatus'] ?? null,
+            'scopeStatus' => $receipt['scopeStatus'] ?? null,
+            'nextAction' => $receipt['nextAction'] ?? null,
+            'unresolved' => $unresolved,
+        ];
+    }
+
+    /**
+     * After the operator resolves the blocker, submit fresh authorized keys. A failed Shipment
+     * needs its own request; the Order request never creates it implicitly.
+     */
+    public function resubmitCancellation(string $subject, string $parentRun, string $requestId): array
+    {
+        foreach (['child', 'parent'] as $role) {
+            $scope = ExampleOwnershipPolicy::scope($subject, $parentRun, $role);
+            (new ExampleOwnershipPolicy(self::PRINCIPAL))->assertScopeAllowed($scope, self::PRINCIPAL, 'request');
+            $receipt = app(ScopeRecovery::class)->request(
+                $scope,
+                $requestId,
+                self::PRINCIPAL,
+                'business_cancellation'
+            );
+        }
+        return $receipt;
+    }
+
+    /**
+     * The carrier took the parcel; voiding the delivery now needs the parcel back.
+     */
+    public function recordCarrierHandoff(string $subject): void
+    {
+        $this->moveDelivery($subject, 'active', 'dispatched');
+    }
+
+    /**
+     * The carrier returned the parcel, so the delivery can be voided again.
+     */
+    public function recordCarrierReturn(string $subject): void
+    {
+        $this->moveDelivery($subject, 'dispatched', 'active');
+    }
+
+    private function moveDelivery(string $subject, string $from, string $to): void
+    {
+        $this->db->transaction(function () use ($subject, $from, $to): void {
+            $shipment = $this->db->table('example_machine_subjects')
+                ->where('subject', $subject)
+                ->where('scope', ExampleOwnershipPolicy::APPLICATION . '.shipment')
+                ->lockForUpdate()
+                ->sole();
+            $moved = $this->db->table('example_machine_effects')
+                ->where('subject_id', $shipment->id)
+                ->where('action', 'deliver')
+                ->where('status', $from)
+                ->update([
+                    'status' => $to,
+                ]);
+            if ($moved !== 1) {
+                throw new LogicException('The Shipment delivery is not ' . $from . '.');
+            }
+        });
+    }
+
     private function subject(ExecutionReference $execution): object
     {
         $row = $this->db->table('example_machine_subjects')

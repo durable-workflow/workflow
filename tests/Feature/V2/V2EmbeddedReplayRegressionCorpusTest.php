@@ -2853,6 +2853,15 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 $this->assertSame(2, WorkflowStepHistory::nextDurableCommandSequence($run->fresh()));
             }
 
+            if ($fixture['id'] === 'cooperative-delivery-before-signal-wait') {
+                // Query-state replay must deliver the recorded cancellation where the executor did.
+                $run = $this->createRunFromFixture($fixture);
+                $state = (new QueryStateReplayer())->replayState($run->fresh(['historyEvents']));
+                $this->assertSame(2, $state->sequence, "{$fixture['id']} query-state replay position");
+                $this->assertInstanceOf(\Workflow\V2\Support\ActivityCall::class, $state->current);
+                $this->assertSame(\Tests\Fixtures\V2\TestRetryActivity::class, $state->current->activity);
+            }
+
             $consumers = $fixture['consumers'] ?? ['workflow-fiber-runner'];
             if (in_array('embedded-history-import', $consumers, true)) {
                 $this->assertHistoryImportMetadataRoundTrips($fixture);
