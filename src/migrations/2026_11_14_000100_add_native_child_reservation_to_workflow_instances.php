@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use Illuminate\Database\Connection;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 use Workflow\Support\WorkflowMigration;
@@ -21,13 +22,20 @@ return new class() extends WorkflowMigration {
         }
     }
 
+    public function rollbackRefusal(Connection $connection): ?string
+    {
+        if ($connection->getSchemaBuilder()->hasColumn('workflow_instances', 'native_child_reservation')
+            && $connection->table('workflow_instances')
+                ->whereNotNull('native_child_reservation')
+                ->exists()) {
+            return 'Native child reservation fences cannot be discarded by a schema rollback.';
+        }
+        return null;
+    }
+
     public function down(): void
     {
-        if (\Illuminate\Support\Facades\DB::table('workflow_instances')->whereNotNull(
-            'native_child_reservation'
-        )->exists()) {
-            throw new LogicException('Native child reservation fences cannot be discarded by a schema rollback.');
-        }
+        $this->refuseRetainedRollback();
         Schema::table('workflow_instances', static function (Blueprint $table): void {
             $table->dropColumn('native_child_reservation');
         });

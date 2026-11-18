@@ -9,10 +9,22 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\MySqlConnection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use LogicException;
 use UnexpectedValueException;
 
 abstract class WorkflowMigration extends Migration
 {
+    /**
+     * Why rolling this migration back would discard retained state, or null.
+     *
+     * MigrationRollbackPreflight calls this for every migration in a rollback
+     * before any of them runs down(), so read only through $connection.
+     */
+    public function rollbackRefusal(Connection $connection): ?string
+    {
+        return null;
+    }
+
     public function getConnection(): ?string
     {
         return config('workflows.storage.connection') ?? $this->connection;
@@ -65,9 +77,21 @@ abstract class WorkflowMigration extends Migration
      *
      * @template TResult
      *
-     * @param callable(): TResult $operation
      * @return TResult
      */
+    /**
+     * Refuse this migration's own rollback. The operation-wide preflight has
+     * already checked the whole rollback when the migrator runs it; this
+     * covers a direct down() call.
+     */
+    protected function refuseRetainedRollback(): void
+    {
+        $refusal = $this->rollbackRefusal(DB::connection());
+        if ($refusal !== null) {
+            throw new LogicException($refusal);
+        }
+    }
+
     protected function withSchemaLockBudget(callable $operation): mixed
     {
         $connection = $this->schemaConnection();

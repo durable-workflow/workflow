@@ -2,8 +2,8 @@
 
 declare(strict_types=1);
 
+use Illuminate\Database\Connection;
 use Illuminate\Database\Schema\Blueprint;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Workflow\Support\WorkflowMigration;
 
@@ -30,16 +30,22 @@ return new class() extends WorkflowMigration {
         });
     }
 
+    public function rollbackRefusal(Connection $connection): ?string
+    {
+        // Removing receipts after audit compaction could admit a duplicate
+        // historical backfill. A rollback needs a restored pre-compaction DB.
+        if ($connection->getSchemaBuilder()->hasTable(self::TABLE) && $connection->table(self::TABLE)->exists()) {
+            return 'Schedule occurrence receipts must be preserved after audit compaction.';
+        }
+        return null;
+    }
+
     public function down(): void
     {
         if (! Schema::hasTable(self::TABLE)) {
             return;
         }
-        // Removing receipts after audit compaction could admit a duplicate
-        // historical backfill. A rollback needs a restored pre-compaction DB.
-        if (DB::table(self::TABLE)->exists()) {
-            throw new LogicException('Schedule occurrence receipts must be preserved after audit compaction.');
-        }
+        $this->refuseRetainedRollback();
         Schema::drop(self::TABLE);
     }
 };

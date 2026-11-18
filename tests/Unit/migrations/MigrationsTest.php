@@ -376,6 +376,97 @@ final class MigrationsTest extends SchemaTestCase
         }
     }
 
+    /**
+     * @return list<array{string, array<string, mixed>}>
+     */
+    public static function refusedRollbackCommandProvider(): array
+    {
+        return [['migrate:rollback', []], [
+            'migrate:rollback', [
+                '--step' => 40,
+            ]], ['migrate:reset', []]];
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     */
+    #[DataProvider('refusedRollbackCommandProvider')]
+    public function testRefusedRollbackLeavesEveryMigrationInItsBatchIntact(string $command, array $options): void
+    {
+        $databasePath = tempnam(sys_get_temp_dir(), 'workflow-sqlite-rollback-preflight-');
+        $this->assertIsString($databasePath);
+        $connection = 'workflow_test_rollback_preflight';
+        config()
+            ->set("database.connections.{$connection}", [
+                'driver' => 'sqlite',
+                'database' => $databasePath,
+                'prefix' => '',
+                'foreign_key_constraints' => true,
+            ]);
+        $arguments = [
+            '--database' => $connection,
+            '--path' => self::packageMigrationPaths(),
+            '--realpath' => true,
+        ];
+
+        try {
+            $this->artisan('migrate:fresh', $arguments)
+                ->assertExitCode(0);
+            DB::connection($connection)->table('workflow_compensation_scopes')->insert([
+                'id' => str_repeat('a', 64),
+                'identity' => '{}',
+                'recovery_instance_id' => 'dw-compensation-preflight',
+                'original_run_id' => 'preflight-run',
+                'status' => 'open',
+            ]);
+            $before = $this->sqliteSchemaSnapshot($connection);
+            // Newer migrations in the same batch would otherwise drop first.
+            $this->assertContains('workflow_schedule_occurrences', $before['tables']);
+            $this->assertContains('native_root_reservation', $before['columns']['workflow_instances']);
+
+            try {
+                \Illuminate\Support\Facades\Artisan::call($command, $arguments + $options);
+                $this->fail('A rollback discarded retained compensation scopes.');
+            } catch (\LogicException $error) {
+                $this->assertStringContainsString('refused before any migration ran', $error->getMessage());
+                $this->assertStringContainsString(
+                    'Retained compensation scopes cannot be discarded by a schema rollback.',
+                    $error->getMessage(),
+                );
+            }
+            $this->assertSame($before, $this->sqliteSchemaSnapshot($connection));
+
+            // A rollback whose set excludes every guarded migration is unaffected.
+            DB::connection($connection)->table('workflow_compensation_scopes')->delete();
+            \Illuminate\Support\Facades\Artisan::call('migrate:rollback', $arguments + [
+                '--step' => 1,
+            ]);
+            $after = $this->sqliteSchemaSnapshot($connection);
+            $this->assertCount(count($before['migrations']) - 1, $after['migrations']);
+            $this->artisan('migrate', $arguments)
+                ->assertExitCode(0);
+
+            // Pretending runs no down(), so it is not refused.
+            DB::connection($connection)->table('workflow_compensation_scopes')->insert([
+                'id' => str_repeat('b', 64),
+                'identity' => '{}',
+                'recovery_instance_id' => 'dw-compensation-preflight-2',
+                'original_run_id' => 'preflight-run',
+                'status' => 'open',
+            ]);
+            $this->assertSame(
+                0,
+                \Illuminate\Support\Facades\Artisan::call('migrate:rollback', $arguments + [
+                    '--pretend' => true,
+                ])
+            );
+        } finally {
+            if (is_file($databasePath)) {
+                @unlink($databasePath);
+            }
+        }
+    }
+
     public function testTimerProjectionRowsDefaultToCurrentSchemaVersion(): void
     {
         /** @var WorkflowRunTimerEntry $entry */
@@ -540,6 +631,35 @@ final class MigrationsTest extends SchemaTestCase
                 "Expected SQLite table [{$table}] to exist.",
             );
         }
+    }
+
+    /**
+     * @return array{tables: list<string>, columns: array<string, list<string>>, migrations: list<array<string, mixed>>}
+     */
+    private function sqliteSchemaSnapshot(string $connection): array
+    {
+        $database = DB::connection($connection);
+        $tables = array_map(
+            static fn (object $row): string => $row->name,
+            $database->select(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            ),
+        );
+        $columns = [];
+        foreach ($tables as $table) {
+            $columns[$table] = Schema::connection($connection)->getColumnListing($table);
+        }
+        return [
+            'tables' => $tables,
+            'columns' => $columns,
+            'migrations' => array_map(
+                static fn (object $row): array => (array) $row,
+                $database->table('migrations')
+                    ->orderBy('id')
+                    ->get()
+                    ->all(),
+            ),
+        ];
     }
 
     private function assertSqliteWorkflowTablesMissing(string $connection): void

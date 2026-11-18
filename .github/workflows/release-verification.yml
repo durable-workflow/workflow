@@ -321,9 +321,10 @@ jobs:
           LARAVEL_VERSION: ${{ matrix.laravel }}
           RELEASE_TAG: ${{ needs.published-package.outputs.release_tag }}
         run: |
-          # Compensation scopes first shipped in 2.29.0; earlier tags have no ledger.
-          if php -r 'exit(version_compare(getenv("RELEASE_TAG"), "2.29.0", "<") ? 0 : 1);'; then
-            echo "Release ${RELEASE_TAG} predates compensation scopes; nothing to qualify."
+          # Compensation scopes shipped in 2.29.0, but 2.29.0 and 2.29.1 drop the ledger
+          # on rollback (#1063). The journey qualifies releases with the rollback guard.
+          if php -r 'exit(version_compare(getenv("RELEASE_TAG"), "2.29.2", "<") ? 0 : 1);'; then
+            echo "Release ${RELEASE_TAG} predates the compensation rollback guard; nothing to qualify."
             exit 0
           fi
           WORKFLOW_CANDIDATE_VERSION="$RELEASE_TAG" scripts/ci/compensation-scope-upgrade-smoke.sh
