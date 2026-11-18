@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Webhook `token` authentication with no token configured, and `signature`
+  authentication with no secret configured, now refuse every request with
+  `503` instead of accepting requests without the header (token) or failing
+  with a type error (signature). Use the `none` method for webhooks without
+  authentication. Deployments using `none`, a custom authenticator, or a
+  configured token or secret are unaffected.
 - Workflow code can read the schedule fire that started its run with
   `$this->scheduleOrigin()` (durable-workflow/.github#243). It returns a
   `Workflow\V2\Support\ScheduleOrigin` with `scheduleId`, `occurrenceTime`
@@ -24,6 +30,15 @@
   database backup taken before the upgrade. Two new replay fixtures pin the
   2.29 histories of a completed parent with a child participant and of
   in-origin Saga cleanup after a lost forward result.
+
+- CI now installs published 2.28.1 into a new Laravel application, upgrades
+  it and checks retained compensation scopes (#1063). The job covers recovery
+  after the origin run closes and schema rollback with an empty and a
+  populated ledger. It also checks a package downgrade that keeps the ledger,
+  followed by an upgrade that recovers it. It runs on pull requests that
+  change migrations or compensation code, and on stable release tags against
+  the published package. `docs/compensation-scopes.md` describes the rollback
+  and downgrade behavior it checks.
 
 ## 2.29.1 - 2026-11-18
 
