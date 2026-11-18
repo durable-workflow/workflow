@@ -48,6 +48,13 @@
   cancellation that arrived before such a wait opened made query-state replay
   report a history shape mismatch, though the run itself replayed and completed
   correctly. A new replay fixture pins the signal-wait history.
+- The experimental provider state-machine example's common payment-first
+  checkout can opt into one partial-stock policy (`fulfill-partial`,
+  `wait-complete` or `cancel-all`) through trusted bootstrap (#1069). The
+  policy is part of the business grant; workflow arguments and signals cannot
+  change it. The example's unit refund no longer records a confirmed refund as
+  unknown because of an over-long evidence reference. See
+  `examples/provider-state-machines/README.md`.
 
 ## 2.29.1 - 2026-11-18
 
