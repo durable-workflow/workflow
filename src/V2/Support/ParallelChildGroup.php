@@ -492,7 +492,15 @@ final class ParallelChildGroup
             }
 
             $expectedResolution = self::resolutionEventForMember($run, $memberBase, $memberSize, $outcome);
-            if (! $expectedResolution instanceof WorkflowHistoryEvent || $expectedResolution->id !== $resolution->id) {
+            if (! $expectedResolution instanceof WorkflowHistoryEvent || (
+                $expectedResolution->id !== $resolution->id
+                && ! ($memberKind === 'condition' && self::conditionOutcomeFollowsItsFiredTimeout(
+                    $run,
+                    $memberBase,
+                    $expectedResolution,
+                    $resolution,
+                ))
+            )) {
                 self::throwSelectionMismatch(
                     $memberBase,
                     'Winner outcome is not bound to the event that made the authored member terminal.',
@@ -1246,8 +1254,13 @@ final class ParallelChildGroup
         $timedOut = false;
         foreach ($events as $event) {
             if (self::conditionResolutionMatchesOpening($event, $latest)) {
-                $satisfied = $satisfied || $event->event_type === HistoryEventType::ConditionWaitSatisfied;
-                $timedOut = $timedOut || $event->event_type !== HistoryEventType::ConditionWaitSatisfied;
+                // A fired timeout followed by ConditionWaitSatisfied is a
+                // satisfied occurrence: input ordered before the timer won (#230).
+                if ($event->event_type === HistoryEventType::ConditionWaitSatisfied) {
+                    $satisfied = true;
+                } elseif ($event->event_type === HistoryEventType::ConditionWaitTimedOut || $satisfied) {
+                    $timedOut = true;
+                }
             }
             if ($event->event_type !== HistoryEventType::ConditionWaitOpened
                 || $event->sequence <= $original->sequence
@@ -1273,6 +1286,48 @@ final class ParallelChildGroup
         }
 
         return $latest;
+    }
+
+    /**
+     * A condition member's condition-timeout TimerFired precedes the outcome
+     * the engine records for it: ConditionWaitTimedOut, or ConditionWaitSatisfied
+     * when input ordered before the timer satisfied it (.github#230). The
+     * winner names that first recorded outcome.
+     */
+    private static function conditionOutcomeFollowsItsFiredTimeout(
+        WorkflowRun $run,
+        int $memberBase,
+        WorkflowHistoryEvent $firedTimeout,
+        WorkflowHistoryEvent $outcome,
+    ): bool {
+        if ($firedTimeout->event_type !== HistoryEventType::TimerFired
+            || ($firedTimeout->payload['timer_kind'] ?? null) !== 'condition_timeout'
+            || ! in_array($outcome->event_type, [
+                HistoryEventType::ConditionWaitSatisfied,
+                HistoryEventType::ConditionWaitTimedOut,
+            ], true)
+            || $outcome->sequence <= $firedTimeout->sequence) {
+            return false;
+        }
+
+        $opening = self::conditionOpeningForAuthoredSequence($run, $memberBase);
+        if (! $opening instanceof WorkflowHistoryEvent || ! self::conditionResolutionMatchesOpening(
+            $firedTimeout,
+            $opening
+        )) {
+            return false;
+        }
+
+        /** @var WorkflowHistoryEvent|null $firstOutcome */
+        $firstOutcome = $run->historyEvents->sortBy('sequence')
+            ->first(
+                static fn (WorkflowHistoryEvent $event): bool => in_array($event->event_type, [
+                    HistoryEventType::ConditionWaitSatisfied,
+                    HistoryEventType::ConditionWaitTimedOut,
+                ], true) && self::conditionResolutionMatchesOpening($event, $opening)
+            );
+
+        return $firstOutcome?->id === $outcome->id;
     }
 
     private static function conditionResolutionMatchesOpening(

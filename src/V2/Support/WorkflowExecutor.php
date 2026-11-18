@@ -874,7 +874,21 @@ final class WorkflowExecutor
         $current = &$frame->current;
         $sequence = &$frame->sequence;
         $this->syncWorkflowCursorForCurrent($workflow, $run, $current, $sequence);
-        if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
+        $resolutionEvent = $this->conditionWaitResolutionEvent($run, $sequence);
+        // A recorded outcome replays as recorded. Only an unresolved wait is
+        // decided from the durable order of its input (#230).
+        $inputOrder = null;
+        if ($resolutionEvent === null) {
+            $inputOrder = new ConditionWaitInputOrder();
+            $inputOrder->track(
+                $sequence,
+                $current->condition,
+                $current instanceof AwaitWithTimeoutCall
+                    ? $this->conditionTimeoutFiredEvent($run, $sequence)?->sequence
+                    : null,
+            );
+        }
+        if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task, $inputOrder)) {
             return $this->restartAfterPendingUpdateFailure($run, $task);
         }
         try {
@@ -883,7 +897,6 @@ final class WorkflowExecutor
             $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
             return null;
         }
-        $resolutionEvent = $this->conditionWaitResolutionEvent($run, $sequence);
         $cancellationDelivery = $this->deliverCancellationAtCall(
             $run,
             $task,
@@ -901,7 +914,7 @@ final class WorkflowExecutor
         if ($resolutionEvent !== null) {
             return $this->resumeConditionResolution($run, $task, $frame, $resolutionEvent);
         }
-        return $this->waitForCondition($run, $task, $frame);
+        return $this->waitForCondition($run, $task, $frame, $inputOrder);
     }
 
     private function resumeConditionResolution(
@@ -1017,7 +1030,8 @@ final class WorkflowExecutor
     private function waitForCondition(
         WorkflowRun $run,
         WorkflowTask $task,
-        WorkflowContinuation $frame
+        WorkflowContinuation $frame,
+        ?ConditionWaitInputOrder $inputOrder = null,
     ): WorkflowTask|WorkflowTaskStep|null {
         $waitId = $this->conditionWaitId($run, $frame->sequence) ?? (string) Str::ulid();
         $this->recordConditionWaitOpened(
@@ -1042,14 +1056,21 @@ final class WorkflowExecutor
             $run,
             $frame->sequence
         ) : null;
-        if ($frame->current instanceof AwaitWithTimeoutCall && ($timeoutFiredEvent !== null || $timeoutScheduledEvent === null && $timeoutTimer?->status === TimerStatus::Fired)) {
+        // Input ordered before the condition-timeout TimerFired decides the race;
+        // the workflow task running after the deadline does not.
+        // A fired timer row without TimerScheduled/TimerFired history has no
+        // durable boundary to order input against and still times out.
+        $conditionSatisfied = $inputOrder?->satisfied($frame->sequence) ?? false;
+        if ($frame->current instanceof AwaitWithTimeoutCall && (($timeoutFiredEvent !== null && ! $conditionSatisfied) || $timeoutFiredEvent === null && $timeoutScheduledEvent === null && $timeoutTimer?->status === TimerStatus::Fired)) {
             return $this->resumeTimedOutCondition($run, $task, $frame, $waitId, $timeoutTimer, $timeoutFiredEvent);
         }
-        try {
-            $conditionSatisfied = ($frame->current->condition)() === true;
-        } catch (Throwable $throwable) {
-            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
-            return null;
+        if (! $conditionSatisfied) {
+            try {
+                $conditionSatisfied = ($frame->current->condition)() === true;
+            } catch (Throwable $throwable) {
+                $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+                return null;
+            }
         }
         if ($conditionSatisfied) {
             return $this->resumeSatisfiedCondition($run, $task, $frame, $waitId, $timeoutTimer);
@@ -1857,10 +1878,11 @@ final class WorkflowExecutor
         $sequence = &$frame->sequence;
 
         $this->syncWorkflowCursorForCurrent($workflow, $run, $current, $sequence);
-        if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
+        $leafDescriptors = $current->leafDescriptors($sequence);
+        $conditionInputOrder = $this->parallelConditionInputOrder($run, $sequence, $leafDescriptors);
+        if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task, $conditionInputOrder)) {
             return $this->restartAfterPendingUpdateFailure($run, $task);
         }
-        $leafDescriptors = $current->leafDescriptors($sequence);
         $groupSize = count($leafDescriptors);
         try {
             StructuralLimits::guardCommandBatchSize($groupSize);
@@ -1923,12 +1945,44 @@ final class WorkflowExecutor
             return null;
         }
         $group = new WorkflowParallelDispatch($sequence);
+        $group->conditionInputOrder = $conditionInputOrder;
         foreach ($dispatchDescriptors as $descriptor) {
             if (! $this->dispatchParallelMember($run, $task, $descriptor, $group)) {
                 return null;
             }
         }
         return $this->finishParallelDispatch($run, $task, $frame, $leafDescriptors, $group);
+    }
+
+    /**
+     * Track the group's unresolved condition members so the input applied at
+     * the group's step decides them in durable order (#230).
+     */
+    private function parallelConditionInputOrder(
+        WorkflowRun $run,
+        int $sequence,
+        array $leafDescriptors,
+    ): ?ConditionWaitInputOrder {
+        $inputOrder = new ConditionWaitInputOrder();
+        foreach ($leafDescriptors as $descriptor) {
+            $call = $descriptor['call'];
+            if (! $call instanceof AwaitCall && ! $call instanceof AwaitWithTimeoutCall) {
+                continue;
+            }
+            $itemSequence = $sequence + $descriptor['offset'];
+            if ($this->conditionWaitResolutionEvent($run, $itemSequence) !== null) {
+                continue;
+            }
+            $inputOrder->track(
+                $itemSequence,
+                $call->condition,
+                $call instanceof AwaitWithTimeoutCall
+                    ? $this->conditionTimeoutFiredEvent($run, $itemSequence)?->sequence
+                    : null,
+            );
+        }
+
+        return $inputOrder->isEmpty() ? null : $inputOrder;
     }
 
     private function parallelReplayDescriptors(
@@ -2295,7 +2349,17 @@ final class WorkflowExecutor
             'sequence',
             $itemSequence
         ) : null;
-        if (($call->condition)() === true) {
+        $timeoutFired = $call instanceof AwaitWithTimeoutCall ? $this->conditionTimeoutFiredEvent(
+            $run,
+            $itemSequence
+        ) : null;
+        // Once the member's TimerFired is recorded, only input ordered before it
+        // can satisfy the member; later state is not evaluated (#230).
+        $conditionSatisfied = $group->conditionInputOrder?->satisfied($itemSequence) ?? false;
+        if (! $conditionSatisfied && $timeoutFired === null) {
+            $conditionSatisfied = ($call->condition)() === true;
+        }
+        if ($conditionSatisfied) {
             if ($timeoutTimer instanceof WorkflowTimer) {
                 $this->cancelConditionTimeout($run, $task, $timeoutTimer);
             }
@@ -2313,10 +2377,6 @@ final class WorkflowExecutor
             ParallelChildGroup::claimSelectionWinner($run, $descriptor['group_path'], 'condition', $resolutionEvent);
             return true;
         }
-        $timeoutFired = $call instanceof AwaitWithTimeoutCall ? $this->conditionTimeoutFiredEvent(
-            $run,
-            $itemSequence
-        ) : null;
         if ($call instanceof AwaitWithTimeoutCall && ($timeoutFired !== null || $timeoutTimer?->status === TimerStatus::Fired)) {
             $resolutionEvent = $this->recordConditionWaitTimedOut(
                 $run,
@@ -6595,7 +6655,10 @@ final class WorkflowExecutor
         \Workflow\V2\Workflow $workflow,
         int $sequence,
         ?WorkflowTask $task = null,
+        ?ConditionWaitInputOrder $inputOrder = null,
     ): bool {
+        $inputOrder?->observeEntry();
+
         $events = $run->historyEvents
             ->filter(
                 static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::UpdateApplied
@@ -6666,12 +6729,20 @@ final class WorkflowExecutor
                 } else {
                     $workflow->{$method}(...$parameters);
                 }
+
+                $inputOrder?->observeInput(ConditionWaitInputOrder::appliedUpdateAcceptedSequence($run, $event));
             }
         } finally {
             $workflow->setCommandDispatchEnabled(true);
         }
 
-        if ($task instanceof WorkflowTask && ! $this->applyPendingUpdates($run, $task, $workflow, $sequence)) {
+        if ($task instanceof WorkflowTask && ! $this->applyPendingUpdates(
+            $run,
+            $task,
+            $workflow,
+            $sequence,
+            $inputOrder,
+        )) {
             return false;
         }
 
@@ -6683,6 +6754,7 @@ final class WorkflowExecutor
         WorkflowTask $task,
         \Workflow\V2\Workflow $workflow,
         int $sequence,
+        ?ConditionWaitInputOrder $inputOrder = null,
     ): bool {
         $run->loadMissing(['updates', 'commands']);
 
@@ -6795,6 +6867,12 @@ final class WorkflowExecutor
                     'result' => ExternalPayloads::historyValue($storedResult, $updateCodec, $namespace),
                 ], $task, $command);
                 $run->historyEvents->push($completedEvent);
+
+                $inputOrder?->observeInput(ConditionWaitInputOrder::updateAcceptedSequence(
+                    $run,
+                    $update->id,
+                    $command?->id,
+                ));
 
                 $update->forceFill([
                     'workflow_sequence' => $sequence,

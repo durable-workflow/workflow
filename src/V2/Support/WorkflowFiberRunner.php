@@ -1941,7 +1941,7 @@ final class WorkflowFiberRunner
     private static function indexRecordedConditionOutcomes(array $historyEvents): array
     {
         $outcomes = [];
-        $resolvedSequences = [];
+        $timerFiredSequences = [];
 
         foreach ($historyEvents as $event) {
             $type = self::eventType($event);
@@ -1961,15 +1961,24 @@ final class WorkflowFiberRunner
                 continue;
             }
 
-            if (isset($resolvedSequences[$sequence])) {
-                continue;
+            // A recorded ConditionWaitSatisfied is the wait's outcome even when
+            // its condition-timeout TimerFired precedes it: input ordered before
+            // the timer can satisfy the wait (#230). Every other first record
+            // keeps resolving the wait as it always has.
+            if (isset($outcomes[$sequence])) {
+                if ($type !== 'ConditionWaitSatisfied' || ! isset($timerFiredSequences[$sequence])) {
+                    continue;
+                }
+
+                unset($timerFiredSequences[$sequence]);
+            } elseif ($type === 'TimerFired') {
+                $timerFiredSequences[$sequence] = true;
             }
 
             $outcomes[$sequence] = [
                 'result' => $type === 'ConditionWaitSatisfied',
                 'recorded_at' => self::eventRecordedAt($event, $payload, ['fired_at']),
             ];
-            $resolvedSequences[$sequence] = true;
         }
 
         return $outcomes;
