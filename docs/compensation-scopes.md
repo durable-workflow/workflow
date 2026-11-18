@@ -3,8 +3,9 @@
 Implementation of the embedded, sequential scope design in
 [retained compensation proposal](https://github.com/durable-workflow/workflow/issues/1063), preparing the
 nested-machine integration in [business state-machine proposal](https://github.com/durable-workflow/workflow/issues/1069).
-This is not a released API. Existing run-local Saga and the four-method
-`TransitionStep` contract remain unchanged.
+These APIs first shipped in 2.29.0 as experimental, without a compatibility
+promise; see [API stability](api-stability.md#experimental-compensation-scopes).
+Existing run-local Saga and the four-method `TransitionStep` contract remain unchanged.
 
 ## Boundaries
 
@@ -168,6 +169,33 @@ runs. Explicit release removes the hold; ordinary forward-origin details can be
 pruned independently. Release authorization runs outside replay and SQL
 transactions, before the atomic retirement mutation.
 
+### Upgrade, schema rollback and downgrade
+
+A schema rollback refuses while the ledger holds any scope, including a released
+tombstone. Dropping those tables would discard unresolved obligations. Dropping
+the tombstones would let an old generation or request key be accepted again. To
+return to a release without these tables, restore a database backup taken before
+the upgrade. An empty ledger rolls back normally.
+
+The refusal stops `migrate:rollback` at the ledger migration. Migrations later in
+the same batch have already rolled back by then, for example the reservation
+columns. Run `php artisan migrate` to restore them; the retained rows are not
+changed.
+
+Downgrading only the package (to 2.28.x or earlier) leaves the ledger tables and
+rows in place. The older engine keeps running ordinary workflows on the upgraded
+schema, but it has no recovery classes, so retained scopes cannot be recovered
+or released. Its `migrate:rollback` cannot reach the newer migrations, because
+their files are absent. Upgrading again resumes from the same ledger: a recovery
+request then verifies the obligations the closed origin left behind, and the
+origin's terminal history is unchanged. Do not downgrade while a recovery run is
+open, because the older workers cannot load it.
+
+`scripts/ci/compensation-scope-upgrade-smoke.sh` installs published 2.28.1 into a
+new Laravel application and checks each of these steps against the candidate. It
+runs on pull requests that change migrations or compensation code, and on every
+stable release tag against the published package.
+
 ## Continue-as-new and originating-run redrive
 
 Scope identity and native child supervision are separate. When a workflow
@@ -304,8 +332,10 @@ original workflow can resume, let it initialize and register through recorded
 activities under that fence. If it closes before registration, keep the missing
 scope unresolved and reconcile the application outcome. Do not call internal
 scope persistence directly to invent an empty verified ledger. The child
-reservation contract above does not provide an atomic root-start/scope-open
-primitive.
+reservation contract above does not cover root start. For a new root, the opt-in
+`RootReservationStore` reserves the original run and its scope before dispatch;
+closure then returns either the original admission or a permanent never-admitted
+receipt. See [original root scope admission](experimental-root-admission.md).
 
 ## Runnable Order and Shipment example
 
