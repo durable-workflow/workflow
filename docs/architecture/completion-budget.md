@@ -52,7 +52,7 @@ retried attempt starts over with an empty stage.
   `json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)`.
   If the payload cannot be encoded, the completion fails closed with
   `history_transaction_measure_unavailable`.
-- **Rows.** Every write statement is charged before it runs (#1116), by the
+- **Rows.** Every write statement is charged before it runs, by the
   storage connection's before-executing hook, which `HistoryTransactionMeter::run()`
   registers once per connection. The hook charges nothing for a read, one row
   per tuple of an insert or upsert, and one row for an update or delete. A
@@ -188,7 +188,7 @@ That close is the server's own work on stored state, not the worker's, so it
 runs outside the worker's meter (`HistoryTransactionMeter::unmetered()`) and
 before the early check. A budget refusal therefore never prevents a close.
 
-The close is bounded instead (#1116). An ordinary run, one without opted-in
+The close is bounded instead. An ordinary run, one without opted-in
 timeout cleanup, closes in a single transaction only when its open work fits
 one batch. The batch is the completion budget's events less one (for the
 terminal event), and at most a fifth of its rows, since a cancelled activity
@@ -226,13 +226,12 @@ timeout cleanup and cooperative cancellation keep their own close
 
 ## Phases
 
-**Phase A** (#930) added the timing caps and the storage-floor guard, the exact
+**Phase A** added the timing caps and the storage-floor guard, the exact
 local-activity early check, the writer-level event and byte meter, history
 and local-activity row charges, the external payload limits with staging,
 lifecycle events held back until commit, and the unmetered deadline close.
 
-**Phase B** (#1116) charges every write statement before it runs, counts
+**Phase B** charges every write statement before it runs, counts
 bulk updates and deletes with a bounded read, bounds the deadline close in
 fenced batches, and lets the watchdog close an ordinary expired run whose
-task is unclaimed or abandoned. Native parity is tracked in
-durable-workflow/server#766.
+task is unclaimed or abandoned. The native server tracks parity separately.
