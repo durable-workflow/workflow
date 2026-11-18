@@ -6,6 +6,7 @@ namespace Tests\Feature;
 
 use Illuminate\Routing\Route as RoutingRoute;
 use Illuminate\Support\Facades\Route;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\TestActivity;
 use Tests\Fixtures\TestOtherActivity;
 use Tests\TestCase;
@@ -252,5 +253,33 @@ final class WebhookWorkflowTest extends TestCase
             ->sort()
             ->values()
             ->toArray());
+    }
+
+    /**
+     * @return iterable<string, array{string, string, mixed}>
+     */
+    public static function unconfiguredAuthProvider(): iterable
+    {
+        yield 'token unset' => ['token', 'workflows.webhook_auth.token.token', null];
+        yield 'token empty' => ['token', 'workflows.webhook_auth.token.token', ''];
+        yield 'signature secret unset' => ['signature', 'workflows.webhook_auth.signature.secret', null];
+        yield 'signature secret empty' => ['signature', 'workflows.webhook_auth.signature.secret', ''];
+    }
+
+    #[DataProvider('unconfiguredAuthProvider')]
+    public function testUnconfiguredAuthFailsClosed(string $method, string $key, mixed $value): void
+    {
+        config([
+            'workflows.webhook_auth.method' => $method,
+            $key => $value,
+        ]);
+
+        foreach ([[], ['Authorization' => ''], ['X-Signature' => '']] as $headers) {
+            $response = $this->postJson('/webhooks/start/test-webhook-workflow', [], $headers);
+
+            $response->assertStatus(503);
+        }
+
+        $this->assertSame(0, StoredWorkflow::count());
     }
 }
