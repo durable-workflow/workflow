@@ -28,17 +28,40 @@ timestamp falls before the earliest timestamp every supported column stores
 ## The early check
 
 After a run's deadline close (see below) and before the worker's first write,
-`complete()` counts the history events and rows the completion's local
-activities will write. The count is exact: per command, 1 scheduled event,
-then per attempt 1 started event, its heartbeats and a retry event before the
-next attempt, then 1 terminal event. Rows are two per event (the event and
-the run's history position), plus the execution, each attempt and a failure
-when the activity failed or timed out. Every other command counts its lower
-bound of one event.
+`complete()` checks the completion against two estimates computed from its
+command list.
+
+- **Events.** Local activities count exactly: per command, 1 scheduled event,
+  then per attempt 1 started event, its heartbeats and a retry event before
+  the next attempt, then 1 terminal event. Every other command counts its
+  lower bound of one event.
+- **Rows.** `CompletionRowEstimate` charges each command what one command of
+  its family writes, plus 3 rows for completing the task, the run and its
+  summary:
+
+  | Family | Rows per command |
+  | --- | --- |
+  | `schedule_activity` | 6 |
+  | `start_timer` | 7 |
+  | `start_child_workflow` | 19, plus one per memo and search attribute the child inherits from the parent |
+  | `record_side_effect`, `record_version_marker`, `complete_workflow` | 3 |
+  | `fail_workflow` | 4 |
+  | `continue_as_new` | 14 |
+  | `upsert_memo`, `upsert_search_attributes` | 3, plus one per entry |
+  | `record_local_activity` | execution, attempts and failure, plus 3 per event and 1 |
+  | any other command | 25 |
+
+  The figures are measured per family, and they are exact for each one: the
+  family tests check that the meter charges exactly the estimate. Rows that
+  depend on stored state rather than on the commands are not in the estimate.
+  These are the accepted updates a terminal command fails, the signals
+  continue-as-new carries, and the parent-close cascade. The meter charges
+  them before each statement.
 
 Past a limit, the completion is refused with `completion_budget_exceeded`
-before anything is written, and the worker keeps its lease. This refuses the
-local-activity amplifier cheaply. It is not the whole budget.
+before a single write statement runs, while it holds only the task and run
+locks it took to read them, and the worker keeps its lease. The meter below
+stays the exact backstop.
 
 ## The history transaction meter
 
@@ -89,10 +112,35 @@ check, operator metrics and backend capability reports show them.
 | --- | --- | --- | --- |
 | `history_transaction_size` | `DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE` | 5,000 | History events one completion may write |
 | `history_transaction_bytes` | `DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES` | 16 MiB | History bytes one completion may write |
-| `history_transaction_rows` | `DW_V2_LIMIT_HISTORY_TRANSACTION_ROWS` | 20,000 | Rows one completion may insert, update or delete, counted before each statement |
+| `history_transaction_rows` | `DW_V2_LIMIT_HISTORY_TRANSACTION_ROWS` | 520,000 (derived, see below) | Rows one completion may insert, update or delete, counted before each statement |
 | `external_payload_transaction_bytes` | `DW_V2_LIMIT_EXTERNAL_PAYLOAD_TRANSACTION_BYTES` | 16 MiB | Raw payload bytes one completion may externalize |
 | `payload_size_bytes` (existing) | `DW_V2_LIMIT_PAYLOAD_SIZE_BYTES` | 2 MiB | Each raw payload externalized |
 
+
+**The default row limit.** Unless `history_transaction_rows` is configured,
+it follows `history_transaction_size`, so it never refuses a completion the
+event limit admits. Measured per family, rows per history event are:
+
+| Family | Rows per event |
+| --- | --- |
+| `schedule_activity` | 6 |
+| `start_timer` | 7 |
+| `start_child_workflow` | 19 / 3 events, about 6.3 |
+| child inheriting 100 memos and 100 search attributes | 219 / 3 events, 73 |
+| `upsert_memo` or `upsert_search_attributes` of 100 entries | 103 |
+| `record_local_activity` | 4 |
+| an accepted update failed by a terminal command | 11 / 2 events, 5.5 |
+| a signal carried by continue-as-new | 4 |
+
+The highest is a full metadata upsert: a run holds at most 100 memos and 100
+search attributes, and an upsert records one event, its run position and the
+run summary. So the default is 103 rows per event times the event limit, plus
+5,000 for the rows a completion writes without an event (its own task, run and
+summary, and the pending messages continue-as-new hands over). At the default
+5,000 events, that is 103 × 5,000 + 5,000 = 520,000. An event limit of 0
+disables the derived row limit too. A configured row limit, including 0, is
+used as is. `CompletionRowBudgetDerivationTest` measures every family listed
+above and fails if any exceeds 103 rows per event.
 
 `HistoryBudget`'s continue-as-new thresholds stay advisory. They recommend
 continue-as-new and never refuse a write.
@@ -171,14 +219,16 @@ Queue dispatch runs after commit and is not completion state: with a database
 queue it inserts one job per task the completion created, and each of those
 tasks was charged when it was written.
 
-The early check stays exact for local activities and a lower bound for other
-commands. A cascade larger than the remaining budget is refused by the charge
-before its first statement, so a refused completion rolls back everything the
-completion had already written. The tests in
+The command estimate is exact for every command family; rows that depend
+on stored state are charged by the meter before each statement. The tests in
 `tests/Unit/V2/CompletionWriteFamilyBudgetTest.php` complete each family once
-to learn its exact total, then show that a limit equal to it admits the
-completion and a limit one lower refuses it with executions, attempts,
-history, projections and receipts unchanged and the task's lease kept.
+to learn its exact total. They then show that a limit equal to it admits the
+completion, and a limit one lower refuses it. For a command family, the
+refusal is the early `completion_budget_exceeded`, with no write statement
+run. For the state-driven family (a terminal command failing accepted
+updates), it is the meter's `history_transaction_limit_exceeded`. Either way,
+executions, attempts, history, projections and receipts stay unchanged, and
+the task keeps its lease.
 
 ## A run's deadline close
 
@@ -209,7 +259,16 @@ fenced and continued:
    batches skip it.
 3. The watchdog continues the close without a worker. Each pass takes one
    batch. When the rest fits, the existing close times the run out with the
-   same `WorkflowTimedOut`, failure, update closes and parent-close policy.
+   same `WorkflowTimedOut` and failure.
+4. The cascade after the terminal event is bounded the same way. In order,
+   it fails the accepted updates and then applies parent-close policy to
+   open children. The close transaction takes what is left of its batch,
+   and each child's terminate or cancellation is that child's own write. If
+   work remains, the closing task, now Completed, carries
+   `deadline_close_settlement: pending`. Each watchdog pass then settles one
+   more batch, updates before children and children in link order, skipping
+   any child the run already recorded a policy outcome for. When nothing is
+   left, the marker becomes `settled`.
 
 Every pass removes at least one open item, so a close always finishes, within
 one pass per batch. The history of a batched close is the history the single
@@ -217,7 +276,8 @@ close writes, so a run closed by an earlier version and a run closed in
 batches replay the same way. Setting both limits to 0 restores the single
 transaction.
 
-**Selection of expired runs.** The watchdog used to skip an expired run with
+**Selection of expired runs.** Expired runs are taken oldest deadline first,
+then by id. The watchdog used to skip an expired run with
 any Ready or Leased workflow task, expecting that task's completion to close
 it. A run whose task no worker claims then stayed open past its deadline. It
 now skips only a run whose workflow task holds a live lease. For an ordinary
@@ -225,7 +285,9 @@ run whose task is Ready or whose lease expired, the watchdog closes the run
 itself under the run lock, using that task, through the same bounded close. An
 ordinary close needs no workflow code, so no worker is needed. Opted-in
 timeout cleanup and cooperative cancellation keep their own close
-(`docs/architecture/timeout-cleanup.md`).
+(`docs/architecture/timeout-cleanup.md`). Such a run is not selected while its
+workflow task is open and its own deadline has not passed, so it cannot fill
+a pass's scan limit with no-op candidates.
 
 ## Phases
 

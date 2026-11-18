@@ -67,7 +67,22 @@ final class StructuralLimits
 
     public const DEFAULT_HISTORY_TRANSACTION_BYTES = 16777216; // 16 MiB
 
-    public const DEFAULT_HISTORY_TRANSACTION_ROWS = 20000;
+    /**
+     * Rows a completion may write beyond MAX_ROWS_PER_HISTORY_EVENT per
+     * event: its fixed task, run and summary rows, and the pending inbound
+     * messages continue-as-new hands to the next run (one row each).
+     */
+    public const HISTORY_TRANSACTION_ROWS_HEADROOM = self::DEFAULT_PENDING_SIGNAL_COUNT;
+
+    /**
+     * The row limit when none is configured, at the default event limit:
+     * 103 rows per event x 5,000 events + 5,000 = 520,000. It never binds
+     * before the event limit for any first-party command mix (see
+     * {@see self::historyTransactionRowsLimit()}).
+     */
+    public const DEFAULT_HISTORY_TRANSACTION_ROWS = CompletionRowEstimate::MAX_ROWS_PER_HISTORY_EVENT
+        * self::DEFAULT_HISTORY_TRANSACTION_SIZE
+        + self::HISTORY_TRANSACTION_ROWS_HEADROOM;
 
     public const DEFAULT_EXTERNAL_PAYLOAD_TRANSACTION_BYTES = 16777216; // 16 MiB
 
@@ -239,10 +254,33 @@ final class StructuralLimits
     /**
      * Rows one workflow task completion may insert, update or delete, each
      * charged before its statement runs (#1116). 0 disables the check.
+     *
+     * A configured value is honored as is. Without one, the limit follows the
+     * event limit so it never refuses a completion the event limit admits:
+     * at most {@see CompletionRowEstimate::MAX_ROWS_PER_HISTORY_EVENT} rows
+     * per event, plus {@see self::HISTORY_TRANSACTION_ROWS_HEADROOM}. With
+     * the event limit disabled, so is the derived row limit.
      */
     public static function historyTransactionRowsLimit(): int
     {
-        return self::intConfig('history_transaction_rows', self::DEFAULT_HISTORY_TRANSACTION_ROWS);
+        $configured = config('workflows.v2.structural_limits.history_transaction_rows');
+        if (is_numeric($configured)) {
+            return max(0, (int) $configured);
+        }
+
+        return self::derivedHistoryTransactionRowsLimit(self::historyTransactionSizeLimit());
+    }
+
+    public static function derivedHistoryTransactionRowsLimit(int $eventLimit): int
+    {
+        if ($eventLimit <= 0) {
+            return 0;
+        }
+
+        return HistoryTransactionMeter::checkedAdd(
+            HistoryTransactionMeter::checkedMultiply($eventLimit, CompletionRowEstimate::MAX_ROWS_PER_HISTORY_EVENT),
+            self::HISTORY_TRANSACTION_ROWS_HEADROOM,
+        );
     }
 
     /**

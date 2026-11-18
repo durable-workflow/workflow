@@ -26,6 +26,7 @@ use Workflow\V2\Models\WorkflowServiceCallDispatch;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\DeadlineCloseSettlement;
 use Workflow\V2\Support\LinkedServiceCallCloser;
 use Workflow\V2\Support\NamespaceScope;
 use Workflow\V2\Support\NamespaceScopeRefusals;
@@ -223,6 +224,23 @@ final class TaskWatchdog
                 $report['deadline_expired_failures'][] = [
                     'run_id' => $deadlineRunId,
                     'message' => $result['error'],
+                ];
+            }
+            SqliteMaintenanceYield::pause((new WorkflowRun())->getConnection());
+        }
+
+        foreach (self::deadlineSettlementRunIds(
+            $runIds,
+            $instanceId,
+            $connection,
+            $queue,
+            $namespaces
+        ) as $settleRunId) {
+            $error = self::continueDeadlineCloseSettlement($settleRunId);
+            if ($error !== null) {
+                $report['deadline_expired_failures'][] = [
+                    'run_id' => $settleRunId,
+                    'message' => $error,
                 ];
             }
             SqliteMaintenanceYield::pause((new WorkflowRun())->getConnection());
@@ -591,7 +609,13 @@ final class TaskWatchdog
         ?string $queue = null,
         ?NamespaceScope $namespaces = null,
     ): array {
+        // Oldest deadline first, then a stable key, so a scan-limit's worth
+        // of runs that stay selected cannot starve the rest (#1116).
         return self::deadlineExpiredRunQuery(now(), $runIds, $instanceId, $connection, $queue, $namespaces)
+            ->orderByRaw(
+                'COALESCE(execution_deadline_at, run_deadline_at, cancellation_deadline_at, timeout_cleanup_work_deadline_at)'
+            )
+            ->orderBy('id')
             ->limit(TaskRepairPolicy::scanLimit())
             ->pluck('id')
             ->all();
@@ -673,13 +697,23 @@ final class TaskWatchdog
                 });
             })
             ->where(static function ($available) use ($now): void {
-                // Only a live workflow task lease defers the close to the
-                // worker's completion. An unclaimed Ready task, or a lease
-                // that expired, no longer hides an expired run (#1116).
-                $available->whereDoesntHave('tasks', static function ($task) use ($now): void {
+                $available->whereDoesntHave('tasks', static function ($task): void {
                     $task->where('task_type', TaskType::Workflow->value)
-                        ->where('status', TaskStatus::Leased->value)
-                        ->where('lease_expires_at', '>', $now);
+                        ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value]);
+                })->orWhere(static function ($ordinary) use ($now): void {
+                    // An ordinary run's close needs no workflow code: only a
+                    // live workflow task lease defers it to that worker's
+                    // completion. An unclaimed Ready task, or a lease that
+                    // expired, no longer hides it (#1116). Runs with pending
+                    // cancellation or timeout cleanup keep their own close and
+                    // are not selected for it, so they cannot fill the scan.
+                    $ordinary->whereNull('cancellation_request_command_id')
+                        ->whereNull('timeout_cleanup_work_deadline_at')
+                        ->whereDoesntHave('tasks', static function ($task) use ($now): void {
+                            $task->where('task_type', TaskType::Workflow->value)
+                                ->where('status', TaskStatus::Leased->value)
+                                ->where('lease_expires_at', '>', $now);
+                        });
                 })->orWhere(static function ($cancellation) use ($now): void {
                     $cancellation->whereNotNull('cancellation_request_command_id')
                         ->whereNotNull('cancellation_deadline_at')
@@ -702,6 +736,80 @@ final class TaskWatchdog
         RequestedTaskScope::apply($query, $connection, $queue, $namespaces);
 
         return $query;
+    }
+
+    /**
+     * Closed runs whose bounded deadline close still has accepted updates or
+     * children to settle: the closing task carries the pending marker.
+     *
+     * @param list<string> $runIds
+     * @return list<string>
+     */
+    private static function deadlineSettlementRunIds(
+        array $runIds,
+        ?string $instanceId,
+        ?string $connection,
+        ?string $queue,
+        ?NamespaceScope $namespaces,
+    ): array {
+        $query = WorkflowRun::query()
+            ->where('status', RunStatus::Failed->value)
+            ->whereHas('tasks', static function ($task): void {
+                $task->where('task_type', TaskType::Workflow->value)
+                    ->where('status', TaskStatus::Completed->value)
+                    ->where('payload->' . DeadlineCloseSettlement::MARKER, DeadlineCloseSettlement::PENDING);
+            });
+
+        if ($runIds !== []) {
+            $query->whereKey($runIds);
+        }
+
+        if ($instanceId !== null) {
+            $query->where('workflow_instance_id', $instanceId);
+        }
+
+        RequestedTaskScope::apply($query, $connection, $queue, $namespaces);
+
+        return $query->orderBy('closed_at')
+            ->orderBy('id')
+            ->limit(TaskRepairPolicy::scanLimit())
+            ->pluck('id')
+            ->all();
+    }
+
+    private static function continueDeadlineCloseSettlement(string $runId): ?string
+    {
+        try {
+            ConfiguredV2Models::connection()->transaction(static function () use ($runId): void {
+                /** @var WorkflowRun|null $run */
+                $run = WorkflowRun::query()
+                    ->lockForUpdate()
+                    ->find($runId);
+                if ($run === null) {
+                    return;
+                }
+                /** @var WorkflowTask|null $task */
+                $task = WorkflowTask::query()
+                    ->where('workflow_run_id', $run->id)
+                    ->where('task_type', TaskType::Workflow->value)
+                    ->where('payload->' . DeadlineCloseSettlement::MARKER, DeadlineCloseSettlement::PENDING)
+                    ->lockForUpdate()
+                    ->first();
+                if ($task === null) {
+                    return;
+                }
+                DeadlineCloseSettlement::settle($run, $task, WorkflowExecutor::deadlineCloseBatchSize() ?? PHP_INT_MAX);
+                self::historyProjectionRole()->projectRun(
+                    $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+                );
+            }, 3);
+        } catch (Throwable $throwable) {
+            report($throwable);
+
+            return $throwable->getMessage();
+        }
+
+        return null;
     }
 
     private static function tablesReady(): bool

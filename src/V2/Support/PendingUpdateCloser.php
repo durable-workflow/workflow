@@ -19,15 +19,20 @@ use Workflow\V2\Models\WorkflowUpdate;
 
 final class PendingUpdateCloser
 {
-    public static function closeForTerminalRun(WorkflowRun $run, ?WorkflowTask $task = null): void
+    /**
+     * Fail every accepted update of a closed run, in acceptance order, or at
+     * most $limit of them for a bounded deadline close (#1116), which
+     * continues with the rest in a later transaction in the same order.
+     *
+     * @return int the updates closed
+     */
+    public static function closeForTerminalRun(WorkflowRun $run, ?WorkflowTask $task = null, ?int $limit = null): int
     {
-        $updates = ConfiguredV2Models::query('update_model', WorkflowUpdate::class)
-            ->where('workflow_run_id', $run->id)
-            ->where('status', UpdateStatus::Accepted->value)
-            ->orderByRaw('CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END')
-            ->orderBy('command_sequence')
-            ->orderBy('accepted_at')
-            ->orderBy('id')
+        if ($limit !== null && $limit <= 0) {
+            return 0;
+        }
+        $updates = self::acceptedQuery($run)
+            ->when($limit !== null, static fn ($query) => $query->limit($limit))
             ->lockForUpdate()
             ->get();
 
@@ -114,5 +119,23 @@ final class PendingUpdateCloser
                 }
             }
         }
+
+        return $updates->count();
+    }
+
+    public static function hasAccepted(WorkflowRun $run): bool
+    {
+        return self::acceptedQuery($run)->exists();
+    }
+
+    private static function acceptedQuery(WorkflowRun $run)
+    {
+        return ConfiguredV2Models::query('update_model', WorkflowUpdate::class)
+            ->where('workflow_run_id', $run->id)
+            ->where('status', UpdateStatus::Accepted->value)
+            ->orderByRaw('CASE WHEN command_sequence IS NULL THEN 1 ELSE 0 END')
+            ->orderBy('command_sequence')
+            ->orderBy('accepted_at')
+            ->orderBy('id');
     }
 }

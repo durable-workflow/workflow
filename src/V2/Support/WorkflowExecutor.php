@@ -143,11 +143,12 @@ final class WorkflowExecutor
             return self::DEADLINE_NOT_EXPIRED;
         }
 
-        if ($this->cancelOpenWorkBatchBeforeDeadlineClose($run, $task)) {
+        $cascadeBudget = null;
+        if ($this->cancelOpenWorkBatchBeforeDeadlineClose($run, $task, $cascadeBudget)) {
             return self::DEADLINE_CLOSING;
         }
 
-        $this->timeoutRun($run, $task);
+        $this->timeoutRun($run, $task, cascadeBudget: $cascadeBudget);
 
         return self::DEADLINE_CLOSED;
     }
@@ -337,8 +338,12 @@ final class WorkflowExecutor
      * tasks. Returns false, writing nothing, when the open work fits one
      * close or the run's close belongs to opted-in timeout cleanup.
      */
-    private function cancelOpenWorkBatchBeforeDeadlineClose(WorkflowRun $run, WorkflowTask $task): bool
-    {
+    private function cancelOpenWorkBatchBeforeDeadlineClose(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        ?int &$cascadeBudget = null,
+    ): bool {
+        $cascadeBudget = null;
         if (CooperativeCancellationDelivery::context($run)?->isTimeout() === true
             || ($run->timeout_cleanup_work_deadline_at !== null && $run->cancellation_request_command_id === null)) {
             return false;
@@ -381,7 +386,12 @@ final class WorkflowExecutor
             ))
             ->values();
 
-        if ($openActivities->count() + $openTimers->count() + $otherTasks->count() <= $batch) {
+        $openWork = $openActivities->count() + $openTimers->count() + $otherTasks->count();
+        if ($openWork <= $batch) {
+            // The terminal cascade (accepted updates, then children) gets
+            // what is left of this transaction's batch, at least one item.
+            $cascadeBudget = max(1, $batch - $openWork);
+
             return false;
         }
 
@@ -4796,8 +4806,12 @@ final class WorkflowExecutor
      * @param array<string, mixed>|null $timeoutCleanup The cleanup outcome when
      *        deadline-triggered cleanup (#863) ran first; its timeout kind wins.
      */
-    private function timeoutRun(WorkflowRun $run, WorkflowTask $task, ?array $timeoutCleanup = null): void
-    {
+    private function timeoutRun(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        ?array $timeoutCleanup = null,
+        ?int $cascadeBudget = null,
+    ): void {
         $now = now();
 
         // Every deadline boundary, including task completion, preserves the
@@ -4936,7 +4950,13 @@ final class WorkflowExecutor
             ] : []),
         ], $task);
 
-        PendingUpdateCloser::closeForTerminalRun($run, $task);
+        // A bounded close (#1116) fails at most its remaining budget of
+        // accepted updates and acts on children only once none is left.
+        $updatesClosed = PendingUpdateCloser::closeForTerminalRun($run, $task, $cascadeBudget);
+        if ($cascadeBudget !== null) {
+            $cascadeBudget -= $updatesClosed;
+        }
+        $updatesLeft = $cascadeBudget !== null && PendingUpdateCloser::hasAccepted($run);
 
         // Mark current task completed.
         $task->forceFill([
@@ -4956,7 +4976,23 @@ final class WorkflowExecutor
         );
 
         // Apply parent-close policy to open children.
-        ParentClosePolicyEnforcer::enforce($run);
+        $childrenSettled = true;
+        if (! $updatesLeft) {
+            ParentClosePolicyEnforcer::enforce(
+                $run,
+                $cascadeBudget === null ? null : max(0, $cascadeBudget),
+                $childrenSettled
+            );
+        }
+        if ($updatesLeft || ! $childrenSettled) {
+            // The watchdog continues the cascade from this marker.
+            $task->forceFill([
+                'payload' => [
+                    ...(is_array($task->payload) ? $task->payload : []),
+                    DeadlineCloseSettlement::MARKER => DeadlineCloseSettlement::PENDING,
+                ],
+            ])->save();
+        }
 
         // Notify parent workflows and project summary.
         $this->dispatchParentResumeTasks($run);

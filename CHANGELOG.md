@@ -20,11 +20,21 @@
   `history_transaction_rows` before the statement runs, not only history and
   local activity rows (#1116). Task, run, timer, activity, child, signal,
   update, continue-as-new, memo, search attribute and projection writes all
-  count, and a write that can change several existing rows is counted with a
-  bounded read first. A completion over the limit is refused with
-  `history_transaction_limit_exceeded` before it writes anything, and its task
-  keeps its lease. Completions that write many rows may now reach the default
-  20,000-row limit; raise `DW_V2_LIMIT_HISTORY_TRANSACTION_ROWS` if needed.
+  count. A write that can change several existing rows is counted first with
+  a bounded read. Before its first write, a completion is also checked
+  against an estimate computed from its command list. If over the limit, it
+  is refused with `completion_budget_exceeded` without writing anything, and
+  its task keeps its lease.
+  **Upgrade note:** unless you set `DW_V2_LIMIT_HISTORY_TRANSACTION_ROWS`,
+  the row limit is now derived from the event limit
+  (`DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE`, default 5,000). The derivation is
+  103 rows per event × 5,000 + 5,000 = 520,000. 103 is the most rows any
+  first-party command writes per history event: an upsert of a run's full
+  100 memos or search attributes. So a completion 2.29.1 admitted under the
+  event limit is still admitted. For example, 1,000 children and 1,000
+  activities is 4,000 events and about 25,000 rows. If you configured a row
+  limit, it is used as is: completions now count more rows than in 2.29, so
+  review the setting before upgrading.
 - An ordinary run past its execution or run deadline whose workflow task sits
   Ready and unclaimed, or whose lease expired, is now timed out by the
   watchdog instead of staying open. A live lease still leaves the close to that
@@ -34,7 +44,15 @@
   timers and tasks with the same history the single close writes, releases
   the workflow task, and answers the worker with
   `reason: run_deadline_closing`. The watchdog finishes the close without a
-  worker. Histories recorded by earlier versions replay unchanged.
+  worker. Accepted updates failed by the close, and children its parent-close
+  policy acts on, are settled in bounded batches too. After the terminal
+  event, the watchdog continues them in order from a marker on the closing
+  task. A run's history equals a single close's, and histories recorded by
+  earlier versions replay unchanged.
+- The watchdog takes expired runs oldest deadline first. It no longer
+  selects runs it cannot close yet, such as a pending cooperative
+  cancellation with an open workflow task, so they cannot starve other
+  runs.
 
 ## 2.29.1 - 2026-11-18
 

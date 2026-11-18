@@ -1392,7 +1392,12 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
 
                 // The early whole-completion check (#930): after any deadline
                 // close, before the worker's first write; the lease stays.
-                if (WorkflowCommandNormalizer::completionBudgetErrors(array_values($commands)) !== []) {
+                // The row estimate is an upper bound on the rows the commands
+                // write, so an over-limit completion is refused here without
+                // a single write (#1116). The meter stays the exact backstop.
+                $rowLimit = StructuralLimits::historyTransactionRowsLimit();
+                if (WorkflowCommandNormalizer::completionBudgetErrors(array_values($commands)) !== []
+                    || ($rowLimit > 0 && CompletionRowEstimate::rows($run, array_values($commands)) > $rowLimit)) {
                     return [
                         'completed' => false,
                         'task_id' => $taskId,

@@ -20,12 +20,16 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Models\ActivityExecution;
+use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
+use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Models\WorkflowUpdate;
+use Workflow\V2\Support\CompletionRowEstimate;
 use Workflow\V2\Support\HistoryTransactionMeter;
 use Workflow\V2\Support\MemoPayload;
 use Workflow\V2\Support\WorkflowExecutor;
@@ -61,6 +65,7 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
             'workflow completion',
             'workflow failure',
             'continue as new',
+            'workflow failure with accepted updates',
         ] as $family) {
             yield $family => [$family];
         }
@@ -91,6 +96,14 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
             ) !== 1,
         )));
         $this->assertGreaterThan(0, $rows);
+        $stateDriven = $family === 'workflow failure with accepted updates';
+        if ($stateDriven) {
+            // Rows that depend on stored state are not in the command estimate.
+            $this->assertLessThan($rows, $measured['estimate']);
+        } else {
+            // The command estimate is exact for every command family.
+            $this->assertSame($rows, $measured['estimate'], $family);
+        }
 
         $admitted = $this->completeFamily($family, $rows);
         $this->assertTrue($admitted['result']['completed'], json_encode($admitted['result'], JSON_THROW_ON_ERROR));
@@ -98,9 +111,30 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
 
         $refused = $this->completeFamily($family, $rows - 1);
         $this->assertFalse($refused['result']['completed']);
-        $this->assertSame('history_transaction_limit_exceeded', $refused['result']['reason']);
-        $this->assertSame(HistoryTransactionMeter::ROWS, $refused['result']['limit'] ?? null);
+        if ($stateDriven) {
+            // The meter is the exact backstop for state-driven rows.
+            $this->assertSame('history_transaction_limit_exceeded', $refused['result']['reason']);
+            $this->assertSame(HistoryTransactionMeter::ROWS, $refused['result']['limit'] ?? null);
+        } else {
+            // Refused from the command list before a single write statement.
+            $this->assertSame('completion_budget_exceeded', $refused['result']['reason']);
+            $this->assertSame([], $refused['writes']);
+        }
         $this->assertSame($refused['before'], $this->databaseSnapshot(), 'A refused completion changed stored state.');
+    }
+
+    /**
+     * An over-limit completion is refused before any statement writes: the
+     * estimate is computed from the command list after the locks are taken.
+     */
+    public function testAnOverLimitCompletionIsRefusedBeforeAnyWriteStatement(): void
+    {
+        Queue::fake();
+        $refused = $this->completeFamily('child workflow', 5);
+
+        $this->assertSame('completion_budget_exceeded', $refused['result']['reason']);
+        $this->assertSame([], $refused['writes']);
+        $this->assertSame($refused['before'], $this->databaseSnapshot());
     }
 
     /**
@@ -153,6 +187,28 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
     }
 
     /**
+     * The statement hook charges an insert by its tuples. An insert from a
+     * select has none to count, so the engine must route one through
+     * HistoryTransactionMeter::affecting() with its select; there is none.
+     */
+    public function testNoEngineWriteInsertsFromASelect(): void
+    {
+        $offenders = [];
+        $files = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator(dirname(__DIR__, 3) . '/src'));
+        foreach ($files as $file) {
+            if ($file->isFile() && $file->getExtension() === 'php'
+                && preg_match(
+                    '/->(insertUsing|insertOrIgnoreUsing)\(/',
+                    (string) file_get_contents($file->getPathname())
+                ) === 1) {
+                $offenders[] = $file->getPathname();
+            }
+        }
+
+        $this->assertSame([], $offenders);
+    }
+
+    /**
      * The confirmed #1116 defect: an ordinary run past its execution deadline
      * whose original workflow task is Ready and unclaimed used to stay
      * Pending. The watchdog now closes it under the run lock with that task.
@@ -191,6 +247,41 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
 
         $this->assertSame(RunStatus::Failed, $run->fresh()->status);
         $this->assertSame(TaskStatus::Completed, $task->fresh()->status);
+    }
+
+    /**
+     * Expired runs whose close is not the watchdog's to take now (pending
+     * cooperative cancellation with a Ready task) are not selected, and the
+     * rest are taken oldest deadline first, so they cannot starve an
+     * ordinary run behind a full scan.
+     */
+    public function testNoOpDeadlineCandidatesCannotStarveAnOrdinaryClose(): void
+    {
+        config([
+            'workflows.v2.task_repair.scan_limit' => 3,
+        ]);
+        foreach (range(1, 5) as $index) {
+            $waiting = $this->createWaitingRun();
+            $waiting->forceFill([
+                'execution_deadline_at' => now()
+                    ->subHours(2),
+                'cancellation_request_command_id' => 'cancel-' . $index,
+                'cancellation_deadline_at' => now()
+                    ->addHour(),
+            ])->save();
+            $this->createTask($waiting, TaskStatus::Ready);
+        }
+        $ordinary = $this->createWaitingRun();
+        $ordinary->forceFill([
+            'execution_deadline_at' => now()
+                ->subMinute(),
+        ])->save();
+        $this->createTask($ordinary, TaskStatus::Ready);
+
+        $report = TaskWatchdog::runPass();
+
+        $this->assertSame(1, $report['deadline_expired_candidates']);
+        $this->assertSame(RunStatus::Failed, $ordinary->fresh()->status);
     }
 
     /**
@@ -292,8 +383,73 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
     }
 
     /**
+     * The terminal cascade of a bounded close is bounded too: accepted updates
+     * and then children are settled at most one batch per transaction, and
+     * the watchdog continues from the closing task's marker. The run's
+     * history equals a single close's.
+     *
+     * 200 children and 300 updates over batches of 100 take five bounded
+     * transactions. (A thousand children work the same way, but each child's
+     * termination is a full command on that child, which makes a thousand of
+     * them, twice, take ten minutes on SQLite.)
+     */
+    public function testABoundedCloseSettlesUpdatesAndChildrenAcrossPassesWithTheSingleCloseHistory(): void
+    {
+        Queue::fake();
+        Carbon::setTestNow(now()->startOfSecond());
+        config([
+            'workflows.v2.structural_limits.history_transaction_size' => 0,
+            'workflows.v2.structural_limits.history_transaction_rows' => 0,
+        ]);
+        $single = $this->createExpiredParent(children: 200, updates: 300);
+        $this->assertSame(
+            'run_timed_out',
+            $this->bridge()->complete($single['task']->id, [$this->startTimer()])['reason']
+        );
+        $this->assertSame(0, $this->openChildren($single['run']));
+        $this->assertNull($single['task']->fresh()->payload['deadline_close_settlement'] ?? null);
+
+        $batched = $this->createExpiredParent(children: 200, updates: 300);
+        // 100 items per close transaction.
+        config([
+            'workflows.v2.structural_limits.history_transaction_rows' => 500,
+        ]);
+        $this->assertSame(100, WorkflowExecutor::deadlineCloseBatchSize());
+
+        $closed = $this->bridge()
+            ->complete($batched['task']->id, [$this->startTimer()]);
+
+        $this->assertSame('run_timed_out', $closed['reason']);
+        $this->assertSame(RunStatus::Failed, $batched['run']->fresh()->status);
+        // The close took the first 100 updates and left the rest.
+        $this->assertSame(200, $this->acceptedUpdates($batched['run']));
+        $this->assertSame(200, $this->openChildren($batched['run']));
+        $this->assertSame('pending', $batched['task']->fresh()->payload['deadline_close_settlement'] ?? null);
+
+        $passes = 0;
+        while (($batched['task']->fresh()->payload['deadline_close_settlement'] ?? null) === 'pending' && $passes < 20) {
+            $updates = $this->acceptedUpdates($batched['run']);
+            $children = $this->openChildren($batched['run']);
+            TaskWatchdog::runPass(runIds: [$batched['run']->id]);
+            ++$passes;
+            // No pass settles more than one batch.
+            $this->assertLessThanOrEqual(
+                100,
+                $updates - $this->acceptedUpdates($batched['run']) + $children - $this->openChildren($batched['run'])
+            );
+        }
+
+        // 200 updates and 200 children left, 100 per pass.
+        $this->assertSame(4, $passes);
+        $this->assertSame('settled', $batched['task']->fresh()->payload['deadline_close_settlement']);
+        $this->assertSame(0, $this->openChildren($batched['run']));
+        $this->assertSame(0, $this->acceptedUpdates($batched['run']));
+        $this->assertSame($this->closeHistory($single['run']), $this->closeHistory($batched['run']));
+    }
+
+    /**
      * @param list<string> $unmetered
-     * @return array{result: array<string, mixed>, before: array<string, string>}
+     * @return array{result: array<string, mixed>, before: array<string, string>, estimate: int, writes: list<string>}
      */
     private function completeFamily(string $family, ?int $rowLimit, array &$unmetered = []): array
     {
@@ -304,8 +460,14 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
         if ($family === 'search attribute delete') {
             $this->seedSearchAttributes($run, 3);
         }
+        if ($family === 'workflow failure with accepted updates') {
+            foreach (range(1, 3) as $index) {
+                $this->acceptUpdate($run, $index);
+            }
+        }
         $task = $this->createLeasedTask($run);
         $commands = $this->familyCommands($family);
+        $estimate = CompletionRowEstimate::rows($run, $commands);
         if ($rowLimit !== null) {
             config([
                 'workflows.v2.structural_limits.history_transaction_rows' => $rowLimit,
@@ -313,9 +475,13 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
         }
         $before = $this->databaseSnapshot();
         $counting = true;
-        DB::listen(static function ($query) use (&$unmetered, &$counting): void {
-            if ($counting && HistoryTransactionMeter::current() === null
-                && HistoryTransactionMeter::statementRows($query->sql) > 0) {
+        $writes = [];
+        DB::listen(static function ($query) use (&$unmetered, &$counting, &$writes): void {
+            if (! $counting || HistoryTransactionMeter::statementRows($query->sql) === 0) {
+                return;
+            }
+            $writes[] = $query->sql;
+            if (HistoryTransactionMeter::current() === null) {
                 $unmetered[] = $query->sql;
             }
         });
@@ -327,6 +493,8 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
         return [
             'result' => $result,
             'before' => $before,
+            'estimate' => $estimate,
+            'writes' => $writes,
         ];
     }
 
@@ -397,11 +565,43 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
                 'message' => 'metered failure',
                 'exception_class' => \RuntimeException::class,
             ]],
+            'workflow failure with accepted updates' => [[
+                'type' => 'fail_workflow',
+                'message' => 'metered failure',
+                'exception_class' => \RuntimeException::class,
+            ]],
             'continue as new' => [[
                 'type' => 'continue_as_new',
                 'arguments' => Serializer::serialize(['next']),
             ]],
         };
+    }
+
+    private function acceptUpdate(WorkflowRun $run, int $index): void
+    {
+        $instance = WorkflowInstance::query()->findOrFail($run->workflow_instance_id);
+        $command = WorkflowCommand::record($instance, $run, [
+            'command_type' => 'update',
+            'target_scope' => 'instance',
+            'payload_codec' => 'avro',
+            'payload' => Serializer::serialize([
+                'name' => 'approve-' . $index,
+            ]),
+            'source' => 'api',
+            'status' => 'accepted',
+            'accepted_at' => now(),
+        ]);
+        WorkflowUpdate::query()->create([
+            'workflow_command_id' => $command->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'command_sequence' => $command->command_sequence,
+            'update_name' => 'approve-' . $index,
+            'status' => 'accepted',
+            'payload_codec' => 'avro',
+            'arguments' => Serializer::serialize([]),
+            'accepted_at' => now(),
+        ]);
     }
 
     /**
@@ -510,6 +710,68 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
     }
 
     /**
+     * @return array{run: WorkflowRun, task: WorkflowTask}
+     */
+    private function createExpiredParent(int $children, int $updates): array
+    {
+        $run = $this->createWaitingRun();
+        // Children are seeded as stored rows: starting a thousand children in
+        // one completion is itself slow, and only their close is under test.
+        foreach (range(1, $children) as $sequence) {
+            $child = $this->createWaitingRun();
+            WorkflowLink::query()->create([
+                'link_type' => 'child_workflow',
+                'sequence' => $sequence,
+                'parent_workflow_instance_id' => $run->workflow_instance_id,
+                'parent_workflow_run_id' => $run->id,
+                'child_workflow_instance_id' => $child->workflow_instance_id,
+                'child_workflow_run_id' => $child->id,
+                'is_primary_parent' => true,
+                'parent_close_policy' => 'terminate',
+            ]);
+        }
+        foreach (range(1, $updates) as $index) {
+            $this->acceptUpdate($run, $index);
+        }
+        $run->refresh()
+            ->forceFill([
+                'status' => RunStatus::Waiting->value,
+                'execution_deadline_at' => now()
+                    ->subMinute(),
+            ])->save();
+
+        return [
+            'run' => $run,
+            'task' => $this->createLeasedTask($run),
+        ];
+    }
+
+    private function acceptedUpdates(WorkflowRun $run): int
+    {
+        return WorkflowUpdate::query()->where('workflow_run_id', $run->id)
+            ->where('status', 'accepted')
+            ->count();
+    }
+
+    private function openChildren(WorkflowRun $parent): int
+    {
+        return WorkflowRun::query()
+            ->whereIn('id', WorkflowLink::query()
+                ->where('parent_workflow_run_id', $parent->id)
+                ->select('child_workflow_run_id'))
+            ->whereNotIn(
+                'status',
+                [
+                    RunStatus::Terminated->value,
+                    RunStatus::Failed->value,
+                    RunStatus::Completed->value,
+                    RunStatus::Cancelled->value,
+                ]
+            )
+            ->count();
+    }
+
+    /**
      * The close's history without per-run identities and clock values.
      *
      * @return list<array<string, mixed>>
@@ -536,7 +798,7 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
     private static function withoutIdentities(array $value): array
     {
         foreach ($value as $key => $item) {
-            if (is_string($key) && preg_match('/(^id$|_id$|_at$|^idempotency_key$|^task$)/', $key) === 1) {
+            if (is_string($key) && preg_match('/(^id$|_id$|_at$|^idempotency_key$|^task$|^stream_key$)/', $key) === 1) {
                 unset($value[$key]);
 
                 continue;

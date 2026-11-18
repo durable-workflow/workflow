@@ -201,7 +201,10 @@ final class SqliteTransaction
                 try {
                     if ($admission !== null) {
                         SqliteWriteWait::run($pdo, static function () use ($admission, $database): void {
-                            $admission($database);
+                            // SQLite's writer admission rewrites a key to itself.
+                            // Other backends have none, so no completion meter
+                            // charges it (#1116).
+                            HistoryTransactionMeter::unmetered(static fn () => $admission($database));
                         }, $deadline);
                     }
                     $entered = true;
