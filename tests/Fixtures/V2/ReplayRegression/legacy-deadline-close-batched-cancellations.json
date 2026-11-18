@@ -10,8 +10,10 @@
     "workflow-fiber-runner"
   ],
   "workflow": {
-    "type": "Tests\\Fixtures\\V2\\TestHistoryTimerReplayWorkflow",
-    "arguments": [],
+    "type": "Tests\\Fixtures\\V2\\TestTimeoutCleanupWorkflow",
+    "arguments": [
+      "complete"
+    ],
     "payload_codec": "avro"
   },
   "history": [
@@ -26,7 +28,7 @@
       "event_type": "TimerScheduled",
       "payload": {
         "sequence": 1,
-        "delay_seconds": 0
+        "delay_seconds": 3600
       },
       "recorded_at": "2026-11-18T00:00:01.000000Z"
     },
@@ -35,7 +37,7 @@
       "event_type": "TimerCancelled",
       "payload": {
         "sequence": 1,
-        "delay_seconds": 0
+        "delay_seconds": 3600
       },
       "recorded_at": "2026-11-18T00:01:00.000000Z"
     },
@@ -61,7 +63,7 @@
   },
   "legacy_deadline_close": {
     "issue": "durable-workflow/workflow#1116",
-    "batch_size": 1,
-    "note": "An ordinary run's deadline close cancels its open work and then records WorkflowTimedOut. Since #1116 an oversized close cancels open work in bounded batches across transactions, but writes exactly this history: each cancellation event in the order the single 2.29.x close wrote it, then the terminal event. The history replays as it did before batching."
+    "execution_timeout_seconds": 60,
+    "note": "An ordinary run (no timeout cleanup opt-in) waits on a timer past its execution deadline, and the watchdog's deadline task is never claimed. Before #1116 the watchdog skipped any expired run with a Ready workflow task, so the run stayed open. Now the watchdog closes it with that task: the open timer is cancelled and WorkflowTimedOut recorded, the same history a worker-observed close writes. An oversized close writes this history in bounded batches."
   }
 }

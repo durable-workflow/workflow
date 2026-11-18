@@ -202,8 +202,11 @@ fenced and continued:
    other open tasks. The run stays open and expired. Its workflow task is
    released to Ready, and the completion answers `completed: false` with
    `reason: run_deadline_closing`.
-2. An expired run accepts no worker command: every completion and claim on it
-   goes to the close first, so the batch is a fence, not a race.
+2. An expired run accepts no workflow command: every workflow task
+   completion and execution on it goes to the close first, so no command can
+   add open work between batches. An activity that finishes between batches
+   records its outcome as it would have before the close began, and later
+   batches skip it.
 3. The watchdog continues the close without a worker. Each pass takes one
    batch. When the rest fits, the existing close times the run out with the
    same `WorkflowTimedOut`, failure, update closes and parent-close policy.

@@ -418,6 +418,61 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         );
     }
 
+    /**
+     * An ordinary run past its execution deadline whose workflow task is
+     * Ready and unclaimed is closed by the watchdog with the history the
+     * evidence records, instead of staying open (#1116).
+     */
+    public function testLegacyDeadlineCloseCorpusClosesAnUnclaimedRun(): void
+    {
+        $path = self::FIXTURE_DIR . '/legacy-deadline-close-batched-cancellations.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The legacy deadline close evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['legacy_deadline_close'];
+        config()
+            ->set('queue.default', 'database');
+        Queue::fake();
+        $this->travelTo(now()->startOfSecond());
+        $stub = WorkflowStub::make($fixture['workflow']['type'], 'regression-legacy-deadline-close');
+        $stub->start(...[
+            ...$fixture['workflow']['arguments'],
+            new StartOptions(executionTimeoutSeconds: $scenario['execution_timeout_seconds']),
+        ]);
+        $runId = $stub->runId();
+        $this->runReadyTaskOfType($runId, TaskType::Workflow);
+        $this->travel($scenario['execution_timeout_seconds'] + 1)->seconds();
+
+        // The first pass gives the run a deadline task no worker claims; the
+        // next pass must not leave the run open behind it.
+        TaskWatchdog::runPass(runIds: [$runId]);
+        TaskWatchdog::runPass(runIds: [$runId]);
+
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $this->assertSame(RunStatus::Failed, $run->status);
+        $this->assertSame('timed_out', $run->closed_reason);
+        $this->assertSame(0, WorkflowTask::query()->where('workflow_run_id', $runId)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])->count());
+        $this->assertSame(
+            array_map(static fn (array $event): array => [
+                $event['event_type'],
+                $event['payload']['sequence'] ?? null,
+            ], $fixture['history']),
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->where('event_type', '!=', HistoryEventType::StartAccepted->value)
+                ->orderBy('sequence')
+                ->get()
+                ->map(static fn (WorkflowHistoryEvent $event): array => [
+                    $event->event_type->value,
+                    $event->payload['sequence'] ?? null,
+                ])
+                ->values()
+                ->all(),
+        );
+    }
+
     public function testTimeoutCleanupContinueAsNewCorpusKeepsTheWorkDeadline(): void
     {
         $path = self::FIXTURE_DIR . '/timeout-cleanup-continue-as-new-inheritance.json';
