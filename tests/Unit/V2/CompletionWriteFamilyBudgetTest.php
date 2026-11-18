@@ -404,7 +404,8 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
         $single = $this->createExpiredParent(children: 200, updates: 300);
         $this->assertSame(
             'run_timed_out',
-            $this->bridge()->complete($single['task']->id, [$this->startTimer()])['reason']
+            $this->bridge()
+                ->complete($single['task']->id, [$this->startTimer()])['reason']
         );
         $this->assertSame(0, $this->openChildren($single['run']));
         $this->assertNull($single['task']->fresh()->payload['deadline_close_settlement'] ?? null);
