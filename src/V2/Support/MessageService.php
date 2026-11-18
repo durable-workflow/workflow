@@ -348,13 +348,13 @@ class MessageService
     {
         ConfiguredV2Models::connection()->transaction(static function () use ($closingRun, $continuedRun): void {
             // Transfer pending inbound messages to new run
-            WorkflowMessage::where('workflow_run_id', $closingRun->id)
+            $pending = WorkflowMessage::where('workflow_run_id', $closingRun->id)
                 ->where('direction', MessageDirection::Inbound)
-                ->where('consume_state', MessageConsumeState::Pending)
-                ->update([
-                    'workflow_run_id' => $continuedRun->id,
-                    'updated_at' => now(),
-                ]);
+                ->where('consume_state', MessageConsumeState::Pending);
+            HistoryTransactionMeter::affecting($pending, static fn (): int => $pending->update([
+                'workflow_run_id' => $continuedRun->id,
+                'updated_at' => now(),
+            ]));
 
             // Transfer message cursor position
             MessageStreamCursor::transferCursor($closingRun, $continuedRun);

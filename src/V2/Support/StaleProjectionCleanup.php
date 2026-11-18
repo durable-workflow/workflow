@@ -77,9 +77,9 @@ final class StaleProjectionCleanup
 
         sort($staleIds);
 
-        $model::query()
-            ->whereIn('id', $staleIds)
-            ->delete();
+        $stale = $model::query()
+            ->whereIn('id', $staleIds);
+        HistoryTransactionMeter::affecting($stale, static fn (): mixed => $stale->delete());
     }
 
     private static function isConcurrencyError(Throwable $e): bool

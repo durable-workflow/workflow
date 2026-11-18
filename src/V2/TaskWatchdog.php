@@ -673,9 +673,13 @@ final class TaskWatchdog
                 });
             })
             ->where(static function ($available) use ($now): void {
-                $available->whereDoesntHave('tasks', static function ($task): void {
+                // Only a live workflow task lease defers the close to the
+                // worker's completion. An unclaimed Ready task, or a lease
+                // that expired, no longer hides an expired run (#1116).
+                $available->whereDoesntHave('tasks', static function ($task) use ($now): void {
                     $task->where('task_type', TaskType::Workflow->value)
-                        ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value]);
+                        ->where('status', TaskStatus::Leased->value)
+                        ->where('lease_expires_at', '>', $now);
                 })->orWhere(static function ($cancellation) use ($now): void {
                     $cancellation->whereNotNull('cancellation_request_command_id')
                         ->whereNotNull('cancellation_deadline_at')
@@ -806,6 +810,23 @@ final class TaskWatchdog
                     $cancellationEnforced = $timeoutCleanupExpired
                         ? $executor->timeoutIfDeadlineExpired($run, $controlTask)
                         : $executor->cancelIfCleanupDeadlineExpired($run, $controlTask);
+
+                    return null;
+                }
+
+                if ($existingWorkflowTask !== null
+                    && ! $enteredCleanup
+                    && $run->timeout_cleanup_work_deadline_at === null
+                    && ! is_string($run->cancellation_request_command_id)
+                    && ($existingWorkflowTask->status === TaskStatus::Ready
+                        || $existingWorkflowTask->lease_expires_at === null
+                        || $now->gte($existingWorkflowTask->lease_expires_at))) {
+                    // An ordinary run's deadline close is server work that
+                    // needs no workflow code, so an unclaimed or abandoned
+                    // task must not hold it open (#1116). The close is
+                    // bounded: an oversized one cancels a batch per pass.
+                    $cancellationEnforced = app(WorkflowExecutor::class)
+                        ->closeExpiredDeadline($run, $existingWorkflowTask) !== WorkflowExecutor::DEADLINE_NOT_EXPIRED;
 
                     return null;
                 }

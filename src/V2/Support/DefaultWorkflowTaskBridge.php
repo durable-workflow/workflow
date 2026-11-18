@@ -774,8 +774,12 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             if ($this->executor->cancelIfCleanupDeadlineExpired($run, $task)) {
                 return $response('run_cancelled', $run);
             }
-            if ($this->executor->timeoutIfDeadlineExpired($run, $task)) {
-                return $response('run_timed_out', $run);
+            $deadlineClose = $this->executor->closeExpiredDeadline($run, $task);
+            if ($deadlineClose !== WorkflowExecutor::DEADLINE_NOT_EXPIRED) {
+                return $response(
+                    $deadlineClose === WorkflowExecutor::DEADLINE_CLOSING ? 'run_deadline_closing' : 'run_timed_out',
+                    $run
+                );
             }
             if ($task->lease_expires_at === null || now()->gte($task->lease_expires_at)) {
                 return $response('lease_expired', $run);
@@ -1353,18 +1357,23 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 }
 
                 // A run's deadline close is the server's own work on stored
-                // state, not the worker's commands, and nothing else closes
-                // a run whose task is open: it is never metered (#930).
-                if (HistoryTransactionMeter::unmetered(
-                    fn (): bool => $this->executor->timeoutIfDeadlineExpired($run, $task)
-                )) {
+                // state, not the worker's commands, so the worker's budget
+                // never refuses it (#930). It is bounded instead (#1116): an
+                // oversized ordinary close cancels one batch of open work,
+                // releases this task and continues on later passes.
+                $deadlineClose = HistoryTransactionMeter::unmetered(
+                    fn (): string => $this->executor->closeExpiredDeadline($run, $task)
+                );
+                if ($deadlineClose !== WorkflowExecutor::DEADLINE_NOT_EXPIRED) {
                     return [
                         'completed' => false,
                         'task_id' => $taskId,
                         'workflow_run_id' => $run->id,
                         'run_status' => $run->status->value,
                         'created_task_ids' => [],
-                        'reason' => 'run_timed_out',
+                        'reason' => $deadlineClose === WorkflowExecutor::DEADLINE_CLOSING
+                            ? 'run_deadline_closing'
+                            : 'run_timed_out',
                     ];
                 }
 
@@ -4888,7 +4897,6 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         $lastAttempt = $attempts[array_key_last($attempts)];
 
         /** @var ActivityExecution $execution */
-        HistoryTransactionMeter::current()?->chargeRows(1);
         $execution = ActivityExecution::query()->create([
             'workflow_run_id' => $run->id,
             'sequence' => $sequence,
@@ -4952,7 +4960,6 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 default => ActivityAttemptStatus::Failed,
             };
 
-            HistoryTransactionMeter::current()?->chargeRows(1);
             $attemptRecord = ActivityAttempt::query()->create([
                 'id' => $attemptId,
                 'workflow_run_id' => $run->id,
@@ -5103,7 +5110,6 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 : ($outcome === 'timed_out'
                     ? ActivityTimeoutException::class
                     : RuntimeException::class);
-            HistoryTransactionMeter::current()?->chargeRows(1);
             $failure = WorkflowFailure::query()->create([
                 'workflow_run_id' => $run->id,
                 'source_kind' => 'activity_execution',

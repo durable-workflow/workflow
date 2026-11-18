@@ -84,9 +84,9 @@ final class SearchAttributeUpsertService
             self::validateAttributeSet($mergedAttributes);
 
             if ($deleteKeys !== []) {
-                WorkflowSearchAttribute::where('workflow_run_id', $run->id)
-                    ->whereIn('key', array_values(array_unique($deleteKeys)))
-                    ->delete();
+                $deleted = WorkflowSearchAttribute::where('workflow_run_id', $run->id)
+                    ->whereIn('key', array_values(array_unique($deleteKeys)));
+                HistoryTransactionMeter::affecting($deleted, static fn (): mixed => $deleted->delete());
             }
 
             if ($upsertRows !== []) {

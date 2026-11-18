@@ -237,10 +237,8 @@ final class StructuralLimits
     }
 
     /**
-     * Metered rows one workflow task completion may write: each history event
-     * and the run position it advances, and each local activity execution,
-     * attempt and failure row. Other command writes are not counted yet. 0
-     * disables the check.
+     * Rows one workflow task completion may insert, update or delete, each
+     * charged before its statement runs (#1116). 0 disables the check.
      */
     public static function historyTransactionRowsLimit(): int
     {

@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- A workflow task completion now charges every row it writes against
+  `history_transaction_rows` before the statement runs, not only history and
+  local activity rows (#1116). Task, run, timer, activity, child, signal,
+  update, continue-as-new, memo, search attribute and projection writes all
+  count, and a write that can change several existing rows is counted with a
+  bounded read first. A completion over the limit is refused with
+  `history_transaction_limit_exceeded` before it writes anything, and its task
+  keeps its lease. Completions that write many rows may now reach the default
+  20,000-row limit; raise `DW_V2_LIMIT_HISTORY_TRANSACTION_ROWS` if needed.
+- An ordinary run past its execution or run deadline whose workflow task sits
+  Ready and unclaimed, or whose lease expired, is now timed out by the
+  watchdog instead of staying open. A live lease still leaves the close to that
+  worker's completion. Opted-in timeout cleanup is unchanged.
+- An ordinary deadline close with more open work than one completion's
+  budget now runs in bounded batches. Each batch cancels open activities,
+  timers and tasks with the same history the single close writes, releases
+  the workflow task, and answers the worker with
+  `reason: run_deadline_closing`. The watchdog finishes the close without a
+  worker. Histories recorded by earlier versions replay unchanged.
+
 ## 2.29.1 - 2026-11-18
 
 - A condition wait with a timeout now returns `true` when an update accepted

@@ -325,9 +325,10 @@ return [
                 5000
             ),
             // Hard ceilings for one workflow task completion; 0 disables a
-            // dimension. history_transaction_rows counts the rows history
-            // events and local activity records write; other command writes
-            // are not counted yet.
+            // dimension. history_transaction_rows counts every row the
+            // completion inserts, updates or deletes, before each statement.
+            // An ordinary deadline close cancels open work in batches these
+            // limits also bound (docs/architecture/completion-budget.md).
             'history_transaction_bytes' => (int) Env::dw(
                 'DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES',
                 'WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_BYTES',

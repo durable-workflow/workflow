@@ -586,15 +586,19 @@ final class DefaultWorkflowTaskBridgeLocalActivityTest extends TestCase
             + \Workflow\V2\Models\WorkflowFailure::query()->where('workflow_run_id', $run->id)->count();
         $this->assertSame(WorkflowCommandNormalizer::localActivityRows($normalized), $inserted);
         $used = HistoryTransactionMeter::lastUsed();
-        // The local activity's rows are part of what the meter charged.
-        $this->assertGreaterThanOrEqual(2 * $events + $inserted, $used[HistoryTransactionMeter::ROWS]);
-        $this->assertSame($used[HistoryTransactionMeter::EVENTS] * 2 + $inserted, $used[HistoryTransactionMeter::ROWS]);
+        // The local activity's rows are part of what the meter charged; since
+        // #1116 the task, run and projection writes around them are too.
+        $this->assertGreaterThan(
+            2 * $used[HistoryTransactionMeter::EVENTS] + $inserted,
+            $used[HistoryTransactionMeter::ROWS]
+        );
     }
 
     /**
      * Workflow #930: a run's deadline close is not the worker's work and is
      * not metered, so a run whose close exceeds one completion's budget still
-     * times out instead of refusing every completion.
+     * times out instead of refusing every completion. Since #1116 an
+     * oversized close is batched and the watchdog finishes it.
      */
     public function testADeadlineCloseIsNotBlockedByTheCompletionBudget(): void
     {
@@ -620,8 +624,12 @@ final class DefaultWorkflowTaskBridgeLocalActivityTest extends TestCase
 
         $result = $this->app->make(WorkflowTaskBridge::class)->complete($task->id, [$this->localActivity(0)]);
 
-        $this->assertSame('run_timed_out', $result['reason'], json_encode($result, JSON_THROW_ON_ERROR));
+        $this->assertSame('run_deadline_closing', $result['reason'], json_encode($result, JSON_THROW_ON_ERROR));
+        for ($pass = 0; $pass < 5 && $run->fresh()->status !== RunStatus::Failed; ++$pass) {
+            \Workflow\V2\TaskWatchdog::runPass(runIds: [$run->id]);
+        }
         $this->assertSame(RunStatus::Failed, $run->fresh()->status);
+        $this->assertSame(0, ActivityExecution::query()->where('workflow_run_id', $run->id)->count());
         // Three timer cancellations and the timeout: more than the budget of one.
         $this->assertGreaterThan(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->count());
     }

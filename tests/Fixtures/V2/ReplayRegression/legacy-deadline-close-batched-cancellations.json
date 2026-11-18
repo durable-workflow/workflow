@@ -1,0 +1,67 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "legacy-deadline-close-batched-cancellations",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestHistoryTimerReplayWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-18T00:00:00.000000Z"
+    },
+    {
+      "sequence": 2,
+      "event_type": "TimerScheduled",
+      "payload": {
+        "sequence": 1,
+        "delay_seconds": 0
+      },
+      "recorded_at": "2026-11-18T00:00:01.000000Z"
+    },
+    {
+      "sequence": 3,
+      "event_type": "TimerCancelled",
+      "payload": {
+        "sequence": 1,
+        "delay_seconds": 0
+      },
+      "recorded_at": "2026-11-18T00:01:00.000000Z"
+    },
+    {
+      "sequence": 4,
+      "event_type": "WorkflowTimedOut",
+      "payload": {
+        "failure_id": "01kdeadlineclosefailure0001",
+        "timeout_kind": "execution_timeout",
+        "failure_category": "timeout",
+        "message": "Workflow execution deadline expired at 2026-11-18T00:01:00+00:00.",
+        "exception_class": "Workflow\\V2\\Exceptions\\WorkflowTimeoutException",
+        "execution_deadline_at": "2026-11-18T00:01:00+00:00",
+        "run_deadline_at": null
+      },
+      "recorded_at": "2026-11-18T00:01:30.000000Z"
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": []
+  },
+  "legacy_deadline_close": {
+    "issue": "durable-workflow/workflow#1116",
+    "batch_size": 1,
+    "note": "An ordinary run's deadline close cancels its open work and then records WorkflowTimedOut. Since #1116 an oversized close cancels open work in bounded batches across transactions, but writes exactly this history: each cancellation event in the order the single 2.29.x close wrote it, then the terminal event. The history replays as it did before batching."
+  }
+}
