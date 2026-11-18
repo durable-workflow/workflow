@@ -805,9 +805,9 @@ Run `vendor/bin/phpunit tests/Feature/V2/V2ServiceBillingPeriodTest.php tests/Fe
 for the native service-only and Order source scenarios, and
 `vendor/bin/phpunit tests/Unit/V2/StateMachine/BillingPeriodTest.php tests/Unit/V2/StateMachine/BillingPeriodReceiptTest.php`
 for contract and provider-receipt controls. These are synthetic source tests.
-Worker loss during a period charge or refund is covered below. The remaining
-race matrix, installed recovery, upgrade/rollback and publication acceptance
-remain unfinished. This source increment does not complete PAY-06, SUB-01
+Worker loss during a period charge or refund, and its races with cancellation
+and admission, are covered below. The rest of the race matrix, installed
+recovery, upgrade/rollback and publication acceptance remain unfinished. This source increment does not complete PAY-06, SUB-01
 through SUB-04 or the full matrix.
 
 For period adapters, a fresh synthetic `Journal` can explicitly select
@@ -841,6 +841,24 @@ production `TaskWatchdog`, using the same immutable period grants. Cuts:
 - service period: the refund committed after cancelling a paid period;
 - genuine period Order, grace: the Order's capture committed on time, and the
   replacement starts only after the deadline.
+
+The same controls cover PAY-06 races while the charge's worker is lost after the
+provider committed:
+
+- `cancel()` of the service period: recovery reconciles that original charge
+  through the compensation admission fence and refunds it once;
+- `cancel()` of the genuine period Order: the same capture is refunded once,
+  and no stock is reserved;
+- `cancelFuture()`: the paid current period keeps its charge and access, and
+  the next period cannot be admitted;
+- repeated admission and a duplicate `payment-observed` signal, with the next
+  period admitted before recovery: re-admission returns the original run,
+  and each period has exactly one charge of its own.
+
+If the worker dies after DW admitted the service charge and before the provider
+was called, recovery leaves the charge unresolved and the period run fails
+without access. `cancel()` then settles it through the provider admission fence,
+with no charge or refund.
 
 Each effect commits once, and the period keeps its original native run,
 obligation, deadline and provider commit time. While no worker is alive, live
