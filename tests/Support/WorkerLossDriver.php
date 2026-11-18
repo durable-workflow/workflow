@@ -24,8 +24,9 @@ use Workflow\V2\TaskWatchdog;
 
 /**
  * Worker side of the real process-loss controls. The crash phase dies with SIGKILL inside one selected native
- * operation after its provider effect commits and before DW records the outcome. A resume phase is a new
- * process: the production watchdog repairs the abandoned lease, like a replacement queue worker.
+ * operation after its provider effect commits and before DW records the outcome, or (mode "before") after DW
+ * admitted the forward attempt and before the provider is called. A resume phase is a new process: the
+ * production watchdog repairs the abandoned lease, like a replacement queue worker.
  */
 trait WorkerLossDriver
 {
@@ -93,6 +94,10 @@ trait WorkerLossDriver
 
             public function execute(OperationContext $context): ForwardResult
             {
+                if ($this->mode === 'before' && $this->selected($context)) {
+                    // DW admitted this forward attempt; no provider request was sent.
+                    $this->stop($context);
+                }
                 $result = $this->inner->execute($context);
                 if ($this->mode === 'forward' && $result->observed && $this->selected($context)) {
                     $this->stop($context);
@@ -117,7 +122,7 @@ trait WorkerLossDriver
 
             private function stop(OperationContext $context): never
             {
-                // The provider committed and acknowledged; no DW outcome is returned or recorded.
+                // No DW outcome is returned or recorded for the provider effect (if any) of this attempt.
                 file_put_contents($this->report, json_encode([
                     'pid' => getmypid(),
                     'scope' => $context->scope->toArray(),

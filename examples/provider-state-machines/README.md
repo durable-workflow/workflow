@@ -325,6 +325,17 @@ reservation is not released. A fresh authorized recovery request
 obligations, and `CancellationStore::finish()` starts the proof-only finalizer.
 Replay of that original root reproduces its recorded compensation failure.
 
+A worker can also die after DW admitted the capture attempt and before the
+provider was called. The provider then has no operation for that capture. The
+remaining native attempts only look it up. A missing operation is unknown, not
+success and not proof of non-execution, so the forward stays unresolved, the
+Order stays `received`, and its technical run fails. The example operations
+never re-send an uncertain forward command. Business cancellation, with
+`CancellationStore::finish()`, settles the Order through the retained recovery
+route. Compensation closes provider admission for the capture and verifies the
+fenced non-execution. No capture or refund exists, and a delayed capture
+command arriving after the fence creates no effect.
+
 Every case ends in verified business cancellation of the same original
 obligation. Each provider effect is committed once, and repayments total the
 original 1499: 499 + 1000, or a single 1499 refund when the capture race closes
