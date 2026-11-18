@@ -107,6 +107,93 @@ final readonly class StockWarehouse
         return $this->snapshot($this->original($original), $original);
     }
 
+    public function find(Request $original): ?array
+    {
+        $this->assertHost();
+        $row = $this->row(self::RESERVATION_ROW, [$original->identity->key()]);
+        return $row === null ? null : $this->snapshot($row, $original);
+    }
+
+    /**
+     * A physical goods receipt. The event key makes a repeated delivery note idempotent.
+     */
+    public function receive(string $client, string $sku, string $eventKey, int $quantity): array
+    {
+        $this->assertHost();
+        PortableDescriptor::identifier($eventKey, 'original warehouse goods receipt');
+        if ($quantity < 1 || $quantity > 1_000_000) {
+            throw new InvalidArgumentException('A goods receipt needs its bounded positive quantity.');
+        }
+        $stockKey = self::stockKey($client, $sku);
+        $id = hash('sha256', PortableDescriptor::encode([$client, 'receipt', $eventKey]));
+        $hash = hash('sha256', PortableDescriptor::encode([$client, $sku, $quantity]));
+        return $this->transaction(function () use ($client, $sku, $stockKey, $id, $hash, $quantity): array {
+            $old = $this->row('SELECT * FROM allocation_events WHERE id = ?', [$id]);
+            if ($old !== null) {
+                if ($old['fingerprint'] !== $hash
+                    || ! hash_equals($old['result_sha256'], hash('sha256', $old['result']))) {
+                    throw new LogicException('The original goods receipt changed content or owner.');
+                }
+                return json_decode($old['result'], true, 32, JSON_THROW_ON_ERROR);
+            }
+            if ($this->readInventory($client, $sku)['initial_quantity'] + $quantity > 1_000_000_000) {
+                throw new LogicException('The goods receipt exceeds the bounded warehouse quantity.');
+            }
+            $this->query(
+                'UPDATE allocation_stock SET initial_quantity = initial_quantity + ?, available = available + ? WHERE id = ?',
+                [$quantity, $quantity, $stockKey]
+            );
+            $result = [
+                'received' => $quantity,
+                'inventory' => $this->readInventory($client, $sku),
+            ];
+            $payload = PortableDescriptor::encode($result);
+            $this->query(
+                'INSERT INTO allocation_events VALUES (?, ?, ?, ?)',
+                [$id, $hash, $payload, hash('sha256', $payload)]
+            );
+            // Return the stored canonical receipt, so a repeated delivery note is indistinguishable.
+            return json_decode($payload, true, 32, JSON_THROW_ON_ERROR);
+        });
+    }
+
+    /**
+     * Allocate newly available suitable stock to an open reservation's unavailable original units.
+     * Earlier held, damaged and missing units keep their ordinal and disposition.
+     */
+    public function allocate(Request $original): array
+    {
+        $this->assertHost();
+        return $this->transaction(function () use ($original): array {
+            $row = $this->original($original);
+            if ((bool) $row['closed']) {
+                return $this->snapshot($row, $original);
+            }
+            $allocation = StockAllocation::fromArray(json_decode($row['allocation'], true, 32, JSON_THROW_ON_ERROR));
+            $stock = $this->readInventory($original->identity->client, $original->terms['sku']);
+            $states = $allocation->units;
+            $moved = 0;
+            foreach ($states as $unit => $state) {
+                if ($state === 'unavailable' && $moved < $stock['available']) {
+                    $states[$unit] = 'held';
+                    ++$moved;
+                }
+            }
+            if ($moved === 0) {
+                return $this->snapshot($row, $original);
+            }
+            $allocation = new StockAllocation($original, $states);
+            $this->query('UPDATE allocation_stock SET available = available - ? WHERE id = ?', [
+                $moved, self::stockKey($original->identity->client, $original->terms['sku']),
+            ]);
+            $this->query('UPDATE allocation_reservations SET allocation = ?, revision = ? WHERE id = ?', [
+                PortableDescriptor::encode($allocation->toArray()), (int) $row['revision'] + 1,
+                $original->identity->key(),
+            ]);
+            return $this->snapshot($this->original($original), $original);
+        });
+    }
+
     public function disposition(Request $original, string $eventKey, array $units, string $condition): array
     {
         $this->assertHost();
