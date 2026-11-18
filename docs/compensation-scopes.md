@@ -177,10 +177,13 @@ the tombstones would let an old generation or request key be accepted again. To
 return to a release without these tables, restore a database backup taken before
 the upgrade. An empty ledger rolls back normally.
 
-The refusal stops `migrate:rollback` at the ledger migration. Migrations later in
-the same batch have already rolled back by then, for example the reservation
-columns. Run `php artisan migrate` to restore them; the retained rows are not
-changed.
+The refusal happens before any migration in the rollback runs `down()`. When the
+migrator starts a rollback or reset, the package checks every guarded migration in
+that operation: the compensation ledger, child and root reservation fences and
+schedule occurrence receipts. If any of them holds retained state, nothing is
+rolled back, including newer migrations in the same batch. `--pretend` is not
+refused because it runs no `down()`. `migrate:fresh` drops every table without
+running `down()`, so it is not guarded.
 
 Downgrading only the package (to 2.28.x or earlier) leaves the ledger tables and
 rows in place. The older engine keeps running ordinary workflows on the upgraded
