@@ -512,7 +512,7 @@ for v2 workflows. Its definition boundary is specified by
 It exposes two surfaces, both covered by the semver guarantee:
 
 - **Instance members** applications rely on inside a `handle()` method:
-  `workflowId()`, `runId()`, `lastChild()`,
+  `workflowId()`, `runId()`, `scheduleOrigin()`, `lastChild()`,
   `children()`, `historyLength()`, `historySize()`,
   `historyFanOut()`, `shouldContinueAsNew()`, `historyBudgetPressure()`,
   `messages()`, `inbox()`, `outbox()`,
