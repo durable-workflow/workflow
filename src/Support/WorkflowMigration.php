@@ -7,6 +7,7 @@ namespace Workflow\Support;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\MySqlConnection;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use LogicException;
@@ -90,6 +91,43 @@ abstract class WorkflowMigration extends Migration
         if ($refusal !== null) {
             throw new LogicException($refusal);
         }
+    }
+
+    /**
+     * Refusal for a nullable column whose non-null values are permanent fences.
+     */
+    protected static function populatedColumnRefusal(
+        Connection $connection,
+        string $table,
+        string $column,
+        string $refusal,
+    ): ?string {
+        return $connection->getSchemaBuilder()
+            ->hasColumn($table, $column)
+            && $connection->table($table)
+                ->whereNotNull($column)
+                ->exists() ? $refusal : null;
+    }
+
+    protected function addNullableJsonColumn(string $table, string $column): void
+    {
+        if (Schema::hasColumn($table, $column)) {
+            return;
+        }
+        $this->withSchemaLockBudget(static function () use ($table, $column): void {
+            Schema::table($table, static function (Blueprint $blueprint) use ($column): void {
+                $blueprint->json($column)
+                    ->nullable();
+            });
+        });
+    }
+
+    protected function dropColumnUnlessRetained(string $table, string $column): void
+    {
+        $this->refuseRetainedRollback();
+        Schema::table($table, static function (Blueprint $blueprint) use ($column): void {
+            $blueprint->dropColumn($column);
+        });
     }
 
     protected function withSchemaLockBudget(callable $operation): mixed
