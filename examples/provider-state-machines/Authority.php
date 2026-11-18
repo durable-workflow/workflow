@@ -29,6 +29,8 @@ final readonly class Authority implements ChildScopeBindingAuthorization
 
     public UnitMoneyPolicy $unitMoney;
 
+    public StockPolicy $stock;
+
     /**
      * @param list<string> $subjects Canonical OrderTerms::subjectKey() grants.
      */
@@ -41,6 +43,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
         array $orderPeriods = [],
         array $reservedRoots = [],
         array $unitAmounts = [],
+        array $stockPolicies = [],
     ) {
         PortableDescriptor::identifier($principal, 'authenticated principal');
         if (! array_is_list($subjects)) {
@@ -71,6 +74,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
         $this->periods = new OrderPeriodPolicy($this, $orderPeriods);
         $this->roots = new RootPolicy($this, $reservedRoots);
         $this->unitMoney = new UnitMoneyPolicy($this, $unitAmounts, $subjects);
+        $this->stock = new StockPolicy($this, $stockPolicies);
     }
 
     public function recipe(string $key): string
@@ -89,7 +93,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
             'sha256',
             BindingPlan::versionFor($this->recipe($key)) . ($this->cart->selected($key) ? '.cart-v1' : '')
                 . $this->periods->version($key) . $this->roots->version($key)
-                . $this->unitMoney->version($key)
+                . $this->unitMoney->version($key) . $this->stock->version($key)
                 . ':' . $this->profile($key, $role)->fingerprint()
         );
     }
@@ -246,10 +250,11 @@ final readonly class Authority implements ChildScopeBindingAuthorization
             'rootRun' => $plan->rootRun,
             'nativeRun' => $actor->native_run,
             'role' => $role,
-        ] : $terms->descriptor($role);
+        ] : $this->stock->descriptor($terms, $role);
+        $handler = $role === 'order' ? $this->stock->handler($key) : 'provider.effect';
         if ($actor->root_key !== $key || $actor->role !== $role || $actor->native_run !== $context->originalRunId
             || $actor->scope !== PortableDescriptor::encode($context->scope->toArray())
-            || $context->obligation->handlerType !== ($owner ? 'provider.owner' : 'provider.effect')
+            || $context->obligation->handlerType !== ($owner ? 'provider.owner' : $handler)
             || $context->obligation->handlerVersion !== '1'
             || $context->obligation->key !== ($owner ? 'owner' : 'effect')
             || PortableDescriptor::encode($context->obligation->input) !== PortableDescriptor::encode($expected)) {

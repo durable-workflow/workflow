@@ -42,6 +42,12 @@
   change migrations or compensation code, and on stable release tags against
   the published package. `docs/compensation-scopes.md` describes the rollback
   and downgrade behavior it checks.
+- Query-state replay (queries and `WorkflowReplayer`) now delivers a recorded
+  cooperative cancellation to an activity, timer, signal or condition call that
+  never opened, at the same position the executor used (#1069). Previously a
+  cancellation that arrived before such a wait opened made query-state replay
+  report a history shape mismatch, though the run itself replayed and completed
+  correctly. A new replay fixture pins the signal-wait history.
 
 ## 2.29.1 - 2026-11-18
 

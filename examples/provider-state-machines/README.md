@@ -49,15 +49,69 @@ publishes business cancellation after genuine retained recovery verifies.
 The native source controls include a prior provider repayment of 499 followed
 by the remaining 1000 refund, payment-first and reservation-first common routes,
 unknown-result recovery, callback-free replay and ownership substitution. The
-prior repayment is a provider fixture control, not a native partial-stock
-fulfillment scenario. Requested/selected shipment quantities, warehouse stock
-quality, partial fulfillment/return and the full fault/installed/publication
-criteria still need their own integration. The legacy `reserve-first` recipe
+prior repayment is a provider fixture control; native partial-stock selection is
+described in the next section. Partial customer returns and the full
+fault/installed/publication criteria still need their own integration. The legacy `reserve-first` recipe
 and other payment families retain their original contracts; this opt-in does
 not silently reinterpret them.
 
 ```shell
 vendor/bin/phpunit tests/Feature/V2/V2CommonUnitPaymentTest.php
+```
+
+## Partial stock on the common payment-first checkout
+
+The `payment-first` recipe with original unit money can also opt into one
+explicit partial-availability policy through trusted bootstrap. The Order,
+Payment and booking-only Shipment workflow classes are unchanged:
+
+```php
+$authority = new Authority($businessDb, $workerPrincipal, [$terms->subjectKey()], [
+    $terms->subjectKey() => Catalogue::PAYMENT_FIRST,
+], unitAmounts: [$terms->subjectKey() => [500, 500, 499]], stockPolicies: [
+    $terms->subjectKey() => StockAllocation::PARTIAL, // or WAIT, CANCEL
+]);
+$warehouse = new StockWarehouse($independentProviderPdo);
+$warehouse->install(); // Disposable provider fixture schema, outside business/DW storage.
+$store = MachineStore::configure($app, $authority, $provider, unitRefunds: $refunds, warehouse: $warehouse);
+```
+
+The policy is part of the immutable business grant. Workflow arguments and
+signals cannot select or replace it. `wait-complete` requires the original
+`fulfillmentDeadline`; a missing deadline is refused at `seed()`. Other recipes,
+including `reserve-first-common`, refuse a stock policy instead of silently
+reinterpreting their route.
+
+The original reservation is registered as `provider.stock`. After the original
+reservation command confirms, the same native activity records the physical
+warehouse allocation. Units stay distinct: held, unavailable, damaged or missing.
+A retry or uncertain replay never holds stock twice. Inside the one admitted
+`prepare` execution, a recorded `stock-plan` boundary reads the allocation and
+applies the selected policy. The first final plan is stored with the Order
+assignment and never changes. A wait observation is not stored.
+
+| Policy | Two of three paid units available |
+| --- | --- |
+| `fulfill-partial` | Repay the unavailable unit with a registered `provider.unit-refund` obligation, then book only units 0 and 1. Booking waits for confirmed repayment. Processing, Unknown and refused repayments stay outstanding. |
+| `wait-complete` | Do not book. A goods receipt plus `reconcile-stock` allocates new stock to the original unavailable units. At the original deadline the plan becomes a recorded full cancellation. Neither replay nor worker replacement extends that deadline. |
+| `cancel-all` | Record a cancellation plan and request business cancellation. Native compensation repays every original unit and then releases only the suitable held units. |
+
+Damaged or missing reserved units cancel under every policy; only the suitable
+held units return to saleable stock. Cancellation that starts before a plan
+exists wins; no fulfilment plan, shortage repayment or booking follows. Both are
+native cases in `V2PartialStockSelectionTest`.
+A later cancellation of a partially fulfilled Order cancels the booking. It then
+repays only the original units not already repaid (1000 after an earlier 499)
+and releases the held reservation. The shortage repayment is monotonic: its
+compensation verifies or fences it and never reverses customer money.
+
+The recorded plan keeps the requested quantity and the fulfilled, unavailable,
+refunded and released unit ordinals. Booking-only Shipment books exactly the
+fulfilled ordinals. Physical stock deduction, partial customer returns and a
+real warehouse remain outside this booking-only source example.
+
+```shell
+vendor/bin/phpunit tests/Feature/V2/V2PartialStockSelectionTest.php
 ```
 
 ## Authorization and physical fulfillment
@@ -243,6 +297,44 @@ payment, subscription, partial-stock, physical return or replacement variants in
 the [consumer acceptance matrix](https://github.com/durable-workflow/workflow/issues/1069#issuecomment-6889952106).
 Those requirements remain open. These source fixtures do not qualify a release,
 installed upgrade, rollback, real provider operation or production readiness.
+
+### Worker loss on the common payment-first checkout
+
+`V2CheckoutProcessLossTest` covers TECH-01, TECH-03 and TECH-06 on the
+payment-first checkout with unit money and the partial-stock policy. A real
+worker process stops with `SIGKILL` inside the selected native operation, after
+its provider effect commits and before DW records the outcome. Cuts:
+
+- capture, warehouse allocation, shortage repayment or carrier booking committed
+  during forward work;
+- cancellation requested while the capture or booking worker is lost;
+- booking cancellation, remaining repayment or reservation release committed
+  during compensation.
+
+A new process starts after the abandoned activity lease expires. The production
+`TaskWatchdog` repairs the lease and the original operation reconciles through
+its uncertain-forward lookup or idempotent compensation.
+
+Losing the worker during a closed child's retained compensation (booking
+cancellation or remaining repayment) behaves differently. The child's native
+recovery run retries after the lease repair, but the Order's finite
+compensation attempts expire first. The Order's technical run closes unsettled:
+its business state stays `booked`, its root scope stays `requested`, and the
+reservation is not released. A fresh authorized recovery request
+(`CancellationStore::request()` with a new recovery key) then resumes the same
+obligations, and `CancellationStore::finish()` starts the proof-only finalizer.
+Replay of that original root reproduces its recorded compensation failure.
+
+Every case ends in verified business cancellation of the same original
+obligation. Each provider effect is committed once, and repayments total the
+original 1499: 499 + 1000, or a single 1499 refund when the capture race closes
+forward work first. Both warehouse units return to stock. Request attempts may
+repeat across processes; effects do not. Replay of the root performs no
+provider I/O.
+
+These are source process-loss controls on synthetic providers. They need a
+shared application database and POSIX signals, and skip otherwise. Installed
+queue workers, host loss and real providers still need their own qualification.
 
 ## One checkout route, two prerequisite policies
 
