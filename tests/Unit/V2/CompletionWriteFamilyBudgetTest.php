@@ -24,12 +24,14 @@ use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
+use Workflow\V2\Models\WorkflowMemo;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\CompletionRowEstimate;
+use Workflow\V2\Support\DeadlineCloseSettlement;
 use Workflow\V2\Support\HistoryTransactionMeter;
 use Workflow\V2\Support\MemoPayload;
 use Workflow\V2\Support\WorkflowExecutor;
@@ -66,6 +68,8 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
             'workflow failure',
             'continue as new',
             'workflow failure with accepted updates',
+            'memo upsert deleting an absent key',
+            'continue as new inheriting memos and search attributes',
         ] as $family) {
             yield $family => [$family];
         }
@@ -84,7 +88,7 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
         $unmetered = [];
         $measured = $this->completeFamily($family, null, $unmetered);
         $this->assertTrue($measured['result']['completed'], json_encode($measured['result'], JSON_THROW_ON_ERROR));
-        $rows = HistoryTransactionMeter::lastUsed()[HistoryTransactionMeter::ROWS];
+        $rows = HistoryTransactionMeter::lastUsed()[HistoryTransactionMeter::COMPLETION_ROWS];
         // No write statement of the completion ran outside the meter, except
         // the child-call projection, which runs after commit and was charged
         // its row in advance.
@@ -107,20 +111,53 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
 
         $admitted = $this->completeFamily($family, $rows);
         $this->assertTrue($admitted['result']['completed'], json_encode($admitted['result'], JSON_THROW_ON_ERROR));
-        $this->assertSame($rows, HistoryTransactionMeter::lastUsed()[HistoryTransactionMeter::ROWS]);
+        $this->assertSame($rows, HistoryTransactionMeter::lastUsed()[HistoryTransactionMeter::COMPLETION_ROWS]);
 
         $refused = $this->completeFamily($family, $rows - 1);
         $this->assertFalse($refused['result']['completed']);
         if ($stateDriven) {
             // The meter is the exact backstop for state-driven rows.
             $this->assertSame('history_transaction_limit_exceeded', $refused['result']['reason']);
-            $this->assertSame(HistoryTransactionMeter::ROWS, $refused['result']['limit'] ?? null);
+            $this->assertSame(HistoryTransactionMeter::COMPLETION_ROWS, $refused['result']['limit'] ?? null);
         } else {
             // Refused from the command list before a single write statement.
             $this->assertSame('completion_budget_exceeded', $refused['result']['reason']);
             $this->assertSame([], $refused['writes']);
         }
         $this->assertSame($refused['before'], $this->databaseSnapshot(), 'A refused completion changed stored state.');
+    }
+
+    /**
+     * A service operation's memo and search attributes count one row each;
+     * a delete of a key the run does not hold counts none.
+     */
+    public function testTheEstimateCountsServiceMetadataAndOnlyExistingDeletes(): void
+    {
+        $run = $this->createWaitingRun();
+        $service = [
+            'type' => 'start_service_operation',
+            'memo' => [
+                'a' => 1,
+                'b' => 2,
+                'c' => 3,
+            ],
+            'search_attributes' => [
+                'd' => 'x',
+            ],
+        ];
+        $this->assertSame(
+            CompletionRowEstimate::COMPLETION_ROWS + CompletionRowEstimate::OTHER_COMMAND_ROWS + 4,
+            CompletionRowEstimate::rows($run, [$service])
+        );
+        $this->assertSame(
+            CompletionRowEstimate::COMPLETION_ROWS + CompletionRowEstimate::METADATA_UPSERT_ROWS,
+            CompletionRowEstimate::rows($run, [[
+                'type' => 'upsert_search_attributes',
+                'attributes' => [
+                    'missing' => null,
+                ],
+            ]])
+        );
     }
 
     /**
@@ -159,7 +196,7 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
         $this->assertTrue($result['completed'], json_encode($result, JSON_THROW_ON_ERROR));
         $this->assertSame(1, $deletes);
         $this->assertSame(0, WorkflowSearchAttribute::query()->where('workflow_run_id', $run->id)->count());
-        $withThree = HistoryTransactionMeter::lastUsed()[HistoryTransactionMeter::ROWS];
+        $withThree = HistoryTransactionMeter::lastUsed()[HistoryTransactionMeter::COMPLETION_ROWS];
 
         $other = $this->createWaitingRun();
         $this->seedSearchAttributes($other, 3);
@@ -168,7 +205,10 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
         $this->assertTrue($this->bridge()->complete($otherTask->id, [$this->deleteSearchAttributes(3)])['completed']);
 
         // Same statements, two fewer rows deleted.
-        $this->assertSame($withThree - 2, HistoryTransactionMeter::lastUsed()[HistoryTransactionMeter::ROWS]);
+        $this->assertSame(
+            $withThree - 2,
+            HistoryTransactionMeter::lastUsed()[HistoryTransactionMeter::COMPLETION_ROWS]
+        );
     }
 
     public function testStatementRowsCountsTuplesOfAnInsertAndOneRowForOtherWrites(): void
@@ -324,7 +364,7 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
         Carbon::setTestNow(now()->startOfSecond());
         config([
             'workflows.v2.structural_limits.history_transaction_size' => 0,
-            'workflows.v2.structural_limits.history_transaction_rows' => 0,
+            'workflows.v2.structural_limits.completion_rows' => 0,
         ]);
         $single = $this->createExpiredRunWithOpenWork(activities: 3, timers: 4);
         $singleResult = $this->bridge()
@@ -334,7 +374,7 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
         // A batch of two open items per close transaction.
         config([
             'workflows.v2.structural_limits.history_transaction_size' => 1,
-            'workflows.v2.structural_limits.history_transaction_rows' => 10,
+            'workflows.v2.structural_limits.completion_rows' => 10,
         ]);
         $this->assertSame(1, WorkflowExecutor::deadlineCloseBatchSize());
         config([
@@ -399,7 +439,7 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
         Carbon::setTestNow(now()->startOfSecond());
         config([
             'workflows.v2.structural_limits.history_transaction_size' => 0,
-            'workflows.v2.structural_limits.history_transaction_rows' => 0,
+            'workflows.v2.structural_limits.completion_rows' => 0,
         ]);
         $single = $this->createExpiredParent(children: 200, updates: 300);
         $this->assertSame(
@@ -413,7 +453,7 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
         $batched = $this->createExpiredParent(children: 200, updates: 300);
         // 100 items per close transaction.
         config([
-            'workflows.v2.structural_limits.history_transaction_rows' => 500,
+            'workflows.v2.structural_limits.completion_rows' => 500,
         ]);
         $this->assertSame(100, WorkflowExecutor::deadlineCloseBatchSize());
 
@@ -426,6 +466,17 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
         $this->assertSame(200, $this->acceptedUpdates($batched['run']));
         $this->assertSame(200, $this->openChildren($batched['run']));
         $this->assertSame('pending', $batched['task']->fresh()->payload['deadline_close_settlement'] ?? null);
+        // The run already reads Failed while its closing task is held for
+        // the settlement: Leased by the settlement owner, with no expiry.
+        $this->assertTrue(DeadlineCloseSettlement::holds($batched['task']->fresh()));
+        $this->assertNull($batched['task']->fresh()->lease_expires_at);
+        // A late completion of the held task leaves it held.
+        $this->assertSame(
+            'run_already_closed',
+            $this->bridge()
+                ->complete($batched['task']->id, [$this->startTimer()])['reason']
+        );
+        $this->assertTrue(DeadlineCloseSettlement::holds($batched['task']->fresh()));
 
         $passes = 0;
         while (($batched['task']->fresh()->payload['deadline_close_settlement'] ?? null) === 'pending' && $passes < 20) {
@@ -443,9 +494,74 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
         // 200 updates and 200 children left, 100 per pass.
         $this->assertSame(4, $passes);
         $this->assertSame('settled', $batched['task']->fresh()->payload['deadline_close_settlement']);
+        $this->assertSame(TaskStatus::Completed, $batched['task']->fresh()->status);
         $this->assertSame(0, $this->openChildren($batched['run']));
         $this->assertSame(0, $this->acceptedUpdates($batched['run']));
         $this->assertSame($this->closeHistory($single['run']), $this->closeHistory($batched['run']));
+    }
+
+    /**
+     * The watchdog finds pending settlements from held tasks in the open
+     * (Ready/Leased) task set, so its lookup does not grow with retained
+     * closed runs and their completed tasks.
+     */
+    public function testThePendingSettlementLookupDoesNotGrowWithRetainedClosedRuns(): void
+    {
+        $held = $this->createWaitingRun(RunStatus::Failed);
+        DeadlineCloseSettlement::hold($this->createTask($held, TaskStatus::Leased, now()->addMinute()));
+
+        $first = $this->settlementLookup();
+        foreach (range(1, 60) as $index) {
+            $closed = $this->createWaitingRun(RunStatus::Failed);
+            $task = $this->createTask($closed, TaskStatus::Completed);
+            $task->forceFill([
+                'payload' => [
+                    DeadlineCloseSettlement::MARKER => DeadlineCloseSettlement::SETTLED,
+                ],
+            ])->save();
+        }
+        $second = $this->settlementLookup();
+
+        $this->assertSame([$held->id], $first['run_ids']);
+        $this->assertSame([$held->id], $second['run_ids']);
+        $this->assertSame(count($first['queries']), count($second['queries']));
+        // The first query reads held tasks by status and owner, with a limit;
+        // the run query only reads the runs those tasks name.
+        $this->assertStringContainsString('workflow_tasks', $second['queries'][0]['sql']);
+        $this->assertStringContainsString('lease_owner', $second['queries'][0]['sql']);
+        $this->assertStringContainsString('limit', strtolower($second['queries'][0]['sql']));
+        $this->assertContains(TaskStatus::Leased->value, $second['queries'][0]['bindings']);
+        $this->assertSame(1, $second['rows'][0]);
+    }
+
+    /**
+     * @return array{run_ids: list<string>, queries: list<array{sql: string, bindings: array<int, mixed>}>, rows: list<int>}
+     */
+    private function settlementLookup(): array
+    {
+        $queries = [];
+        $listening = true;
+        DB::listen(static function ($query) use (&$queries, &$listening): void {
+            if ($listening) {
+                $queries[] = [
+                    'sql' => $query->sql,
+                    'bindings' => $query->bindings,
+                ];
+            }
+        });
+        $method = new \ReflectionMethod(TaskWatchdog::class, 'deadlineSettlementRunIds');
+        $runIds = $method->invoke(null, [], null, null, null, null);
+        $listening = false;
+        $rows = [count(WorkflowTask::query()
+            ->where('status', TaskStatus::Leased->value)
+            ->where('lease_owner', DeadlineCloseSettlement::OWNER)
+            ->get())];
+
+        return [
+            'run_ids' => $runIds,
+            'queries' => $queries,
+            'rows' => $rows,
+        ];
     }
 
     /**
@@ -455,11 +571,29 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
     private function completeFamily(string $family, ?int $rowLimit, array &$unmetered = []): array
     {
         config([
-            'workflows.v2.structural_limits.history_transaction_rows' => 0,
+            'workflows.v2.structural_limits.completion_rows' => 0,
         ]);
         $run = $this->createWaitingRun();
-        if ($family === 'search attribute delete') {
+        if (in_array(
+            $family,
+            ['search attribute delete', 'continue as new inheriting memos and search attributes'],
+            true
+        )) {
             $this->seedSearchAttributes($run, 3);
+        }
+        if (in_array(
+            $family,
+            ['memo upsert deleting an absent key', 'continue as new inheriting memos and search attributes'],
+            true
+        )) {
+            $memo = new WorkflowMemo([
+                'workflow_run_id' => $run->id,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'key' => 'present',
+                'upserted_at_sequence' => 1,
+            ]);
+            $memo->setValue('stored');
+            $memo->save();
         }
         if ($family === 'workflow failure with accepted updates') {
             foreach (range(1, 3) as $index) {
@@ -471,7 +605,7 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
         $estimate = CompletionRowEstimate::rows($run, $commands);
         if ($rowLimit !== null) {
             config([
-                'workflows.v2.structural_limits.history_transaction_rows' => $rowLimit,
+                'workflows.v2.structural_limits.completion_rows' => $rowLimit,
             ]);
         }
         $before = $this->databaseSnapshot();
@@ -570,6 +704,18 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
                 'type' => 'fail_workflow',
                 'message' => 'metered failure',
                 'exception_class' => \RuntimeException::class,
+            ]],
+            'memo upsert deleting an absent key' => [[
+                'type' => 'upsert_memo',
+                'entries' => MemoPayload::envelope([
+                    'present' => null,
+                    'absent' => null,
+                    'added' => 'new',
+                ]),
+            ]],
+            'continue as new inheriting memos and search attributes' => [[
+                'type' => 'continue_as_new',
+                'arguments' => Serializer::serialize(['next']),
             ]],
             'continue as new' => [[
                 'type' => 'continue_as_new',

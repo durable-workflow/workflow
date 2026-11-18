@@ -1341,10 +1341,14 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 }
 
                 if ($run->status->isTerminal()) {
-                    $task->forceFill([
-                        'status' => $run->status === RunStatus::Failed ? TaskStatus::Failed : TaskStatus::Completed,
-                        'lease_expires_at' => null,
-                    ])->save();
+                    // A task held for a bounded close's settlement stays
+                    // held; only the watchdog completes it (#1116).
+                    if (! DeadlineCloseSettlement::holds($task)) {
+                        $task->forceFill([
+                            'status' => $run->status === RunStatus::Failed ? TaskStatus::Failed : TaskStatus::Completed,
+                            'lease_expires_at' => null,
+                        ])->save();
+                    }
 
                     return [
                         'completed' => false,
@@ -1395,7 +1399,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 // The row estimate is an upper bound on the rows the commands
                 // write, so an over-limit completion is refused here without
                 // a single write (#1116). The meter stays the exact backstop.
-                $rowLimit = StructuralLimits::historyTransactionRowsLimit();
+                $rowLimit = StructuralLimits::completionRowsLimit();
                 if (WorkflowCommandNormalizer::completionBudgetErrors(array_values($commands)) !== []
                     || ($rowLimit > 0 && CompletionRowEstimate::rows($run, array_values($commands)) > $rowLimit)) {
                     return [
@@ -4902,6 +4906,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         $lastAttempt = $attempts[array_key_last($attempts)];
 
         /** @var ActivityExecution $execution */
+        HistoryTransactionMeter::current()?->chargeRows(1);
         $execution = ActivityExecution::query()->create([
             'workflow_run_id' => $run->id,
             'sequence' => $sequence,
@@ -4965,6 +4970,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 default => ActivityAttemptStatus::Failed,
             };
 
+            HistoryTransactionMeter::current()?->chargeRows(1);
             $attemptRecord = ActivityAttempt::query()->create([
                 'id' => $attemptId,
                 'workflow_run_id' => $run->id,
@@ -5115,6 +5121,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 : ($outcome === 'timed_out'
                     ? ActivityTimeoutException::class
                     : RuntimeException::class);
+            HistoryTransactionMeter::current()?->chargeRows(1);
             $failure = WorkflowFailure::query()->create([
                 'workflow_run_id' => $run->id,
                 'source_kind' => 'activity_execution',

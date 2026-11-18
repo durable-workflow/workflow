@@ -740,7 +740,10 @@ final class TaskWatchdog
 
     /**
      * Closed runs whose bounded deadline close still has accepted updates or
-     * children to settle: the closing task carries the pending marker.
+     * children to settle. They are found from their held closing tasks:
+     * Leased workflow tasks of the settlement owner, read from the open-task
+     * set by status (indexed), in a stable order and bounded by the scan
+     * limit. Retained closed runs and their completed tasks are never scanned.
      *
      * @param list<string> $runIds
      * @return list<string>
@@ -752,17 +755,22 @@ final class TaskWatchdog
         ?string $queue,
         ?NamespaceScope $namespaces,
     ): array {
-        $query = WorkflowRun::query()
-            ->where('status', RunStatus::Failed->value)
-            ->whereHas('tasks', static function ($task): void {
-                $task->where('task_type', TaskType::Workflow->value)
-                    ->where('status', TaskStatus::Completed->value)
-                    ->where('payload->' . DeadlineCloseSettlement::MARKER, DeadlineCloseSettlement::PENDING);
-            });
-
-        if ($runIds !== []) {
-            $query->whereKey($runIds);
+        $held = WorkflowTask::query()
+            ->where('status', TaskStatus::Leased->value)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('lease_owner', DeadlineCloseSettlement::OWNER)
+            ->when($runIds !== [], static fn ($query) => $query->whereIn('workflow_run_id', $runIds))
+            ->orderBy('id')
+            ->limit(TaskRepairPolicy::scanLimit())
+            ->pluck('workflow_run_id')
+            ->all();
+        if ($held === []) {
+            return [];
         }
+
+        $query = WorkflowRun::query()
+            ->whereKey(array_values(array_unique($held)))
+            ->where('status', RunStatus::Failed->value);
 
         if ($instanceId !== null) {
             $query->where('workflow_instance_id', $instanceId);
@@ -770,9 +778,7 @@ final class TaskWatchdog
 
         RequestedTaskScope::apply($query, $connection, $queue, $namespaces);
 
-        return $query->orderBy('closed_at')
-            ->orderBy('id')
-            ->limit(TaskRepairPolicy::scanLimit())
+        return $query->orderBy('id')
             ->pluck('id')
             ->all();
     }
@@ -791,8 +797,9 @@ final class TaskWatchdog
                 /** @var WorkflowTask|null $task */
                 $task = WorkflowTask::query()
                     ->where('workflow_run_id', $run->id)
+                    ->where('status', TaskStatus::Leased->value)
                     ->where('task_type', TaskType::Workflow->value)
-                    ->where('payload->' . DeadlineCloseSettlement::MARKER, DeadlineCloseSettlement::PENDING)
+                    ->where('lease_owner', DeadlineCloseSettlement::OWNER)
                     ->lockForUpdate()
                     ->first();
                 if ($task === null) {

@@ -166,7 +166,7 @@ final class WorkflowExecutor
         if ($events > 0) {
             $bounds[] = max(1, $events - 1);
         }
-        $rows = StructuralLimits::historyTransactionRowsLimit();
+        $rows = StructuralLimits::completionRowsLimit();
         if ($rows > 0) {
             $bounds[] = max(1, intdiv($rows, self::DEADLINE_CLOSE_ROWS_PER_ITEM));
         }
@@ -4985,13 +4985,9 @@ final class WorkflowExecutor
             );
         }
         if ($updatesLeft || ! $childrenSettled) {
-            // The watchdog continues the cascade from this marker.
-            $task->forceFill([
-                'payload' => [
-                    ...(is_array($task->payload) ? $task->payload : []),
-                    DeadlineCloseSettlement::MARKER => DeadlineCloseSettlement::PENDING,
-                ],
-            ])->save();
+            // The run reads Failed; the watchdog continues the cascade from
+            // the held closing task.
+            DeadlineCloseSettlement::hold($task);
         }
 
         // Notify parent workflows and project summary.

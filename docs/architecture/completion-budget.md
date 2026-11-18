@@ -31,11 +31,13 @@ After a run's deadline close (see below) and before the worker's first write,
 `complete()` checks the completion against two estimates computed from its
 command list.
 
-- **Events.** Local activities count exactly: per command, 1 scheduled event,
-  then per attempt 1 started event, its heartbeats and a retry event before
-  the next attempt, then 1 terminal event. Every other command counts its
-  lower bound of one event.
-- **Rows.** `CompletionRowEstimate` charges each command what one command of
+- **Events and history rows.** Local activities count exactly: per command,
+  1 scheduled event, then per attempt 1 started event, its heartbeats and a
+  retry event before the next attempt, then 1 terminal event. Every other
+  command counts its lower bound of one event. History rows, two per event
+  plus each local activity's execution, attempts and failure, are checked
+  against `history_transaction_rows`, as in 2.29.
+- **Completion rows.** `CompletionRowEstimate` charges each command what one command of
   its family writes, plus 3 rows for completing the task, the run and its
   summary:
 
@@ -44,10 +46,11 @@ command list.
   | `schedule_activity` | 6 |
   | `start_timer` | 7 |
   | `start_child_workflow` | 19, plus one per memo and search attribute the child inherits from the parent |
+  | `continue_as_new` | 14, plus one per memo and search attribute the next run inherits |
+  | `start_service_operation` | 25, plus one per memo and search attribute it carries |
   | `record_side_effect`, `record_version_marker`, `complete_workflow` | 3 |
   | `fail_workflow` | 4 |
-  | `continue_as_new` | 14 |
-  | `upsert_memo`, `upsert_search_attributes` | 3, plus one per entry |
+  | `upsert_memo`, `upsert_search_attributes` | 3, plus one per entry written and one per deleted key the run holds |
   | `record_local_activity` | execution, attempts and failure, plus 3 per event and 1 |
   | any other command | 25 |
 
@@ -58,7 +61,8 @@ command list.
   continue-as-new carries, and the parent-close cascade. The meter charges
   them before each statement.
 
-Past a limit, the completion is refused with `completion_budget_exceeded`
+The completion-row estimate is checked against `completion_rows`. Past
+either limit, the completion is refused with `completion_budget_exceeded`
 before a single write statement runs, while it holds only the task and run
 locks it took to read them, and the worker keeps its lease. The meter below
 stays the exact backstop.
@@ -75,7 +79,12 @@ retried attempt starts over with an empty stage.
   `json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)`.
   If the payload cannot be encoded, the completion fails closed with
   `history_transaction_measure_unavailable`.
-- **Rows.** Every write statement is charged before it runs, by the
+- **History rows** (`history_transaction_rows`, unchanged from 2.29). Each
+  history event charges two rows, the event and the run position it
+  advances, and each local activity execution, attempt and failure charges
+  one.
+- **Completion rows** (`completion_rows`). Every write statement is charged
+  before it runs, by the
   storage connection's before-executing hook, which `HistoryTransactionMeter::run()`
   registers once per connection. The hook charges nothing for a read, one row
   per tuple of an insert or upsert, and one row for an update or delete. A
@@ -112,13 +121,20 @@ check, operator metrics and backend capability reports show them.
 | --- | --- | --- | --- |
 | `history_transaction_size` | `DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE` | 5,000 | History events one completion may write |
 | `history_transaction_bytes` | `DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES` | 16 MiB | History bytes one completion may write |
-| `history_transaction_rows` | `DW_V2_LIMIT_HISTORY_TRANSACTION_ROWS` | 520,000 (derived, see below) | Rows one completion may insert, update or delete, counted before each statement |
+| `history_transaction_rows` | `DW_V2_LIMIT_HISTORY_TRANSACTION_ROWS` | 20,000 | History rows one completion may write: two per event plus local activity records (its 2.29 meaning) |
+| `completion_rows` | `DW_V2_LIMIT_COMPLETION_ROWS` | unset: 520,000, derived (see below) | Rows one completion may insert, update or delete, counted before each statement |
 | `external_payload_transaction_bytes` | `DW_V2_LIMIT_EXTERNAL_PAYLOAD_TRANSACTION_BYTES` | 16 MiB | Raw payload bytes one completion may externalize |
 | `payload_size_bytes` (existing) | `DW_V2_LIMIT_PAYLOAD_SIZE_BYTES` | 2 MiB | Each raw payload externalized |
 
 
-**The default row limit.** Unless `history_transaction_rows` is configured,
-it follows `history_transaction_size`, so it never refuses a completion the
+**Two row settings.** `history_transaction_rows` keeps exactly its 2.29
+key, meaning and default. A config file published from 2.29 pins it at
+20,000, and it behaves the same after the upgrade. Real-row accounting has
+its own setting, `completion_rows`. The package config ships it unset, so
+publishing the config does not pin a number.
+
+**The default completion row limit.** Unless `completion_rows` is
+configured, it follows `history_transaction_size`, so it never refuses a completion the
 event limit admits. Measured per family, rows per history event are:
 
 | Family | Rows per event |
@@ -138,7 +154,7 @@ run summary. So the default is 103 rows per event times the event limit, plus
 5,000 for the rows a completion writes without an event (its own task, run and
 summary, and the pending messages continue-as-new hands over). At the default
 5,000 events, that is 103 × 5,000 + 5,000 = 520,000. An event limit of 0
-disables the derived row limit too. A configured row limit, including 0, is
+disables the derived completion row limit too. A configured `completion_rows`, including 0, is
 used as is. `CompletionRowBudgetDerivationTest` measures every family listed
 above and fails if any exceeds 103 rows per event.
 
@@ -263,12 +279,19 @@ fenced and continued:
 4. The cascade after the terminal event is bounded the same way. In order,
    it fails the accepted updates and then applies parent-close policy to
    open children. The close transaction takes what is left of its batch,
-   and each child's terminate or cancellation is that child's own write. If
-   work remains, the closing task, now Completed, carries
-   `deadline_close_settlement: pending`. Each watchdog pass then settles one
-   more batch, updates before children and children in link order, skipping
-   any child the run already recorded a policy outcome for. When nothing is
-   left, the marker becomes `settled`.
+   and each child's terminate or cancellation is that child's own write.
+5. If work remains, the run already reads Failed, with its `WorkflowTimedOut`
+   recorded, while its accepted updates and children are settled over later
+   passes. Its closing task is held: Leased by `deadline-close-settlement`
+   with no lease expiry, and `deadline_close_settlement: pending` in its
+   payload. No worker can claim a Leased task, task repair never resets one
+   without an expiry, and a late completion of it leaves it held. The
+   watchdog finds held tasks among the open tasks, by status and owner, in
+   id order and up to its scan limit. That set does not grow with retained
+   closed runs. Each pass settles one more batch, updates before children
+   and children in link order, skipping any child the run already recorded
+   a policy outcome for. When nothing is left, the task is Completed and the
+   marker becomes `settled`.
 
 Every pass removes at least one open item, so a close always finishes, within
 one pass per batch. The history of a batched close is the history the single

@@ -33,25 +33,31 @@
   change migrations or compensation code, and on stable release tags against
   the published package. `docs/compensation-scopes.md` describes the rollback
   and downgrade behavior it checks.
-- A workflow task completion now charges every row it writes against
-  `history_transaction_rows` before the statement runs, not only history and
-  local activity rows (#1116). Task, run, timer, activity, child, signal,
-  update, continue-as-new, memo, search attribute and projection writes all
-  count. A write that can change several existing rows is counted first with
-  a bounded read. Before its first write, a completion is also checked
-  against an estimate computed from its command list. If over the limit, it
-  is refused with `completion_budget_exceeded` without writing anything, and
-  its task keeps its lease.
-  **Upgrade note:** unless you set `DW_V2_LIMIT_HISTORY_TRANSACTION_ROWS`,
-  the row limit is now derived from the event limit
-  (`DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE`, default 5,000). The derivation is
-  103 rows per event × 5,000 + 5,000 = 520,000. 103 is the most rows any
-  first-party command writes per history event: an upsert of a run's full
-  100 memos or search attributes. So a completion 2.29.1 admitted under the
-  event limit is still admitted. For example, 1,000 children and 1,000
-  activities is 4,000 events and about 25,000 rows. If you configured a row
-  limit, it is used as is: completions now count more rows than in 2.29, so
-  review the setting before upgrading.
+- A workflow task completion now counts every row it inserts, updates or
+  deletes against a new limit, `completion_rows`
+  (`DW_V2_LIMIT_COMPLETION_ROWS`) (#1116). Task, run, timer, activity,
+  child, signal, update, continue-as-new, memo, search attribute and
+  projection writes all count. Each statement is charged before it runs, and
+  a write that can change several existing rows is counted first with a
+  bounded read. Before its first write, a completion is also checked against
+  an estimate computed from its command list. If over the limit, it is
+  refused with `completion_budget_exceeded` without writing anything, and its
+  task keeps its lease.
+  **Two settings, no upgrade action needed:**
+  - `history_transaction_rows` (`DW_V2_LIMIT_HISTORY_TRANSACTION_ROWS`,
+    default 20,000) is unchanged. It still counts two rows per history event
+    plus local activity records, exactly as in 2.29. A `config/workflows.php`
+    published from 2.29, which pins it at 20,000, behaves the same after
+    upgrading.
+  - `completion_rows` ships unset. Unset, it is derived from the event limit
+    (`DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE`, default 5,000): 103 rows per
+    event × 5,000 + 5,000 = 520,000. 103 is the most rows any first-party
+    command writes per history event (an upsert of a run's full 100 memos or
+    search attributes), so it never refuses a completion the event limit
+    admits. For example, 1,000 children and 1,000 activities is 4,000
+    events, 25,003 completion rows and at least 4,000 history rows. Set
+    `completion_rows` only to bound real rows more tightly; a value you set
+    is honored as is, and 0 disables it.
 - An ordinary run past its execution or run deadline whose workflow task sits
   Ready and unclaimed, or whose lease expired, is now timed out by the
   watchdog instead of staying open. A live lease still leaves the close to that
@@ -62,10 +68,12 @@
   the workflow task, and answers the worker with
   `reason: run_deadline_closing`. The watchdog finishes the close without a
   worker. Accepted updates failed by the close, and children its parent-close
-  policy acts on, are settled in bounded batches too. After the terminal
-  event, the watchdog continues them in order from a marker on the closing
-  task. A run's history equals a single close's, and histories recorded by
-  earlier versions replay unchanged.
+  policy acts on, are settled in bounded batches too. While they are, the
+  run already reads Failed, and its closing task stays Leased by
+  `deadline-close-settlement` (no worker can claim it). The watchdog
+  continues the settlement in order and then completes the task. A run's
+  history equals a single close's, and histories recorded by earlier
+  versions replay unchanged.
 - The watchdog takes expired runs oldest deadline first. It no longer
   selects runs it cannot close yet, such as a pending cooperative
   cancellation with an open workflow task, so they cannot starve other

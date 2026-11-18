@@ -86,12 +86,17 @@ final class CompletionRowEstimate
             $type = $command['type'] ?? null;
             $cost = match ($type) {
                 'record_local_activity' => self::localActivityRows($command),
-                'upsert_memo' => self::METADATA_UPSERT_ROWS + self::memoEntries($command),
-                'upsert_search_attributes' => self::METADATA_UPSERT_ROWS + (is_array($command['attributes'] ?? null)
-                    ? count($command['attributes'])
-                    : WorkflowSearchAttribute::MAX_ATTRIBUTES_PER_RUN),
-                'start_child_workflow' => self::COMMAND_ROWS['start_child_workflow']
+                'upsert_memo' => self::METADATA_UPSERT_ROWS + self::memoRows($run, $command),
+                'upsert_search_attributes' => self::METADATA_UPSERT_ROWS + self::searchAttributeRows($run, $command),
+                // A child and a continued run inherit the run's memos and
+                // search attributes: one row each.
+                'start_child_workflow', 'continue_as_new' => self::COMMAND_ROWS[$type]
                     + ($inherited ??= self::inheritedMetadataRows($run)),
+                // A service operation may carry memo and search attributes for
+                // the run it starts: one row per entry.
+                'start_service_operation' => self::OTHER_COMMAND_ROWS
+                    + (is_array($command['memo'] ?? null) ? count($command['memo']) : 0)
+                    + (is_array($command['search_attributes'] ?? null) ? count($command['search_attributes']) : 0),
                 default => is_string($type) && isset(self::COMMAND_ROWS[$type])
                     ? self::COMMAND_ROWS[$type]
                     : self::OTHER_COMMAND_ROWS,
@@ -117,23 +122,72 @@ final class CompletionRowEstimate
     }
 
     /**
+     * One row per memo the upsert writes, and per memo it deletes that
+     * exists: deleting an absent key writes nothing.
+     *
      * @param array<string, mixed> $command
      */
-    private static function memoEntries(array $command): int
+    private static function memoRows(WorkflowRun $run, array $command): int
     {
         $entries = $command['entries'] ?? null;
         if (! is_array($entries)) {
             return WorkflowMemo::MAX_MEMOS_PER_RUN;
         }
         try {
-            return count(MemoPayload::decodeEntries($entries));
+            $decoded = MemoPayload::decodeEntries($entries);
         } catch (Throwable) {
             return WorkflowMemo::MAX_MEMOS_PER_RUN;
         }
+
+        return self::upsertRows(
+            $decoded,
+            static fn (array $keys): int => WorkflowMemo::query()
+                ->where('workflow_run_id', $run->id)
+                ->whereIn('key', $keys)
+                ->count(),
+        );
     }
 
     /**
-     * A child inherits the parent's memos and search attributes: one row each.
+     * @param array<string, mixed> $command
+     */
+    private static function searchAttributeRows(WorkflowRun $run, array $command): int
+    {
+        if (! is_array($command['attributes'] ?? null)) {
+            return WorkflowSearchAttribute::MAX_ATTRIBUTES_PER_RUN;
+        }
+
+        return self::upsertRows(
+            $command['attributes'],
+            static fn (array $keys): int => WorkflowSearchAttribute::query()
+                ->where('workflow_run_id', $run->id)
+                ->whereIn('key', $keys)
+                ->count(),
+        );
+    }
+
+    /**
+     * @param array<array-key, mixed> $entries
+     * @param callable(list<string>): int $existing
+     */
+    private static function upsertRows(array $entries, callable $existing): int
+    {
+        $deletes = [];
+        $writes = 0;
+        foreach ($entries as $key => $value) {
+            if ($value === null) {
+                $deletes[] = (string) $key;
+            } else {
+                ++$writes;
+            }
+        }
+
+        return $writes + ($deletes === [] ? 0 : $existing(array_values(array_unique($deletes))));
+    }
+
+    /**
+     * A child or continued run inherits the run's memos and search
+     * attributes: one row each.
      */
     private static function inheritedMetadataRows(WorkflowRun $run): int
     {

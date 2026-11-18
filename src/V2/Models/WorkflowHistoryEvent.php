@@ -221,10 +221,11 @@ class WorkflowHistoryEvent extends Model
                 $now = now();
                 $sequence = self::nextSequenceForRun($lockedRun);
                 $storedPayload = self::snapshotPayload($payload, $taskModel, $commandModel, $terminalHistory);
-                // A metered completion (#930) charges the event as stored.
-                // Its rows, the event and the run position it advances, are
-                // charged by the statement hook before each write (#1116).
-                HistoryTransactionMeter::current()?->chargeEvent($eventType->value, $storedPayload);
+                // A metered completion (#930) charges the event as stored,
+                // and the run row whose history position it advances.
+                $meter = HistoryTransactionMeter::current();
+                $meter?->chargeEvent($eventType->value, $storedPayload);
+                $meter?->chargeRows(1);
 
                 /** @var self $event */
                 $event = ConfiguredV2Models::query('history_event_model', self::class)->create([

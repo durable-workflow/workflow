@@ -325,21 +325,24 @@ return [
                 5000
             ),
             // Hard ceilings for one workflow task completion; 0 disables a
-            // dimension. history_transaction_rows counts every row the
-            // completion inserts, updates or deletes, before each statement.
-            // An ordinary deadline close cancels open work in batches these
-            // limits also bound (docs/architecture/completion-budget.md).
+            // dimension. history_transaction_rows keeps its 2.29 meaning: two
+            // rows per history event plus local activity records.
             'history_transaction_bytes' => (int) Env::dw(
                 'DW_V2_LIMIT_HISTORY_TRANSACTION_BYTES',
                 'WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_BYTES',
                 16777216
             ),
-            // Unset: derived from history_transaction_size so it never binds
-            // first (520,000 at the default 5,000 events).
-            'history_transaction_rows' => Env::dw(
+            'history_transaction_rows' => (int) Env::dw(
                 'DW_V2_LIMIT_HISTORY_TRANSACTION_ROWS',
                 'WORKFLOW_V2_LIMIT_HISTORY_TRANSACTION_ROWS',
+                20000
             ),
+            // Every row one completion inserts, updates or deletes, charged
+            // before each statement. Unset: derived from
+            // history_transaction_size so it never binds first (520,000 at
+            // the default 5,000 events). An ordinary deadline close cancels
+            // open work in batches this limit also bounds.
+            'completion_rows' => Env::dw('DW_V2_LIMIT_COMPLETION_ROWS', 'WORKFLOW_V2_LIMIT_COMPLETION_ROWS'),
             'external_payload_transaction_bytes' => (int) Env::dw(
                 'DW_V2_LIMIT_EXTERNAL_PAYLOAD_TRANSACTION_BYTES',
                 'WORKFLOW_V2_LIMIT_EXTERNAL_PAYLOAD_TRANSACTION_BYTES',

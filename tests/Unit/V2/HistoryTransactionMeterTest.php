@@ -28,11 +28,12 @@ final class HistoryTransactionMeterTest extends NonDatabaseTestCase
         });
 
         // {"a":"b/é"}: slashes and unicode unescaped, as HistoryBudget stores it.
-        // The event's own rows are charged by the statement hook (#1116).
         $this->assertSame([
             HistoryTransactionMeter::EVENTS => 1,
             HistoryTransactionMeter::BYTES => strlen('ActivityStarted') + strlen('{"a":"b/é"}'),
-            HistoryTransactionMeter::ROWS => 2,
+            HistoryTransactionMeter::ROWS => 3,
+            // Statements are charged by the storage hook, not by chargeRows().
+            HistoryTransactionMeter::COMPLETION_ROWS => 0,
             HistoryTransactionMeter::STAGED_BYTES => 0,
         ], $used);
     }

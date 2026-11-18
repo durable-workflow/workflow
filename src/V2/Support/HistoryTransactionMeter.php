@@ -41,7 +41,18 @@ final class HistoryTransactionMeter
 
     public const BYTES = 'history_transaction_bytes';
 
+    /**
+     * History rows with their 2.29 meaning: two per history event (the event
+     * and its run position) and each local activity execution, attempt and
+     * failure row.
+     */
     public const ROWS = 'history_transaction_rows';
+
+    /**
+     * Every row the completion inserts, updates or deletes, charged before
+     * each statement runs (#1116).
+     */
+    public const COMPLETION_ROWS = 'completion_rows';
 
     public const STAGED_BYTES = 'external_payload_transaction_bytes';
 
@@ -61,6 +72,7 @@ final class HistoryTransactionMeter
         self::EVENTS => 0,
         self::BYTES => 0,
         self::ROWS => 0,
+        self::COMPLETION_ROWS => 0,
         self::STAGED_BYTES => 0,
     ];
 
@@ -113,6 +125,7 @@ final class HistoryTransactionMeter
             self::EVENTS => StructuralLimits::historyTransactionSizeLimit(),
             self::BYTES => StructuralLimits::historyTransactionBytesLimit(),
             self::ROWS => StructuralLimits::historyTransactionRowsLimit(),
+            self::COMPLETION_ROWS => StructuralLimits::completionRowsLimit(),
             self::STAGED_BYTES => StructuralLimits::externalPayloadTransactionBytesLimit(),
         ]);
         self::$current = $meter;
@@ -180,7 +193,7 @@ final class HistoryTransactionMeter
         $rows = (int) $base->newQuery()
             ->fromSub($bounded, 'metered_rows')
             ->count();
-        $meter->chargeRows($rows);
+        $meter->chargeCompletionRows($rows);
         $meter->nextStatementCharged = true;
 
         try {
@@ -294,11 +307,12 @@ final class HistoryTransactionMeter
 
         $this->charge(self::EVENTS, 1);
         $this->charge(self::BYTES, self::checkedAdd(strlen($eventType), strlen($encoded)));
+        $this->charge(self::ROWS, 1);
     }
 
     /**
-     * Rows the next statement will insert, update, upsert or delete,
-     * including any cascade it causes. Charged before the statement runs.
+     * History rows with their 2.29 meaning (the run position an event
+     * advances, a local activity record), charged before they are written.
      */
     public function chargeRows(int $rows): void
     {
@@ -309,14 +323,28 @@ final class HistoryTransactionMeter
     }
 
     /**
-     * How many more rows this completion may affect, or null when the row
-     * limit is disabled. Bulk write sites read at most this plus one row.
+     * Rows a statement will insert, update or delete, charged before it runs.
+     * The statement hook and {@see self::affecting()} charge these; a write
+     * that happens outside the transaction charges its rows in advance.
+     */
+    public function chargeCompletionRows(int $rows): void
+    {
+        if ($rows < 0) {
+            throw new LogicException('A write cannot affect a negative number of rows.');
+        }
+        $this->charge(self::COMPLETION_ROWS, $rows);
+    }
+
+    /**
+     * How many more rows this completion may insert, update or delete, or
+     * null when that limit is disabled. Bulk write sites read at most this
+     * plus one row.
      */
     public function remainingRows(): ?int
     {
-        $limit = $this->limits[self::ROWS];
+        $limit = $this->limits[self::COMPLETION_ROWS];
 
-        return $limit > 0 ? max(0, $limit - $this->used[self::ROWS]) : null;
+        return $limit > 0 ? max(0, $limit - $this->used[self::COMPLETION_ROWS]) : null;
     }
 
     /**
@@ -388,7 +416,7 @@ final class HistoryTransactionMeter
 
             return;
         }
-        $this->charge(self::ROWS, $rows);
+        $this->charge(self::COMPLETION_ROWS, $rows);
     }
 
     /**

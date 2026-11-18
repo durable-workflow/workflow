@@ -41,33 +41,108 @@ final class CompletionRowBudgetDerivationTest extends TestCase
         Queue::fake();
     }
 
-    public function testTheDefaultRowLimitFollowsTheEventLimit(): void
+    public function testTheDefaultCompletionRowLimitFollowsTheEventLimit(): void
     {
         config([
-            'workflows.v2.structural_limits.history_transaction_rows' => null,
+            'workflows.v2.structural_limits.completion_rows' => null,
         ]);
-        $this->assertSame(520_000, StructuralLimits::DEFAULT_HISTORY_TRANSACTION_ROWS);
-        $this->assertSame(520_000, StructuralLimits::historyTransactionRowsLimit());
+        $this->assertSame(520_000, StructuralLimits::DEFAULT_COMPLETION_ROWS);
+        $this->assertSame(520_000, StructuralLimits::completionRowsLimit());
+        // history_transaction_rows keeps its 2.29 key, meaning and default.
+        $this->assertSame(20_000, StructuralLimits::DEFAULT_HISTORY_TRANSACTION_ROWS);
 
         config([
             'workflows.v2.structural_limits.history_transaction_size' => 2_000,
         ]);
-        $this->assertSame(2_000 * 103 + 5_000, StructuralLimits::historyTransactionRowsLimit());
+        $this->assertSame(2_000 * 103 + 5_000, StructuralLimits::completionRowsLimit());
 
         config([
             'workflows.v2.structural_limits.history_transaction_size' => 0,
         ]);
-        $this->assertSame(0, StructuralLimits::historyTransactionRowsLimit());
+        $this->assertSame(0, StructuralLimits::completionRowsLimit());
+    }
 
-        // A configured row limit is honored as is.
+    /**
+     * The package config ships completion_rows unset, so publishing it does
+     * not pin a number.
+     */
+    public function testThePublishedConfigLeavesTheCompletionRowLimitUnset(): void
+    {
+        $config = require dirname(__DIR__, 3) . '/src/config/workflows.php';
+
+        $this->assertArrayHasKey('completion_rows', $config['v2']['structural_limits']);
+        $this->assertNull($config['v2']['structural_limits']['completion_rows']);
+        $this->assertSame(20_000, $config['v2']['structural_limits']['history_transaction_rows']);
+    }
+
+    /**
+     * A config file published from 2.29.1 pins history_transaction_rows at
+     * 20,000 and has no completion_rows. It behaves as it did on 2.29.1:
+     * history_transaction_rows still counts two rows per event plus local
+     * activity records, and the completion row limit stays derived. A
+     * fan-out 2.29.1 admitted (1,000 children and 1,000 activities: at least
+     * 2,000 events, 4,000 history rows, 25,003 completion rows) is admitted.
+     */
+    public function testAPublished2291ConfigAdmitsWhat2291Admitted(): void
+    {
         config([
-            'workflows.v2.structural_limits.history_transaction_rows' => 7_000,
+            'workflows.v2.structural_limits' => [
+                ...config('workflows.v2.structural_limits'),
+                'history_transaction_rows' => 20000,
+            ],
         ]);
-        $this->assertSame(7_000, StructuralLimits::historyTransactionRowsLimit());
+        config()
+            ->offsetUnset('workflows.v2.structural_limits.completion_rows');
+        $this->assertSame(20_000, StructuralLimits::historyTransactionRowsLimit());
+        $this->assertSame(520_000, StructuralLimits::completionRowsLimit());
+
+        $run = $this->createWaitingRun();
+        $full = $this->fanOut(1_000);
+        // Both early checks admit it, as 2.29.1's did.
+        $this->assertSame([], \Workflow\V2\Support\WorkflowCommandNormalizer::completionBudgetErrors($full));
+        $this->assertLessThanOrEqual(StructuralLimits::completionRowsLimit(), CompletionRowEstimate::rows($run, $full));
+
+        $task = $this->createLeasedTask($run);
+        $result = $this->app->make(WorkflowTaskBridge::class)->complete($task->id, $this->fanOut(100));
+
+        $this->assertTrue($result['completed'], json_encode($result, JSON_THROW_ON_ERROR));
+        $used = HistoryTransactionMeter::lastUsed();
+        // history_transaction_rows: exactly the 2.29.1 charge, two per event.
+        $this->assertSame(2 * $used[HistoryTransactionMeter::EVENTS], $used[HistoryTransactionMeter::ROWS]);
+        $this->assertSame(800, $used[HistoryTransactionMeter::ROWS]);
+        $this->assertSame(2_503, $used[HistoryTransactionMeter::COMPLETION_ROWS]);
+    }
+
+    /**
+     * An explicit completion_rows is honored as is: below a completion's
+     * rows it refuses before any write, at them it admits.
+     */
+    public function testAnExplicitCompletionRowLimitIsHonored(): void
+    {
         config([
-            'workflows.v2.structural_limits.history_transaction_rows' => '0',
+            'workflows.v2.structural_limits.completion_rows' => 7_000,
         ]);
-        $this->assertSame(0, StructuralLimits::historyTransactionRowsLimit());
+        $this->assertSame(7_000, StructuralLimits::completionRowsLimit());
+        config([
+            'workflows.v2.structural_limits.completion_rows' => '0',
+        ]);
+        $this->assertSame(0, StructuralLimits::completionRowsLimit());
+
+        config([
+            'workflows.v2.structural_limits.completion_rows' => 2_502,
+        ]);
+        $run = $this->createWaitingRun();
+        $task = $this->createLeasedTask($run);
+        $refused = $this->app->make(WorkflowTaskBridge::class)->complete($task->id, $this->fanOut(100));
+        $this->assertSame('completion_budget_exceeded', $refused['reason']);
+        $this->assertSame(TaskStatus::Leased, $task->fresh()->status);
+
+        config([
+            'workflows.v2.structural_limits.completion_rows' => 2_503,
+        ]);
+        $admitted = $this->app->make(WorkflowTaskBridge::class)->complete($task->id, $this->fanOut(100));
+        $this->assertTrue($admitted['completed'], json_encode($admitted, JSON_THROW_ON_ERROR));
+        $this->assertSame(2_503, HistoryTransactionMeter::lastUsed()[HistoryTransactionMeter::COMPLETION_ROWS]);
     }
 
     /**
@@ -77,14 +152,14 @@ final class CompletionRowBudgetDerivationTest extends TestCase
     public function testNoFirstPartyFamilyWritesMoreRowsPerEventThanTheDerivation(): void
     {
         config([
-            'workflows.v2.structural_limits.history_transaction_rows' => 0,
+            'workflows.v2.structural_limits.completion_rows' => 0,
             'workflows.v2.structural_limits.history_transaction_size' => 0,
         ]);
         $ratios = [];
         foreach ($this->families() as $family => [$prepare, $commands]) {
             [$two, $twoEstimate] = $this->measure($prepare, $commands, 2);
             [$four, $fourEstimate] = $this->measure($prepare, $commands, 4);
-            $rows = $four[HistoryTransactionMeter::ROWS] - $two[HistoryTransactionMeter::ROWS];
+            $rows = $four[HistoryTransactionMeter::COMPLETION_ROWS] - $two[HistoryTransactionMeter::COMPLETION_ROWS];
             $events = $four[HistoryTransactionMeter::EVENTS] - $two[HistoryTransactionMeter::EVENTS];
             $this->assertGreaterThan(0, $events, $family);
             $ratios[$family] = $rows / $events;
@@ -99,8 +174,12 @@ final class CompletionRowBudgetDerivationTest extends TestCase
                 true
             )) {
                 // The command estimate never undercounts a command family.
-                $this->assertGreaterThanOrEqual($four[HistoryTransactionMeter::ROWS], $fourEstimate, $family);
-                $this->assertGreaterThanOrEqual($two[HistoryTransactionMeter::ROWS], $twoEstimate, $family);
+                $this->assertGreaterThanOrEqual(
+                    $four[HistoryTransactionMeter::COMPLETION_ROWS],
+                    $fourEstimate,
+                    $family
+                );
+                $this->assertGreaterThanOrEqual($two[HistoryTransactionMeter::COMPLETION_ROWS], $twoEstimate, $family);
             }
         }
 
@@ -111,44 +190,42 @@ final class CompletionRowBudgetDerivationTest extends TestCase
     /**
      * A fan-out Workflow 2.29.1 admitted is still admitted with the default
      * limits: 1,000 children and 1,000 activities is 4,000 events and 25,003
-     * rows, over the 20,000 rows a pre-release default allowed. A smaller
-     * fan-out of the same shape is executed to show the meter charges exactly
-     * the estimate, which is linear in the commands. Executing the full
-     * fan-out is not done here only because starting a thousand children in
-     * one completion takes minutes on SQLite (the cost grows with the
-     * square of the children, on the base revision too).
+     * completion rows. A smaller fan-out of the same shape is executed to show
+     * the meter charges exactly the estimate, which is linear in the commands.
+     * The full fan-out is not executed only because starting a thousand
+     * children in one completion takes minutes on SQLite (the cost grows with
+     * the square of the children, on the base revision too).
      */
     public function testA2291ShapedFanOutIsAdmittedWithTheDefaultLimits(): void
     {
-        config([
-            'workflows.v2.structural_limits.history_transaction_rows' => null,
-        ]);
         $run = $this->createWaitingRun();
-        $fanOut = static fn (int $count): array => [
-            ...array_fill(0, $count, [
-                'type' => 'start_child_workflow',
-                'workflow_type' => 'test-greeting-workflow',
-                'arguments' => Serializer::serialize(['child']),
-            ]),
-            ...array_fill(0, $count, [
-                'type' => 'schedule_activity',
-                'activity_type' => 'derivation-activity',
-                'arguments' => Serializer::serialize(['a']),
-            ]),
-        ];
 
-        $full = CompletionRowEstimate::rows($run, $fanOut(1_000));
+        $full = CompletionRowEstimate::rows($run, $this->fanOut(1_000));
         $this->assertSame(3 + 1_000 * 19 + 1_000 * 6, $full);
-        $this->assertGreaterThan(20_000, $full);
-        $this->assertLessThanOrEqual(StructuralLimits::historyTransactionRowsLimit(), $full);
+        $this->assertLessThanOrEqual(StructuralLimits::completionRowsLimit(), $full);
+        $this->assertSame(
+            [],
+            \Workflow\V2\Support\WorkflowCommandNormalizer::completionBudgetErrors($this->fanOut(1_000))
+        );
 
         $task = $this->createLeasedTask($run);
-        $result = $this->app->make(WorkflowTaskBridge::class)->complete($task->id, $fanOut(100));
+        $result = $this->app->make(WorkflowTaskBridge::class)->complete($task->id, $this->fanOut(100));
 
         $this->assertTrue($result['completed'], json_encode($result, JSON_THROW_ON_ERROR));
         $used = HistoryTransactionMeter::lastUsed();
         $this->assertSame(400, $used[HistoryTransactionMeter::EVENTS]);
-        $this->assertSame(3 + 100 * 19 + 100 * 6, $used[HistoryTransactionMeter::ROWS]);
+        $this->assertSame(3 + 100 * 19 + 100 * 6, $used[HistoryTransactionMeter::COMPLETION_ROWS]);
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function fanOut(int $count): array
+    {
+        return [
+            ...array_fill(0, $count, $this->childCommand()),
+            ...array_fill(0, $count, $this->activityCommand()),
+        ];
     }
 
     /**

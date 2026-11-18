@@ -586,12 +586,12 @@ final class DefaultWorkflowTaskBridgeLocalActivityTest extends TestCase
             + \Workflow\V2\Models\WorkflowFailure::query()->where('workflow_run_id', $run->id)->count();
         $this->assertSame(WorkflowCommandNormalizer::localActivityRows($normalized), $inserted);
         $used = HistoryTransactionMeter::lastUsed();
-        // The local activity's rows are part of what the meter charged; since
-        // #1116 the task, run and projection writes around them are too.
-        $this->assertGreaterThan(
-            2 * $used[HistoryTransactionMeter::EVENTS] + $inserted,
-            $used[HistoryTransactionMeter::ROWS]
-        );
+        // The local activity's rows are part of what the meter charged.
+        $this->assertGreaterThanOrEqual(2 * $events + $inserted, $used[HistoryTransactionMeter::ROWS]);
+        // history_transaction_rows keeps its 2.29 meaning exactly; every
+        // other write counts toward completion_rows (#1116).
+        $this->assertSame($used[HistoryTransactionMeter::EVENTS] * 2 + $inserted, $used[HistoryTransactionMeter::ROWS]);
+        $this->assertGreaterThan($used[HistoryTransactionMeter::ROWS], $used[HistoryTransactionMeter::COMPLETION_ROWS]);
     }
 
     /**
