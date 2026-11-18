@@ -13,13 +13,17 @@ missing reserved units stop fulfillment under every policy. Cancellation release
 only suitable held units; it never classifies damaged or absent units as saleable.
 
 The result is a plan. This type does not authenticate warehouse observations,
-mutate inventory, execute a shipment or prove reimbursement. Native business
-integration must retain authoritative warehouse receipts, serialize the selected
-policy with cancellation and physical deduction, fix the waiting deadline at
-original admission, and bind refunds to the original paid unit allocations.
-Before payment, there is no money to refund. After payment, a refund request is
-not confirmed repayment. Reservation release and physical restocking remain
-different operations. These execution and accounting requirements are unfinished.
+mutate inventory, execute a shipment or prove reimbursement. Before payment,
+there is no money to refund. After payment, a refund request is not confirmed
+repayment. Reservation release and physical restocking remain different
+operations.
+
+The common payment-first checkout now consumes these plans natively; see
+"Partial stock on the common payment-first checkout" in [README.md](README.md).
+It retains the warehouse receipts, serializes the selected policy with
+cancellation, fixes the waiting deadline at original admission and binds the
+shortage repayment to the original paid unit allocations. Physical stock
+deduction and partial customer returns remain unfinished.
 
 The detailed per-unit source representation is bounded to 1,000 requested units.
 Larger or multi-line allocations require an explicit extension; units are never
@@ -37,6 +41,7 @@ Releasing a damaged or partly missing reservation returns only suitable held uni
 to the available counter. Damaged and missing counters remain separate. A receipt
 write failure rolls back the counter update, and a new PHP process can replay the
 committed original release from stored rows without reseeding inventory. Reads
-and writes refuse workflow replay and caller-owned transactions. This is a
-disposable provider source component; it is not connected to the business
-StateMachine, a real warehouse or a native fulfillment admission boundary yet.
+and writes refuse workflow replay and caller-owned transactions. A goods receipt is
+idempotent per delivery-note key, and `allocate()` assigns newly available
+suitable stock to an open reservation's unavailable original units. This is a
+disposable provider source component, not a real warehouse.

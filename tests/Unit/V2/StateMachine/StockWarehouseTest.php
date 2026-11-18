@@ -57,6 +57,37 @@ final class StockWarehouseTest extends TestCase
         $this->assertSame(1, $warehouse->inventory('shop-a', 'sku-a')['available']);
     }
 
+    public function testAGoodsReceiptAllocatesOnlyTheOriginalUnavailableUnitsOnce(): void
+    {
+        [, $warehouse, $reserve, $release] = $this->setupWarehouse(1);
+        $this->assertNull($warehouse->find($reserve));
+        $warehouse->reserve($reserve, $release);
+        $warehouse->disposition($reserve, 'inspection', [0], 'damaged');
+        $this->assertSame(
+            ['damaged', 'unavailable', 'unavailable'],
+            $warehouse->allocate($reserve)['allocation']['units']
+        );
+        $receipt = $warehouse->receive('shop-a', 'sku-a', 'delivery-note-1', 1);
+        $this->assertSame($receipt, $warehouse->receive('shop-a', 'sku-a', 'delivery-note-1', 1));
+        $allocated = $warehouse->allocate($reserve);
+        $this->assertSame(['damaged', 'held', 'unavailable'], $allocated['allocation']['units']);
+        $this->assertSame($allocated, $warehouse->allocate($reserve));
+        $this->assertSame(0, $warehouse->inventory('shop-a', 'sku-a')['available']);
+        try {
+            $warehouse->receive('shop-a', 'sku-a', 'delivery-note-1', 2);
+            $this->fail('A reused delivery note changed its original quantity.');
+        } catch (LogicException) {
+        }
+        $this->assertSame([1], $warehouse->release($release)['releasedUnits']);
+        $this->assertSame([
+            'initial_quantity' => 2,
+            'available' => 1,
+            'damaged' => 1,
+            'missing' => 0,
+        ], $warehouse->inventory('shop-a', 'sku-a'));
+        $this->assertSame($warehouse->inspect($reserve), $warehouse->allocate($reserve));
+    }
+
     public function testAReusedObservationCannotMoveToAnotherOriginalUnitOrReservation(): void
     {
         [, $warehouse, $reserve, $release] = $this->setupWarehouse(3);
