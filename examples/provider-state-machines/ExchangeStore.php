@@ -215,9 +215,15 @@ final readonly class ExchangeStore
     {
         [$key, $exchangeKey, $row, $assignment] = $this->actor($actual);
         $scope = $this->scope($key, $exchangeKey, $actual->id);
-        $this->registered($scope, $this->obligation($assignment, 'request'), $actual->id, observed: true);
+        PostDeliveryRecords::registered(
+            'exchange',
+            $scope,
+            $this->obligation($assignment, 'request'),
+            $actual->id,
+            observed: true
+        );
         if ($row->plan !== null) {
-            return $this->decode($row->plan, $row->plan_sha256);
+            return PostDeliveryRecords::decode('exchange', $row->plan, $row->plan_sha256);
         }
         $snapshot = $this->provider->shipments()
             ->inspectUnitReturn($assignment['request']);
@@ -274,7 +280,7 @@ final readonly class ExchangeStore
             }
         });
         $stored = $this->row($key, $exchangeKey);
-        return $this->decode($stored->plan, $stored->plan_sha256);
+        return PostDeliveryRecords::decode('exchange', $stored->plan, $stored->plan_sha256);
     }
 
     /**
@@ -284,7 +290,13 @@ final readonly class ExchangeStore
     {
         [$key, $exchangeKey, , $assignment] = $this->actor($actual);
         $scope = $this->scope($key, $exchangeKey, $actual->id);
-        $this->registered($scope, $this->obligation($assignment, 'book'), $actual->id, observed: true);
+        PostDeliveryRecords::registered(
+            'exchange',
+            $scope,
+            $this->obligation($assignment, 'book'),
+            $actual->id,
+            observed: true
+        );
         if (($this->forward($scope, 'exchange.book')['status'] ?? null) !== 'confirmed') {
             throw new LogicException('Replacement tracking requires its confirmed replacement booking.');
         }
@@ -307,11 +319,17 @@ final readonly class ExchangeStore
     {
         [$key, $exchangeKey, $row, $assignment] = $this->actor($actual);
         if ($row->outcome !== null) {
-            return $this->decode($row->outcome, $row->outcome_sha256);
+            return PostDeliveryRecords::decode('exchange', $row->outcome, $row->outcome_sha256);
         }
         $scope = $this->scope($key, $exchangeKey, $actual->id);
-        $this->registered($scope, $this->obligation($assignment, 'request'), $actual->id, observed: true);
-        $plan = $row->plan === null ? null : $this->decode($row->plan, $row->plan_sha256);
+        PostDeliveryRecords::registered(
+            'exchange',
+            $scope,
+            $this->obligation($assignment, 'request'),
+            $actual->id,
+            observed: true
+        );
+        $plan = $row->plan === null ? null : PostDeliveryRecords::decode('exchange', $row->plan, $row->plan_sha256);
         $saleable = $plan['saleableUnits'] ?? [];
         $accepted = ($plan['acceptedUnits'] ?? []) !== [];
         $snapshot = $this->provider->shipments()
@@ -330,7 +348,13 @@ final readonly class ExchangeStore
             'ownPayoutMinor' => 0,
         ];
         if ($reserved === 'refused') {
-            $this->registered($scope, $this->obligation($assignment, 'refund'), $actual->id, observed: true);
+            PostDeliveryRecords::registered(
+                'exchange',
+                $scope,
+                $this->obligation($assignment, 'refund'),
+                $actual->id,
+                observed: true
+            );
             $refunded = $this->refunds->lookup($this->command($assignment));
         }
         $restocked = $snapshot['facts']['restocked_units'] === $saleable;
@@ -404,7 +428,7 @@ final readonly class ExchangeStore
             }
         });
         $stored = $this->row($key, $exchangeKey);
-        return $this->decode($stored->outcome, $stored->outcome_sha256);
+        return PostDeliveryRecords::decode('exchange', $stored->outcome, $stored->outcome_sha256);
     }
 
     /**
@@ -416,10 +440,10 @@ final readonly class ExchangeStore
             throw new LogicException('The exchange operation mode is unavailable.');
         }
         $this->authorizeScope($context->scope, $this->authority->principal, $mode);
-        [$key, $exchangeKey] = $this->parse($context->scope);
+        [$key, $exchangeKey] = PostDeliveryRecords::parse('exchange', $context->scope, self::SCOPE_INFIX);
         $row = $this->row($key, $exchangeKey);
         $assignment = $this->assignment($row);
-        $plan = $row->plan === null ? null : $this->decode($row->plan, $row->plan_sha256);
+        $plan = $row->plan === null ? null : PostDeliveryRecords::decode('exchange', $row->plan, $row->plan_sha256);
         $stage = match ($context->obligation->key) {
             'exchange.request' => 'request',
             'exchange.restock' => ($plan['restock'] ?? null) === null ? null : 'restock',
@@ -433,7 +457,13 @@ final readonly class ExchangeStore
             || $context->obligation->fingerprint() !== $expected->fingerprint()) {
             throw new LogicException('The exchange operation belongs to another exchange, Order, unit or SKU.');
         }
-        $this->registered($context->scope, $expected, $row->native_run, $context->operationId);
+        PostDeliveryRecords::registered(
+            'exchange',
+            $context->scope,
+            $expected,
+            $row->native_run,
+            $context->operationId
+        );
         if ($mode !== 'forward') {
             return;
         }
@@ -453,7 +483,7 @@ final readonly class ExchangeStore
 
     public function authorizeScope(ScopeIdentity $scope, string $principal, string $operation): string
     {
-        [$key, $exchangeKey] = $this->parse($scope);
+        [$key, $exchangeKey] = PostDeliveryRecords::parse('exchange', $scope, self::SCOPE_INFIX);
         $this->authority->authorize($key, $principal);
         if ($scope->application !== Catalogue::APPLICATION || $scope->namespace !== Catalogue::NAMESPACE
             || ! in_array($operation, ['register', 'forward', 'compensate', 'request', 'inspect'], true)) {
@@ -651,42 +681,5 @@ final readonly class ExchangeStore
             }
         }
         return null;
-    }
-
-    private function registered(
-        ScopeIdentity $scope,
-        Obligation $expected,
-        string $run,
-        ?string $operationId = null,
-        bool $observed = false
-    ): void {
-        $ledger = (new ScopeRepository())->inspect($scope);
-        $rows = array_values(array_filter($ledger['obligations'], static fn (array $row): bool =>
-            ($row['descriptor']['key'] ?? null) === $expected->key));
-        if ($ledger['original_run_id'] !== $run || count($rows) !== 1
-            || ($operationId !== null && $rows[0]['id'] !== $operationId)
-            || $rows[0]['fingerprint'] !== $expected->fingerprint()
-            || Obligation::fromArray($rows[0]['descriptor'])->fingerprint() !== $expected->fingerprint()
-            || ($observed && $rows[0]['forward_status'] !== 'observed')) {
-            throw new LogicException('The exchange operation requires its exact original registered obligation.');
-        }
-    }
-
-    private function parse(ScopeIdentity $scope): array
-    {
-        $key = substr($scope->key, 0, 64);
-        $suffix = substr($scope->key, 64);
-        if (preg_match('/\A[0-9a-f]{64}\z/D', $key) !== 1 || ! str_starts_with($suffix, self::SCOPE_INFIX)) {
-            throw new LogicException('The scope is not an original unit exchange scope.');
-        }
-        return [$key, substr($suffix, strlen(self::SCOPE_INFIX))];
-    }
-
-    private function decode(string $payload, ?string $sha256): array
-    {
-        if ($sha256 === null || ! hash_equals($sha256, hash('sha256', $payload))) {
-            throw new LogicException('The recorded original exchange data changed.');
-        }
-        return json_decode($payload, true, flags: JSON_THROW_ON_ERROR);
     }
 }

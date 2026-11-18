@@ -15,7 +15,6 @@ use Workflow\V2\Compensation\Definition\Obligation;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
 use Workflow\V2\Compensation\Execution\OperationContext;
-use Workflow\V2\Compensation\Persistence\ScopeRepository;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\StartOptions;
 use Workflow\V2\WorkflowStub;
@@ -166,9 +165,15 @@ final readonly class ReturnStore
     {
         [$key, $returnKey, $row, $assignment] = $this->actor($actual);
         $scope = $this->scope($key, $returnKey, $actual->id);
-        $this->registered($scope, $this->requestObligation($assignment), $actual->id, observed: true);
+        PostDeliveryRecords::registered(
+            'return',
+            $scope,
+            $this->requestObligation($assignment),
+            $actual->id,
+            observed: true
+        );
         if ($row->plan !== null) {
-            return $this->decode($row->plan, $row->plan_sha256);
+            return PostDeliveryRecords::decode('return', $row->plan, $row->plan_sha256);
         }
         $snapshot = $this->provider->shipments()
             ->inspectUnitReturn($assignment['request']);
@@ -212,7 +217,7 @@ final readonly class ReturnStore
             }
         });
         $stored = $this->row($key, $returnKey);
-        return $this->decode($stored->plan, $stored->plan_sha256);
+        return PostDeliveryRecords::decode('return', $stored->plan, $stored->plan_sha256);
     }
 
     /**
@@ -222,11 +227,17 @@ final readonly class ReturnStore
     {
         [$key, $returnKey, $row, $assignment] = $this->actor($actual);
         if ($row->outcome !== null) {
-            return $this->decode($row->outcome, $row->outcome_sha256);
+            return PostDeliveryRecords::decode('return', $row->outcome, $row->outcome_sha256);
         }
         $scope = $this->scope($key, $returnKey, $actual->id);
-        $this->registered($scope, $this->requestObligation($assignment), $actual->id, observed: true);
-        $plan = $row->plan === null ? null : $this->decode($row->plan, $row->plan_sha256);
+        PostDeliveryRecords::registered(
+            'return',
+            $scope,
+            $this->requestObligation($assignment),
+            $actual->id,
+            observed: true
+        );
+        $plan = $row->plan === null ? null : PostDeliveryRecords::decode('return', $row->plan, $row->plan_sha256);
         $saleable = $plan['saleableUnits'] ?? [];
         $restock = $saleable === [] ? null : UnitReturnTerms::restock($assignment['request'], $saleable);
         $snapshot = $this->provider->shipments()
@@ -237,7 +248,13 @@ final readonly class ReturnStore
         ];
         if ($saleable !== []) {
             foreach (['restockObligation', 'refundObligation'] as $method) {
-                $this->registered($scope, $this->{$method}($assignment, $saleable), $actual->id, observed: true);
+                PostDeliveryRecords::registered(
+                    'return',
+                    $scope,
+                    $this->{$method}($assignment, $saleable),
+                    $actual->id,
+                    observed: true
+                );
             }
             $refunded = $this->refunds->lookup($this->command($assignment, $saleable));
         }
@@ -285,7 +302,7 @@ final readonly class ReturnStore
             }
         });
         $stored = $this->row($key, $returnKey);
-        return $this->decode($stored->outcome, $stored->outcome_sha256);
+        return PostDeliveryRecords::decode('return', $stored->outcome, $stored->outcome_sha256);
     }
 
     /**
@@ -297,10 +314,10 @@ final readonly class ReturnStore
             throw new LogicException('The return operation mode is unavailable.');
         }
         $this->authorizeScope($context->scope, $this->authority->principal, $mode);
-        [$key, $returnKey] = $this->parse($context->scope);
+        [$key, $returnKey] = PostDeliveryRecords::parse('return', $context->scope, self::SCOPE_INFIX);
         $row = $this->row($key, $returnKey);
         $assignment = $this->assignment($row);
-        $plan = $row->plan === null ? null : $this->decode($row->plan, $row->plan_sha256);
+        $plan = $row->plan === null ? null : PostDeliveryRecords::decode('return', $row->plan, $row->plan_sha256);
         $saleable = $plan['saleableUnits'] ?? [];
         $expected = match ($context->obligation->key) {
             'return.request' => $this->requestObligation($assignment),
@@ -312,7 +329,7 @@ final readonly class ReturnStore
             || $context->obligation->fingerprint() !== $expected->fingerprint()) {
             throw new LogicException('The return operation belongs to another original return, Order or unit quote.');
         }
-        $this->registered($context->scope, $expected, $row->native_run, $context->operationId);
+        PostDeliveryRecords::registered('return', $context->scope, $expected, $row->native_run, $context->operationId);
         if ($mode === 'forward' && $context->obligation->key === 'return.request'
             && (bool) $this->authority->subject($key, 'order')
                 ->cancellation_requested) {
@@ -322,7 +339,7 @@ final readonly class ReturnStore
 
     public function authorizeScope(ScopeIdentity $scope, string $principal, string $operation): string
     {
-        [$key, $returnKey] = $this->parse($scope);
+        [$key, $returnKey] = PostDeliveryRecords::parse('return', $scope, self::SCOPE_INFIX);
         $this->authority->authorize($key, $principal);
         if ($scope->application !== Catalogue::APPLICATION || $scope->namespace !== Catalogue::NAMESPACE
             || ! in_array($operation, ['register', 'forward', 'compensate', 'request', 'inspect'], true)) {
@@ -472,42 +489,5 @@ final readonly class ReturnStore
     {
         $returnKey = UnitReturnTerms::fromArray($assignment['request']->terms)->returnKey;
         return new UnitRefundCommand($assignment['original'], 'unit-return-' . $returnKey, $units);
-    }
-
-    private function registered(
-        ScopeIdentity $scope,
-        Obligation $expected,
-        string $run,
-        ?string $operationId = null,
-        bool $observed = false
-    ): void {
-        $ledger = (new ScopeRepository())->inspect($scope);
-        $rows = array_values(array_filter($ledger['obligations'], static fn (array $row): bool =>
-            ($row['descriptor']['key'] ?? null) === $expected->key));
-        if ($ledger['original_run_id'] !== $run || count($rows) !== 1
-            || ($operationId !== null && $rows[0]['id'] !== $operationId)
-            || $rows[0]['fingerprint'] !== $expected->fingerprint()
-            || Obligation::fromArray($rows[0]['descriptor'])->fingerprint() !== $expected->fingerprint()
-            || ($observed && $rows[0]['forward_status'] !== 'observed')) {
-            throw new LogicException('The return operation requires its exact original registered obligation.');
-        }
-    }
-
-    private function parse(ScopeIdentity $scope): array
-    {
-        $key = substr($scope->key, 0, 64);
-        $suffix = substr($scope->key, 64);
-        if (preg_match('/\A[0-9a-f]{64}\z/D', $key) !== 1 || ! str_starts_with($suffix, self::SCOPE_INFIX)) {
-            throw new LogicException('The scope is not an original unit return scope.');
-        }
-        return [$key, substr($suffix, strlen(self::SCOPE_INFIX))];
-    }
-
-    private function decode(string $payload, ?string $sha256): array
-    {
-        if ($sha256 === null || ! hash_equals($sha256, hash('sha256', $payload))) {
-            throw new LogicException('The recorded original return data changed.');
-        }
-        return json_decode($payload, true, flags: JSON_THROW_ON_ERROR);
     }
 }
