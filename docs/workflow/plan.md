@@ -326,6 +326,19 @@ event), the open `workflow_tasks` row is closed, and the fiber
 wakes through the cancellation/termination path rather than the
 timer-fired path.
 
+A wait with a timeout is decided by durable history order, not by when
+the workflow task runs. Input whose acceptance is recorded before the
+wait's own `TimerFired` can resolve it even when the task runs after the
+deadline; input recorded after that `TimerFired` cannot. Equal
+timestamps fall back to history sequence. Named signal waits compare
+`SignalReceived` with `TimerFired`. Standalone and `select()`/`all()`
+condition waits re-evaluate the predicate on the state the wait started
+with and after each update applied at the wait, in order, until an
+update accepted after `TimerFired`. The first `true` satisfies the wait,
+and later input does not reverse it. A recorded `ConditionWaitSatisfied`
+or `ConditionWaitTimedOut` always replays as recorded, so runs that
+already resolved under earlier rules keep their outcome.
+
 ### Activity timeout taxonomy
 
 Every `activity_executions` row carries the four timeout deadlines

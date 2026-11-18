@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- A condition wait with a timeout now returns `true` when an update accepted
+  before its timeout fired makes the predicate true, even if the workflow task
+  runs after the deadline. Updates accepted after the timeout fired cannot
+  satisfy it. Standalone waits and conditions inside `select()` or `all()`
+  now follow the history-order rule named signal waits already use. When
+  several updates are pending, the first one that makes the predicate true
+  satisfies the wait and later updates do not reverse it. Runs whose
+  history already records the wait as satisfied or timed out replay that outcome
+  unchanged. Replaying a `select()` whose condition member resolved after
+  its timeout fired no longer blocks with a history-shape mismatch.
+
 ## 2.29.0 - 2026-11-17
 
 **Run migrations.** Seven migrations add the compensation scope/obligation
