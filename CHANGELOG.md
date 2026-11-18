@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- A refused schema rollback no longer leaves part of its batch rolled back
+  (#1063). Before the migrator runs any `down()`, the package now checks every
+  guarded migration in the rollback or reset: the compensation ledger, the
+  child and root reservation fences, and the schedule occurrence receipts.
+  Previously, newer migrations in the same batch, such as the reservation
+  columns, were already dropped when the guard refused.
+- The Order/Shipment compensation example covers a compensation worker killed
+  after its SQL void commits, and a dispatched delivery whose compensation
+  fails after native retries. The operator sees the failure through
+  `cancellationOutcome()` and resolves it with `resubmitCancellation()`. Three
+  replay fixtures recorded from these runs pin the recovery histories.
+
 ## 2.30.0 - 2026-11-18
 
 - **Security fix:** webhook `token` authentication with no token configured
@@ -55,18 +67,6 @@
   change it. The example's unit refund no longer records a confirmed refund as
   unknown because of an over-long evidence reference. See
   `examples/provider-state-machines/README.md`.
-
-- A refused schema rollback no longer leaves part of its batch rolled back
-  (#1063). Before the migrator runs any `down()`, the package now checks every
-  guarded migration in the rollback or reset: the compensation ledger, the
-  child and root reservation fences, and the schedule occurrence receipts.
-  Previously, newer migrations in the same batch, such as the reservation
-  columns, were already dropped when the guard refused.
-- The Order/Shipment compensation example covers a compensation worker killed
-  after its SQL void commits, and a dispatched delivery whose compensation
-  fails after native retries. The operator sees the failure through
-  `cancellationOutcome()` and resolves it with `resubmitCancellation()`. Three
-  replay fixtures recorded from these runs pin the recovery histories.
 
 ## 2.29.1 - 2026-11-18
 
