@@ -76,10 +76,15 @@
   worker. Accepted updates failed by the close, and children its parent-close
   policy acts on, are settled in bounded batches too. While they are, the
   run already reads Failed, and its closing task stays Leased by
-  `deadline-close-settlement` (no worker can claim it). The watchdog
-  continues the settlement in order and then completes the task. A run's
-  history equals a single close's, and histories recorded by earlier
-  versions replay unchanged.
+  `deadline-close-settlement`. No worker can claim it, a stale worker's
+  completion or failure leaves it alone, and only the settlement can
+  release it. The watchdog continues the settlement within its own scope,
+  oldest first. A failed pass records its error and retries with backoff;
+  it is never dropped. Pending and stuck settlements appear in operator
+  metrics, queue visibility (`deadline_close_settlements`) and run describe
+  (`deadline_close_settlement`). Retention keeps the run until the
+  settlement completes. A run's history equals a single close's, and
+  histories recorded by earlier versions replay unchanged.
 - The watchdog takes expired runs oldest deadline first. It no longer
   selects runs it cannot close yet, such as a pending cooperative
   cancellation with an open workflow task, so they cannot starve other

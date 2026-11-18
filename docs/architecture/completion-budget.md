@@ -50,7 +50,7 @@ command list.
   | `start_service_operation` | 25, plus one per memo and search attribute it carries |
   | `record_side_effect`, `record_version_marker`, `complete_workflow` | 3 |
   | `fail_workflow` | 4 |
-  | `upsert_memo`, `upsert_search_attributes` | 3, plus one per entry written and one per deleted key the run holds |
+  | `upsert_memo`, `upsert_search_attributes` | 3, plus one per entry written and one per deleted key the run holds or this completion wrote earlier |
   | `record_local_activity` | execution, attempts and failure, plus 3 per event and 1 |
   | any other command | 25 |
 
@@ -284,14 +284,30 @@ fenced and continued:
    recorded, while its accepted updates and children are settled over later
    passes. Its closing task is held: Leased by `deadline-close-settlement`
    with no lease expiry, and `deadline_close_settlement: pending` in its
-   payload. No worker can claim a Leased task, task repair never resets one
-   without an expiry, and a late completion of it leaves it held. The
-   watchdog finds held tasks among the open tasks, by status and owner, in
-   id order and up to its scan limit. That set does not grow with retained
-   closed runs. Each pass settles one more batch, updates before children
-   and children in link order, skipping any child the run already recorded
-   a policy outcome for. When nothing is left, the task is Completed and the
-   marker becomes `settled`.
+   payload. No worker can claim a Leased task, and task repair never resets
+   one without an expiry. A stale worker's late completion or failure of it
+   leaves it held. Any other write that would change a held task's status,
+   lease or owner, or delete it, is refused: only the settlement ends the
+   hold. Retention does not prune the run while it is held
+   (`deadline_close_settlement_pending`).
+6. The watchdog finds due held tasks among the open tasks, by status and
+   owner. It applies its connection, queue, namespace, instance and run
+   scope before its scan limit, oldest due first. That set does not grow
+   with retained closed runs. Each pass settles one more batch, updates
+   before children and children in link order, skipping any child the run
+   already recorded a policy outcome for. When nothing is left, the task is
+   Completed and the marker becomes `settled`.
+7. A pass that fails rolls back. In a separate transaction, it records the
+   error as the held task's `last_error`, adds one to `attempt_count` and to
+   the payload's `deadline_close_settlement_failures`, and backs the task off
+   by moving `available_at` 10 seconds out, doubling per failure up to an
+   hour. The settlement is never released, because it is
+   correctness-critical: it stays visible and is retried. OperatorMetrics
+   (`deadline_close_settlements`) and each queue's repair visibility report
+   held and stuck settlements. A settlement counts as stuck after 3 failed
+   passes, and a stuck one marks its queue as needing attention. Run describe
+   (`deadline_close_settlement`) shows its state, failed attempts, last error
+   and next attempt.
 
 Every pass removes at least one open item, so a close always finishes, within
 one pass per batch. The history of a batched close is the history the single

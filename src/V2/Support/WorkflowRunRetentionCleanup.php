@@ -199,6 +199,11 @@ final class WorkflowRunRetentionCleanup
         $run = $run instanceof WorkflowRun ? $run
             : ConfiguredV2Models::query('run_model', WorkflowRun::class)->findOrFail($run);
         $database = $run->getConnection();
+        // A bounded deadline close still settling its updates and children
+        // keeps the run until the settlement completes (#1116).
+        if (DeadlineCloseSettlement::heldQuery()->where('workflow_run_id', $run->id)->exists()) {
+            return 'deadline_close_settlement_pending';
+        }
         // Retained request keys still need both native receipt copies and
         // redrive links, even after verification. Only explicit release ends
         // this hold. A concurrent release can at most defer pruning one pass.

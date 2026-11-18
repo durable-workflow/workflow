@@ -434,6 +434,10 @@ final class OperatorQueueVisibility
             : null;
 
         $totalCandidates = $dispatchFailedCount + $expiredLeaseCount + $dispatchOverdueCount;
+        $settlements = DeadlineCloseSettlement::metrics(static function ($query) use ($namespace, $taskQueue): void {
+            $query->where('namespace', $namespace)
+                ->where('queue', $taskQueue);
+        });
 
         return [
             'candidates' => $totalCandidates,
@@ -446,7 +450,9 @@ final class OperatorQueueVisibility
             'dispatch_overdue' => $dispatchOverdueCount,
             'oldest_dispatch_overdue_since' => $oldestDispatchOverdueSince?->toJSON(),
             'max_dispatch_overdue_age_ms' => self::ageMilliseconds($oldestDispatchOverdueSince, $now),
-            'needs_attention' => $totalCandidates > 0,
+            // Bounded deadline closes still settling on this queue (#1116).
+            'deadline_close_settlements' => $settlements,
+            'needs_attention' => $totalCandidates > 0 || $settlements['stuck'] > 0,
             'policy' => [
                 'redispatch_after_seconds' => TaskRepairPolicy::redispatchAfterSeconds(),
             ],

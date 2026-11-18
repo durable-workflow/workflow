@@ -34,6 +34,7 @@ use Workflow\V2\Support\CompletionRowEstimate;
 use Workflow\V2\Support\DeadlineCloseSettlement;
 use Workflow\V2\Support\HistoryTransactionMeter;
 use Workflow\V2\Support\MemoPayload;
+use Workflow\V2\Support\NamespaceScope;
 use Workflow\V2\Support\WorkflowExecutor;
 use Workflow\V2\TaskWatchdog;
 
@@ -535,6 +536,206 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
     }
 
     /**
+     * A stale worker that failed its task after run_deadline_closing cannot
+     * drop the settlement hold of the close that later completed: fail()
+     * leaves the held task alone and the settlement finishes.
+     */
+    public function testAStaleWorkerFailureLeavesTheSettlementHoldIntact(): void
+    {
+        Queue::fake();
+        Carbon::setTestNow(now()->startOfSecond());
+        config([
+            'workflows.v2.structural_limits.history_transaction_size' => 0,
+            'workflows.v2.structural_limits.completion_rows' => 0,
+        ]);
+        $parent = $this->createExpiredParent(children: 12, updates: 12);
+        foreach (range(1, 15) as $sequence) {
+            WorkflowTimer::query()->create([
+                'workflow_run_id' => $parent['run']->id,
+                'sequence' => 1_000 + $sequence,
+                'status' => TimerStatus::Pending->value,
+                'delay_seconds' => 60,
+                'fire_at' => now()
+                    ->addMinute(),
+            ]);
+        }
+        // Ten items per close transaction.
+        config([
+            'workflows.v2.structural_limits.completion_rows' => 50,
+        ]);
+
+        $this->assertSame(
+            'run_deadline_closing',
+            $this->bridge()
+                ->complete($parent['task']->id, [$this->startTimer()])['reason']
+        );
+        $passes = 0;
+        while (! DeadlineCloseSettlement::holds($parent['task']->fresh()) && $passes < 5) {
+            TaskWatchdog::runPass(runIds: [$parent['run']->id]);
+            ++$passes;
+        }
+        $this->assertSame(RunStatus::Failed, $parent['run']->fresh()->status);
+        $this->assertTrue(DeadlineCloseSettlement::holds($parent['task']->fresh()));
+
+        // The worker that got run_deadline_closing still has the task id.
+        $failed = $this->bridge()
+            ->fail($parent['task']->id, 'stale worker failure');
+
+        $this->assertFalse($failed['recorded']);
+        $this->assertTrue(DeadlineCloseSettlement::holds($parent['task']->fresh()));
+        // No other writer can release a held task either.
+        try {
+            $parent['task']->fresh()
+                ->forceFill([
+                    'status' => TaskStatus::Failed,
+                ])->save();
+            $this->fail('A held task was released outside its settlement.');
+        } catch (\LogicException $refused) {
+            $this->assertStringContainsString('held for a deadline close settlement', $refused->getMessage());
+        }
+
+        for ($passes = 0; DeadlineCloseSettlement::holds($parent['task']->fresh()) && $passes < 10; ++$passes) {
+            TaskWatchdog::runPass(runIds: [$parent['run']->id]);
+        }
+        $this->assertSame(TaskStatus::Completed, $parent['task']->fresh()->status);
+        $this->assertSame(0, $this->openChildren($parent['run']));
+        $this->assertSame(0, $this->acceptedUpdates($parent['run']));
+    }
+
+    /**
+     * Held tasks outside a watchdog's scope never fill its scan: the scope
+     * applies before the limit.
+     */
+    public function testAScopedWatchdogSettlesItsOwnBehindAFullScanElsewhere(): void
+    {
+        foreach (range(1, 30) as $index) {
+            $foreign = $this->createWaitingRun(RunStatus::Failed);
+            $foreign->forceFill([
+                'namespace' => 'elsewhere',
+            ])->save();
+            $task = $this->createTask($foreign, TaskStatus::Leased, now()->addMinute());
+            $task->forceFill([
+                'namespace' => 'elsewhere',
+            ])->save();
+            DeadlineCloseSettlement::hold($task);
+        }
+        $own = $this->createWaitingRun(RunStatus::Failed);
+        $ownTask = $this->createTask($own, TaskStatus::Leased, now()->addMinute());
+        DeadlineCloseSettlement::hold($ownTask);
+        $this->assertSame(25, \Workflow\V2\Support\TaskRepairPolicy::scanLimit());
+
+        TaskWatchdog::runPass(namespaces: NamespaceScope::of([null]));
+
+        $this->assertSame(TaskStatus::Completed, $ownTask->fresh()->status);
+        $this->assertSame(30, DeadlineCloseSettlement::heldQuery()->where('namespace', 'elsewhere')->count());
+    }
+
+    /**
+     * A settlement pass that fails is not released: it records its error, one
+     * more attempt and a backoff, is skipped until due, counts as stuck after
+     * repeated failures, and is retried until it settles.
+     */
+    public function testAFailingSettlementPassBacksOffAndIsRetried(): void
+    {
+        Queue::fake();
+        Carbon::setTestNow(now()->startOfSecond());
+        config([
+            'workflows.v2.structural_limits.history_transaction_size' => 0,
+            'workflows.v2.structural_limits.completion_rows' => 0,
+        ]);
+        $parent = $this->createExpiredParent(children: 0, updates: 20);
+        $parent['task']->forceFill([
+            'namespace' => 'default',
+        ])->save();
+        config([
+            'workflows.v2.structural_limits.completion_rows' => 50,
+        ]);
+        $this->assertSame(
+            'run_timed_out',
+            $this->bridge()
+                ->complete($parent['task']->id, [$this->startTimer()])['reason']
+        );
+        $this->assertTrue(DeadlineCloseSettlement::holds($parent['task']->fresh()));
+        $attempts = (int) $parent['task']->fresh()
+            ->attempt_count;
+
+        $failing = true;
+        \Illuminate\Support\Facades\Event::listen(
+            'eloquent.updating: ' . WorkflowUpdate::class,
+            static function () use (&$failing): void {
+                if ($failing) {
+                    throw new \RuntimeException('forced settlement failure');
+                }
+            }
+        );
+
+        $report = TaskWatchdog::runPass(runIds: [$parent['run']->id]);
+
+        $task = $parent['task']->fresh();
+        $this->assertTrue(DeadlineCloseSettlement::holds($task));
+        $this->assertSame($attempts + 1, $task->attempt_count);
+        $this->assertSame('forced settlement failure', $task->last_error);
+        $this->assertSame(1, DeadlineCloseSettlement::failures($task));
+        $this->assertSame(now()->addSeconds(10)->toJSON(), $task->available_at->toJSON());
+        $this->assertSame('forced settlement failure', $report['deadline_expired_failures'][0]['message'] ?? null);
+        $this->assertSame(10, $this->acceptedUpdates($parent['run']));
+
+        // Not due yet: skipped.
+        TaskWatchdog::runPass(runIds: [$parent['run']->id]);
+        $this->assertSame(1, DeadlineCloseSettlement::failures($parent['task']->fresh()));
+
+        // Two more failures make it stuck, and visible as such.
+        foreach ([11, 21] as $seconds) {
+            Carbon::setTestNow(now()->addSeconds($seconds));
+            TaskWatchdog::runPass(runIds: [$parent['run']->id]);
+        }
+        $this->assertSame(3, DeadlineCloseSettlement::failures($parent['task']->fresh()));
+        $metrics = \Workflow\V2\Support\OperatorMetrics::snapshot()['deadline_close_settlements'];
+        $this->assertSame(1, $metrics['held']);
+        $this->assertSame(1, $metrics['stuck']);
+        $queue = \Workflow\V2\Support\OperatorQueueVisibility::forQueue('default', 'default')->repair();
+        $this->assertSame(1, $queue['deadline_close_settlements']['stuck']);
+        $this->assertTrue($queue['needs_attention']);
+        $described = \Workflow\V2\Support\RunDetailView::forRun($parent['run']->fresh())['deadline_close_settlement'];
+        $this->assertSame('pending', $described['state']);
+        $this->assertSame(3, $described['failed_attempts']);
+        $this->assertSame('forced settlement failure', $described['last_error']);
+
+        // Once due again and healthy, the next pass retries and settles.
+        $failing = false;
+        Carbon::setTestNow(now()->addSeconds(41));
+        TaskWatchdog::runPass(runIds: [$parent['run']->id]);
+
+        $this->assertSame(TaskStatus::Completed, $parent['task']->fresh()->status);
+        $this->assertSame(0, $this->acceptedUpdates($parent['run']));
+        $this->assertSame(0, \Workflow\V2\Support\OperatorMetrics::snapshot()['deadline_close_settlements']['held']);
+        $this->assertSame(
+            'settled',
+            \Workflow\V2\Support\RunDetailView::forRun($parent['run']->fresh())['deadline_close_settlement']['state']
+        );
+    }
+
+    public function testADeleteOfAKeyWrittenEarlierInTheCompletionCountsItsRow(): void
+    {
+        $run = $this->createWaitingRun();
+
+        $this->assertSame(
+            CompletionRowEstimate::COMPLETION_ROWS + 2 * CompletionRowEstimate::METADATA_UPSERT_ROWS + 2,
+            CompletionRowEstimate::rows($run, [[
+                'type' => 'upsert_search_attributes',
+                'attributes' => [
+                    'stage' => 'one',
+                ],
+            ], [
+                'type' => 'upsert_search_attributes',
+                'attributes' => [
+                    'stage' => null,
+                ],
+            ]])
+        );
+    }
+
+    /**
      * @return array{run_ids: list<string>, queries: list<array{sql: string, bindings: array<int, mixed>}>, rows: list<int>}
      */
     private function settlementLookup(): array
@@ -550,7 +751,7 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
             }
         });
         $method = new \ReflectionMethod(TaskWatchdog::class, 'deadlineSettlementRunIds');
-        $runIds = $method->invoke(null, [], null, null, null, null);
+        $runIds = array_column($method->invoke(null, [], null, null, null, null), 'run_id');
         $listening = false;
         $rows = [count(WorkflowTask::query()
             ->where('status', TaskStatus::Leased->value)
@@ -864,7 +1065,7 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
         $run = $this->createWaitingRun();
         // Children are seeded as stored rows: starting a thousand children in
         // one completion is itself slow, and only their close is under test.
-        foreach (range(1, $children) as $sequence) {
+        for ($sequence = 1; $sequence <= $children; ++$sequence) {
             $child = $this->createWaitingRun();
             WorkflowLink::query()->create([
                 'link_type' => 'child_workflow',
@@ -877,7 +1078,7 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
                 'parent_close_policy' => 'terminate',
             ]);
         }
-        foreach (range(1, $updates) as $index) {
+        for ($index = 1; $index <= $updates; ++$index) {
             $this->acceptUpdate($run, $index);
         }
         $run->refresh()

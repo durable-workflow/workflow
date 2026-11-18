@@ -79,6 +79,10 @@ final class CompletionRowEstimate
     {
         $rows = self::COMPLETION_ROWS;
         $inherited = null;
+        // Keys written earlier in this completion: a later delete of one
+        // removes a row even though the run does not hold it yet.
+        $writtenMemos = [];
+        $writtenAttributes = [];
         foreach ($commands as $command) {
             if (! is_array($command)) {
                 continue;
@@ -86,8 +90,9 @@ final class CompletionRowEstimate
             $type = $command['type'] ?? null;
             $cost = match ($type) {
                 'record_local_activity' => self::localActivityRows($command),
-                'upsert_memo' => self::METADATA_UPSERT_ROWS + self::memoRows($run, $command),
-                'upsert_search_attributes' => self::METADATA_UPSERT_ROWS + self::searchAttributeRows($run, $command),
+                'upsert_memo' => self::METADATA_UPSERT_ROWS + self::memoRows($run, $command, $writtenMemos),
+                'upsert_search_attributes' => self::METADATA_UPSERT_ROWS
+                    + self::searchAttributeRows($run, $command, $writtenAttributes),
                 // A child and a continued run inherit the run's memos and
                 // search attributes: one row each.
                 'start_child_workflow', 'continue_as_new' => self::COMMAND_ROWS[$type]
@@ -127,7 +132,7 @@ final class CompletionRowEstimate
      *
      * @param array<string, mixed> $command
      */
-    private static function memoRows(WorkflowRun $run, array $command): int
+    private static function memoRows(WorkflowRun $run, array $command, array &$written): int
     {
         $entries = $command['entries'] ?? null;
         if (! is_array($entries)) {
@@ -141,6 +146,7 @@ final class CompletionRowEstimate
 
         return self::upsertRows(
             $decoded,
+            $written,
             static fn (array $keys): int => WorkflowMemo::query()
                 ->where('workflow_run_id', $run->id)
                 ->whereIn('key', $keys)
@@ -151,7 +157,7 @@ final class CompletionRowEstimate
     /**
      * @param array<string, mixed> $command
      */
-    private static function searchAttributeRows(WorkflowRun $run, array $command): int
+    private static function searchAttributeRows(WorkflowRun $run, array $command, array &$written): int
     {
         if (! is_array($command['attributes'] ?? null)) {
             return WorkflowSearchAttribute::MAX_ATTRIBUTES_PER_RUN;
@@ -159,6 +165,7 @@ final class CompletionRowEstimate
 
         return self::upsertRows(
             $command['attributes'],
+            $written,
             static fn (array $keys): int => WorkflowSearchAttribute::query()
                 ->where('workflow_run_id', $run->id)
                 ->whereIn('key', $keys)
@@ -168,21 +175,28 @@ final class CompletionRowEstimate
 
     /**
      * @param array<array-key, mixed> $entries
+     * @param array<string, true> $written keys written earlier in this completion
      * @param callable(list<string>): int $existing
      */
-    private static function upsertRows(array $entries, callable $existing): int
+    private static function upsertRows(array $entries, array &$written, callable $existing): int
     {
         $deletes = [];
-        $writes = 0;
+        $rows = 0;
         foreach ($entries as $key => $value) {
-            if ($value === null) {
-                $deletes[] = (string) $key;
+            $key = (string) $key;
+            if ($value !== null) {
+                $written[$key] = true;
+                ++$rows;
+            } elseif (isset($written[$key])) {
+                // Deleting a key this completion wrote removes that row.
+                unset($written[$key]);
+                ++$rows;
             } else {
-                ++$writes;
+                $deletes[] = $key;
             }
         }
 
-        return $writes + ($deletes === [] ? 0 : $existing(array_values(array_unique($deletes))));
+        return $rows + ($deletes === [] ? 0 : $existing(array_values(array_unique($deletes))));
     }
 
     /**

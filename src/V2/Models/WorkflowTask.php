@@ -11,6 +11,7 @@ use Workflow\Traits\ResolvesStorageConnection;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\DeadlineCloseSettlement;
 use Workflow\V2\Support\TaskSchedulingFields;
 
 class WorkflowTask extends Model
@@ -66,6 +67,14 @@ class WorkflowTask extends Model
 
         static::creating(static function (self $task): void {
             $task->inheritRunScheduling();
+        });
+        // Only a bounded deadline close's settlement may release its held
+        // closing task (#1116).
+        static::updating(static function (self $task): void {
+            DeadlineCloseSettlement::guard($task);
+        });
+        static::deleting(static function (self $task): void {
+            DeadlineCloseSettlement::guard($task, deleting: true);
         });
     }
 

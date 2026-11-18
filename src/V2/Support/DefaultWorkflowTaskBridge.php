@@ -682,6 +682,17 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 ];
             }
 
+            // A stale worker's failure must not drop a bounded close's
+            // settlement hold (#1116); the run is already closed.
+            if (DeadlineCloseSettlement::holds($task)) {
+                return [
+                    'recorded' => false,
+                    'task_id' => $taskId,
+                    'reason' => 'run_already_closed',
+                    'next_task_id' => null,
+                ];
+            }
+
             $errorMessage = self::failureMessage($failure);
 
             $task->forceFill([

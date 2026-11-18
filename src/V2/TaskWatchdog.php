@@ -235,11 +235,11 @@ final class TaskWatchdog
             $connection,
             $queue,
             $namespaces
-        ) as $settleRunId) {
-            $error = self::continueDeadlineCloseSettlement($settleRunId);
+        ) as $settlement) {
+            $error = self::continueDeadlineCloseSettlement($settlement['run_id'], $settlement['task_id']);
             if ($error !== null) {
                 $report['deadline_expired_failures'][] = [
-                    'run_id' => $settleRunId,
+                    'run_id' => $settlement['run_id'],
                     'message' => $error,
                 ];
             }
@@ -739,14 +739,14 @@ final class TaskWatchdog
     }
 
     /**
-     * Closed runs whose bounded deadline close still has accepted updates or
-     * children to settle. They are found from their held closing tasks:
-     * Leased workflow tasks of the settlement owner, read from the open-task
-     * set by status (indexed), in a stable order and bounded by the scan
-     * limit. Retained closed runs and their completed tasks are never scanned.
+     * Held closing tasks of bounded deadline closes whose settlement is due.
+     * They are read from the open-task set by status and owner, scoped like
+     * every other pass (connection, queue, namespace, instance, run ids)
+     * before the scan limit, oldest due first. Retained closed runs and their
+     * completed tasks are never scanned.
      *
      * @param list<string> $runIds
-     * @return list<string>
+     * @return list<array{run_id: string, task_id: string}>
      */
     private static function deadlineSettlementRunIds(
         array $runIds,
@@ -755,54 +755,51 @@ final class TaskWatchdog
         ?string $queue,
         ?NamespaceScope $namespaces,
     ): array {
-        $held = WorkflowTask::query()
-            ->where('status', TaskStatus::Leased->value)
-            ->where('task_type', TaskType::Workflow->value)
-            ->where('lease_owner', DeadlineCloseSettlement::OWNER)
-            ->when($runIds !== [], static fn ($query) => $query->whereIn('workflow_run_id', $runIds))
+        $now = now()
+            ->format('Y-m-d H:i:s.u');
+        $held = DeadlineCloseSettlement::heldQuery()
+            ->where(static function ($due) use ($now): void {
+                $due->whereNull('available_at')
+                    ->orWhere('available_at', '<=', $now);
+            });
+        if ($runIds !== []) {
+            $held->whereIn('workflow_run_id', $runIds);
+        }
+        if ($instanceId !== null) {
+            $held->whereIn('workflow_run_id', WorkflowRun::query()
+                ->select('id')
+                ->where('workflow_instance_id', $instanceId));
+        }
+        RequestedTaskScope::applyToTasks($held, $connection, $queue, $namespaces);
+
+        return $held->orderBy('available_at')
             ->orderBy('id')
             ->limit(TaskRepairPolicy::scanLimit())
-            ->pluck('workflow_run_id')
-            ->all();
-        if ($held === []) {
-            return [];
-        }
-
-        $query = WorkflowRun::query()
-            ->whereKey(array_values(array_unique($held)))
-            ->where('status', RunStatus::Failed->value);
-
-        if ($instanceId !== null) {
-            $query->where('workflow_instance_id', $instanceId);
-        }
-
-        RequestedTaskScope::apply($query, $connection, $queue, $namespaces);
-
-        return $query->orderBy('id')
-            ->pluck('id')
+            ->get(['id', 'workflow_run_id'])
+            ->map(static fn (WorkflowTask $task): array => [
+                'run_id' => (string) $task->workflow_run_id,
+                'task_id' => (string) $task->id,
+            ])
             ->all();
     }
 
-    private static function continueDeadlineCloseSettlement(string $runId): ?string
+    /**
+     * One settlement pass. A failed pass rolls back, then records its error
+     * and a backoff on the held task, which stays held for the next try.
+     */
+    private static function continueDeadlineCloseSettlement(string $runId, string $taskId): ?string
     {
         try {
-            ConfiguredV2Models::connection()->transaction(static function () use ($runId): void {
+            ConfiguredV2Models::connection()->transaction(static function () use ($runId, $taskId): void {
                 /** @var WorkflowRun|null $run */
                 $run = WorkflowRun::query()
                     ->lockForUpdate()
                     ->find($runId);
-                if ($run === null) {
-                    return;
-                }
                 /** @var WorkflowTask|null $task */
                 $task = WorkflowTask::query()
-                    ->where('workflow_run_id', $run->id)
-                    ->where('status', TaskStatus::Leased->value)
-                    ->where('task_type', TaskType::Workflow->value)
-                    ->where('lease_owner', DeadlineCloseSettlement::OWNER)
                     ->lockForUpdate()
-                    ->first();
-                if ($task === null) {
+                    ->find($taskId);
+                if ($run === null || $task === null || ! DeadlineCloseSettlement::holds($task)) {
                     return;
                 }
                 DeadlineCloseSettlement::settle($run, $task, WorkflowExecutor::deadlineCloseBatchSize() ?? PHP_INT_MAX);
@@ -812,6 +809,11 @@ final class TaskWatchdog
             }, 3);
         } catch (Throwable $throwable) {
             report($throwable);
+            try {
+                DeadlineCloseSettlement::recordFailure($taskId, $throwable);
+            } catch (Throwable $recording) {
+                report($recording);
+            }
 
             return $throwable->getMessage();
         }
