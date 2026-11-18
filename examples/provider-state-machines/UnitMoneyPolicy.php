@@ -27,7 +27,7 @@ final readonly class UnitMoneyPolicy
                 || ! in_array($authority->recipe($key), [Catalogue::PAYMENT_FIRST,
                     Catalogue::COMMON_RESERVE_FIRST, FinancialCatalogue::AFTER_STOCK], true)) {
                 throw new LogicException(
-                    'Unit money needs an existing direct or stock-triggered capture grant and explicit original amounts.'
+                    'Unit money needs an existing direct-capture grant or authorized after-stock capture and explicit amounts.'
                 );
             }
             foreach ($amounts as $amount) {
