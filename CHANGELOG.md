@@ -25,6 +25,13 @@
   2.29 histories of a completed parent with a child participant and of
   in-origin Saga cleanup after a lost forward result.
 
+- Query-state replay (queries and `WorkflowReplayer`) now delivers a recorded
+  cooperative cancellation to an activity, timer, signal or condition call that
+  never opened, at the same position the executor used (#1069). Previously a
+  cancellation that arrived before such a wait opened made query-state replay
+  report a history shape mismatch, though the run itself replayed and completed
+  correctly. A new replay fixture pins the signal-wait history.
+
 ## 2.29.1 - 2026-11-18
 
 - A condition wait with a timeout now returns `true` when an update accepted
