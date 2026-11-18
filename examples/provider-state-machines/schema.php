@@ -16,6 +16,8 @@ return static function (Builder $schema): void {
             ->nullable();
         $table->text('stock_refusal')
             ->nullable();
+        $table->text('stock_plan')
+            ->nullable();
     });
     $schema->create('provider_machine_actors', static function (Blueprint $table): void {
         $table->string('id', 64)
