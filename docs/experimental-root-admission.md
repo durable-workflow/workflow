@@ -1,11 +1,11 @@
 # Original root scope admission
 
-This experimental source API reserves one original native run and its compensation
+This experimental API reserves one original native run and its compensation
 scope before the application dispatches the workflow. It closes the gap between
 ordinary native admission and the first recorded scope-registration activity. It
-is not included in the current stable package. The configured StateMachine
-examples and complete customer scenarios require their own integration and
-qualification.
+first shipped in 2.29.0 without a compatibility promise. The configured
+StateMachine examples and complete customer scenarios require their own
+integration and qualification.
 
 The host creates a `RootIdentity` with the original `ScopeIdentity`, workflow
 class, definition and input fingerprints, routing, codec, worker compatibility,
