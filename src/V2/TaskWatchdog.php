@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Workflow\V2;
 
-use Workflow\V2\Compensation\Recovery\CompensationAutoRecovery;
 use Carbon\CarbonInterface;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Cache;
@@ -12,6 +11,7 @@ use Illuminate\Support\Facades\Schema;
 use Throwable;
 use Workflow\Queue\DatabaseTaskDelivery;
 use Workflow\Support\CacheThrottle;
+use Workflow\V2\Compensation\Recovery\CompensationAutoRecovery;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\WorkflowTaskRepairProjectionRole;
 use Workflow\V2\Enums\RunStatus;

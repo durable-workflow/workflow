@@ -453,7 +453,8 @@ final class V2NestedCompensationExampleTest extends TestCase
         $this->assertSame('The cancellation principal was revoked.', $described['refusal']['reason']);
         $this->assertSame(1, collect((new ScopeRepository())->journal(
             ExampleOwnershipPolicy::scope(self::SUBJECT, $parentRun, 'parent')
-        ))->where('kind', 'recovery_authorization_failed')->count());
+        ))->where('kind', 'recovery_authorization_failed')
+            ->count());
 
         // Once authority is restored, the operator resubmits manually.
         $this->app->instance(\Workflow\V2\Compensation\Security\ScopeAuthorization::class, $policy);
@@ -525,53 +526,15 @@ final class V2NestedCompensationExampleTest extends TestCase
         $this->assertSame(
             [1, 2, 3, 4, 5, 6],
             ActivityAttempt::query()->where('activity_execution_id', $execution->id)
-                ->orderBy('attempt_number')->pluck('attempt_number')->all()
+                ->orderBy('attempt_number')
+                ->pluck('attempt_number')
+                ->all()
         );
         // The recorded maximum holds: a later wake finds nothing to retry.
         \Workflow\V2\Compensation\Recovery\CompensationWake::scope($childScope);
         $this->drain();
         $this->assertSame(6, ActivityAttempt::query()->where('activity_execution_id', $execution->id)->count());
         $this->assertSame(RunStatus::Failed, WorkflowRun::query()->findOrFail($execution->workflow_run_id)->status);
-    }
-
-    /**
-     * Cancel while the Order still waits; its in-origin compensation fails fast because the
-     * carrier holds the parcel, so the Order closes with its scope still requested.
-     *
-     * @return array{WorkflowStub, string}
-     */
-    private function closeOrderWithDispatchedDelivery(): array
-    {
-        $stub = $this->start('prepare');
-        $parentRun = $stub->runId();
-        app(NestedCompensationExample::class)->recordCarrierHandoff(self::SUBJECT);
-        $route = app(NestedCompensationExample::class)->requestCancellation(self::SUBJECT, $parentRun, 'cancel-open');
-        $this->assertSame('origin', $route['route']);
-        $crossed = now();
-        // Stop before the Shipment recovery's long wait; that wait is for a crashed attempt.
-        $this->drain(pauseBefore: static fn (WorkflowTask $next): bool => $next->available_at !== null
-            && $next->available_at->greaterThan($crossed->copy()->addMinutes(2)));
-        $this->assertSame(RunStatus::Failed, WorkflowRun::query()->findOrFail($parentRun)->status, $this->nativeProgress());
-        $this->assertSame(
-            'requested',
-            (new ScopeRepository())->inspect(ExampleOwnershipPolicy::scope(self::SUBJECT, $parentRun, 'parent'))['status']
-        );
-        $this->assertSame([], $this->compensationLog());
-        $this->assertSame(0, $this->parentRecoveryRuns($parentRun));
-        return [$stub, $parentRun];
-    }
-
-    private function outcome(string $parentRun): array
-    {
-        return app(NestedCompensationExample::class)->cancellationOutcome(self::SUBJECT, $parentRun);
-    }
-
-    private function parentRecoveryRuns(string $parentRun): int
-    {
-        return WorkflowRun::query()->where(
-            'workflow_instance_id',
-            ExampleOwnershipPolicy::scope(self::SUBJECT, $parentRun, 'parent')->recoveryInstanceId()
-        )->count();
     }
 
     public static function foreignNativeOwners(): array
@@ -595,6 +558,52 @@ final class V2NestedCompensationExampleTest extends TestCase
         foreach (['example_machine_subjects', 'example_machine_bindings', 'example_machine_effects'] as $table) {
             $this->assertSame(0, DB::table($table)->count());
         }
+    }
+
+    /**
+     * Cancel while the Order still waits; its in-origin compensation fails fast because the
+     * carrier holds the parcel, so the Order closes with its scope still requested.
+     *
+     * @return array{WorkflowStub, string}
+     */
+    private function closeOrderWithDispatchedDelivery(): array
+    {
+        $stub = $this->start('prepare');
+        $parentRun = $stub->runId();
+        app(NestedCompensationExample::class)->recordCarrierHandoff(self::SUBJECT);
+        $route = app(NestedCompensationExample::class)->requestCancellation(self::SUBJECT, $parentRun, 'cancel-open');
+        $this->assertSame('origin', $route['route']);
+        $crossed = now();
+        // Stop before the Shipment recovery's long wait; that wait is for a crashed attempt.
+        $this->drain(pauseBefore: static fn (WorkflowTask $next): bool => $next->available_at !== null
+            && $next->available_at->greaterThan($crossed->copy()->addMinutes(2)));
+        $this->assertSame(
+            RunStatus::Failed,
+            WorkflowRun::query()->findOrFail($parentRun)->status,
+            $this->nativeProgress()
+        );
+        $this->assertSame(
+            'requested',
+            (new ScopeRepository())->inspect(
+                ExampleOwnershipPolicy::scope(self::SUBJECT, $parentRun, 'parent')
+            )['status']
+        );
+        $this->assertSame([], $this->compensationLog());
+        $this->assertSame(0, $this->parentRecoveryRuns($parentRun));
+        return [$stub, $parentRun];
+    }
+
+    private function outcome(string $parentRun): array
+    {
+        return app(NestedCompensationExample::class)->cancellationOutcome(self::SUBJECT, $parentRun);
+    }
+
+    private function parentRecoveryRuns(string $parentRun): int
+    {
+        return WorkflowRun::query()->where(
+            'workflow_instance_id',
+            ExampleOwnershipPolicy::scope(self::SUBJECT, $parentRun, 'parent')->recoveryInstanceId()
+        )->count();
     }
 
     private function start(string $integration): WorkflowStub

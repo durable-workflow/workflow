@@ -124,10 +124,15 @@ final class CompensationAutoRecovery
         return $query
             ->where('scope.status', 'requested')
             ->whereIn('origin.status', array_values($terminal))
-            ->when($runIds !== [], static fn (Builder $query): Builder => $query->whereIn('scope.original_run_id', $runIds))
-            ->whereNotExists(static fn (Builder $query): Builder => $query->from('workflow_compensation_requests as routed')
-                ->whereColumn('routed.scope_id', 'scope.id')
-                ->whereNotNull('routed.recovery_route'))
+            ->when(
+                $runIds !== [],
+                static fn (Builder $query): Builder => $query->whereIn('scope.original_run_id', $runIds)
+            )
+            ->whereNotExists(
+                static fn (Builder $query): Builder => $query->from('workflow_compensation_requests as routed')
+                    ->whereColumn('routed.scope_id', 'scope.id')
+                    ->whereNotNull('routed.recovery_route')
+            )
             ->whereNotExists(static fn (Builder $query): Builder => $query->from(ScopeStorage::JOURNAL . ' as refused')
                 ->whereColumn('refused.scope_id', 'scope.id')
                 ->where('refused.kind', self::REFUSED))

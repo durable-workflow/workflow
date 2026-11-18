@@ -52,14 +52,27 @@
   `cancellationOutcome()` and resolves it with `resubmitCancellation()`. Three
   replay fixtures recorded from these runs pin the recovery histories.
 
-- A single worker crash while a child participant is being compensated now
-  settles the parent without operator action (#1205). Newly scheduled
-  compensation activities retry six times: after 1, 2, 5 and 10 seconds, and
-  then after one activity lease plus one task-repair pass (about six minutes
-  by default). The crashed child attempt is reclaimed before the parent's last
-  retry. A persistent failure still fails the run explicitly after the sixth
-  attempt. Compensations scheduled before upgrading keep their recorded
-  three-attempt policy and replay unchanged.
+- A single worker crash during compensation now settles without operator
+  action (#1205):
+  - **Automatic recovery after closure.** When an origin closes with an
+    accepted but unverified compensation request, the task watchdog routes
+    that request to canonical recovery. It re-authorizes the original
+    principal and starts one recovery run per request, including under
+    concurrent passes or a racing manual request. A refused re-authorization
+    starts nothing and records `recovery_authorization_failed`.
+    `ScopeRecovery::describe()` reports it, and a fresh authorized request
+    still works.
+  - **Longer retries in recovery runs.** New recovery runs compensate with
+    six attempts. They wait 1, 2, 5 and 10 seconds, then one activity lease
+    plus one task-repair pass, so a crashed child attempt is reclaimed first.
+    The schedule is gated by `patched()` and recorded with `sideEffect()`.
+    Recovery runs recorded earlier replay with three attempts. In-origin
+    compensation keeps three attempts.
+  - **Prompt retries.** A waiting retry runs immediately when a child scope
+    verifies or an authorized request arrives. It keeps its attempt number
+    and recorded maximum.
+  - **Unchanged.** A persistent failure still fails the recovery run
+    explicitly.
 
 ## 2.29.1 - 2026-11-18
 

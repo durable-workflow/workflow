@@ -300,7 +300,10 @@ final readonly class NestedCompensationExample
         $parent = $recovery->describe(ExampleOwnershipPolicy::scope($subject, $parentRun, 'parent'), self::PRINCIPAL);
         $child = $recovery->describe(ExampleOwnershipPolicy::scope($subject, $parentRun, 'child'), self::PRINCIPAL);
         $unresolved = [];
-        foreach (['child' => $child, 'parent' => $parent] as $role => $view) {
+        foreach ([
+            'child' => $child,
+            'parent' => $parent,
+        ] as $role => $view) {
             foreach ($view['unresolved'] as $obligation) {
                 $unresolved[] = [
                     'role' => $role,
