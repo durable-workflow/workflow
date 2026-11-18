@@ -25,6 +25,15 @@
   2.29 histories of a completed parent with a child participant and of
   in-origin Saga cleanup after a lost forward result.
 
+- CI now installs published 2.28.1 into a new Laravel application, upgrades
+  it and checks retained compensation scopes (#1063). The job covers recovery
+  after the origin run closes and schema rollback with an empty and a
+  populated ledger. It also checks a package downgrade that keeps the ledger,
+  followed by an upgrade that recovers it. It runs on pull requests that
+  change migrations or compensation code, and on stable release tags against
+  the published package. `docs/compensation-scopes.md` describes the rollback
+  and downgrade behavior it checks.
+
 ## 2.29.1 - 2026-11-18
 
 - A condition wait with a timeout now returns `true` when an update accepted
