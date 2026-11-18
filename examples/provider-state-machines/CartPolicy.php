@@ -31,6 +31,6 @@ final readonly class CartPolicy
             return app(CartStore::class)->stockObligation($key);
         }
         [, $terms] = $this->authority->assignment($key);
-        return new Obligation('effect', 'provider.effect', '1', $terms->descriptor('order'));
+        return new Obligation('effect', $this->authority->stock->handler($key), '1', $terms->descriptor('order'));
     }
 }
