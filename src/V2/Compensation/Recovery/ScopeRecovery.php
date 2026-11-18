@@ -42,6 +42,21 @@ final readonly class ScopeRecovery
         string $reason,
         ?StartOptions $profile = null,
     ): array {
+        $result = $this->route($scope, $requestKey, $principal, $reason, $profile);
+        if ($result['route'] !== 'verified') {
+            // An authorized request is a reason to retry now rather than after the long wait.
+            CompensationWake::scope($scope);
+        }
+        return $result;
+    }
+
+    private function route(
+        ScopeIdentity $scope,
+        string $requestKey,
+        string $principal,
+        string $reason,
+        ?StartOptions $profile,
+    ): array {
         $this->assertHostContext();
         $policyVersion = $this->authorization->assertAllowed($scope, $principal, 'request');
         $this->assertHostContext();
