@@ -61,6 +61,7 @@ final class QueryStateReplayer
         $versionDecisions = new VersionDecisions($run);
         $workflowExecution = WorkflowExecution::start($workflow, $arguments, RedriveReplayClock::startedAt($run));
         $historySequencesByPosition = $this->historySequencesByReplayPosition($run);
+        $deliveredCancellations = $this->indexDeliveredCancellations($run);
 
         if (! $workflowExecution->valid()) {
             $this->syncWorkflowCursor($workflow, 0);
@@ -100,7 +101,7 @@ final class QueryStateReplayer
             );
 
             $delivery = $this->deliveredCancellation(
-                $run,
+                $deliveredCancellations,
                 $current,
                 $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence),
             );
@@ -2111,8 +2112,11 @@ final class QueryStateReplayer
      *
      * @return array{context: CancellationContext|null, recorded_at: \Carbon\CarbonInterface|null}|null
      */
-    private function deliveredCancellation(WorkflowRun $run, mixed $current, int $historySequence): ?array
+    private function deliveredCancellation(array $deliveries, mixed $current, int $historySequence): ?array
     {
+        if ($deliveries === [] || ! isset($deliveries[$historySequence])) {
+            return null;
+        }
         $callKind = match (true) {
             $current instanceof ActivityCall => 'activity',
             $current instanceof TimerCall => 'timer',
@@ -2123,33 +2127,48 @@ final class QueryStateReplayer
         if ($callKind === null) {
             return null;
         }
-        $delivered = $run->historyEvents->first(
-            fn (WorkflowHistoryEvent $event): bool => $event->event_type
-                === HistoryEventType::CooperativeCancellationDelivered
-                && $this->intValue($event->payload['sequence'] ?? null) === $historySequence
-        );
-        if (! $delivered instanceof WorkflowHistoryEvent) {
-            return null;
-        }
-        if (($delivered->payload['call_kind'] ?? null) !== $callKind) {
+        $delivery = $deliveries[$historySequence];
+        if ($delivery['call_kind'] !== $callKind) {
             throw new RuntimeException('Cooperative cancellation delivery does not match the replayed wait.');
         }
-        $commandId = $delivered->payload['workflow_command_id'] ?? $delivered->workflow_command_id;
-        $request = $run->historyEvents->first(
-            static fn (WorkflowHistoryEvent $event): bool => $event->event_type
-                === HistoryEventType::CooperativeCancellationRequested
-                && ($event->payload['workflow_command_id'] ?? $event->workflow_command_id) === $commandId
-                && is_array($event->payload['cancellation'] ?? null)
-        );
-        // Legacy requests carry no context; the executor then delivers a context-free cancellation too.
-        $context = $request instanceof WorkflowHistoryEvent
-            ? CancellationContext::fromArray($request->payload['cancellation'])
-            : null;
 
-        return [
-            'context' => $context,
-            'recorded_at' => RedriveReplayClock::recordedAt($delivered),
-        ];
+        return $delivery;
+    }
+
+    /**
+     * One pass over history, as WorkflowFiberRunner indexes it; replay then looks deliveries up by sequence.
+     *
+     * @return array<int, array{call_kind: string, context: CancellationContext|null, recorded_at: \Carbon\CarbonInterface|null}>
+     */
+    private function indexDeliveredCancellations(WorkflowRun $run): array
+    {
+        $contexts = [];
+        $delivered = [];
+        foreach ($run->historyEvents as $event) {
+            if (! $event instanceof WorkflowHistoryEvent) {
+                continue;
+            }
+            $commandId = $event->payload['workflow_command_id'] ?? $event->workflow_command_id;
+            if ($event->event_type === HistoryEventType::CooperativeCancellationRequested
+                && is_array($event->payload['cancellation'] ?? null)) {
+                $contexts[$commandId] = CancellationContext::fromArray($event->payload['cancellation']);
+            } elseif ($event->event_type === HistoryEventType::CooperativeCancellationDelivered
+                && in_array($event->payload['call_kind'] ?? null, self::DELIVERED_CALL_KINDS, true)
+                && ($sequence = $this->intValue($event->payload['sequence'] ?? null)) !== null) {
+                $delivered[$sequence] = [$event, $commandId];
+            }
+        }
+        $deliveries = [];
+        foreach ($delivered as $sequence => [$event, $commandId]) {
+            // Legacy requests carry no context; the executor then delivers a context-free cancellation too.
+            $deliveries[$sequence] = [
+                'call_kind' => $event->payload['call_kind'],
+                'context' => $contexts[$commandId] ?? null,
+                'recorded_at' => RedriveReplayClock::recordedAt($event),
+            ];
+        }
+
+        return $deliveries;
     }
 
     private function hasWorkflowCommandSequence(?string $type): bool
