@@ -56,8 +56,8 @@ final class V2CheckoutProcessLossTest extends TestCase
             'cancellation races a lost capture' => ['provider.unit-payment', 'forward', true, false],
             'cancellation races a lost booking' => ['provider.effect', 'forward', true, false],
             // Closed child scopes compensate in a native recovery run, which retries after the watchdog repairs
-            // the lost lease. The parent's finite compensation attempts expire first: the Order closes unsettled
-            // and a fresh authorized recovery request plus the proof-only finalizer settle it.
+            // the lost lease. The Order's in-origin attempts expire first and the Order closes unsettled; the
+            // watchdog then routes its accepted request to recovery, and the proof-only finalizer settles it.
             'booking cancellation committed' => ['provider.effect', 'compensate', false, true],
             'remaining repayment committed' => ['provider.unit-payment', 'compensate', false, true],
             'reservation release committed' => ['provider.stock', 'compensate', false, false],
@@ -150,23 +150,17 @@ final class V2CheckoutProcessLossTest extends TestCase
             $this->assertSame($freshRecovery, $resumed['idle']);
             \Illuminate\Support\Carbon::setTestNow($resumed['clock']);
             if ($freshRecovery) {
-                // No false business cancellation: the Order stays booked and its root scope unsettled.
+                // The Order's in-origin compensation failed fast and the Order closed unsettled. The watchdog in
+                // the fresh worker routed its accepted request to recovery, which outlasted the child's lease
+                // repair (#1205). No business cancellation is committed until the application finalizes it.
                 $this->assertSame('booked', $resumed['state']);
                 $root = $this->authority->plan($key)
                     ->rootScope();
-                $this->assertSame('requested', (new ScopeRepository())->metadata($root)['status'], $this->progress());
+                $this->assertSame('verified', (new ScopeRepository())->metadata($root)['status'], $this->progress());
                 $this->assertSame('failed', WorkflowRun::query()->findOrFail($stub->runId())->status->value);
-                // Settled child work happened exactly once; the root release still waits behind its refund.
-                $this->assertSame(['capture', 'reserve', 'book', 'cancel-booking'], $this->effects());
-                $this->assertSame($handler === 'provider.unit-payment' ? [499, 1000] : [499], $this->payouts());
-                $this->assertSame(0, $this->warehouse->inventory('shop-a', 'sku-1')['available']);
-                $cancellation->request(
-                    $key,
-                    $stub->runId(),
-                    'cancel-before-worker-loss',
-                    'recover-after-worker-loss'
-                );
-                $this->drainLikeAWorker();
+                $this->assertSame(['capture', 'reserve', 'book', 'cancel-booking', 'release'], $this->effects());
+                $this->assertSame([499, 1000], $this->payouts());
+                $this->assertSame(2, $this->warehouse->inventory('shop-a', 'sku-1')['available']);
                 $this->assertSame(
                     'started',
                     $cancellation->finish($key, $stub->runId(), 'cancel-before-worker-loss')['status'],
