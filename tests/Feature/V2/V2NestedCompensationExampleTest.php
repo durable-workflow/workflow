@@ -20,10 +20,14 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\ActivityAttempt;
+use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\ActivityLease;
 use Workflow\V2\Support\WorkflowReplayer;
+use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub;
 
 require_once __DIR__ . '/../../../examples/business-state-machines/bootstrap.php';
@@ -218,6 +222,163 @@ final class V2NestedCompensationExampleTest extends TestCase
         $this->assertSame(0, DB::table('example_machine_bindings')->count());
     }
 
+    public function testCompensationResumesAfterTheWorkerDiesHavingVoidedTheDelivery(): void
+    {
+        $database = config('database.connections.' . config('database.default'));
+        if (! function_exists('posix_kill') || (($database['driver'] ?? null) === 'sqlite'
+            && in_array($database['database'] ?? null, [null, '', ':memory:'], true))) {
+            $this->markTestSkipped('The worker-restart control needs POSIX signals and a shared database.');
+        }
+        $stub = $this->start('prepare');
+        $stub->signal('finish');
+        $this->drain();
+        $parentRun = $stub->runId();
+        $childScope = ExampleOwnershipPolicy::scope(self::SUBJECT, $parentRun, 'child');
+        $route = app(NestedCompensationExample::class)->requestCancellation(self::SUBJECT, $parentRun, 'late-cancel');
+        $this->assertSame('recovery', $route['route']);
+        $task = $this->drainUntil(
+            static fn (WorkflowTask $task): bool => $task->task_type === TaskType::Activity
+                && ActivityExecution::query()->whereKey($task->payload['activity_execution_id'] ?? null)
+                    ->where('activity_type', 'dw.compensation.compensate-obligation.v1')
+                    ->whereIn('workflow_run_id', WorkflowRun::query()->where(
+                        'workflow_instance_id',
+                        $childScope->recoveryInstanceId()
+                    )->select('id'))
+                    ->exists()
+        );
+        $input = tempnam(sys_get_temp_dir(), 'example-crash-input-');
+        $report = tempnam(sys_get_temp_dir(), 'example-crash-report-');
+        chmod($input, 0600);
+        chmod($report, 0600);
+        try {
+            file_put_contents($input, json_encode([
+                'database' => $database,
+                'redis' => config('database.redis'),
+                'report' => $report,
+                'task_id' => $task->id,
+            ], JSON_THROW_ON_ERROR));
+            $process = new \Symfony\Component\Process\Process([
+                PHP_BINARY, 'vendor/bin/phpunit', 'tests/Support/NestedCompensationCrashProcessTest.php',
+            ], dirname(__DIR__, 3), [
+                'DWF_EXAMPLE_CRASH_INPUT' => $input,
+            ], timeout: 60);
+            try {
+                $process->run();
+                $this->fail('The compensation worker must die: ' . $process->getOutput() . $process->getErrorOutput());
+            } catch (\Symfony\Component\Process\Exception\ProcessSignaledException $error) {
+                $this->assertSame(SIGKILL, $error->getProcess()->getTermSignal());
+            }
+            $cut = json_decode(file_get_contents($report), true, flags: JSON_THROW_ON_ERROR);
+            $this->assertSame($task->id, $cut['task']);
+            $this->assertNotSame(getmypid(), $cut['pid']);
+        } finally {
+            unlink($input);
+            unlink($report);
+        }
+
+        // The void committed, but the dead worker never recorded the outcome.
+        $this->assertSame(['deliver'], $this->compensationLog());
+        $this->assertSame('voided', DB::table('example_machine_effects')->where('action', 'deliver')->value('status'));
+        $child = (new ScopeRepository())->inspect($childScope);
+        $this->assertSame('requested', $child['status']);
+        $this->assertNotSame('verified', $child['obligations'][0]['compensation_status']);
+
+        // The stranded attempt holds its lease. Meanwhile the Order's native retries for the
+        // Shipment participant run out, so that request fails visibly instead of waiting.
+        $this->drain();
+        $outcome = app(NestedCompensationExample::class)->cancellationOutcome(self::SUBJECT, $parentRun, 'late-cancel');
+        $this->assertSame('failed', $outcome['recoveryStatus']);
+        $this->assertSame('submit_fresh_authorized_request', $outcome['nextAction']);
+        $this->assertSame(
+            [['child', 'deliver'], ['parent', 'reserve'], ['parent', 'prepare'], ['parent', 'work']],
+            array_map(static fn (array $item): array => [$item['role'], $item['key']], $outcome['unresolved'])
+        );
+        $this->assertSame(['deliver'], $this->compensationLog());
+
+        // A restarted worker reclaims the expired attempt and reconciles the committed void.
+        Carbon::setTestNow(now()->addSeconds(ActivityLease::seconds() + 1));
+        TaskWatchdog::runPass(respectThrottle: false, runIds: [$task->workflow_run_id]);
+        $this->drain();
+        $this->assertSame('verified', (new ScopeRepository())->inspect($childScope)['status']);
+        $this->assertSame(['deliver'], $this->compensationLog());
+        $this->assertSame(2, ActivityAttempt::query()
+            ->where('activity_execution_id', $task->payload['activity_execution_id'])
+            ->count());
+
+        // The operator resubmits the Order; earlier Order work now follows the verified Shipment.
+        app(NestedCompensationExample::class)->resubmitCancellation(self::SUBJECT, $parentRun, 'after-restart');
+        $this->drain();
+        $this->assertVerified($parentRun);
+        $this->assertSame(['deliver', 'prepare', 'reserve'], $this->compensationLog());
+        $this->assertSame(0, DB::table('example_machine_effects')->where('status', 'active')->count());
+    }
+
+    public function testDispatchedShipmentFailsCompensationVisiblyUntilTheOperatorResubmits(): void
+    {
+        $stub = $this->start('prepare');
+        $stub->signal('finish');
+        $this->drain();
+        $parentRun = $stub->runId();
+        $example = app(NestedCompensationExample::class);
+        $example->recordCarrierHandoff(self::SUBJECT);
+
+        $route = $example->requestCancellation(self::SUBJECT, $parentRun, 'late-cancel');
+        $this->assertSame('recovery', $route['route']);
+        $this->drain();
+
+        // Native retries ran out. The failure is terminal for this request and stays visible.
+        $outcome = $example->cancellationOutcome(self::SUBJECT, $parentRun, 'late-cancel');
+        $this->assertSame([
+            'recoveryStatus' => 'failed',
+            'scopeStatus' => 'requested',
+            'nextAction' => 'submit_fresh_authorized_request',
+        ], array_intersect_key($outcome, array_flip(['recoveryStatus', 'scopeStatus', 'nextAction'])));
+        $this->assertContains([
+            'role' => 'child',
+            'key' => 'deliver',
+            'status' => 'unknown',
+            'reason' => 'effect_dispatched',
+        ], $outcome['unresolved']);
+        // Earlier Order work waits behind the unresolved Shipment.
+        $this->assertSame([], $this->compensationLog());
+        $this->assertSame(
+            [
+                'deliver' => 'dispatched',
+                'prepare' => 'active',
+                'reserve' => 'active',
+            ],
+            DB::table('example_machine_effects')->orderBy('action')->pluck('status', 'action')->all()
+        );
+        $childRecovery = WorkflowRun::query()->where(
+            'workflow_instance_id',
+            ExampleOwnershipPolicy::scope(self::SUBJECT, $parentRun, 'child')->recoveryInstanceId()
+        )->sole();
+        $this->assertSame(RunStatus::Failed, $childRecovery->status);
+        $this->assertSame(3, ActivityAttempt::query()->where('workflow_run_id', $childRecovery->id)
+            ->whereIn('activity_execution_id', ActivityExecution::query()
+                ->where('workflow_run_id', $childRecovery->id)
+                ->where('activity_type', 'dw.compensation.compensate-obligation.v1')
+                ->select('id'))
+            ->count());
+        // Repeating the request returns the same failed receipt; it starts nothing.
+        $runs = WorkflowRun::query()->count();
+        $this->assertSame($outcome, $example->cancellationOutcome(self::SUBJECT, $parentRun, 'late-cancel'));
+        $this->assertSame($runs, WorkflowRun::query()->count());
+
+        // The carrier returns the parcel; the operator submits fresh authorized requests.
+        $example->recordCarrierReturn(self::SUBJECT);
+        $example->resubmitCancellation(self::SUBJECT, $parentRun, 'late-cancel-after-return');
+        $this->drain();
+        $this->assertVerified($parentRun);
+        $this->assertSame(['deliver', 'prepare', 'reserve'], $this->compensationLog());
+        $this->assertSame([
+            'recoveryStatus' => 'completed',
+            'scopeStatus' => 'verified',
+            'nextAction' => 'none',
+            'unresolved' => [],
+        ], $example->cancellationOutcome(self::SUBJECT, $parentRun, 'late-cancel-after-return'));
+    }
+
     public static function foreignNativeOwners(): array
     {
         return [
@@ -299,7 +460,29 @@ final class V2NestedCompensationExampleTest extends TestCase
         ], JSON_THROW_ON_ERROR);
     }
 
-    private function drain(?callable $stopWhen = null): void
+    private function compensationLog(): array
+    {
+        return DB::table('example_machine_compensation_log')->orderBy('sequence')->pluck('action')->all();
+    }
+
+    /**
+     * Drain until the next ready task matches, and return it without running it.
+     */
+    private function drainUntil(callable $matches): WorkflowTask
+    {
+        $found = null;
+        $this->drain(pauseBefore: static function (WorkflowTask $task) use ($matches, &$found): bool {
+            if ($matches($task)) {
+                $found = $task;
+                return true;
+            }
+            return false;
+        });
+        $this->assertInstanceOf(WorkflowTask::class, $found, $this->nativeProgress());
+        return $found;
+    }
+
+    private function drain(?callable $stopWhen = null, ?callable $pauseBefore = null): void
     {
         for ($i = 0; $i < 250; ++$i) {
             $task = WorkflowTask::query()->where('status', TaskStatus::Ready)->orderBy('available_at')->orderBy(
@@ -307,6 +490,9 @@ final class V2NestedCompensationExampleTest extends TestCase
             )->orderBy('id')
                 ->first();
             if ($task === null) {
+                return;
+            }
+            if ($pauseBefore !== null && $pauseBefore($task)) {
                 return;
             }
             if ($task->available_at !== null && $task->available_at->isFuture()) {
