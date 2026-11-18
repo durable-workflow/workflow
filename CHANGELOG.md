@@ -52,6 +52,15 @@
   `cancellationOutcome()` and resolves it with `resubmitCancellation()`. Three
   replay fixtures recorded from these runs pin the recovery histories.
 
+- A single worker crash while a child participant is being compensated now
+  settles the parent without operator action (#1205). Newly scheduled
+  compensation activities retry six times: after 1, 2, 5 and 10 seconds, and
+  then after one activity lease plus one task-repair pass (about six minutes
+  by default). The crashed child attempt is reclaimed before the parent's last
+  retry. A persistent failure still fails the run explicitly after the sixth
+  attempt. Compensations scheduled before upgrading keep their recorded
+  three-attempt policy and replay unchanged.
+
 ## 2.29.1 - 2026-11-18
 
 - A condition wait with a timeout now returns `true` when an update accepted

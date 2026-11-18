@@ -283,34 +283,37 @@ final class V2NestedCompensationExampleTest extends TestCase
         $this->assertSame('requested', $child['status']);
         $this->assertNotSame('verified', $child['obligations'][0]['compensation_status']);
 
-        // The stranded attempt holds its lease. Meanwhile the Order's native retries for the
-        // Shipment participant run out, so that request fails visibly instead of waiting.
-        $this->drain();
-        $outcome = app(NestedCompensationExample::class)->cancellationOutcome(self::SUBJECT, $parentRun, 'late-cancel');
-        $this->assertSame('failed', $outcome['recoveryStatus']);
-        $this->assertSame('submit_fresh_authorized_request', $outcome['nextAction']);
-        $this->assertSame(
-            [['child', 'deliver'], ['parent', 'reserve'], ['parent', 'prepare'], ['parent', 'work']],
-            array_map(static fn (array $item): array => [$item['role'], $item['key']], $outcome['unresolved'])
-        );
+        // Run everything due while the stranded attempt holds its lease. The Order's short
+        // retries for the Shipment participant fail, and its last wait outlasts the lease.
+        $crashedAt = now();
+        $this->drain(pauseBefore: static fn (WorkflowTask $next): bool => $next->available_at !== null
+            && $next->available_at->greaterThan($crashedAt->copy()->addSeconds(ActivityLease::seconds())));
+        $parentRecovery = WorkflowRun::query()->where(
+            'workflow_instance_id',
+            ExampleOwnershipPolicy::scope(self::SUBJECT, $parentRun, 'parent')->recoveryInstanceId()
+        )->sole();
+        $this->assertSame(RunStatus::Waiting, $parentRecovery->status, $this->nativeProgress());
         $this->assertSame(['deliver'], $this->compensationLog());
 
-        // A restarted worker reclaims the expired attempt and reconciles the committed void.
-        Carbon::setTestNow(now()->addSeconds(ActivityLease::seconds() + 1));
+        // A worker loop after lease expiry reclaims the attempt and reconciles the committed void.
+        Carbon::setTestNow($crashedAt->copy()->addSeconds(ActivityLease::seconds() + 1));
         TaskWatchdog::runPass(respectThrottle: false, runIds: [$task->workflow_run_id]);
         $this->drain();
-        $this->assertSame('verified', (new ScopeRepository())->inspect($childScope)['status']);
-        $this->assertSame(['deliver'], $this->compensationLog());
         $this->assertSame(2, ActivityAttempt::query()
             ->where('activity_execution_id', $task->payload['activity_execution_id'])
             ->count());
 
-        // The operator resubmits the Order; earlier Order work now follows the verified Shipment.
-        app(NestedCompensationExample::class)->resubmitCancellation(self::SUBJECT, $parentRun, 'after-restart');
-        $this->drain();
+        // The Order settles without operator action, child-first and once per effect.
         $this->assertVerified($parentRun);
+        $this->assertSame(RunStatus::Completed, $parentRecovery->refresh()->status);
         $this->assertSame(['deliver', 'prepare', 'reserve'], $this->compensationLog());
         $this->assertSame(0, DB::table('example_machine_effects')->where('status', 'active')->count());
+        $this->assertSame([
+            'recoveryStatus' => 'completed',
+            'scopeStatus' => 'verified',
+            'nextAction' => 'none',
+            'unresolved' => [],
+        ], app(NestedCompensationExample::class)->cancellationOutcome(self::SUBJECT, $parentRun, 'late-cancel'));
     }
 
     public function testDispatchedShipmentFailsCompensationVisiblyUntilTheOperatorResubmits(): void
@@ -354,7 +357,7 @@ final class V2NestedCompensationExampleTest extends TestCase
             ExampleOwnershipPolicy::scope(self::SUBJECT, $parentRun, 'child')->recoveryInstanceId()
         )->sole();
         $this->assertSame(RunStatus::Failed, $childRecovery->status);
-        $this->assertSame(3, ActivityAttempt::query()->where('workflow_run_id', $childRecovery->id)
+        $this->assertSame(6, ActivityAttempt::query()->where('workflow_run_id', $childRecovery->id)
             ->whereIn('activity_execution_id', ActivityExecution::query()
                 ->where('workflow_run_id', $childRecovery->id)
                 ->where('activity_type', 'dw.compensation.compensate-obligation.v1')

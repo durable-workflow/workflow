@@ -124,8 +124,9 @@ per parent and at most 256 obligations per scope (at most 4,352 across that tree
 Children cannot be shared between parents. One application/namespace graph-integrity
 row serializes edge changes before scope locks. It contains no executor, lease,
 heartbeat or retry state. A missing or unverified child stops earlier parent work.
-Long child cleanup can exhaust the ordinary native activity retry budget; the
-parent remains unresolved. A failed child requires a fresh authorized child
+A child cleanup that outlasts the parent's compensation retry schedule leaves
+the parent unresolved. That schedule outlasts one crashed child attempt (see
+below). A failed child requires a fresh authorized child
 request. The stable parent-operation key never creates that request implicitly.
 After the child ledger becomes verified, a fresh authorized parent request can
 redrive the parent and observe that result before earlier parent work resumes.
@@ -139,8 +140,18 @@ work unresolved rather than silently adopting another principal. Requesting clea
 on an active origin requests cancellation of the entire native run: all its Saga
 callbacks can run, including other scopes and ordinary non-scope compensations.
 
-The default scoped forward/compensation activities use three native attempts and
-the native backoff. No scope retry loop is introduced. `DurableScope.execute()`
+The default scoped forward activities use three native attempts and the native
+backoff. Compensation activities scheduled from the next release use six
+attempts, waiting 1, 2, 5 and 10 seconds and then one activity lease plus one
+task-repair pass (`activity_task_lease_seconds + task_repair.loop_throttle_seconds
++ task_repair.failure_backoff_max_seconds`, about six minutes by default). If a
+worker crashes while a child participant is being compensated, the child's
+attempt holds its lease until task repair reclaims it. The parent's last wait
+outlasts that, so the parent settles without operator action. A persistent
+failure still fails the run after the sixth attempt, with the obligation left
+unresolved. Each activity keeps the policy recorded when it was scheduled, so
+runs started earlier keep three attempts and replay unchanged. No scope retry
+loop is introduced. `DurableScope.execute()`
 accepts native `ActivityOptions` for forward work. Immediate terminal cancellation
 or termination can prevent cleanup; retained obligations remain for explicit
 recovery. A request accepted on an active origin is durable routing evidence; if
