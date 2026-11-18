@@ -20,6 +20,7 @@ use DurableWorkflow\Examples\ProviderStateMachines\StockWarehouse;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use LogicException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Support\ProviderMachineFixture;
 use Tests\TestCase;
 use Workflow\V2\Compensation\Definition\Obligation;
@@ -137,6 +138,54 @@ final class V2PartialStockSelectionTest extends TestCase
         $this->assertSame(2, $this->warehouse->inventory('shop-a', 'sku-1')['available']);
     }
 
+    public function testCancellationBeforeAnyStockPlanWinsOverPartialFulfilment(): void
+    {
+        $stub = $this->checkout(StockAllocation::PARTIAL, [0, 1], untilPlan: true);
+        $key = $this->order->subjectKey();
+        $this->assertSame(
+            ['held', 'held', 'unavailable'],
+            $this->warehouse->find($this->reservation())['allocation']['units']
+        );
+        $this->assertNull($this->authority->stock->recorded($key));
+        app(CancellationStore::class)->request($key, $stub->runId(), 'cancel-before-original-stock-plan');
+        $this->drain();
+        $this->assertSame('cancelled', $this->authority->subject($key, 'order')->state, $this->progress());
+        // No fulfilment plan, shortage repayment or booking exists after cancellation began.
+        $this->assertNull(DB::table('provider_machine_assignments')->where('id', $key)->value('stock_plan'));
+        $this->assertSame(['capture', 'reserve', 'release'], $this->effects());
+        $this->assertSame([1499], $this->payouts());
+        $this->assertSame(2, $this->warehouse->inventory('shop-a', 'sku-1')['available']);
+        $this->assertTrue($this->warehouse->find($this->reservation())['closed']);
+    }
+
+    public static function unsuitableUnits(): array
+    {
+        return [
+            'damaged' => ['damaged'],
+            'missing' => ['missing'],
+        ];
+    }
+
+    #[DataProvider('unsuitableUnits')]
+    public function testDamagedOrMissingReservedUnitCancelsEvenUnderThePartialPolicy(string $condition): void
+    {
+        $this->checkout(StockAllocation::PARTIAL, null, stock: 3, untilPlan: true);
+        $key = $this->order->subjectKey();
+        $this->warehouse->disposition($this->reservation(), 'original-inspection-1', [1], $condition);
+        $this->drain();
+        $this->assertSame('cancelled', $this->authority->subject($key, 'order')->state, $this->progress());
+        $plan = $this->authority->stock->recorded($key);
+        $this->assertSame(['cancel', 'fulfill-partial', 'original-allocation', [1], [0, 2], [0, 1, 2], []], [
+            $plan['action'], $plan['policy'], $plan['reason'], $plan[$condition . 'Units'], $plan['releaseUnits'],
+            $plan['requiredRefundUnits'], $plan['fulfillUnits'],
+        ]);
+        $this->assertSame(['capture', 'reserve', 'release'], $this->effects());
+        $this->assertSame([1499], $this->payouts());
+        // Only the two suitable units become saleable again; the unsuitable unit keeps its own counter.
+        $inventory = $this->warehouse->inventory('shop-a', 'sku-1');
+        $this->assertSame([2, 1], [$inventory['available'], $inventory[$condition]]);
+    }
+
     public function testForeignShortageRepaymentIsRefusedBeforeProviderDispatch(): void
     {
         $this->checkout(StockAllocation::PARTIAL, [0, 1]);
@@ -200,8 +249,13 @@ final class V2PartialStockSelectionTest extends TestCase
     /**
      * Two of three requested units are in stock. Null booking units means no booking is expected.
      */
-    private function checkout(string $policy, ?array $booking, bool $untilWaiting = false): WorkflowStub
-    {
+    private function checkout(
+        string $policy,
+        ?array $booking,
+        bool $untilWaiting = false,
+        int $stock = 2,
+        bool $untilPlan = false
+    ): WorkflowStub {
         $this->order = new OrderTerms(
             'shop-a',
             'purchase-stock-' . $policy,
@@ -222,7 +276,7 @@ final class V2PartialStockSelectionTest extends TestCase
         ]);
         $this->warehouse = new StockWarehouse($this->providerDb);
         $this->warehouse->install();
-        $this->warehouse->seed('shop-a', 'sku-1', 2);
+        $this->warehouse->seed('shop-a', 'sku-1', $stock);
         $this->store = MachineStore::configure(
             $this->app,
             $this->authority,
@@ -252,11 +306,21 @@ final class V2PartialStockSelectionTest extends TestCase
         $stub = WorkflowStub::make(CheckoutOrder::class, 'provider-order-' . $key, Catalogue::NAMESPACE);
         $stub->start($key);
         // The wait case stops before native time reaches the original deadline timer.
-        $this->drain($untilWaiting ? static fn (): bool => WorkflowTask::query()
+        $stop = $untilWaiting ? static fn (): bool => WorkflowTask::query()
             ->where('status', TaskStatus::Ready)
             ->get()
-            ->every(static fn (WorkflowTask $task): bool => $task->available_at?->isFuture() === true) : null);
+            ->every(static fn (WorkflowTask $task): bool => $task->available_at?->isFuture() === true) : null;
+        if ($untilPlan) {
+            // The warehouse allocation commits in the reservation activity; stock-plan needs a later task.
+            $stop = fn (): bool => $this->warehouse->find($this->reservation()) !== null;
+        }
+        $this->drain($stop);
         return $stub;
+    }
+
+    private function reservation(): Request
+    {
+        return Request::fromArray($this->order->descriptor('order')['forward']);
     }
 
     private function cancellationRefund(): UnitRefundCommand
@@ -273,6 +337,15 @@ final class V2PartialStockSelectionTest extends TestCase
             "SELECT o.request FROM provider_operations o WHERE json_extract(o.request, '$.action') = 'book'"
         )->fetchColumn(), true, flags: JSON_THROW_ON_ERROR);
         return array_intersect_key($request['terms'], array_flip(['quantity', 'units']));
+    }
+
+    private function payouts(): array
+    {
+        return array_map(
+            'intval',
+            $this->providerDb->query('SELECT amount_minor FROM unit_refund_payouts ORDER BY rowid')
+                ->fetchAll(\PDO::FETCH_COLUMN)
+        );
     }
 
     private function paidBack(): int
