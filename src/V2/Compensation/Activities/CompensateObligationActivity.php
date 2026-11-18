@@ -18,8 +18,6 @@ use Workflow\V2\Compensation\Persistence\ScopeProgress;
 use Workflow\V2\Compensation\Recovery\ChildResolution;
 use Workflow\V2\Compensation\Recovery\ReservedChildResolution;
 use Workflow\V2\Compensation\Security\ScopeBoundary;
-use Workflow\V2\Support\ActivityLease;
-use Workflow\V2\Support\TaskRepairPolicy;
 
 /**
  * @internal Recorded compensation engine boundary.
@@ -29,33 +27,7 @@ use Workflow\V2\Support\TaskRepairPolicy;
 #[Type('dw.compensation.compensate-obligation.v1')]
 final class CompensateObligationActivity extends Activity
 {
-    /**
-     * Before #1205 this was 3 attempts over about three seconds. A parent
-     * compensating a child participant then exhausted its attempts while the
-     * child's crashed attempt still held its lease, so one worker crash failed
-     * the parent run. Activities scheduled earlier keep their recorded policy.
-     */
-    public int $tries = 6;
-
-    /**
-     * Short retries cover ordinary child progress. The last wait outlasts one
-     * activity lease plus a repair pass, so a single crashed attempt in the
-     * child can be repaired first. A persistent failure still ends the run.
-     *
-     * @return list<int>
-     */
-    public function backoff(): array
-    {
-        return [
-            1,
-            2,
-            5,
-            10,
-            ActivityLease::seconds()
-            + TaskRepairPolicy::loopThrottleSeconds()
-            + TaskRepairPolicy::failureBackoffMaxSeconds(),
-        ];
-    }
+    public int $tries = 3;
 
     public function handle(array $identity, string $id): void
     {

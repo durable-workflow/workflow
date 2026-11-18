@@ -14,6 +14,7 @@ use LogicException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
 use Workflow\V2\Compensation\Persistence\ScopeRepository;
+use Workflow\V2\Compensation\Recovery\ScopeRecovery;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
@@ -311,9 +312,10 @@ final class V2NestedCompensationExampleTest extends TestCase
         $this->assertSame([
             'recoveryStatus' => 'completed',
             'scopeStatus' => 'verified',
+            'automaticRecovery' => 'routed',
             'nextAction' => 'none',
             'unresolved' => [],
-        ], app(NestedCompensationExample::class)->cancellationOutcome(self::SUBJECT, $parentRun, 'late-cancel'));
+        ], app(NestedCompensationExample::class)->cancellationOutcome(self::SUBJECT, $parentRun));
     }
 
     public function testDispatchedShipmentFailsCompensationVisiblyUntilTheOperatorResubmits(): void
@@ -330,7 +332,7 @@ final class V2NestedCompensationExampleTest extends TestCase
         $this->drain();
 
         // Native retries ran out. The failure is terminal for this request and stays visible.
-        $outcome = $example->cancellationOutcome(self::SUBJECT, $parentRun, 'late-cancel');
+        $outcome = $example->cancellationOutcome(self::SUBJECT, $parentRun);
         $this->assertSame([
             'recoveryStatus' => 'failed',
             'scopeStatus' => 'requested',
@@ -365,7 +367,7 @@ final class V2NestedCompensationExampleTest extends TestCase
             ->count());
         // Repeating the request returns the same failed receipt; it starts nothing.
         $runs = WorkflowRun::query()->count();
-        $this->assertSame($outcome, $example->cancellationOutcome(self::SUBJECT, $parentRun, 'late-cancel'));
+        $this->assertSame($outcome, $example->cancellationOutcome(self::SUBJECT, $parentRun));
         $this->assertSame($runs, WorkflowRun::query()->count());
 
         // The carrier returns the parcel; the operator submits fresh authorized requests.
@@ -377,9 +379,199 @@ final class V2NestedCompensationExampleTest extends TestCase
         $this->assertSame([
             'recoveryStatus' => 'completed',
             'scopeStatus' => 'verified',
+            'automaticRecovery' => 'routed',
             'nextAction' => 'none',
             'unresolved' => [],
-        ], $example->cancellationOutcome(self::SUBJECT, $parentRun, 'late-cancel-after-return'));
+        ], $example->cancellationOutcome(self::SUBJECT, $parentRun));
+    }
+
+    public function testOrderThatClosesUnsettledRecoversAutomaticallyOnTheNextWatchdogPass(): void
+    {
+        [$stub, $parentRun] = $this->closeOrderWithDispatchedDelivery();
+        $this->assertSame('pending', $this->outcome($parentRun)['automaticRecovery']);
+        $this->assertSame('await_automatic_recovery', $this->outcome($parentRun)['nextAction']);
+
+        // The carrier returns the parcel. No operator request follows the Order's closure.
+        app(NestedCompensationExample::class)->recordCarrierReturn(self::SUBJECT);
+        $report = TaskWatchdog::runPass(respectThrottle: false);
+        $this->assertSame(1, $report['compensation_recoveries_started'], json_encode($report));
+        $this->drain();
+
+        $this->assertVerified($parentRun);
+        $this->assertSame(['deliver', 'prepare', 'reserve'], $this->compensationLog());
+        $this->assertSame(1, $this->parentRecoveryRuns($parentRun));
+        $this->assertSame([
+            'recoveryStatus' => 'completed',
+            'scopeStatus' => 'verified',
+            'automaticRecovery' => 'routed',
+            'nextAction' => 'none',
+            'unresolved' => [],
+        ], $this->outcome($parentRun));
+        $this->assertSame(RunStatus::Failed, WorkflowRun::query()->findOrFail($stub->runId())->status);
+    }
+
+    public function testRefusedAutomaticRecoveryStartsNothingAndLeavesManualResubmission(): void
+    {
+        [, $parentRun] = $this->closeOrderWithDispatchedDelivery();
+        $example = app(NestedCompensationExample::class);
+        $example->recordCarrierReturn(self::SUBJECT);
+        $policy = app(\Workflow\V2\Compensation\Security\ScopeAuthorization::class);
+        $this->app->instance(
+            \Workflow\V2\Compensation\Security\ScopeAuthorization::class,
+            new class($policy) implements \Workflow\V2\Compensation\Security\ScopeAuthorization {
+                public function __construct(
+                    private readonly \Workflow\V2\Compensation\Security\ScopeAuthorization $policy
+                ) {
+                }
+
+                public function assertAllowed(
+                    \Workflow\V2\Compensation\Definition\ScopeIdentity $scope,
+                    string $principal,
+                    string $operation
+                ): string {
+                    if ($operation === 'request') {
+                        throw new LogicException('The cancellation principal was revoked.');
+                    }
+                    return $this->policy->assertAllowed($scope, $principal, $operation);
+                }
+            },
+        );
+
+        foreach ([1, 2] as $pass) {
+            $report = TaskWatchdog::runPass(respectThrottle: false);
+            $this->assertSame(0, $report['compensation_recoveries_started']);
+            $this->assertSame($pass === 1 ? 1 : 0, $report['compensation_recovery_refusals']);
+        }
+        $this->assertSame(0, $this->parentRecoveryRuns($parentRun));
+        $outcome = $this->outcome($parentRun);
+        $this->assertSame('recovery_authorization_failed', $outcome['automaticRecovery']);
+        $this->assertSame('submit_fresh_authorized_request', $outcome['nextAction']);
+        $described = app(ScopeRecovery::class)->describe(
+            ExampleOwnershipPolicy::scope(self::SUBJECT, $parentRun, 'parent'),
+            NestedCompensationExample::PRINCIPAL,
+        );
+        $this->assertSame('The cancellation principal was revoked.', $described['refusal']['reason']);
+        $this->assertSame(1, collect((new ScopeRepository())->journal(
+            ExampleOwnershipPolicy::scope(self::SUBJECT, $parentRun, 'parent')
+        ))->where('kind', 'recovery_authorization_failed')->count());
+
+        // Once authority is restored, the operator resubmits manually.
+        $this->app->instance(\Workflow\V2\Compensation\Security\ScopeAuthorization::class, $policy);
+        $example->resubmitCancellation(self::SUBJECT, $parentRun, 'after-authorization-restored');
+        $this->drain();
+        $this->assertVerified($parentRun);
+        $this->assertSame(['deliver', 'prepare', 'reserve'], $this->compensationLog());
+        $this->assertSame(1, $this->parentRecoveryRuns($parentRun));
+    }
+
+    public function testAutomaticRecoveryRacingAManualRequestStartsOneRecoveryRun(): void
+    {
+        [, $parentRun] = $this->closeOrderWithDispatchedDelivery();
+        $example = app(NestedCompensationExample::class);
+        $example->recordCarrierReturn(self::SUBJECT);
+        $armed = true;
+        // The manual request lands after the pass selected its candidate and before it routes.
+        DB::listen(static function (\Illuminate\Database\Events\QueryExecuted $query) use (
+            &$armed,
+            $example,
+            $parentRun
+        ): void {
+            if (! $armed || ! str_contains($query->sql, 'workflow_compensation_requests')
+                || ! str_contains(strtolower($query->sql), 'order by') || $query->connection->transactionLevel() > 1) {
+                return;
+            }
+            $armed = false;
+            DB::afterCommit(static fn () => $example->resubmitCancellation(self::SUBJECT, $parentRun, 'manual-race'));
+        });
+        $first = TaskWatchdog::runPass(respectThrottle: false);
+        $this->assertFalse($armed, 'The race must interleave with the automatic pass.');
+        $second = TaskWatchdog::runPass(respectThrottle: false);
+        $this->assertSame(0, $second['compensation_recovery_candidates']);
+        $this->assertSame([], $first['compensation_recovery_failures']);
+        $this->drain();
+        $this->assertVerified($parentRun);
+        $this->assertSame(1, $this->parentRecoveryRuns($parentRun));
+        $this->assertSame(['deliver', 'prepare', 'reserve'], $this->compensationLog());
+    }
+
+    public function testWakingAWaitingRetryRunsOneAttemptWithinTheRecordedPolicy(): void
+    {
+        $stub = $this->start('prepare');
+        $stub->signal('finish');
+        $this->drain();
+        $parentRun = $stub->runId();
+        $example = app(NestedCompensationExample::class);
+        $example->recordCarrierHandoff(self::SUBJECT);
+        $example->requestCancellation(self::SUBJECT, $parentRun, 'late-cancel');
+        $childScope = ExampleOwnershipPolicy::scope(self::SUBJECT, $parentRun, 'child');
+        $started = now();
+        $this->drain(pauseBefore: static fn (WorkflowTask $next): bool => $next->available_at !== null
+            && $next->available_at->greaterThan($started->copy()->addMinutes(2)));
+        $execution = ActivityExecution::query()
+            ->whereIn('workflow_run_id', WorkflowRun::query()->where(
+                'workflow_instance_id',
+                $childScope->recoveryInstanceId()
+            )->select('id'))
+            ->where('activity_type', 'dw.compensation.compensate-obligation.v1')
+            ->sole();
+        $this->assertSame(6, $execution->retry_policy['max_attempts']);
+        $this->assertSame(5, ActivityAttempt::query()->where('activity_execution_id', $execution->id)->count());
+
+        // Two wakes before any worker runs still release only the one waiting retry.
+        \Workflow\V2\Compensation\Recovery\CompensationWake::scope($childScope);
+        \Workflow\V2\Compensation\Recovery\CompensationWake::scope($childScope);
+        $this->drain(pauseBefore: static fn (WorkflowTask $next): bool => $next->available_at !== null
+            && $next->available_at->greaterThan(now()->addMinutes(2)));
+        $this->assertSame(
+            [1, 2, 3, 4, 5, 6],
+            ActivityAttempt::query()->where('activity_execution_id', $execution->id)
+                ->orderBy('attempt_number')->pluck('attempt_number')->all()
+        );
+        // The recorded maximum holds: a later wake finds nothing to retry.
+        \Workflow\V2\Compensation\Recovery\CompensationWake::scope($childScope);
+        $this->drain();
+        $this->assertSame(6, ActivityAttempt::query()->where('activity_execution_id', $execution->id)->count());
+        $this->assertSame(RunStatus::Failed, WorkflowRun::query()->findOrFail($execution->workflow_run_id)->status);
+    }
+
+    /**
+     * Cancel while the Order still waits; its in-origin compensation fails fast because the
+     * carrier holds the parcel, so the Order closes with its scope still requested.
+     *
+     * @return array{WorkflowStub, string}
+     */
+    private function closeOrderWithDispatchedDelivery(): array
+    {
+        $stub = $this->start('prepare');
+        $parentRun = $stub->runId();
+        app(NestedCompensationExample::class)->recordCarrierHandoff(self::SUBJECT);
+        $route = app(NestedCompensationExample::class)->requestCancellation(self::SUBJECT, $parentRun, 'cancel-open');
+        $this->assertSame('origin', $route['route']);
+        $crossed = now();
+        // Stop before the Shipment recovery's long wait; that wait is for a crashed attempt.
+        $this->drain(pauseBefore: static fn (WorkflowTask $next): bool => $next->available_at !== null
+            && $next->available_at->greaterThan($crossed->copy()->addMinutes(2)));
+        $this->assertSame(RunStatus::Failed, WorkflowRun::query()->findOrFail($parentRun)->status, $this->nativeProgress());
+        $this->assertSame(
+            'requested',
+            (new ScopeRepository())->inspect(ExampleOwnershipPolicy::scope(self::SUBJECT, $parentRun, 'parent'))['status']
+        );
+        $this->assertSame([], $this->compensationLog());
+        $this->assertSame(0, $this->parentRecoveryRuns($parentRun));
+        return [$stub, $parentRun];
+    }
+
+    private function outcome(string $parentRun): array
+    {
+        return app(NestedCompensationExample::class)->cancellationOutcome(self::SUBJECT, $parentRun);
+    }
+
+    private function parentRecoveryRuns(string $parentRun): int
+    {
+        return WorkflowRun::query()->where(
+            'workflow_instance_id',
+            ExampleOwnershipPolicy::scope(self::SUBJECT, $parentRun, 'parent')->recoveryInstanceId()
+        )->count();
     }
 
     public static function foreignNativeOwners(): array
