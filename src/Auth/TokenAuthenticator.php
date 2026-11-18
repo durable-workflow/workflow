@@ -17,7 +17,9 @@ class TokenAuthenticator implements WebhookAuthenticator
         // empty expected value would otherwise match a request without the
         // header.
         if (! is_string($expected) || $expected === '') {
-            Log::warning('Webhook token authentication is selected but DW_WEBHOOKS_TOKEN is not set; refusing webhook requests. Set it, or use the none method for webhooks without authentication.');
+            Log::warning(
+                'Webhook token authentication is selected but DW_WEBHOOKS_TOKEN is not set; refusing webhook requests. Set it, or use the none method for webhooks without authentication.'
+            );
             abort(503, 'Webhook token authentication is not configured.');
         }
 

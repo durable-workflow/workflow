@@ -274,7 +274,11 @@ final class WebhookWorkflowTest extends TestCase
             $key => $value,
         ]);
 
-        foreach ([[], ['Authorization' => ''], ['X-Signature' => '']] as $headers) {
+        foreach ([[], [
+            'Authorization' => '',
+        ], [
+            'X-Signature' => '',
+        ]] as $headers) {
             $response = $this->postJson('/webhooks/start/test-webhook-workflow', [], $headers);
 
             $response->assertStatus(503);
