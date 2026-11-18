@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.29.1 - 2026-11-18
+
 - A condition wait with a timeout now returns `true` when an update accepted
   before its timeout fired makes the predicate true, even if the workflow task
   runs after the deadline. Updates accepted after the timeout fired cannot
