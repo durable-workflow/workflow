@@ -84,7 +84,7 @@ final class CompensationPublicSurfaceTest extends TestCase
             if ($property->getDeclaringClass()->getName() !== $class || self::excluded($property->getDocComment())) {
                 continue;
             }
-            $members[] = 'property ' . self::type($property->getType()) . ' $' . $property->getName();
+            $members[] = 'property ' . self::type($property->getType(), $class) . ' $' . $property->getName();
         }
         foreach ($reflection->getMethods(ReflectionMethod::IS_PUBLIC) as $method) {
             if ($method->getDeclaringClass()->getName() !== $class || self::excluded($method->getDocComment())) {
@@ -93,7 +93,7 @@ final class CompensationPublicSurfaceTest extends TestCase
             $parameters = array_map(self::parameter(...), $method->getParameters());
             $members[] = ($method->isStatic() ? 'static ' : '') . $method->getName()
                 . '(' . implode(', ', $parameters) . ')'
-                . ($method->hasReturnType() ? ': ' . self::type($method->getReturnType()) : '');
+                . ($method->hasReturnType() ? ': ' . self::type($method->getReturnType(), $class) : '');
         }
         return $members;
     }
@@ -106,7 +106,8 @@ final class CompensationPublicSurfaceTest extends TestCase
     private static function parameter(ReflectionParameter $parameter): string
     {
         $text = self::type(
-            $parameter->getType()
+            $parameter->getType(),
+            $parameter->getDeclaringClass()?->getName() ?? ''
         ) . ' ' . ($parameter->isVariadic() ? '...' : '') . '$' . $parameter->getName();
         if ($parameter->isDefaultValueAvailable()) {
             $text .= ' = ' . self::value($parameter->getDefaultValue());
@@ -129,14 +130,15 @@ final class CompensationPublicSurfaceTest extends TestCase
         };
     }
 
-    private static function type(?ReflectionType $type): string
+    private static function type(?ReflectionType $type, string $class = ''): string
     {
         if ($type === null) {
             return '';
         }
         if ($type instanceof ReflectionNamedType) {
-            return ($type->allowsNull() && $type->getName() !== 'mixed' && $type->getName() !== 'null' ? '?' : '')
-                . $type->getName();
+            // PHP 8.5 reports a declared self type by its class name; pin the declared form.
+            $name = $class !== '' && $type->getName() === $class ? 'self' : $type->getName();
+            return ($type->allowsNull() && $name !== 'mixed' && $name !== 'null' ? '?' : '') . $name;
         }
         return (string) $type;
     }
