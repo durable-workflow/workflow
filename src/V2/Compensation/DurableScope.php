@@ -11,7 +11,9 @@ use Workflow\V2\Compensation\Activities\RequestScopeActivity;
 use Workflow\V2\Compensation\Activities\ReserveChildScopeActivity;
 use Workflow\V2\Compensation\Activities\VerifyScopeActivity;
 use Workflow\V2\Compensation\Definition\Obligation;
+use Workflow\V2\Compensation\Definition\PortableDescriptor;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
+use Workflow\V2\Compensation\Execution\HandlerRegistry;
 use Workflow\V2\StateMachine\Binding\BindingIdentity;
 use Workflow\V2\StateMachine\Binding\ChildReservation;
 use Workflow\V2\StateMachine\Binding\ChildScopeParticipation;
@@ -26,8 +28,19 @@ use Workflow\V2\Workflow;
  */
 final readonly class DurableScope
 {
+    /**
+     * Patch marker for checks added after 2.31 (caller input and forward value limits, reserved handler types).
+     */
+    private const REGISTRATION_CHECKS = 'dw.compensation.registration-checks';
+
+    private bool $registrationChecks;
+
+    /**
+     * @param Workflow $workflow the native workflow whose saga receives each compensation callback
+     * @param string $principal trusted cleanup principal from application policy, never from request input
+     */
     public function __construct(
-        private Workflow $saga,
+        private Workflow $workflow,
         private ScopeIdentity $identity,
         private string $principal
     ) {
@@ -35,6 +48,8 @@ final readonly class DurableScope
             throw new \LogicException('DurableScope must be authored inside a native workflow.');
         }
         Workflow::getVersion('dw.compensation.scope-activities', 1, 1);
+        // Histories recorded before these checks replay without them.
+        $this->registrationChecks = (bool) Workflow::patched(self::REGISTRATION_CHECKS);
     }
 
     public function execute(Obligation $obligation, ?ActivityOptions $options = null): array
@@ -48,15 +63,18 @@ final readonly class DurableScope
      */
     public function register(Obligation $obligation): RegisteredObligation
     {
+        if ($this->registrationChecks) {
+            self::assertRegistrable($obligation);
+        }
         $scope = $this->identity->toArray();
         $principal = $this->principal;
         $id = Workflow::activity(RegisterObligationActivity::class, $scope, $obligation->toArray(), $principal);
         // The callback is rebuilt by replay before dispatching the effect and never needs its return value.
-        $this->saga->addCompensation(static function () use ($scope, $principal, $id): void {
+        $this->workflow->addCompensation(static function () use ($scope, $principal, $id): void {
             Workflow::activity(RequestScopeActivity::class, $scope, $principal);
             Workflow::activity(CompensateObligationActivity::class, $scope, $id);
         });
-        return new RegisteredObligation($this->identity, $id, $principal);
+        return new RegisteredObligation($this->identity, $id, $principal, $this->registrationChecks);
     }
 
     public function participate(string $key, ScopeIdentity $child): void
@@ -64,17 +82,29 @@ final readonly class DurableScope
         $scope = $this->identity->toArray();
         $principal = $this->principal;
         $id = Workflow::activity(RegisterChildScopeActivity::class, $scope, $key, $child->toArray(), $principal);
-        $this->saga->addCompensation(static function () use ($scope, $principal, $id): void {
+        $this->workflow->addCompensation(static function () use ($scope, $principal, $id): void {
             Workflow::activity(RequestScopeActivity::class, $scope, $principal);
             Workflow::activity(CompensateObligationActivity::class, $scope, $id);
         });
     }
 
+    /**
+     * Verify that every obligation in this scope is compensated, after the saga ran.
+     *
+     * Returns `['scopeId' => <id()>, 'status' => 'verified']`. While any obligation is unresolved it does not
+     * return: the recorded verify activity fails, and the workflow receives that failure.
+     *
+     * @return array{scopeId: string, status: 'verified'}
+     */
     public function verifyCompensation(): array
     {
         return Workflow::activity(VerifyScopeActivity::class, $this->identity->toArray());
     }
 
+    /**
+     * @experimental Reserved child admission depends on the experimental StateMachine binding types (#1069).
+     *     It is not part of the compensation-scope surface planned for promotion.
+     */
     public function reserveChild(string $key, ScopeIdentity $child, BindingIdentity $binding): ChildReservation
     {
         $scope = $this->identity->toArray();
@@ -104,10 +134,24 @@ final readonly class DurableScope
             throw new \LogicException('The recorded child participant belongs to another binding.');
         }
         $id = $result['obligationId'];
-        $this->saga->addCompensation(static function () use ($scope, $principal, $id): void {
+        $this->workflow->addCompensation(static function () use ($scope, $principal, $id): void {
             Workflow::activity(RequestScopeActivity::class, $scope, $principal);
             Workflow::activity(CompensateObligationActivity::class, $scope, $id);
         });
         return $reservation;
+    }
+
+    private static function assertRegistrable(Obligation $obligation): void
+    {
+        if (str_starts_with($obligation->handlerType, HandlerRegistry::RESERVED_PREFIX)) {
+            throw new \InvalidArgumentException('Handler types starting with "dw." are reserved for the engine.');
+        }
+        PortableDescriptor::userData(
+            $obligation->input,
+            'obligation input',
+            PortableDescriptor::USER_INPUT_MAX_BYTES,
+            PortableDescriptor::USER_INPUT_MAX_VALUES,
+            PortableDescriptor::USER_INPUT_MAX_DEPTH,
+        );
     }
 }

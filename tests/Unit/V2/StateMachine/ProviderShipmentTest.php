@@ -269,7 +269,7 @@ final class ProviderShipmentTest extends TestCase
         $operation = $this->operation();
         $this->assertTrue($operation->execute($this->context())->observed);
         $this->assertTrue($operation->compensate($this->context())->verified);
-        $this->assertTrue($this->operation()->compensate($this->context())->forwardSettled);
+        $this->assertSame('verified', $this->operation()->compensate($this->context())->outcome);
         $this->assertSame(2, (int) $this->db->query('SELECT COUNT(*) FROM provider_effects')->fetchColumn());
         $this->assertFalse($this->facts()['return_requested']);
         $this->assertSame(0, $this->facts()['restocked_quantity']);
@@ -320,7 +320,7 @@ final class ProviderShipmentTest extends TestCase
         $result = $this->operation()
             ->compensate($this->context());
         $this->assertTrue($result->verified);
-        $this->assertTrue($result->forwardSettled);
+        $this->assertSame('verified', $result->outcome);
         $this->assertContains('original-receipt:event-received', $result->evidence);
         $this->assertContains('original-inspection:event-inspected', $result->evidence);
         $this->assertTrue($this->facts()['original_recipient_delivered']);
@@ -354,7 +354,7 @@ final class ProviderShipmentTest extends TestCase
         $result = $this->operation()
             ->compensate($this->context());
         $this->assertFalse($result->verified);
-        $this->assertFalse($result->forwardSettled);
+        $this->assertNotSame('verified', $result->outcome);
         $this->assertSame(0, (int) $this->db->query('SELECT COUNT(*) FROM provider_effects')->fetchColumn());
         $this->provider->resolve($this->shipment->booking, Status::Confirmed);
         $this->provider->plan($this->shipment->cancel, Status::Confirmed);

@@ -28,8 +28,6 @@ final class ChildScopes
 
     public const MAX_CHILDREN = 16;
 
-    public const MAX_DEPTH = 1;
-
     public function register(ScopeIdentity $parent, string $originalRunId, string $key, ScopeIdentity $child): string
     {
         return $this->registerParticipant(

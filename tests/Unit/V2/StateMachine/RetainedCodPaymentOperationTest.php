@@ -61,7 +61,7 @@ final class RetainedCodPaymentOperationTest extends TestCase
         foreach (['payer', 'merchant'] as $stage) {
             $outcome = $this->handler($stage)
                 ->compensate($this->context($stage));
-            $this->assertTrue($outcome->verified && $outcome->forwardSettled);
+            $this->assertTrue($outcome->verified);
         }
         $this->assertSame(0, $this->effects());
         $this->assertTrue($this->provider->collections->inspect($this->original)['collectionAdmissionClosed']);
@@ -121,7 +121,7 @@ final class RetainedCodPaymentOperationTest extends TestCase
         $this->provider = $replacement;
         $outcome = $this->handler('payer')
             ->compensate($this->context('payer', activity: 'replacement-activity'));
-        $this->assertTrue($outcome->verified && $outcome->forwardSettled);
+        $this->assertTrue($outcome->verified);
         $this->assertSame(1, $this->effects());
         $this->assertFalse($this->handler('merchant')->compensate($this->context('merchant'))->verified);
         $facts = $this->provider->collections->inspect($this->original);
@@ -213,7 +213,7 @@ final class RetainedCodPaymentOperationTest extends TestCase
         ));
         $result = $this->handler('merchant')
             ->compensate($this->context('merchant', activity: 'original-debt-paid'));
-        $this->assertTrue($result->verified && $result->forwardSettled);
+        $this->assertTrue($result->verified);
         $this->assertSame(0, $this->effects());
         $snapshot = $this->provider->collections->inspect($this->original);
         $this->assertTrue($snapshot['collectionAdmissionClosed']);

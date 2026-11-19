@@ -185,7 +185,7 @@ final readonly class OrderBillingPeriodStore
         }
         $role = $context->scope->key === $orderKey ? 'order' : substr($context->scope->key, strlen($orderKey) + 1);
         if ($role === 'payment') {
-            if (! $context->uncertainForward && Carbon::now()->getTimestamp() >= $period->paymentDeadline) {
+            if (! $context->reconcileBeforeForward && Carbon::now()->getTimestamp() >= $period->paymentDeadline) {
                 throw new LogicException('The original period first-charge deadline has elapsed.');
             }
             return;
