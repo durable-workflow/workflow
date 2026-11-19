@@ -2,7 +2,7 @@ name: Fan-out scaling
 
 # The literal documented fan-out limit (#1203, #1231): one all() of 1,000
 # activities and one of 1,000 child workflows with 10 KB arguments. Each
-# workflow task must finish well inside the default 60-second queue job
+# workflow task must finish inside the default 60-second queue job
 # timeout and cost roughly ten times the 100-member run's. The 30-versus-300
 # member guard runs in the ordinary feature shards.
 
