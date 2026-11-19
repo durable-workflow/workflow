@@ -1,0 +1,51 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "transit-owed-remedy-ends-order-wait",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestTransitIncidentReplayWorkflow",
+    "arguments": [
+      false,
+      false
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 2,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "example.provider.physical-boundary.v1",
+        "result": "wwHioz3/VYAiNw4IEGluY2lkZW50AgEOc2V0dGxlZAIADmRlY2lkZWQCARByZW1lZHlJZAqAAWNjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2MA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "remedy": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "delivery": null,
+      "restock": false
+    },
+    "commands": [
+      {
+        "type": "complete_workflow",
+        "result": "wwHioz3/VYAiNw4GDHJlbWVkeQqAAWNjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2MQZGVsaXZlcnkADnJlc3RvY2sCAAA=",
+        "payload_codec": "avro"
+      }
+    ]
+  }
+}

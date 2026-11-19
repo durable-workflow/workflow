@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace DurableWorkflow\Examples\ProviderStateMachines;
 
-use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Identity;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Journal;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\OriginalUnitAmounts;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Request;
@@ -265,20 +264,7 @@ final readonly class ExchangeStore
             'refund' => $accepted ? $this->obligation($assignment, 'refund')
                 ->toArray() : null,
         ]);
-        $this->authority->db->transaction(function () use ($row, $plan): void {
-            $current = $this->authority->db->table(self::TABLE)
-                ->where('id', $row->id)
-                ->lockForUpdate()
-                ->sole();
-            if ($current->plan === null) {
-                $this->authority->db->table(self::TABLE)
-                    ->where('id', $row->id)
-                    ->update([
-                        'plan' => $plan,
-                        'plan_sha256' => hash('sha256', $plan),
-                    ]);
-            }
-        });
+        PostDeliveryRecords::storeOnce($this->authority->db, self::TABLE, $row->id, 'plan', $plan);
         $stored = $this->row($key, $exchangeKey);
         return PostDeliveryRecords::decode('exchange', $stored->plan, $stored->plan_sha256);
     }
@@ -303,13 +289,7 @@ final readonly class ExchangeStore
         $events = $this->provider->shipments()
             ->inspect($this->replacement($assignment)['graph'])
             ->toArray()['events'];
-        $failed = array_values(array_intersect(['damaged', 'lost', 'non-collection'], array_keys($events)));
-        return [
-            'action' => isset($events['delivered']) ? 'delivered' : ($failed === [] ? 'wait' : 'failed'),
-            'handedOver' => isset($events['handed-over']),
-            'delivered' => isset($events['delivered']),
-            'failed' => $failed,
-        ];
+        return PostDeliveryRecords::carrierProgress($events);
     }
 
     /**
@@ -413,20 +393,7 @@ final readonly class ExchangeStore
             return $outcome;
         }
         $payload = PortableDescriptor::encode($outcome);
-        $this->authority->db->transaction(function () use ($row, $payload): void {
-            $current = $this->authority->db->table(self::TABLE)
-                ->where('id', $row->id)
-                ->lockForUpdate()
-                ->sole();
-            if ($current->outcome === null) {
-                $this->authority->db->table(self::TABLE)
-                    ->where('id', $row->id)
-                    ->update([
-                        'outcome' => $payload,
-                        'outcome_sha256' => hash('sha256', $payload),
-                    ]);
-            }
-        });
+        PostDeliveryRecords::storeOnce($this->authority->db, self::TABLE, $row->id, 'outcome', $payload);
         $stored = $this->row($key, $exchangeKey);
         return PostDeliveryRecords::decode('exchange', $stored->outcome, $stored->outcome_sha256);
     }
@@ -531,31 +498,7 @@ final readonly class ExchangeStore
      */
     public static function replacementCommands(Request $booking, string $exchangeKey, string $sku): array
     {
-        $identity = static fn (string $stage): Identity => new Identity(
-            $booking->identity->client,
-            $booking->identity->subject,
-            $booking->identity->generation,
-            'exchange.' . $exchangeKey . '.' . $stage
-        );
-        $original = ShipmentTerms::fromArray($booking->terms);
-        $stock = [
-            'sku' => $sku,
-            'quantity' => 1,
-        ];
-        $terms = (new ShipmentTerms($sku, 1, $original->carrier))->toArray();
-        $reserve = $identity('reserve');
-        $book = $identity('book');
-        $return = $identity('return');
-        return [
-            'reserve' => new Request($reserve, 'reserve', $stock),
-            'release' => new Request($identity('release'), 'release', $stock, $reserve),
-            'graph' => new ShipmentDescriptor(
-                new Request($book, 'ship-book', $terms),
-                new Request($identity('cancel'), 'ship-cancel-booking', $terms, $book),
-                new Request($return, 'request-return', $terms, $book),
-                new Request($identity('restock'), 'restock', $terms, $return),
-            ),
-        ];
+        return PostDeliveryRecords::replacement($booking, 'exchange.' . $exchangeKey, $sku, 1);
     }
 
     private function actor(WorkflowRun $actual): array
@@ -675,11 +618,6 @@ final readonly class ExchangeStore
      */
     private function forward(ScopeIdentity $scope, string $key): ?array
     {
-        foreach ((new ScopeRepository())->inspect($scope)['obligations'] as $row) {
-            if (($row['descriptor']['key'] ?? null) === $key && $row['forward_status'] === 'observed') {
-                return json_decode($row['forward_result'], true, flags: JSON_THROW_ON_ERROR)['value'];
-            }
-        }
-        return null;
+        return PostDeliveryRecords::forward($scope, $key);
     }
 }

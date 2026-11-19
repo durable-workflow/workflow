@@ -50,7 +50,17 @@ class AuthorizationCheckout extends Workflow
                 self::activity(ShipmentBoundaryActivity::class, 'expire');
                 throw new BusinessCancellationRequested('The original fulfillment request deadline expired.');
             }
-            $fulfilled = $machine->transition('fulfill', new FulfillmentStep($machine));
+            try {
+                $fulfilled = $machine->transition('fulfill', new FulfillmentStep($machine));
+            } catch (TransitIncidentObserved) {
+                // Only opted-in remedy grants raise this; the Order never reports delivery or a false cancellation.
+                $remedied = $machine->transition('remedy', new TransitRemedyStep($machine));
+                return [
+                    'businessOutcome' => $remedied->status === TransitionStatus::Committed ? 'remedied' : 'unsettled',
+                    'originalRunId' => $this->runId(),
+                    'transition' => $remedied->toArray(),
+                ];
+            }
             return [
                 'businessOutcome' => $fulfilled->status === TransitionStatus::Committed ? 'fulfilled' : 'unsettled',
                 'originalRunId' => $this->runId(),

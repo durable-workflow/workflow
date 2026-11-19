@@ -31,6 +31,8 @@ final readonly class Authority implements ChildScopeBindingAuthorization
 
     public StockPolicy $stock;
 
+    public TransitPolicy $transit;
+
     /**
      * @param list<string> $subjects Canonical OrderTerms::subjectKey() grants.
      */
@@ -44,6 +46,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
         array $reservedRoots = [],
         array $unitAmounts = [],
         array $stockPolicies = [],
+        array $transitPolicies = [],
     ) {
         PortableDescriptor::identifier($principal, 'authenticated principal');
         if (! array_is_list($subjects)) {
@@ -75,6 +78,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
         $this->roots = new RootPolicy($this, $reservedRoots);
         $this->unitMoney = new UnitMoneyPolicy($this, $unitAmounts, $subjects);
         $this->stock = new StockPolicy($this, $stockPolicies);
+        $this->transit = new TransitPolicy($this, $transitPolicies);
     }
 
     public function recipe(string $key): string
@@ -84,7 +88,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
 
     public function profile(string $key, string $role): PolicyProfile
     {
-        return Catalogue::profile($role, $this->recipe($key));
+        return Catalogue::profile($role, $this->recipe($key), $this->transit->selected($key));
     }
 
     public function grantFor(string $key, string $role): string
@@ -93,7 +97,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
             'sha256',
             BindingPlan::versionFor($this->recipe($key)) . ($this->cart->selected($key) ? '.cart-v1' : '')
                 . $this->periods->version($key) . $this->roots->version($key)
-                . $this->unitMoney->version($key) . $this->stock->version($key)
+                . $this->unitMoney->version($key) . $this->stock->version($key) . $this->transit->version($key)
                 . ':' . $this->profile($key, $role)->fingerprint()
         );
     }
@@ -148,7 +152,8 @@ final readonly class Authority implements ChildScopeBindingAuthorization
             },
             $this->recipe($key),
             $this->cart->selected($key),
-            $this->roots->selected($key) ? $this->roots->reservationFor($key, $row->root_run) : null
+            $this->roots->selected($key) ? $this->roots->reservationFor($key, $row->root_run) : null,
+            $this->transit->selected($key)
         );
     }
 
@@ -223,6 +228,9 @@ final readonly class Authority implements ChildScopeBindingAuthorization
             if ($operation !== 'compensate' || $assignment->root_run === null) {
                 return $this->roots->authorizeRecoveryScope($scope, $principal, $operation);
             }
+        }
+        if ($scope->key === $key . IncidentStore::SCOPE_SUFFIX) {
+            return app(IncidentStore::class)->authorizeScope($scope, $principal, $operation);
         }
         if (str_starts_with($scope->key, $key . ExchangeStore::SCOPE_INFIX)) {
             return app(ExchangeStore::class)->authorizeScope($scope, $principal, $operation);

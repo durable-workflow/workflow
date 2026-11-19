@@ -368,13 +368,11 @@ final readonly class AssessmentStore
         return match ($actor->role) {
             'payment' => $this->financialFacts($actual, $activityId, $actor, $plan, $values, $evidence, $id),
             'shipment' => $this->physicalFacts($actual, $values, $evidence, $id),
-            'order' => $transitionKey === 'fulfill' ? $this->fulfillmentFacts(
-                $actual,
-                $actor,
-                $values,
-                $evidence,
-                $id
-            ) : null,
+            'order' => match ($transitionKey) {
+                'fulfill' => $this->fulfillmentFacts($actual, $actor, $values, $evidence, $id),
+                'remedy' => $this->remedyFacts($actual, $values, $evidence, $id),
+                default => null,
+            },
             default => null,
         };
     }
@@ -403,6 +401,15 @@ final readonly class AssessmentStore
             && Carbon::now()->getTimestamp() < $terms->fulfillmentDeadline;
         $values['fulfillment_confirmed'] = app(ShipmentBoundaryStore::class)->fulfilled($actual);
         $evidence['fulfillment_permitted'] = $evidence['fulfillment_confirmed'] = 'original-fulfillment:' . $id;
+        return new RecordedFacts($id, $values, $evidence);
+    }
+
+    private function remedyFacts(WorkflowRun $actual, array $values, array $evidence, string $id): RecordedFacts
+    {
+        $remedy = app(IncidentStore::class)->remedy($actual);
+        $values['transit_incident_confirmed'] = $remedy['incident'];
+        $values['transit_remedy_settled'] = $remedy['settled'];
+        $evidence['transit_incident_confirmed'] = $evidence['transit_remedy_settled'] = 'original-transit-remedy:' . $id;
         return new RecordedFacts($id, $values, $evidence);
     }
 
@@ -564,7 +571,8 @@ final readonly class AssessmentStore
         $transition = Catalogue::transition(
             $actor->role,
             $request['transition']['key'] ?? '',
-            $this->authority->recipe($actor->root_key)
+            $this->authority->recipe($actor->root_key),
+            $this->authority->transit->selected($actor->root_key)
         );
         if ($actual->workflow_class === Cancellation::class && $transition->key !== 'cancel') {
             throw new LogicException('The proof-only finalizer cannot admit or assess forward work.');

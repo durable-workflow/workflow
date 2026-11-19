@@ -1,0 +1,1477 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "transit-unresolved-replacement-ends-explicitly",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestTransitSettlementReplayWorkflow",
+    "arguments": [
+      true
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 2,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 3,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 2,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-2"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 4,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-2",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-2",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 5,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 2,
+        "signal_id": "hint-2",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-2",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 6,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 3,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 7,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 4,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-4"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 8,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-4",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-4",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 9,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 4,
+        "signal_id": "hint-4",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-4",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 10,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 5,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 11,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 6,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-6"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 12,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-6",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-6",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 13,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 6,
+        "signal_id": "hint-6",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-6",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 14,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 7,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 15,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 8,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-8"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 16,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-8",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-8",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 17,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 8,
+        "signal_id": "hint-8",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-8",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 18,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 9,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 19,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 10,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-10"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 20,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-10",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-10",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 21,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 10,
+        "signal_id": "hint-10",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-10",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 22,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 11,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 23,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 12,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-12"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 24,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-12",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-12",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 25,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 12,
+        "signal_id": "hint-12",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-12",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 26,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 13,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 27,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 14,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-14"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 28,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-14",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-14",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 29,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 14,
+        "signal_id": "hint-14",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-14",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 30,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 15,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 31,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 16,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-16"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 32,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-16",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-16",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 33,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 16,
+        "signal_id": "hint-16",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-16",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 34,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 17,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 35,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 18,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-18"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 36,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-18",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-18",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 37,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 18,
+        "signal_id": "hint-18",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-18",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 38,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 19,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 39,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 20,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-20"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 40,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-20",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-20",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 41,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 20,
+        "signal_id": "hint-20",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-20",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 42,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 21,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 43,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 22,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-22"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 44,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-22",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-22",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 45,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 22,
+        "signal_id": "hint-22",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-22",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 46,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 23,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 47,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 24,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-24"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 48,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-24",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-24",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 49,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 24,
+        "signal_id": "hint-24",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-24",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 50,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 25,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 51,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 26,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-26"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 52,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-26",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-26",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 53,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 26,
+        "signal_id": "hint-26",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-26",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 54,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 27,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 55,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 28,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-28"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 56,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-28",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-28",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 57,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 28,
+        "signal_id": "hint-28",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-28",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 58,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 29,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 59,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 30,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-30"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 60,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-30",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-30",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 61,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 30,
+        "signal_id": "hint-30",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-30",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 62,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 31,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 63,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 32,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-32"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 64,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-32",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-32",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 65,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 32,
+        "signal_id": "hint-32",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-32",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 66,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 33,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 67,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 34,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-34"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 68,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-34",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-34",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 69,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 34,
+        "signal_id": "hint-34",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-34",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 70,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 35,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 71,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 36,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-36"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 72,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-36",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-36",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 73,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 36,
+        "signal_id": "hint-36",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-36",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 74,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 37,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 75,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 38,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-38"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 76,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-38",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-38",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 77,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 38,
+        "signal_id": "hint-38",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-38",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 78,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 39,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 79,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 40,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-40"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 80,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-40",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-40",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 81,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 40,
+        "signal_id": "hint-40",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-40",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 82,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 41,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 83,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 42,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-42"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 84,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-42",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-42",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 85,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 42,
+        "signal_id": "hint-42",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-42",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 86,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 43,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 87,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 44,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-44"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 88,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-44",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-44",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 89,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 44,
+        "signal_id": "hint-44",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-44",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 90,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 45,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 91,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 46,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-46"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 92,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-46",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-46",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 93,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 46,
+        "signal_id": "hint-46",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-46",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 94,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 47,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 95,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 48,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-48"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 96,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-48",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-48",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 97,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 48,
+        "signal_id": "hint-48",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-48",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 98,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 49,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 99,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 50,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-50"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 100,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-50",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-50",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 101,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 50,
+        "signal_id": "hint-50",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-50",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 102,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 51,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 103,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 52,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-52"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 104,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-52",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-52",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 105,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 52,
+        "signal_id": "hint-52",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-52",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 106,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 53,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 107,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 54,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-54"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 108,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-54",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-54",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 109,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 54,
+        "signal_id": "hint-54",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-54",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 110,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 55,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 111,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 56,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-56"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 112,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-56",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-56",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 113,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 56,
+        "signal_id": "hint-56",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-56",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 114,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 57,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 115,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 58,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-58"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 116,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-58",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-58",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 117,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 58,
+        "signal_id": "hint-58",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-58",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 118,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 59,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 119,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 60,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-60"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 120,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-60",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-60",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 121,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 60,
+        "signal_id": "hint-60",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-60",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 122,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 61,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 123,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 62,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-62"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 124,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-62",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-62",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 125,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 62,
+        "signal_id": "hint-62",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-62",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 126,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 63,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 127,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 64,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-64"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 128,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-64",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-64",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 129,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 64,
+        "signal_id": "hint-64",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-64",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "action": "unresolved"
+    },
+    "commands": [
+      {
+        "type": "complete_workflow",
+        "result": "wwHioz3/VYAiNw4CDGFjdGlvbgoUdW5yZXNvbHZlZAA=",
+        "payload_codec": "avro"
+      }
+    ]
+  }
+}

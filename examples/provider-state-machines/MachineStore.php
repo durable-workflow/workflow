@@ -12,6 +12,7 @@ use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentOp
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentProvider;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Journal;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\RetainedOperation;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\ShipmentLedger;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\ShipmentOperation;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\UnitCaptureOperation;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\UnitPaymentOperation;
@@ -81,6 +82,7 @@ final readonly class MachineStore
         if ($unitRefunds !== null) {
             $app->instance(ReturnStore::class, new ReturnStore($authority, $provider, $unitRefunds));
             $app->instance(ExchangeStore::class, new ExchangeStore($authority, $provider, $unitRefunds));
+            $app->instance(IncidentStore::class, new IncidentStore($authority, $provider, $unitRefunds));
         }
         if ($warehouse !== null && $unitRefunds !== null) {
             $app->instance(
@@ -290,7 +292,12 @@ final readonly class MachineStore
         if ($actual->workflow_class === Cancellation::class && $key !== 'cancel') {
             throw new LogicException('A proof-only finalizer cannot take over original forward work.');
         }
-        Catalogue::transition($actor->role, $key, $this->authority->recipe($actor->root_key));
+        Catalogue::transition(
+            $actor->role,
+            $key,
+            $this->authority->recipe($actor->root_key),
+            $this->authority->transit->selected($actor->root_key)
+        );
         return (new ExecutionReference(
             $row->scope,
             $row->subject,
@@ -403,7 +410,12 @@ final readonly class MachineStore
     {
         $execution = Authority::reference($value);
         [$actor, , $plan] = $this->authority->actor($actual, $execution);
-        Catalogue::transition($actor->role, $key, $this->authority->recipe($actor->root_key));
+        Catalogue::transition(
+            $actor->role,
+            $key,
+            $this->authority->recipe($actor->root_key),
+            $this->authority->transit->selected($actor->root_key)
+        );
         if ($execution->executionId !== $actual->id . '.' . $key . '.' . $execution->sourceRevision) {
             throw new LogicException('Step compensation requires its original transition identity.');
         }
@@ -521,6 +533,28 @@ final readonly class MachineStore
             $handlers[ExchangeStore::REFUND_HANDLER] = [
                 '1' => new UnitRefundOperation($provider, $this->unitRefunds, $exchanges->operation(...)),
             ];
+            $incidents = app(IncidentStore::class);
+            $handlers[IncidentStore::REFUND_HANDLER] = [
+                '1' => new UnitRefundOperation($provider, $this->unitRefunds, $incidents->operation(...)),
+            ];
+            $handlers[IncidentStore::RESERVE_HANDLER] = [
+                '1' => new RetainedOperation($provider, $incidents->operation(...)),
+            ];
+            $handlers[IncidentStore::BOOK_HANDLER] = [
+                '1' => new ShipmentOperation($provider, $incidents->operation(...)),
+            ];
+            $handlers[IncidentStore::RELEASE_HANDLER] = [
+                '1' => new UnitReturnOperation($provider, $incidents->operation(...), UnitReturnTerms::RELEASE),
+            ];
+            $handlers[IncidentStore::CLAIM_HANDLER] = [
+                '1' => new UnitReturnOperation($provider, $incidents->operation(...), ShipmentLedger::CLAIM),
+            ];
+            $handlers[IncidentStore::RECOVER_HANDLER] = [
+                '1' => new UnitReturnOperation($provider, $incidents->operation(...), UnitReturnTerms::RECOVER),
+            ];
+            $handlers[IncidentStore::RESTOCK_HANDLER] = [
+                '1' => new UnitReturnOperation($provider, $incidents->operation(...), UnitReturnTerms::RESTOCK),
+            ];
         }
         if ($this->warehouse !== null && $this->unitRefunds !== null) {
             $selection = app(StockSelectionStore::class);
@@ -609,9 +643,18 @@ final readonly class MachineStore
             || ($assignment->root_run !== null && $assignment->root_run !== $actual->id)) {
             throw new LogicException('This example does not transfer its original Order to a successor.');
         }
-        return new BindingPlan($terms, $actual->id, $this->authority->principal, static function (): void {
-            throw new LogicException('Initialization does not authorize child admission.');
-        }, $this->authority->recipe($key), $this->authority->cart->selected($key), $reservation);
+        return new BindingPlan(
+            $terms,
+            $actual->id,
+            $this->authority->principal,
+            static function (): void {
+                throw new LogicException('Initialization does not authorize child admission.');
+            },
+            $this->authority->recipe($key),
+            $this->authority->cart->selected($key),
+            $reservation,
+            $this->authority->transit->selected($key)
+        );
     }
 
     private function childPlan(WorkflowRun $actual, array $args, string $key, string $role): BindingPlan
@@ -731,6 +774,12 @@ final readonly class MachineStore
         $recipe = $this->authority->recipe($key);
         if ($recipe !== Catalogue::RESERVE_FIRST) {
             $initialization['recipe'] = $recipe;
+        }
+        if (in_array($initialization['role'], ['order', 'shipment'], true) && $this->authority->transit->selected(
+            $key
+        )) {
+            // Legacy initializations lack this field and keep their original routes and recorded waits.
+            $initialization['transitPolicy'] = $this->authority->transit->policy($key);
         }
         return $initialization;
     }
