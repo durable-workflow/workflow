@@ -38,7 +38,10 @@ final class ActivityMiddleware
         try {
             $this->result = $next($job);
 
-            $job->onUnlock = fn (bool $shouldSignal) => $this->onUnlock($shouldSignal);
+            // A copy skipped for another job's unrecorded failure has no result.
+            if (! method_exists($job, 'awaitsRecordedFailure') || ! $job->awaitsRecordedFailure()) {
+                $job->onUnlock = fn (bool $shouldSignal) => $this->onUnlock($shouldSignal);
+            }
         } catch (\Throwable $throwable) {
             $file = new SplFileObject($throwable->getFile());
             $iterator = new LimitIterator($file, max(0, $throwable->getLine() - 4), 7);

@@ -91,6 +91,12 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
                     $this->release();
                 }
             }
+
+            // Until here a redispatched copy of the failed activity waits for
+            // this outcome instead of running again (Activity::handle).
+            if ($this->job === null || ! $this->job->isReleased()) {
+                Cache::forget(Activity::failureKey($this->storedWorkflow->id, $this->index));
+            }
         } finally {
             $lock->release();
         }

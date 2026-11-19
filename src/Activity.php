@@ -46,6 +46,9 @@ class Activity implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
 
     private Container $container;
 
+    // Set while handling only; an unset typed property is not serialized.
+    private bool $awaitingRecordedFailure;
+
     public function __construct(
         public int $index,
         public string $now,
@@ -111,12 +114,39 @@ class Activity implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
 
         $this->container = App::make(Container::class);
 
+        // A failed job's outcome is recorded later by a queued Exception job,
+        // after this activity's unique lock is gone. A replay in between
+        // dispatches the activity again; that copy must not run it again.
+        $failedJob = Cache::get(self::failureKey($this->storedWorkflow->id, $this->index));
+
         if ($this->storedWorkflow->hasLogByIndex($this->index)) {
             return;
         }
 
+        if ($failedJob !== null && $failedJob !== $this->queueJobUuid()) {
+            $this->awaitingRecordedFailure = true;
+
+            return;
+        }
+
+        // The Exception job forgets the failure only after recording it, so
+        // logs loaded with this job's payload may predate that record.
+        if ($failedJob === null && $this->storedWorkflow->relationLoaded('logs') && $this->storedWorkflow->logs()
+            ->whereIndex($this->index)
+            ->exists()) {
+            return;
+        }
+
         try {
-            return $this->{'execute'}(...$this->resolveClassMethodDependencies($this->arguments, $this, 'execute'));
+            $result = $this->{'execute'}(
+                ...$this->resolveClassMethodDependencies($this->arguments, $this, 'execute')
+            );
+
+            if ($failedJob !== null) {
+                Cache::forget(self::failureKey($this->storedWorkflow->id, $this->index));
+            }
+
+            return $result;
         } catch (\Throwable $throwable) {
             $this->storedWorkflow->exceptions()
                 ->create([
@@ -124,12 +154,34 @@ class Activity implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
                     'exception' => Serializer::serialize($throwable),
                 ]);
 
+            // Recorded before the job can fail and release its unique lock.
+            $uuid = $this->queueJobUuid();
+            if ($uuid !== null) {
+                Cache::forever(self::failureKey($this->storedWorkflow->id, $this->index), $uuid);
+            }
+
             if ($throwable instanceof NonRetryableExceptionContract) {
                 $this->fail($throwable);
             }
 
             throw $throwable;
         }
+    }
+
+    /**
+     * @internal
+     */
+    public static function failureKey(int|string $workflowId, int $index): string
+    {
+        return 'laravel-workflow-activity-failure:' . $workflowId . ':' . $index;
+    }
+
+    /**
+     * @internal True when another job of this activity failed and its outcome is not yet recorded.
+     */
+    public function awaitsRecordedFailure(): bool
+    {
+        return $this->awaitingRecordedFailure ?? false;
     }
 
     public function middleware()
@@ -182,5 +234,12 @@ class Activity implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
         if ($this->timeout) {
             Cache::put($this->key, 1, $this->timeout);
         }
+    }
+
+    private function queueJobUuid(): ?string
+    {
+        $uuid = $this->job?->uuid();
+
+        return is_string($uuid) && $uuid !== '' ? $uuid : null;
     }
 }

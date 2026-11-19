@@ -58,6 +58,16 @@
   published package. `docs/business-state-machines.md` describes what it
   checks. The compensation-scope and state-machine journeys now share
   `scripts/ci/upgrade-journey-lib.sh`.
+- A v1 activity whose job failed no longer runs a second time when the
+  workflow replays before the failure is recorded (#1241). The failure is
+  recorded by a separately queued `Workflow\Exception` job after the activity's
+  unique lock is released, so a wake in between (a signal, timer or sibling
+  result) dispatched the activity again and the copy executed it, adding an
+  exception row and repeating its side effects. The failed job now marks the
+  activity in the cache before its lock is released; a copy that finds the mark
+  completes without executing or recording a result, and the Exception job
+  removes the mark once it has recorded the failure or let it go. Recorded
+  history, job payloads and replay are unchanged.
 
 ## 2.33.0 - 2026-11-19
 
