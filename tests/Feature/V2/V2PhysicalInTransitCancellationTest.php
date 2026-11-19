@@ -12,7 +12,11 @@ use RuntimeException;
 use Tests\Support\PhysicalMachineFixture;
 use Tests\TestCase;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
+use Workflow\V2\Compensation\Recovery\AutomaticRecovery;
+use Workflow\V2\Compensation\Recovery\NextAction;
+use Workflow\V2\Compensation\Recovery\ObligationStatus;
 use Workflow\V2\Compensation\Recovery\ScopeRecovery;
+use Workflow\V2\Compensation\Recovery\ScopeStatus;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowRun;
@@ -28,7 +32,7 @@ final class V2PhysicalInTransitCancellationTest extends TestCase
 
     private const FORWARD = ['authorize', 'reserve', 'capture-authorized', 'ship-book', 'deduct-stock'];
 
-    private const RETURN_UNSETTLED = ['unknown', 'shipment-physical-return-unsettled'];
+    private const RETURN_UNSETTLED = [ObligationStatus::Unresolved->value, 'shipment-physical-return-unsettled'];
 
     public function testInTransitCancellationWaitsForInspectedReturnThenRecoversToCancelled(): void
     {
@@ -64,9 +68,12 @@ final class V2PhysicalInTransitCancellationTest extends TestCase
         $this->assertSame('ready', $this->subjectState('order'));
         $plan = $this->store->authority->plan($key);
         $root = $this->described($plan->rootScope());
-        $this->assertSame(['requested', 'failed', 'pending', 'await_automatic_recovery'], [
-            $root['scopeStatus'], $root['originStatus'], $root['automaticRecovery'], $root['nextAction'],
-        ]);
+        $this->assertSame([
+            ScopeStatus::Requested->value,
+            RunStatus::Failed->value,
+            AutomaticRecovery::Pending->value,
+            NextAction::AwaitAutomaticRecovery->value,
+        ], [$root['scopeStatus'], $root['originStatus'], $root['automaticRecovery'], $root['nextAction']]);
         $this->assertSame(self::RETURN_UNSETTLED, $this->physical($plan->childScope('shipment')));
         $history = $this->history($origin->runId());
         $childHistory = $this->history($shipment->id);
@@ -79,9 +86,11 @@ final class V2PhysicalInTransitCancellationTest extends TestCase
         $this->assertSame(0, $this->physicalFacts()['restocked_quantity']);
         $this->assertSame('ready', $this->subjectState('order'));
         $root = $this->described($plan->rootScope());
-        $this->assertSame(['requested', 'routed', 'submit_fresh_authorized_request'], [
-            $root['scopeStatus'], $root['automaticRecovery'], $root['nextAction'],
-        ]);
+        $this->assertSame([
+            ScopeStatus::Requested->value,
+            AutomaticRecovery::Routed->value,
+            NextAction::SubmitFreshAuthorizedRequest->value,
+        ], [$root['scopeStatus'], $root['automaticRecovery'], $root['nextAction']]);
         $this->assertSame(self::RETURN_UNSETTLED, $this->physical($plan->childScope('shipment')));
 
         // Accepted saleable inspection: one fresh authorized request; recovery and the finalizer do the rest.
@@ -100,7 +109,11 @@ final class V2PhysicalInTransitCancellationTest extends TestCase
             $cancellations->request($key, $origin->runId(), 'cancel-in-transit-return-inspected')['route']['route']
         );
         $this->drain();
-        $this->assertSame('verified', $this->described($plan->rootScope())['scopeStatus'], $this->progress());
+        $this->assertSame(
+            ScopeStatus::Verified->value,
+            $this->described($plan->rootScope())['scopeStatus'],
+            $this->progress()
+        );
         $this->assertSame(
             [...self::FORWARD, 'request-return', 'restock', 'refund-authorized', 'release'],
             $this->effects()
