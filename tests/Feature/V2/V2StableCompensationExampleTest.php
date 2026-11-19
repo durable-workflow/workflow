@@ -24,7 +24,7 @@ use Workflow\V2\WorkflowStub;
 require_once __DIR__ . '/../../../examples/compensation-scopes/bootstrap.php';
 
 /**
- * The Order/Shipment example that uses only the compensation API planned for promotion (#1063).
+ * The Order/Shipment example that uses only the stable compensation API (#1063).
  */
 final class V2StableCompensationExampleTest extends TestCase
 {

@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- Compensation scopes are stable `@api` (#1063). Exactly the members listed in
+  `docs/api-stability.md#compensation-scopes` are covered:
+  - authoring: `DurableScope`, `RegisteredObligation`, `Obligation`, `ScopeIdentity`;
+  - handler contract: `ScopedOperation`, `OperationContext`, `ForwardResult`,
+    `Resolution`, `HandlerRegistry`, `HandlerContractViolation`;
+  - host: `ScopeAuthorization`, `ScopeAuthorizationRefused`,
+    `ScopeRecovery::request()` and `describe()`, `ScopeRetention::release()`, and
+    the result enums, which may gain cases in a minor release.
+
+  They now follow the 2.x compatibility policy, as do their recorded replay
+  identities, ledger storage and minimum limits. `DurableScope::reserveChild()` and
+  original root admission remain experimental.
+
+- A run waiting for a signal is no longer given a no-op workflow task on every
+  watchdog pass after a child closed that cannot resume it (#1219). This
+  affected a child started with `startChild()` and not yet awaited, a child
+  whose result the run had already consumed, and a child that completed
+  inside an `all()` group that still needs the signal. Such a run now reads
+  `waiting_for_signal` instead of `repair_needed` or `waiting_for_child`. A
+  child that can still resume the run, such as a member of the same
+  `select()`, a child awaited through its handle, or a failed member of the
+  `all()`, is still repaired when its wake-up task is lost. A losing signal
+  wait of a decided `select()` is not treated as the run's wait. Existing
+  summaries are corrected the next time the run is projected, which the
+  watchdog does before it would create a task. Recorded history is
+  unchanged.
+
 - A wide `all()` no longer makes its workflow tasks grow with the square of the
   fan-out width (#1231, #1203). A 300-member fan-out of 10 KB activities took
   134 s to schedule and 58–85 s to finish on 2.32.0, so Laravel's default

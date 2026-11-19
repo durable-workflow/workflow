@@ -1,6 +1,6 @@
-# Order and Shipment compensation (planned stable API)
+# Order and Shipment compensation (stable API)
 
-This example uses only the compensation-scope API planned for promotion (#1063):
+This example uses only the stable compensation-scope API (#1063):
 `DurableScope`, `Obligation`, `ScopeIdentity`, `participate()`, the handler contract
 (`ScopedOperation`, `OperationContext`, `ForwardResult`, `Resolution`, `HandlerRegistry`),
 `ScopeAuthorization` with `ScopeAuthorizationRefused`, `ScopeRecovery` and `ScopeRetention`. It does not use

@@ -32,7 +32,7 @@ The SQL tests above cover business persistence. They do not establish provider a
 
 ## Native Order and Shipment compensation
 
-This example uses the experimental `DurableScope::reserveChild()` API and internal ledger helpers. For an Order/Shipment example that uses only the compensation API planned for promotion, see [compensation-scopes](../compensation-scopes/README.md).
+This example uses the experimental `DurableScope::reserveChild()` API and internal ledger helpers. For an Order/Shipment example that uses only the stable compensation API, see [compensation-scopes](../compensation-scopes/README.md).
 
 The [Order workflow](OrderWorkflow.php) and [Shipment workflow](ShipmentWorkflow.php) demonstrate the retained-scope foundation with actual native workflow runs and recorded SQL activities. Run the complete example in the repository's configured disposable test database:
 

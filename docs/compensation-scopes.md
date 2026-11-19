@@ -1,11 +1,15 @@
-# Durable compensation scopes (experimental)
+# Durable compensation scopes
 
 Implementation of the embedded, sequential scope design in
 [retained compensation proposal](https://github.com/durable-workflow/workflow/issues/1063), preparing the
 nested-machine integration in [business state-machine proposal](https://github.com/durable-workflow/workflow/issues/1069).
-These APIs first shipped in 2.29.0 as experimental, without a compatibility
-promise; see [API stability](api-stability.md#experimental-compensation-scopes).
-Existing run-local Saga and the four-method `TransitionStep` contract remain unchanged.
+These APIs first shipped in 2.29.0 as experimental. From the release that ships
+their promotion (after 2.32.0; see the CHANGELOG), the authoring, handler-contract
+and host APIs are stable; see
+[API stability](api-stability.md#compensation-scopes) for the exact members and
+guarantees. Reserved child admission (`reserveChild()`) and original root
+admission remain experimental. Existing run-local Saga and the four-method
+`TransitionStep` contract remain unchanged.
 
 ## Boundaries
 
@@ -380,6 +384,9 @@ are not an HTTP-facing data access API.
 
 ## Reserving a retained child before admission
 
+This section describes an experimental API that is not covered by the 2.31.0
+stability guarantee.
+
 For a new child whose admission can race with compensation, use
 `DurableScope::reserveChild($key, $childIdentity, $bindingIdentity)` inside the
 original parent workflow. Unlike `participate()`, this records both the retained
@@ -443,7 +450,7 @@ receipt. See [original root scope admission](experimental-root-admission.md).
 
 ## Runnable Order and Shipment example
 
-[examples/compensation-scopes](../examples/compensation-scopes/README.md) uses only the API planned for promotion, with `participate()`. The example below uses the experimental `reserveChild()` path.
+[examples/compensation-scopes](../examples/compensation-scopes/README.md) uses only the stable API, with `participate()`. The example below uses the experimental `reserveChild()` path.
 
 The [application example](../examples/business-state-machines/README.md#native-order-and-shipment-compensation)
 uses native Order/Shipment workflows, recorded SQL activities and reserved child
@@ -473,9 +480,10 @@ which preserves original scope ownership across continue-as-new and redrive.
 Separate-process locking cases require a supported MySQL/MariaDB or PostgreSQL
 test database; SQLite does not qualify those race orderings.
 
-The example is an integration starting point for these experimental APIs. The
-complete StateMachine transition/rule adapter, policy migration and remaining
+The example is an integration starting point. Its reserved child admission is
+experimental. The complete StateMachine transition/rule adapter, policy migration
+and remaining
 [business state-machine criteria](https://github.com/durable-workflow/workflow/issues/1069)
-are separate. These experimental APIs first ship in 2.29.0; installed upgrade/recovery
-qualification and versioned consumer documentation remain milestones before
-they are supported.
+are separate. The scope APIs first shipped in 2.29.0 as experimental and become
+stable in 2.31.0, after installed upgrade and recovery qualification and the
+versioned [docs-site guide](https://durable-workflow.com/docs/features/compensation-scopes/).

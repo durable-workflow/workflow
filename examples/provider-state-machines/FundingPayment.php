@@ -52,7 +52,7 @@ final class FundingPayment extends Workflow
                 }
             });
         } catch (WorkflowCancellationRequestedException|BusinessCancellationRequested $error) {
-            return $this->compensateFunding($machine, $error);
+            return $this->compensateFunding($machine);
         }
     }
 

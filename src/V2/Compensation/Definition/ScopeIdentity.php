@@ -17,7 +17,7 @@ use InvalidArgumentException;
  * id() is the lowercase hex SHA-256 of the canonical JSON of toArray() (keys sorted, unescaped
  * Unicode). It names the scope in the ledger.
  *
- * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
+ * @api Stable compensation-scope API (#1063). See docs/api-stability.md#compensation-scopes.
  */
 final readonly class ScopeIdentity
 {

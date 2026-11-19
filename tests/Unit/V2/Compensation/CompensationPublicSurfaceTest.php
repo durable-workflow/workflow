@@ -14,7 +14,7 @@ use ReflectionProperty;
 use ReflectionType;
 
 /**
- * Pins the public signatures of the compensation-scope surface planned for promotion (#1063).
+ * Pins the public signatures of the stable compensation-scope surface (#1063).
  *
  * Members marked @internal or @experimental are excluded from the pinned surface. Changing a pinned
  * signature is an API change: update docs/api-stability.md#compensation-scopes in the same change.

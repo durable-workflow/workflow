@@ -18,7 +18,7 @@ use Workflow\V2\Compensation\Definition\ScopeIdentity;
  *
  * Both are false in the other direction.
  *
- * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
+ * @api Stable compensation-scope API (#1063). See docs/api-stability.md#compensation-scopes.
  */
 final readonly class OperationContext
 {

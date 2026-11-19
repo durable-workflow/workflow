@@ -49,10 +49,8 @@ final class CartCheckout extends AuthorizationCheckout
                 'reason' => 'cart-cancelled',
             ]));
             Workflow::cancellationShield(fn () => $this->compensate());
-            $proof = Workflow::cancellationShield(static fn () => $machine->scope->verifyCompensation());
-            if (($proof['status'] ?? null) !== 'verified') {
-                throw $error;
-            }
+            // verifyCompensation() returns only once every obligation is verified; otherwise its activity fails.
+            Workflow::cancellationShield(static fn () => $machine->scope->verifyCompensation());
             return Workflow::cancellationShield(static fn () => $machine->transition('cancel')->toArray());
         }
     }
