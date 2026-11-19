@@ -37,6 +37,16 @@ return [
 
     'workflow_relationships_table' => 'workflow_relationships',
 
+    // Which definition fingerprint version new workflow runs record: "v1"
+    // (raw source lines, the default) or "v2" (code tokens, so editing only
+    // comments or whitespace in a workflow class or an await() condition no
+    // longer changes replay). Every worker on this release or later compares
+    // both versions, and each run keeps the version it recorded. Switch to
+    // "v2" only after every worker that can claim these runs is on this
+    // release or later; switching back to "v1" is safe. Rolling a worker back
+    // below this release requires draining the runs that recorded v2 first.
+    'definition_fingerprint_version' => env('DW_DEFINITION_FINGERPRINT_VERSION', 'v1'),
+
     'v1' => [
         // Existing installations keep their v1 drain. Disable only for a
         // fresh v2-only application or after all legacy work is retired.

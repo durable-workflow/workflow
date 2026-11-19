@@ -1,0 +1,79 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "comment-only-definition-edit-keeps-recorded-branch",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner",
+    "query-state-replayer",
+    "workflow-executor"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestCommentOnlyFingerprintWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {
+        "workflow_definition_fingerprint": "sha256-tokens:b3907d5ce3fc55beb3c9e81ba5e098d14d58fcd4e1af7062090769b2fde27678"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 2,
+      "event_type": "ConditionWaitOpened",
+      "payload": {
+        "sequence": 1,
+        "condition_wait_id": "01m7wf1227c0nd1t10nwa1t001",
+        "condition_key": "comment-only.approved",
+        "condition_definition_fingerprint": "sha256-tokens:dff6f9ab1f0789654697320e8408504f92f01bea5cc362d2f9ba485e10df1b23"
+      },
+      "recorded_at": "2026-11-19T12:00:01+00:00"
+    },
+    {
+      "sequence": 3,
+      "event_type": "UpdateApplied",
+      "payload": {
+        "sequence": 1,
+        "update_name": "approve",
+        "arguments": "wwHioz3/VYAiNwwCAgEA"
+      },
+      "recorded_at": "2026-11-19T12:00:02+00:00"
+    },
+    {
+      "sequence": 4,
+      "event_type": "ConditionWaitSatisfied",
+      "payload": {
+        "sequence": 1,
+        "condition_wait_id": "01m7wf1227c0nd1t10nwa1t001",
+        "condition_key": "comment-only.approved",
+        "condition_definition_fingerprint": "sha256-tokens:dff6f9ab1f0789654697320e8408504f92f01bea5cc362d2f9ba485e10df1b23"
+      },
+      "recorded_at": "2026-11-19T12:00:02+00:00"
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "approved": true,
+      "patched": true,
+      "stage": "completed"
+    },
+    "commands": [
+      {
+        "type": "record_version_marker",
+        "change_id": "comment-only-fingerprint",
+        "version": 1
+      },
+      {
+        "type": "complete_workflow"
+      }
+    ]
+  }
+}

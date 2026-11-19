@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+- Workflow definition and `await()` condition fingerprints are versioned, and
+  a new opt-in version 2 makes comment-only and whitespace-only edits replay-safe
+  (#1227). The prefix names the version:
+  - Version 1, `sha256:`, hashes raw source lines, as before. Editing a comment
+    in a workflow class, its traits or parent workflow classes, or an `await()`
+    condition closure changes it: a missing `getVersion()` or `patched()`
+    marker then takes `DEFAULT_VERSION`, and a waiting condition fails replay.
+  - Version 2, `sha256-tokens:`, hashes the PHP code tokens without comments
+    and whitespace, so those edits no longer change replay.
+  - This release compares both versions, each run by the version it recorded,
+    and new runs still **record version 1** by default. Set
+    `DW_DEFINITION_FINGERPRINT_VERSION=v2` (`workflows.definition_fingerprint_version`)
+    to record version 2, **only after every worker that can claim these runs
+    is on this release or later**. Any other value stops the application or
+    worker at boot; recording never fails a run over this setting. An older worker compares a version 2 run
+    by version 1, sees a changed definition, and takes the legacy default for
+    a missing marker; a newer worker would then take the current branch for
+    the same run. Switching back to `v1` is safe: existing runs keep the
+    version they recorded. Rolling a worker back below this release requires
+    draining the runs that recorded version 2 first. A later release will
+    make version 2 the default.
+  - A run keeps its version for every condition wait it opens, and failed-run
+    redrive keeps the source run's version. Class pinning
+    (`resolveClassForRun()`), run detail drift
+    (`workflow_definition_current_fingerprint` is computed with the recorded
+    version, version 1 when none was recorded) and determinism diagnostics
+    compare by the recorded version.
+  - Compensation root and child reservation descriptors and recovery-run
+    admission receipts stay version 1 under either setting, so a comment edit
+    to a workflow they bind still invalidates them, as before.
+  - `CompiledWorkflowDefinition` uses the recording version for
+    `source.workflow_definition_fingerprint` and the default
+    `definition_version`. Under `v2` both become `sha256-tokens:` values, so the
+    same code compiles to a new version string once, and comment-only edits no
+    longer produce a new one.
+
 ## 2.33.0 - 2026-11-19
 
 Compensation scopes are **stable** from 2.33.0 (#1063). The classes and members

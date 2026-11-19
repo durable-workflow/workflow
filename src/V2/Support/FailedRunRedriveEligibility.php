@@ -137,7 +137,11 @@ final class FailedRunRedriveEligibility
             // a local class is registered for its type later.
             $workerSourced = ($startedPayload['workflow_definition_fingerprint_source'] ?? null) === 'worker';
             $workflowClass = $workerSourced ? null : self::localWorkflowClass($source);
-            $currentFingerprint = $workflowClass === null ? null : WorkflowDefinition::fingerprint($workflowClass);
+            // The successor keeps the fingerprint algorithm its source recorded.
+            $currentFingerprint = $workflowClass === null ? null : WorkflowDefinition::fingerprint(
+                $workflowClass,
+                SourceFingerprint::versionOf($sourceFingerprint),
+            );
 
             if ($workflowClass === null || $currentFingerprint === null) {
                 return self::refuse('definition_change_requires_replay_check');
@@ -263,7 +267,7 @@ final class FailedRunRedriveEligibility
         $workflowClass = self::localWorkflowClass($source);
 
         if ($workflowClass !== null) {
-            return $sourceFingerprint === WorkflowDefinition::fingerprint($workflowClass);
+            return WorkflowDefinition::matchesFingerprint($workflowClass, $sourceFingerprint);
         }
 
         if ($source->workflow_class !== $source->workflow_type) {
