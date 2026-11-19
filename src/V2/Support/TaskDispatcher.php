@@ -147,6 +147,12 @@ final class TaskDispatcher
                         // Its own savepoint keeps the batch usable after a failure.
                         $connection->transaction(static fn () => $write());
                     } catch (Throwable $throwable) {
+                        // A deadlock or lost connection ended the whole batch
+                        // transaction; never continue in it.
+                        if (self::endsTransaction($throwable)) {
+                            throw $throwable;
+                        }
+
                         report($throwable);
                     }
                 };
@@ -182,39 +188,55 @@ final class TaskDispatcher
 
     private static function flushCoalesced(): void
     {
-        $publishes = self::$deferredPublishes ?? [];
+        $deferred = self::$deferredPublishes ?? [];
         self::$deferredPublishes = null;
         $failure = null;
         self::$flushingPublishes = true;
 
         try {
             $admissionTaskId = null;
-            foreach ($publishes as $publish) {
-                if (is_array($publish)) {
-                    $admissionTaskId = $publish['task_id'];
+            foreach ($deferred as $item) {
+                if (is_array($item)) {
+                    $admissionTaskId = $item['task_id'];
 
                     break;
                 }
             }
-            $steps = array_map(
-                static fn (array|\Closure $publish): \Closure => $publish instanceof \Closure
-                    ? $publish
-                    : static fn () => self::publish(
-                        $publish['task_id'],
-                        $publish['queue_timer_wakeup'],
-                        $publish['bounded'],
-                    ),
-                $publishes,
-            );
 
             if ($admissionTaskId === null) {
                 // Writes alone keep their own transactions.
-                foreach ($steps as $step) {
-                    $step();
+                foreach ($deferred as $write) {
+                    if ($write instanceof \Closure) {
+                        $write();
+                    }
                 }
             } else {
-                foreach (array_chunk($steps, self::COALESCED_BATCH_SIZE) as $batch) {
-                    $failure = self::inBatchTransaction($admissionTaskId, $batch) ?? $failure;
+                foreach (array_chunk($deferred, self::COALESCED_BATCH_SIZE) as $batch) {
+                    // Record the batch's writes and dispatch metadata in one
+                    // transaction, then push its jobs only after it commits,
+                    // so a job never runs ahead of the rows it reads.
+                    [$pushes, $batchFailure] = self::inBatchTransaction(
+                        $admissionTaskId,
+                        array_map(
+                            static fn (array|\Closure $item): \Closure => $item instanceof \Closure
+                                ? static function () use ($item): ?array {
+                                    $item();
+
+                                    return null;
+                                }
+                                : static fn (): ?array => self::preparePublish(
+                                    $item['task_id'],
+                                    $item['queue_timer_wakeup'],
+                                    $item['bounded'],
+                                ),
+                            $batch,
+                        ),
+                    );
+                    $failure ??= $batchFailure;
+
+                    foreach ($pushes as $push) {
+                        $failure = self::pushPrepared($push) ?? $failure;
+                    }
                 }
             }
         } finally {
@@ -225,17 +247,22 @@ final class TaskDispatcher
 
         foreach (array_chunk($summaries, self::COALESCED_BATCH_SIZE, true) as $batch) {
             $entries = array_values($batch);
-            $failure = self::inBatchTransaction(
+            [, $batchFailure] = self::inBatchTransaction(
                 $entries[0][0]['task_id'],
                 array_map(
-                    static fn (string $runId, array $runEntries): \Closure => static fn () => self::refreshDeferredRunSummary(
+                    static fn (string $runId, array $runEntries): \Closure => static function () use (
                         $runId,
                         $runEntries,
-                    ),
+                    ): ?array {
+                        self::refreshDeferredRunSummary($runId, $runEntries);
+
+                        return null;
+                    },
                     array_map('strval', array_keys($batch)),
                     $entries,
                 ),
-            ) ?? $failure;
+            );
+            $failure ??= $batchFailure;
         }
 
         if ($failure !== null) {
@@ -246,35 +273,187 @@ final class TaskDispatcher
     /**
      * Run each step in one batch transaction, isolating every step in its own
      * savepoint so one failure keeps the others, as separate transactions did.
-     * Returns the first failure for the caller to report after the batch.
      *
-     * @param list<\Closure(): void> $steps
+     * A failure that ends the transaction itself (a deadlock, lock wait or
+     * lost connection) rolls back every step, so the batch never continues
+     * in it: the whole batch runs once more in a fresh transaction, and a
+     * second such failure is thrown with nothing committed.
+     *
+     * @param list<\Closure(): ?array<string, mixed>> $steps
+     * @return array{0: list<array<string, mixed>>, 1: ?Throwable} the steps'
+     *     non-null results and the first step failure
      */
-    private static function inBatchTransaction(string $admissionTaskId, array $steps): ?Throwable
+    private static function inBatchTransaction(string $admissionTaskId, array $steps): array
     {
-        $failure = null;
-        $runSteps = static function (Connection $connection) use ($steps, &$failure): void {
-            foreach ($steps as $step) {
-                try {
-                    $connection->transaction(static fn () => $step());
-                } catch (Throwable $throwable) {
-                    $failure ??= $throwable;
-                }
-            }
-        };
-
         $connection = ConfiguredV2Models::query('task_model', WorkflowTask::class)->getModel()
             ->getConnection();
 
-        if ($connection->getDriverName() === 'sqlite') {
-            // Take SQLite's writer once for the batch. The steps publish jobs,
-            // so the batch is never repeated after it starts.
-            SqliteTransaction::forTask($admissionTaskId, static fn (Connection $database) => $runSteps($database));
-        } else {
-            $connection->transaction(static fn (Connection $database) => $runSteps($database), 1);
+        for ($attempt = 1; ; $attempt++) {
+            $results = [];
+            $failure = null;
+            $runSteps = static function (Connection $database) use ($steps, &$results, &$failure): void {
+                foreach ($steps as $step) {
+                    try {
+                        $result = $database->transaction(static fn () => $step());
+                    } catch (Throwable $throwable) {
+                        if (self::endsTransaction($throwable)) {
+                            throw $throwable;
+                        }
+                        $failure ??= $throwable;
+
+                        continue;
+                    }
+
+                    if (is_array($result)) {
+                        $results[] = $result;
+                    }
+                }
+            };
+
+            try {
+                if ($connection->getDriverName() === 'sqlite') {
+                    // Take SQLite's writer once for the batch.
+                    SqliteTransaction::forTask(
+                        $admissionTaskId,
+                        static fn (Connection $database) => $runSteps($database),
+                    );
+                } else {
+                    $connection->transaction(static fn (Connection $database) => $runSteps($database), 1);
+                }
+            } catch (Throwable $throwable) {
+                if ($attempt === 1 && self::endsTransaction($throwable) && $connection->transactionLevel() === 0) {
+                    continue;
+                }
+
+                throw $throwable;
+            }
+
+            return [$results, $failure];
+        }
+    }
+
+    /**
+     * Whether a failure ended the surrounding transaction rather than one
+     * statement: InnoDB rolls a deadlock back entirely, and a lost connection
+     * loses everything uncommitted.
+     */
+    private static function endsTransaction(Throwable $throwable): bool
+    {
+        return TransactionFailure::endsTransaction($throwable);
+    }
+
+    /**
+     * Record one deferred publish inside the batch transaction without
+     * throwing: the dispatch metadata a successful push leaves, or the
+     * failure a refused dispatch records. Returns the job to push after the
+     * batch commits, or null when nothing is pushed.
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function preparePublish(
+        string $taskId,
+        bool $queueTimerWakeup,
+        bool $boundedWorkflowTaskProjection,
+    ): ?array {
+        /** @var WorkflowTask|null $task */
+        $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)->find($taskId);
+
+        if (! $task instanceof WorkflowTask || $task->status !== TaskStatus::Ready) {
+            return null;
         }
 
-        return $failure;
+        $job = self::makeJob($task)->beforeCommit();
+        $attemptedAt = now();
+
+        if (self::isPollMode() && ! $queueTimerWakeup) {
+            self::markDispatched($task, $attemptedAt, $boundedWorkflowTaskProjection);
+
+            return null;
+        }
+
+        try {
+            self::ensureBackendSupportsDispatch($task);
+        } catch (Throwable $throwable) {
+            self::markDispatchFailure($task, $attemptedAt, $throwable->getMessage(), $boundedWorkflowTaskProjection);
+
+            return [
+                'failure' => $throwable,
+            ];
+        }
+
+        // Timer wakeups are server infrastructure work, independent of SDK worker compatibility.
+        $fleetBlockReason = $queueTimerWakeup ? null : self::fleetBlockReason($task);
+
+        if ($fleetBlockReason !== null) {
+            self::markDispatchFailure($task, $attemptedAt, $fleetBlockReason, $boundedWorkflowTaskProjection);
+
+            return null;
+        }
+
+        $previous = [
+            'last_dispatched_at' => $task->last_dispatched_at,
+        ];
+        if (array_key_exists('queue_delivery_reference', $task->getAttributes())) {
+            $previous['queue_delivery_reference'] = $task->queue_delivery_reference;
+        }
+        self::markDispatched($task, $attemptedAt, $boundedWorkflowTaskProjection);
+
+        return [
+            'task' => $task,
+            'job' => $job,
+            'attempted_at' => $attemptedAt,
+            'previous' => $previous,
+            'bounded' => $boundedWorkflowTaskProjection,
+        ];
+    }
+
+    /**
+     * Push one prepared job after its batch committed. A failed push records
+     * the dispatch failure on its own, leaving the task as an unbatched
+     * failed publish leaves it, and is returned for the caller to throw.
+     *
+     * @param array<string, mixed> $push
+     */
+    private static function pushPrepared(array $push): ?Throwable
+    {
+        if (($push['failure'] ?? null) instanceof Throwable) {
+            return $push['failure'];
+        }
+
+        /** @var WorkflowTask $task */
+        $task = $push['task'];
+        $job = $push['job'];
+
+        try {
+            if (ExecutionTracing::enabled()) {
+                ExecutionTracing::dispatch(
+                    $task,
+                    $job,
+                    static fn () => app(BusDispatcher::class)->dispatch($job),
+                    true
+                );
+            } else {
+                app(BusDispatcher::class)->dispatch($job);
+            }
+        } catch (Throwable $throwable) {
+            // Leave what an unbatched failed publish leaves: no dispatch mark.
+            $task->forceFill($push['previous']);
+            self::markDispatchFailure($task, $push['attempted_at'], $throwable->getMessage(), $push['bounded']);
+
+            return $throwable;
+        }
+
+        if (array_key_exists('queue_delivery_reference', $task->getAttributes())) {
+            $reference = DatabaseTaskDelivery::capture($task, $job);
+
+            if ($reference !== null) {
+                $task->forceFill([
+                    'queue_delivery_reference' => $reference,
+                ])->save();
+            }
+        }
+
+        return null;
     }
 
     private static function publish(

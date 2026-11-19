@@ -3452,13 +3452,19 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     }
 
     /**
-     * Mask generated identifiers and timestamps; every other recorded value,
-     * key and event position must match.
+     * Mask generated identifiers and timestamps and ignore object key order;
+     * every other recorded value, key and event position must match.
      */
     private static function withoutRunIdentity(mixed $value): mixed
     {
         if (is_array($value)) {
-            return array_map(self::withoutRunIdentity(...), $value);
+            $value = array_map(self::withoutRunIdentity(...), $value);
+            // MySQL's JSON column reorders object keys; compare objects by key.
+            if (! array_is_list($value)) {
+                ksort($value);
+            }
+
+            return $value;
         }
         if (! is_string($value)) {
             return $value;
