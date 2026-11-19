@@ -60,7 +60,7 @@ databases() {
 }
 
 cleanup() {
-  if [ "${KEEP_UPGRADE_FIXTURE:-0}" = 1 ]; then
+  if [[ "${KEEP_UPGRADE_FIXTURE:-0}" == 1 ]]; then
     printf 'Preserving diagnostic fixture: app=%s databases=%s_*\n' "$app_path" "$database_prefix" >&2
     return
   fi
@@ -74,7 +74,7 @@ diagnosed=0
 diagnose() {
   # Functions and command substitutions inherit the trap; report once, from
   # the main shell.
-  if [ "$BASH_SUBSHELL" -ne 0 ] || [ "$diagnosed" = 1 ]; then
+  if [[ "$BASH_SUBSHELL" -ne 0 || "$diagnosed" == 1 ]]; then
     return
   fi
   diagnosed=1
@@ -109,8 +109,9 @@ each_example() {
 }
 
 drain() {
-  in_example "$1" timeout 300 php artisan queue:work redis --queue="state-machine-$1" \
-    --stop-when-empty --sleep=1 --tries=3 --no-interaction >>"$fixture_root/worker-$1.log" 2>&1
+  local example="$1"
+  in_example "$example" timeout 300 php artisan queue:work redis --queue="state-machine-${example}" \
+    --stop-when-empty --sleep=1 --tries=3 --no-interaction >>"$fixture_root/worker-${example}.log" 2>&1
 }
 
 # Runs the example's queue worker until machine:inspect satisfies the
@@ -128,7 +129,7 @@ settle() {
     if json_assert "$state" "$expression" '' 2>/dev/null; then
       return 0
     fi
-    if [ "$SECONDS" -ge "$deadline" ]; then
+    if [[ "$SECONDS" -ge "$deadline" ]]; then
       json_assert "$state" "$expression" "$message"
     fi
     sleep 1
@@ -143,19 +144,19 @@ assert_unchanged() {
 }
 
 assert_replay_is_recorded() {
-  local replay
+  local stage="$1" replay
   for example in "${examples[@]}"; do
     replay=$(machine "$example" machine:replay)
     json_assert "$replay" '$r["replayed"] > 0 && $r["business_queries"] === 0 && $r["provider_requests"] === 0' \
-      "Replaying ${example} runs on $1 queried business state or the provider."
+      "Replaying ${example} runs on ${stage} queried business state or the provider."
   done
 }
 
 assert_engine() {
-  local engine
+  local expression="$1" message="$2" engine
   for example in "${examples[@]}"; do
     engine=$(machine "$example" machine:engine)
-    json_assert "$engine" "$1" "$2"
+    json_assert "$engine" "$expression" "$message"
   done
 }
 

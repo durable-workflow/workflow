@@ -12,27 +12,29 @@ upgrade_journey_init() {
   candidate_version="${WORKFLOW_CANDIDATE_VERSION:-}"
   candidate_path="${WORKFLOW_CANDIDATE_PATH:-}"
 
-  if [ -n "$candidate_version" ] && [ -n "$candidate_path" ]; then
+  if [[ -n "$candidate_version" && -n "$candidate_path" ]]; then
     echo "Set only one of WORKFLOW_CANDIDATE_VERSION or WORKFLOW_CANDIDATE_PATH." >&2
     exit 1
   fi
 
-  if [ -z "$candidate_version" ] && [ -z "$candidate_path" ]; then
+  if [[ -z "$candidate_version" && -z "$candidate_path" ]]; then
     echo "Set WORKFLOW_CANDIDATE_VERSION for a published release or WORKFLOW_CANDIDATE_PATH for source qualification." >&2
     exit 1
   fi
 
-  if [ -n "$candidate_path" ]; then
+  if [[ -n "$candidate_path" ]]; then
     candidate_path=$(cd "$candidate_path" && pwd)
   fi
 }
 
 create_upgrade_app() {
-  composer create-project "laravel/laravel:${1}" "$2" \
+  local version="$1" target="$2"
+  composer create-project "laravel/laravel:${version}" "$target" \
     --no-interaction --no-progress --prefer-dist --no-blocking --quiet
 }
 
 set_env() {
+  local key="$1" value="$2"
   php -r '
     $contents = file_get_contents(".env");
     if (!is_string($contents)) {
@@ -45,11 +47,12 @@ set_env() {
         ? preg_replace($pattern, $line, $contents)
         : rtrim($contents) . PHP_EOL . $line . PHP_EOL;
     file_put_contents(".env", $contents);
-  ' "$1" "$2"
+  ' "$key" "$value"
 }
 
 # Appends a provider class to bootstrap/providers.php once.
 register_provider() {
+  local provider="$1"
   php -r '
     $path = "bootstrap/providers.php";
     $providers = require $path;
@@ -57,7 +60,7 @@ register_provider() {
         $providers[] = $argv[1];
     }
     file_put_contents($path, "<?php\n\nreturn " . var_export($providers, true) . ";\n");
-  ' "$1"
+  ' "$provider"
 }
 
 resolved_workflow() {
@@ -68,16 +71,16 @@ resolved_workflow() {
 }
 
 assert_resolved_workflow() {
-  local resolved
+  local expected="$1" resolved
   resolved=$(resolved_workflow)
-  if [ "$resolved" != "$1" ]; then
-    echo "Expected durable-workflow/workflow ${1}, resolved ${resolved}." >&2
+  if [[ "$resolved" != "$expected" ]]; then
+    echo "Expected durable-workflow/workflow ${expected}, resolved ${resolved}." >&2
     exit 1
   fi
 }
 
 require_baseline() {
-  if [ -n "$candidate_path" ]; then
+  if [[ -n "$candidate_path" ]]; then
     composer config --unset repositories.workflow
   fi
   composer require "durable-workflow/workflow:=${baseline_version}" \
@@ -86,7 +89,7 @@ require_baseline() {
 }
 
 require_candidate() {
-  if [ -n "$candidate_path" ]; then
+  if [[ -n "$candidate_path" ]]; then
     composer config repositories.workflow "$(php -r '
       echo json_encode([
           "type" => "path",
@@ -122,10 +125,11 @@ json_assert() {
 }
 
 json_field() {
+  local field="$1"
   php -r '
     $data = json_decode(stream_get_contents(STDIN), true, 512, JSON_THROW_ON_ERROR);
     echo $data[$argv[1]];
-  ' "$1"
+  ' "$field"
 }
 
 artisan_output() {

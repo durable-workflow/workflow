@@ -56,7 +56,10 @@ $instance = static fn (string $scenario): string => $example() === Host::PROVIDE
     ? 'provider-order-' . Host::terms($scenario)->subjectKey()
     : Ownership::instance(Host::CONFIGURED_SUBJECT);
 
-$origin = static fn (string $scenario): WorkflowStub => WorkflowStub::load($instance($scenario), $namespace())->refresh();
+$origin = static fn (string $scenario): WorkflowStub => WorkflowStub::load(
+    $instance($scenario),
+    $namespace()
+)->refresh();
 
 // Order-insensitive digest of whole tables, so it is the same on every driver.
 $tableDigest = static function (array $tables): string {
@@ -110,7 +113,11 @@ $histories = static function () use ($namespace): array {
     $runs = [];
     foreach (WorkflowRun::query()->where('namespace', $namespace())->orderBy('id')->get() as $run) {
         $events = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->orderBy('sequence')->get()->map(
-            static fn (WorkflowHistoryEvent $event): array => [$event->sequence, $event->event_type->value, $event->payload]
+            static fn (WorkflowHistoryEvent $event): array => [
+                $event->sequence,
+                $event->event_type->value,
+                $event->payload,
+            ]
         )->all();
         $runs[$run->id] = [
             'status' => $run->status->value,
@@ -137,26 +144,26 @@ $scopeStatus = static function (ScopeIdentity $scope): ?string {
 // Actions from the synthetic provider journal, optionally for one scenario's
 // purchase: confirmed effects in the order they happened, or operations the
 // provider admitted but has not resolved.
-$journalActions = static function (string $sql, ?string $scenario = null): array {
+$journalQueries = [
+    'effects' => "SELECT json_extract(o.request, '$.action') FROM provider_effects e"
+        . ' JOIN provider_operations o ON o.id = e.operation_id'
+        . " WHERE (? IS NULL OR json_extract(o.request, '$.identity.subject') = ?) ORDER BY e.sequence",
+    'pending' => "SELECT json_extract(o.request, '$.action') FROM provider_operations o"
+        . " WHERE o.status IN ('processing', 'unknown')"
+        . " AND (? IS NULL OR json_extract(o.request, '$.identity.subject') = ?) ORDER BY o.id",
+];
+$journalActions = static function (string $kind, ?string $scenario = null) use ($journalQueries): array {
     $journal = new PDO('sqlite:' . Host::journalPath());
     $subject = $scenario === null ? null : 'purchase-' . $scenario;
-    $statement = $journal->prepare(sprintf($sql, 'json_extract(o.request, \'$.action\')')
-        . ' AND (? IS NULL OR json_extract(o.request, \'$.identity.subject\') = ?)'
-        . ' ORDER BY ' . (str_contains($sql, 'provider_effects') ? 'e.sequence' : 'o.id'));
+    $statement = $journal->prepare($journalQueries[$kind]);
     $statement->execute([$subject, $subject]);
 
     return $statement->fetchAll(PDO::FETCH_COLUMN);
 };
 
-$journalEffects = static fn (?string $scenario = null): array => $journalActions(
-    'SELECT %s FROM provider_effects e JOIN provider_operations o ON o.id = e.operation_id WHERE 1 = 1',
-    $scenario,
-);
+$journalEffects = static fn (?string $scenario = null): array => $journalActions('effects', $scenario);
 
-$journalPending = static fn (string $scenario): array => $journalActions(
-    "SELECT %s FROM provider_operations o WHERE o.status IN ('processing', 'unknown')",
-    $scenario,
-);
+$journalPending = static fn (string $scenario): array => $journalActions('pending', $scenario);
 
 $journalRequests = static function (string $kind = 'command'): int {
     $journal = new PDO('sqlite:' . Host::journalPath());
@@ -177,7 +184,9 @@ Artisan::command('machine:engine', function () use ($json): void {
 Artisan::command('machine:setup', function () use ($json, $example): void {
     if ($example() === Host::CONFIGURED) {
         app(ConfiguredStore::class)->seed(Host::CONFIGURED_SUBJECT, 'prepare');
-        $this->line($json(['seeded' => [Host::CONFIGURED_SUBJECT]]));
+        $this->line($json([
+            'seeded' => [Host::CONFIGURED_SUBJECT],
+        ]));
 
         return;
     }
@@ -194,7 +203,9 @@ Artisan::command('machine:setup', function () use ($json, $example): void {
         }
         app(ProviderStore::class)->seed($terms);
     }
-    $this->line($json(['seeded' => Host::PROVIDER_SCENARIOS]));
+    $this->line($json([
+        'seeded' => Host::PROVIDER_SCENARIOS,
+    ]));
 });
 
 Artisan::command('machine:start {scenario}', function () use ($json, $example, $instance, $namespace): void {
@@ -206,40 +217,68 @@ Artisan::command('machine:start {scenario}', function () use ($json, $example, $
         $stub = WorkflowStub::make(ConfiguredOrder::class, $instance($scenario), $namespace());
         $stub->start(Host::CONFIGURED_SUBJECT, 'begin');
     }
-    $this->line($json(['workflow_id' => $stub->id(), 'run_id' => $stub->runId()]));
+    $this->line($json([
+        'workflow_id' => $stub->id(),
+        'run_id' => $stub->runId(),
+    ]));
 });
 
 Artisan::command('machine:signal {scenario} {signal}', function () use ($json, $origin): void {
-    $result = $origin((string) $this->argument('scenario'))->signal((string) $this->argument('signal'));
-    $this->line($json(['accepted' => $result->accepted()]));
+    $result = $origin((string) $this->argument('scenario'))
+        ->signal((string) $this->argument('signal'));
+    $this->line($json([
+        'accepted' => $result->accepted(),
+    ]));
 });
 
 Artisan::command('machine:cancel {scenario} {request}', function () use ($json, $example, $origin): void {
-    $run = (string) $origin((string) $this->argument('scenario'))->runId();
+    $run = (string) $origin((string) $this->argument('scenario'))
+        ->runId();
     $request = (string) $this->argument('request');
     $this->line($json($example() === Host::PROVIDER
-        ? app(CancellationStore::class)->request(Host::terms((string) $this->argument('scenario'))->subjectKey(), $run, $request)
+        ? app(CancellationStore::class)->request(
+            Host::terms((string) $this->argument('scenario'))->subjectKey(),
+            $run,
+            $request
+        )
         : app(ConfiguredStore::class)->requestCancellation(Host::CONFIGURED_SUBJECT, $run, $request)));
 });
 
 Artisan::command('machine:finish-cancel {scenario} {request}', function () use ($json, $example, $origin): void {
-    $run = (string) $origin((string) $this->argument('scenario'))->runId();
+    $run = (string) $origin((string) $this->argument('scenario'))
+        ->runId();
     $request = (string) $this->argument('request');
     $this->line($json($example() === Host::PROVIDER
-        ? app(CancellationStore::class)->finish(Host::terms((string) $this->argument('scenario'))->subjectKey(), $run, $request)
+        ? app(CancellationStore::class)->finish(
+            Host::terms((string) $this->argument('scenario'))->subjectKey(),
+            $run,
+            $request
+        )
         : app(ConfiguredStore::class)->finishCancellation(Host::CONFIGURED_SUBJECT, $run, $request)));
 });
 
 Artisan::command('machine:resolve-refund {scenario}', function () use ($json): void {
     $descriptor = Host::terms((string) $this->argument('scenario'))->descriptor('payment');
     $observation = Host::journal()->resolve(Request::fromArray($descriptor['compensation']), Status::Confirmed);
-    $this->line($json(['status' => $observation->status->value]));
+    $this->line($json([
+        'status' => $observation->status->value,
+    ]));
 });
 
-Artisan::command('machine:inspect', function () use ($json, $example, $origin, $scopeStatus, $journalEffects, $journalPending, $journalRequests, $namespace): void {
+Artisan::command('machine:inspect', function () use (
+    $json,
+    $example,
+    $origin,
+    $scopeStatus,
+    $journalEffects,
+    $journalPending,
+    $journalRequests,
+    $namespace
+): void {
     $runs = WorkflowRun::query()->where('namespace', $namespace())->get();
     $report = [
-        'runs' => $runs->countBy(static fn (WorkflowRun $run): string => $run->status->value)->all(),
+        'runs' => $runs->countBy(static fn (WorkflowRun $run): string => $run->status->value)
+            ->all(),
         'scenarios' => [],
     ];
     if ($example() === Host::PROVIDER) {
@@ -249,7 +288,8 @@ Artisan::command('machine:inspect', function () use ($json, $example, $origin, $
             $subject = $store->authority->subject($key, 'order');
             [$status, $scopes] = [null, []];
             try {
-                $status = $origin($scenario)->status();
+                $status = $origin($scenario)
+                    ->status();
                 $plan = $store->authority->plan($key);
                 $scopes = [
                     'root' => $scopeStatus($plan->rootScope()),
@@ -283,10 +323,14 @@ Artisan::command('machine:inspect', function () use ($json, $example, $origin, $
             'state' => $root?->state,
             'revision' => (int) ($root?->revision ?? 0),
             'effects' => DB::table('example_machine_effects')->orderBy('action')->pluck('status', 'action')->all(),
-            'compensations' => DB::table('example_machine_compensation_log')->orderBy('sequence')->pluck('action')->all(),
+            'compensations' => DB::table('example_machine_compensation_log')->orderBy('sequence')->pluck(
+                'action'
+            )->all(),
             'publications' => DB::table('example_machine_publications')->count(),
             'bindings' => DB::table('example_machine_bindings')->count(),
-            'child_outcome_verified' => (bool) DB::table('example_machine_bindings')->value('business_outcome_verified'),
+            'child_outcome_verified' => (bool) DB::table('example_machine_bindings')->value(
+                'business_outcome_verified'
+            ),
             'scopes' => [
                 'root' => $runId === null ? null : $scopeStatus(Ownership::scope(Host::CONFIGURED_SUBJECT, $runId)),
             ],
@@ -338,23 +382,46 @@ Artisan::command('machine:replay', function () use ($json, $example, $namespace,
     ]));
 });
 
-Artisan::command('machine:snapshot {name}', function () use ($json, $tableDigest, $businessTables, $schemaDigest, $histories, $snapshotPath): void {
+Artisan::command('machine:snapshot {name}', function () use (
+    $json,
+    $tableDigest,
+    $businessTables,
+    $schemaDigest,
+    $histories,
+    $snapshotPath
+): void {
     $snapshot = [
         'ledger' => $tableDigest(LEDGER_TABLES),
-        'ledger_rows' => array_sum(array_map(static fn (string $table): int => DB::table($table)->count(), LEDGER_TABLES)),
+        'ledger_rows' => array_sum(
+            array_map(static fn (string $table): int => DB::table($table)->count(), LEDGER_TABLES)
+        ),
         'business' => $tableDigest($businessTables()),
         'schema' => $schemaDigest(),
         'runs' => $histories(),
     ];
     file_put_contents($snapshotPath((string) $this->argument('name')), $json($snapshot));
-    $this->line($json(array_diff_key($snapshot, ['runs' => true])));
+    $this->line($json(array_diff_key($snapshot, [
+        'runs' => true,
+    ])));
 });
 
 // Compares the current state with a saved snapshot. Recorded histories of runs
 // that were already closed must never change; the other fields are compared
 // only when named.
-Artisan::command('machine:compare {name} {fields?*}', function () use ($json, $tableDigest, $businessTables, $schemaDigest, $histories, $snapshotPath): int {
-    $saved = json_decode((string) file_get_contents($snapshotPath((string) $this->argument('name'))), true, 512, JSON_THROW_ON_ERROR);
+Artisan::command('machine:compare {name} {fields?*}', function () use (
+    $json,
+    $tableDigest,
+    $businessTables,
+    $schemaDigest,
+    $histories,
+    $snapshotPath
+): int {
+    $saved = json_decode(
+        (string) file_get_contents($snapshotPath((string) $this->argument('name'))),
+        true,
+        512,
+        JSON_THROW_ON_ERROR
+    );
     $current = [
         'ledger' => static fn (): string => $tableDigest(LEDGER_TABLES),
         'business' => static fn (): string => $tableDigest($businessTables()),
@@ -362,7 +429,7 @@ Artisan::command('machine:compare {name} {fields?*}', function () use ($json, $t
     ];
     $differences = [];
     foreach ($this->argument('fields') as $field) {
-        if ($current[$field]() !== $saved[$field]) {
+        if ($saved[$field] !== $current[$field]()) {
             $differences[] = $field;
         }
     }
@@ -372,7 +439,10 @@ Artisan::command('machine:compare {name} {fields?*}', function () use ($json, $t
             $differences[] = 'history:' . $run;
         }
     }
-    $this->line($json(['differences' => $differences, 'closed_runs' => count(array_filter(array_column($saved['runs'], 'closed')))]));
+    $this->line($json([
+        'differences' => $differences,
+        'closed_runs' => count(array_filter(array_column($saved['runs'], 'closed'))),
+    ]));
 
     return $differences === [] ? 0 : 1;
 });
