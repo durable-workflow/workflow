@@ -8,13 +8,17 @@ declare(strict_types=1);
  *
  * Input (stdin, JSON): {"path": "<repository-relative path>", "base": "<base source>", "current": "<current source>"}
  * Output (stdout, JSON): {"exempt": bool, "reason": string}
+ * With --closure-spans, it prints the closure line spans of the source on stdin instead (used by tests).
  *
  * A file is exempt only when every condition holds; anything unexpected fails closed (not exempt):
  *  1. Its token stream, without T_COMMENT, T_DOC_COMMENT and T_WHITESPACE, is identical at base and head.
  *     Attributes, strings, heredocs and declare statements are ordinary tokens and still count.
  *  2. It declares no trait. Workflow definition fingerprints include the source of traits a workflow uses.
- *  3. It contains no closure, arrow function or anonymous class. Condition-wait fingerprints hash the
- *     raw source lines of closures, comments included.
+ *  3. It contains no anonymous class, and every closure and arrow function spans byte-identical raw
+ *     source lines at base and head, paired in token order. ConditionWaitDefinition::fingerprint()
+ *     hashes exactly the raw text of the whole lines a closure spans (no line numbers, offsets or
+ *     path), so comments outside those lines cannot change it, and any edit on them can. Each span is
+ *     widened to the neighbouring code tokens, so it always covers the lines the fingerprint reads.
  *  4. It declares at least one class, interface or enum; each one loads from this exact file through
  *     the repository autoloader; and no declared class is a Workflow\V2\Workflow or Workflow\Workflow
  *     subclass. Workflow definition fingerprints hash the raw source of workflow classes, comments
@@ -121,7 +125,7 @@ function isToken(array|string|null $token, int|string $kind): bool
 }
 
 /**
- * A trait, closure, arrow function or anonymous class at this token, which fingerprints may read.
+ * A trait or anonymous class at this token, which a fingerprint may read in full.
  *
  * @param list<array|string> $tokens
  */
@@ -132,21 +136,188 @@ function fingerprintedConstructAt(array $tokens, int $index): ?string
     if ($kind === T_TRAIT) {
         return 'it declares a trait';
     }
-    if ($kind === T_FN) {
-        return 'it contains an arrow function';
-    }
     if ($kind === T_CLASS && isToken(previousSignificant($tokens, $index), T_NEW)) {
         return 'it contains an anonymous class';
     }
-    if ($kind !== T_FUNCTION) {
-        return null;
+    return null;
+}
+
+/**
+ * @param list<array|string> $tokens
+ */
+function isClosureAt(array $tokens, int $index): bool
+{
+    if (isToken($tokens[$index], T_FN)) {
+        return true;
+    }
+    if (! isToken($tokens[$index], T_FUNCTION)) {
+        return false;
     }
     $next = nextSignificantIndex($tokens, $index);
     // A by-reference closure is `function &(`; a by-reference method is `function &name(`.
     if ($next !== null && isAmpersand($tokens[$next])) {
         $next = nextSignificantIndex($tokens, $next);
     }
-    return $next !== null && isToken($tokens[$next], '(') ? 'it contains a closure' : null;
+    return $next !== null && isToken($tokens[$next], '(');
+}
+
+/**
+ * The 1-based line each token starts on.
+ *
+ * @param list<array|string> $tokens
+ *
+ * @return list<int>
+ */
+function tokenLines(array $tokens): array
+{
+    $lines = [];
+    $line = 1;
+    foreach ($tokens as $token) {
+        $lines[] = $line;
+        $line += substr_count(is_array($token) ? $token[1] : $token, "\n");
+    }
+    return $lines;
+}
+
+function opensGroup(array|string $token): bool
+{
+    return in_array($token, ['(', '[', '{'], true)
+        || (is_array($token) && in_array($token[0], [T_CURLY_OPEN, T_DOLLAR_OPEN_CURLY_BRACES, T_ATTRIBUTE], true));
+}
+
+/**
+ * Index of the token that closes the group opened at $open, or null.
+ *
+ * @param list<array|string> $tokens
+ */
+function groupEnd(array $tokens, int $open): ?int
+{
+    $depth = 0;
+    for ($index = $open; isset($tokens[$index]); ++$index) {
+        if (opensGroup($tokens[$index])) {
+            ++$depth;
+        } elseif (in_array($tokens[$index], [')', ']', '}'], true) && --$depth === 0) {
+            return $index;
+        }
+    }
+    return null;
+}
+
+/**
+ * Index of the last token of the closure or arrow function at $index, or null when unknown.
+ *
+ * @param list<array|string> $tokens
+ */
+function closureEnd(array $tokens, int $index): ?int
+{
+    $open = $index;
+    while (isset($tokens[++$open]) && $tokens[$open] !== '(') {
+    }
+    $parameters = isset($tokens[$open]) ? groupEnd($tokens, $open) : null;
+    if ($parameters === null) {
+        return null;
+    }
+    if (isToken($tokens[$index], T_FUNCTION)) {
+        // Neither parameter defaults, `use` lists nor return types contain `{`: the first one opens the body.
+        $body = $parameters;
+        while (isset($tokens[++$body]) && $tokens[$body] !== '{') {
+        }
+        return isset($tokens[$body]) ? groupEnd($tokens, $body) : null;
+    }
+    $arrow = $parameters;
+    while (isset($tokens[++$arrow]) && ! isToken($tokens[$arrow], T_DOUBLE_ARROW)) {
+    }
+    // The arrow function's expression ends before the first `;`, `,` or closing bracket at its own depth.
+    $depth = 0;
+    for ($end = $arrow + 1; isset($tokens[$end]); ++$end) {
+        $token = $tokens[$end];
+        if (opensGroup($token)) {
+            ++$depth;
+        } elseif (in_array($token, [')', ']', '}'], true) && $depth-- === 0) {
+            return $end;
+        } elseif ($depth === 0 && (in_array($token, [';', ','], true) || isToken($token, T_CLOSE_TAG))) {
+            return $end;
+        }
+    }
+    return null;
+}
+
+/**
+ * Line spans covering every closure and arrow function, in token order, or null when a bound is unknown.
+ * Each span starts at the code token before the closure (and its `static` keyword and attributes) and
+ * ends at the code token after it, so it covers every line ReflectionFunction reports for the closure.
+ *
+ * @param list<array|string> $tokens
+ *
+ * @return list<array{int, int}>|null
+ */
+function closureSpans(array $tokens): ?array
+{
+    $lines = tokenLines($tokens);
+    $spans = [];
+    foreach (array_keys($tokens) as $index) {
+        if (! isClosureAt($tokens, $index)) {
+            continue;
+        }
+        $end = closureEnd($tokens, $index);
+        if ($end === null) {
+            return null;
+        }
+        $first = $index;
+        for ($previous = $index - 1; $previous >= 0; --$previous) {
+            $token = $tokens[$previous];
+            if (is_array($token) && in_array($token[0], [T_COMMENT, T_DOC_COMMENT, T_WHITESPACE], true)) {
+                continue;
+            }
+            $first = $previous;
+            if (! isToken($token, T_STATIC) && $token !== ']') {
+                break;
+            }
+            if ($token === ']') {
+                // Step back over an attribute group: its T_ATTRIBUTE `#[` opens the matching `]`.
+                $depth = 0;
+                for (; $previous >= 0; --$previous) {
+                    if (in_array($tokens[$previous], [')', ']', '}'], true)) {
+                        ++$depth;
+                    } elseif (opensGroup($tokens[$previous]) && --$depth === 0) {
+                        break;
+                    }
+                }
+                if ($previous < 0 || ! isToken($tokens[$previous], T_ATTRIBUTE)) {
+                    break;
+                }
+                $first = $previous;
+            }
+        }
+        $after = nextSignificantIndex($tokens, $end) ?? $end;
+        $spans[] = [$lines[$first], $lines[$after]];
+    }
+    return $spans;
+}
+
+/**
+ * Why the closures' raw source lines differ between base and head, or null when every pair is identical.
+ */
+function closureProblem(string $base, array $baseTokens, string $current, array $currentTokens): ?string
+{
+    $baseSpans = closureSpans($baseTokens);
+    $currentSpans = closureSpans($currentTokens);
+    if ($baseSpans === null || $currentSpans === null) {
+        return "a closure's bounds could not be determined";
+    }
+    if (count($baseSpans) !== count($currentSpans)) {
+        return 'the closures could not be paired';
+    }
+    $baseLines = explode("\n", $base);
+    $currentLines = explode("\n", $current);
+    foreach ($baseSpans as $pair => [$baseStart, $baseEnd]) {
+        [$currentStart, $currentEnd] = $currentSpans[$pair];
+        if (array_slice($baseLines, $baseStart - 1, $baseEnd - $baseStart + 1)
+            !== array_slice($currentLines, $currentStart - 1, $currentEnd - $currentStart + 1)) {
+            return "a closure's source lines changed";
+        }
+    }
+    return null;
 }
 
 /**
@@ -241,6 +412,13 @@ function loadingProblem(array $declared, string $path): ?string
     return null;
 }
 
+// Test hook: print the closure line spans of the source on stdin.
+if (($argv[1] ?? null) === '--closure-spans') {
+    $tokens = tokens((string) stream_get_contents(STDIN));
+    echo json_encode($tokens === null ? null : closureSpans($tokens), JSON_THROW_ON_ERROR);
+    exit(0);
+}
+
 $input = json_decode((string) stream_get_contents(STDIN), true);
 if (! is_array($input) || ! is_string($input['path'] ?? null)
     || ! is_string($input['base'] ?? null) || ! is_string($input['current'] ?? null)) {
@@ -257,6 +435,7 @@ if (significant($baseTokens) !== significant($currentTokens)) {
 }
 
 ['declared' => $declared, 'problem' => $problem] = declarations($currentTokens);
+$problem ??= closureProblem($input['base'], $baseTokens, $input['current'], $currentTokens);
 if ($problem !== null) {
     result(false, 'comment-only change, but ' . $problem);
 }
@@ -270,4 +449,5 @@ if ($problem !== null) {
 }
 
 result(true, 'comment-only change in ' . implode(', ', $declared)
-    . ': no trait, closure or workflow class, so no workflow or condition fingerprint includes it');
+    . ': no trait or workflow class, and every closure\'s source lines are unchanged, so no workflow or'
+    . ' condition fingerprint changes');

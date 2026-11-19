@@ -2338,24 +2338,6 @@ final readonly class PlainValue
                 "/** Helpers. */\ntrait ScopeHelpers { public function help(): int { return 1; } }\n",
                 "it declares a trait",
             ),
-            "src/V2/Compensation/Definition/WithClosure.php": (
-                "<?php\nnamespace Workflow\\V2\\Compensation\\Definition;\n"
-                "/** Closure. */\nfinal class WithClosure { public function check(): \\Closure "
-                "{ return static function (): bool { return true; }; } }\n",
-                "it contains a closure",
-            ),
-            "src/V2/Compensation/Definition/WithReferenceClosure.php": (
-                "<?php\nnamespace Workflow\\V2\\Compensation\\Definition;\n"
-                "/** Closure. */\nfinal class WithReferenceClosure { public function check(): \\Closure "
-                "{ return function &() { static $value = 1; return $value; }; } }\n",
-                "it contains a closure",
-            ),
-            "src/V2/Compensation/Definition/WithArrow.php": (
-                "<?php\nnamespace Workflow\\V2\\Compensation\\Definition;\n"
-                "/** Arrow. */\nfinal class WithArrow { public function check(): \\Closure "
-                "{ return fn (): bool => true; } }\n",
-                "it contains an arrow function",
-            ),
             "src/V2/Compensation/Definition/WithAnonymousClass.php": (
                 "<?php\nnamespace Workflow\\V2\\Compensation\\Definition;\n"
                 "/** Anonymous. */\nfinal class WithAnonymousClass { public function make(): object "
@@ -2382,6 +2364,76 @@ final readonly class PlainValue
                 self.assertIn(f"regression corpus: {path} is not exempt: comment-only change, but", result.stderr)
                 self.assertIn(reason, result.stderr)
                 target.write_text(source, encoding="utf-8")
+
+    CLOSURES = """<?php
+
+namespace Workflow\\V2\\Compensation\\Definition;
+
+/** Closures. */
+final class WithClosures
+{
+    /** Block closure. */
+    public function block(): \\Closure
+    {
+        return static function (): bool {
+            return true;
+        };
+    }
+
+    /** By-reference closure. */
+    public function reference(): \\Closure
+    {
+        return function &() {
+            static $value = 1;
+            return $value;
+        };
+    }
+
+    /** Arrow function. */
+    public function arrow(): \\Closure
+    {
+        return #[Marker]
+            static fn (array $options = ['ready' => true]): bool => $options['ready'];
+    }
+}
+"""
+
+    def test_comment_only_change_outside_closure_lines_is_exempt(self) -> None:
+        path = "src/V2/Compensation/Definition/WithClosures.php"
+        self.install_comment_only_fixtures({path: self.CLOSURES})
+        source = self.root / path
+        for changed in (
+            self.CLOSURES.replace("/** Closures. */", "/**\n * Closures.\n *\n * @api Stable.\n */\n\n"),
+            self.CLOSURES.replace("    /** Block closure. */", "    /**\n     * Block closure.\n     */\n"),
+            self.CLOSURES.replace("    /** Arrow function. */", "\n\n    // Arrow function.\n"),
+        ):
+            with self.subTest(changed=changed):
+                source.write_text(changed, encoding="utf-8")
+                result = self.validate()
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertIn(f"regression corpus: {path} is exempt", result.stderr)
+
+    def test_comment_only_change_on_closure_lines_is_not_exempt(self) -> None:
+        path = "src/V2/Compensation/Definition/WithClosures.php"
+        self.install_comment_only_fixtures({path: self.CLOSURES})
+        source = self.root / path
+        for changed in (
+            self.CLOSURES.replace("            return true;", "            // Inside the closure.\n            return true;"),
+            self.CLOSURES.replace("return static function (): bool {", "return static function (): bool { // trailing"),
+            self.CLOSURES.replace("        };\n    }\n\n    /** By-reference", "        }; // after\n    }\n\n    /** By-reference"),
+            self.CLOSURES.replace("static $value = 1;", "static $value  =  1;"),
+            self.CLOSURES.replace("        return #[Marker]\n", "        return #[Marker] // attribute\n"),
+            self.CLOSURES.replace("        return #[Marker]\n", "        return #[Marker]\n            // between\n"),
+            self.CLOSURES.replace("=> $options['ready'];", "=> $options['ready']; // end"),
+        ):
+            with self.subTest(changed=changed):
+                source.write_text(changed, encoding="utf-8")
+                result = self.validate()
+                self.assert_requires_replay_growth(result)
+                self.assertIn(
+                    f"regression corpus: {path} is not exempt: comment-only change, but a closure's source lines changed",
+                    result.stderr,
+                )
 
     def test_comment_only_change_is_not_exempt_without_the_repository_autoloader(self) -> None:
         path = "src/V2/Compensation/Definition/PlainValue.php"
