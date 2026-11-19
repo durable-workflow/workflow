@@ -299,17 +299,26 @@ final class ConditionWaits
             );
         }
 
+        // Compare by the algorithm the recorded fingerprint names, so a wait
+        // recorded with version 1 keeps its exact version 1 comparison.
         if (
             $definition['condition_definition_fingerprint'] !== null
             && $call->conditionDefinitionFingerprint !== null
-            && $definition['condition_definition_fingerprint'] !== $call->conditionDefinitionFingerprint
+            && ! ConditionWaitDefinition::matches(
+                $call->condition,
+                $definition['condition_definition_fingerprint'],
+                $call->conditionDefinitionFingerprint,
+            )
         ) {
             throw new ConditionWaitDefinitionMismatchException(
                 $sequence,
                 $definition['condition_key'],
                 $call->conditionKey,
                 $definition['condition_definition_fingerprint'],
-                $call->conditionDefinitionFingerprint,
+                ConditionWaitDefinition::fingerprint(
+                    $call->condition,
+                    SourceFingerprint::versionOf($definition['condition_definition_fingerprint']),
+                ) ?? $call->conditionDefinitionFingerprint,
             );
         }
     }

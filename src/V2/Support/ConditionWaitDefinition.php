@@ -10,13 +10,56 @@ use Throwable;
 
 final class ConditionWaitDefinition
 {
-    public static function fingerprint(Closure $condition): ?string
+    /**
+     * The condition's definition fingerprint. Version 1 hashes the closure's
+     * raw source lines; version 2 hashes their code tokens without comments
+     * and whitespace (see {@see SourceFingerprint}).
+     */
+    public static function fingerprint(Closure $condition, int $version = SourceFingerprint::CURRENT): ?string
     {
-        $source = self::source($condition);
+        $version = SourceFingerprint::normalizeVersion($version);
+        $source = $version === SourceFingerprint::V2
+            ? self::codeTokens($condition)
+            : self::source($condition);
 
         return $source === null
             ? null
-            : 'sha256:' . hash('sha256', $source);
+            : SourceFingerprint::prefix($version) . hash('sha256', $source);
+    }
+
+    /**
+     * Whether a recorded condition fingerprint matches the condition as it is
+     * now, compared by the algorithm that produced the recorded value. A
+     * condition whose current fingerprint is unavailable is not a mismatch,
+     * matching how replay treated a missing fingerprint before versions.
+     */
+    public static function matches(Closure $condition, string $recorded, ?string $current = null): bool
+    {
+        $version = SourceFingerprint::versionOf($recorded);
+
+        if ($current === null || SourceFingerprint::versionOf($current) !== $version) {
+            $current = self::fingerprint($condition, $version);
+        }
+
+        return $current === null || $current === $recorded;
+    }
+
+    private static function codeTokens(Closure $condition): ?string
+    {
+        try {
+            $reflection = new ReflectionFunction($condition);
+            $file = $reflection->getFileName();
+            $startLine = $reflection->getStartLine();
+            $endLine = $reflection->getEndLine();
+
+            if (! is_string($file) || $file === '' || ! is_file($file) || ! is_int($startLine) || ! is_int($endLine)) {
+                return null;
+            }
+
+            return SourceFingerprint::codeTokens($file, $startLine, $endLine);
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     private static function source(Closure $condition): ?string

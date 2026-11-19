@@ -59,7 +59,12 @@ final class QueryStateReplayer
         $entryMethod = EntryMethod::forWorkflow($workflow);
         $arguments = WorkflowEntryArguments::resolve($workflow, $run->workflowArguments(), $entryMethod);
         $versionDecisions = new VersionDecisions($run);
-        $workflowExecution = WorkflowExecution::start($workflow, $arguments, RedriveReplayClock::startedAt($run));
+        $workflowExecution = WorkflowExecution::start(
+            $workflow,
+            $arguments,
+            RedriveReplayClock::startedAt($run),
+            WorkflowDefinitionFingerprint::versionForRun($run),
+        );
         $historySequencesByPosition = $this->historySequencesByReplayPosition($run);
         $deliveredCancellations = $this->indexDeliveredCancellations($run);
 

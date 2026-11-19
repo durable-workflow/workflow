@@ -46,7 +46,10 @@ final class FailedRunRedriveDefinitionCheck
         unset($startedPayload['definition_changed_from']);
         $started = array_merge($startedPayload, [
             'workflow_class' => $workflowClass,
-            'workflow_definition_fingerprint' => WorkflowDefinition::fingerprint($workflowClass),
+            'workflow_definition_fingerprint' => WorkflowDefinition::fingerprint(
+                $workflowClass,
+                SourceFingerprint::versionOf($startedPayload['workflow_definition_fingerprint'] ?? null),
+            ),
         ]);
         $events = [
             [

@@ -45,6 +45,15 @@ final class WorkflowFiberContext
      */
     private static array $forwardBudgets = [];
 
+    /**
+     * Definition fingerprint version per fiber, set by the executor from the
+     * run's recorded workflow fingerprint so every condition fingerprint the
+     * run records uses the same algorithm.
+     *
+     * @var array<int, int>
+     */
+    private static array $definitionFingerprintVersions = [];
+
     public static function enter(): void
     {
         $fiber = Fiber::getCurrent();
@@ -70,6 +79,31 @@ final class WorkflowFiberContext
         unset(self::$cancellationTimeAvailable[spl_object_id($fiber)]);
         unset(self::$cancellationShields[spl_object_id($fiber)]);
         unset(self::$forwardBudgets[spl_object_id($fiber)]);
+        unset(self::$definitionFingerprintVersions[spl_object_id($fiber)]);
+    }
+
+    /**
+     * @internal Called by the executor before it starts a workflow fiber.
+     */
+    public static function setDefinitionFingerprintVersion(int $version, Fiber $fiber): void
+    {
+        self::$definitionFingerprintVersions[spl_object_id($fiber)] = SourceFingerprint::normalizeVersion($version);
+    }
+
+    /**
+     * The definition fingerprint version for condition waits opened by the
+     * current workflow fiber. Outside a workflow run it is the version new
+     * runs record.
+     */
+    public static function definitionFingerprintVersion(): int
+    {
+        $fiber = Fiber::getCurrent();
+
+        if ($fiber instanceof Fiber && isset(self::$definitionFingerprintVersions[spl_object_id($fiber)])) {
+            return self::$definitionFingerprintVersions[spl_object_id($fiber)];
+        }
+
+        return SourceFingerprint::CURRENT;
     }
 
     public static function active(): bool

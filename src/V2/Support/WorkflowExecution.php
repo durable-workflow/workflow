@@ -26,8 +26,12 @@ final class WorkflowExecution
     /**
      * @param array<int|string, mixed> $arguments
      */
-    public static function start(Workflow $workflow, array $arguments, ?CarbonInterface $eventTime = null): self
-    {
+    public static function start(
+        Workflow $workflow,
+        array $arguments,
+        ?CarbonInterface $eventTime = null,
+        int $definitionFingerprintVersion = SourceFingerprint::CURRENT,
+    ): self {
         $entryMethod = EntryMethod::forWorkflow($workflow);
         WorkflowEntryArguments::assertInvocation($workflow, $entryMethod, $arguments);
 
@@ -35,6 +39,7 @@ final class WorkflowExecution
             static fn (): mixed => $workflow->{$entryMethod->getName()}(...$arguments),
             straightLineError: StraightLineWorkflowRequiredException::forWorkflow($workflow::class),
             eventTime: $eventTime,
+            definitionFingerprintVersion: $definitionFingerprintVersion,
         );
     }
 
@@ -46,6 +51,7 @@ final class WorkflowExecution
         array $arguments = [],
         ?StraightLineWorkflowRequiredException $straightLineError = null,
         ?CarbonInterface $eventTime = null,
+        int $definitionFingerprintVersion = SourceFingerprint::CURRENT,
     ): self {
         $callback = ExecutionTracing::bind($callback);
         $fiber = new Fiber(static function () use ($callback, $arguments): mixed {
@@ -64,6 +70,8 @@ final class WorkflowExecution
         if ($eventTime !== null) {
             WorkflowFiberContext::setTime($eventTime, $fiber);
         }
+
+        WorkflowFiberContext::setDefinitionFingerprintVersion($definitionFingerprintVersion, $fiber);
 
         $sample = WorkflowExecutionProfile::begin('authoring_start');
         try {

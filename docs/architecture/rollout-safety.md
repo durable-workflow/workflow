@@ -277,6 +277,18 @@ Guarantees:
   MUST refuse a claim whose worker fingerprint does not match the
   run's `workflow_definition_fingerprint` when
   `DW_V2_PIN_TO_RECORDED_FINGERPRINT=1`.
+- Definition fingerprints are versioned by their prefix. New runs
+  record version 2 (`sha256-tokens:`) for the workflow definition
+  and for every `await()` condition: a hash of the PHP code tokens of
+  the workflow class, its traits and parent workflow classes, or of the
+  condition's lines, without comments and whitespace. Editing only
+  comments, docblocks or formatting in those places therefore no longer
+  changes how in-flight version 2 runs replay. A run recorded with
+  version 1 (`sha256:`, raw source lines) or with no fingerprint keeps
+  being compared by version 1 exactly as before, including the
+  condition waits it opens later, so for those runs a comment edit
+  still counts as a definition change. `Workflow\V2\Support\SourceFingerprint`
+  defines both versions.
 - Worker-contract admission is a fleet property, not a per-request
   property. A single worker advertising a new marker cannot change
   the fleet-wide required marker; the required marker is still

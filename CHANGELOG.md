@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Comment-only and whitespace-only edits to a workflow class, its traits or
+  parent workflow classes, or an `await()` condition closure no longer change
+  replay for runs started on this release (#1227). Definition and condition
+  fingerprints are versioned by their prefix:
+  - New runs record version 2, `sha256-tokens:`, a hash of the code tokens
+    without comments and whitespace. After such an edit, a missing
+    `getVersion()` or `patched()` marker keeps taking the current branch, and a
+    waiting condition keeps matching.
+  - Runs recorded with version 1, `sha256:`, or with no fingerprint keep their
+    exact version 1 comparison, including for condition waits they open after
+    the upgrade. For them a comment edit is still a definition change, as
+    before. Mixed fleets need no coordination: each run is compared by the
+    version it recorded.
+  - Class pinning (`resolveClassForRun()`), run detail drift
+    (`workflow_definition_current_fingerprint` is computed with the recorded
+    version) and determinism diagnostics compare by the recorded version.
+    Failed-run redrive keeps the source run's version.
+  - Compensation root and child reservation descriptors keep recording
+    version 1 fingerprints, so stored reservations compare unchanged.
+
 ## 2.33.0 - 2026-11-19
 
 Compensation scopes are **stable** from 2.33.0 (#1063). The classes and members
