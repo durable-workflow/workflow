@@ -515,7 +515,12 @@ final class WorkflowExecutor
             $versionDecisions = new VersionDecisions($run);
             if ($frame === null) {
                 $continuation?->recordColdEntry();
-                $execution = WorkflowExecution::start($workflow, $arguments, RedriveReplayClock::startedAt($run));
+                $execution = WorkflowExecution::start(
+                    $workflow,
+                    $arguments,
+                    RedriveReplayClock::startedAt($run),
+                    WorkflowDefinitionFingerprint::versionForRun($run),
+                );
                 $frame = new WorkflowContinuation($workflow, $execution, $execution->current());
             }
         } catch (Throwable $throwable) {

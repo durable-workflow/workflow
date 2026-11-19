@@ -6,7 +6,12 @@ namespace Workflow\V2\StateMachine\Definition;
 
 use InvalidArgumentException;
 
-/** A forward command cap and replay-stable history admission thresholds. */
+/**
+ * A forward command cap and replay-stable history admission thresholds.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
+ */
 final readonly class ExecutionLimits
 {
     public const MAX_COMMANDS = 4096;

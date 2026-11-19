@@ -8,7 +8,12 @@ use InvalidArgumentException;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 use Workflow\V2\StateMachine\Definition\MachineDefinition;
 
-/** Recorded invariant outcome; the host retains the complete correlated ConditionEvaluation for inspection. */
+/**
+ * Recorded invariant outcome; the host retains the complete correlated ConditionEvaluation for inspection.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
+ */
 final readonly class MachineAssessment
 {
     private function __construct(

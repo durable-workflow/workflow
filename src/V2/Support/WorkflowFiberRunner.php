@@ -226,7 +226,12 @@ final class WorkflowFiberRunner
         $hasExplicitResume = func_num_args() > 0;
 
         if ($this->execution === null) {
-            $this->execution = WorkflowExecution::start($this->workflow, $this->arguments, $this->startedAt);
+            $this->execution = WorkflowExecution::start(
+                $this->workflow,
+                $this->arguments,
+                $this->startedAt,
+                $this->definitionFingerprintVersion(),
+            );
         } else {
             if ($this->waitingForHistory) {
                 $this->waitingForHistory = false;
@@ -1476,6 +1481,22 @@ final class WorkflowFiberRunner
         }
 
         $run->setRelation('historyEvents', new EloquentCollection($events));
+    }
+
+    /**
+     * A replayed run keeps the fingerprint algorithm of its recorded workflow
+     * fingerprint (version 1 when it recorded none); a run with no history
+     * yet is new and uses the version new runs record.
+     */
+    private function definitionFingerprintVersion(): int
+    {
+        if (! $this->hasReplayHistory) {
+            return SourceFingerprint::recordingVersion();
+        }
+
+        return SourceFingerprint::versionOf(
+            self::workflowStartedPayload($this->historyEvents)['workflow_definition_fingerprint'] ?? null,
+        );
     }
 
     /**

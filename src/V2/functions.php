@@ -119,7 +119,12 @@ if (! function_exists(__NAMESPACE__ . '\\child')) {
 }
 
 if (! function_exists(__NAMESPACE__ . '\\startChild')) {
-    /** Confirm an embedded native child admission without waiting for completion. */
+    /**
+     * Confirm an embedded native child admission without waiting for completion.
+     *
+     * @experimental Native child start may change in a minor release.
+     * See docs/api-stability.md#state-machines.
+     */
     function startChild(string $workflow, mixed ...$arguments): StartedChildWorkflow
     {
         $options = null;
@@ -236,20 +241,25 @@ if (! function_exists(__NAMESPACE__ . '\\await')) {
         }
 
         $condition = \Closure::fromCallable($condition);
+        // A run keeps the fingerprint algorithm it started with.
+        $definitionFingerprint = Support\ConditionWaitDefinition::fingerprint(
+            $condition,
+            Support\WorkflowFiberContext::definitionFingerprintVersion(),
+        );
 
         if ($timeoutSeconds !== null) {
             return WorkflowFiberContext::suspend(new AwaitWithTimeoutCall(
                 $timeoutSeconds,
                 $condition,
                 Support\ConditionWaitKey::normalize($conditionKey),
-                Support\ConditionWaitDefinition::fingerprint($condition),
+                $definitionFingerprint,
             ));
         }
 
         return WorkflowFiberContext::suspend(new AwaitCall(
             $condition,
             Support\ConditionWaitKey::normalize($conditionKey),
-            Support\ConditionWaitDefinition::fingerprint($condition),
+            $definitionFingerprint,
         ));
     }
 }

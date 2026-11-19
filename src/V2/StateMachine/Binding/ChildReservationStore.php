@@ -12,14 +12,18 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\StartedChildWorkflow;
 use Workflow\V2\Support\ChildWorkflowCall;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\SourceFingerprint;
 use Workflow\V2\Support\SqliteTransaction;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\WorkflowDefinition;
 
 /**
- * @experimental Recorded activities call this host boundary. Guards/replay must
+ * Recorded activities call this host boundary. Guards/replay must
  * not call it. Reservation, native admission and closure share one instance row.
  * Closed unused rows are permanent fences, not run-retention candidates.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
  */
 final class ChildReservationStore
 {
@@ -59,7 +63,9 @@ final class ChildReservationStore
             || TypeRegistry::for($workflowClass) !== $identity->childWorkflowType) {
             throw new LogicException('The binding child type does not match its definition.');
         }
-        $fingerprint = WorkflowDefinition::fingerprint($workflowClass);
+        // Reservation descriptors are immutable and byte-compared, so they keep
+        // the version 1 definition fingerprint they have always recorded.
+        $fingerprint = WorkflowDefinition::fingerprint($workflowClass, SourceFingerprint::V1);
         if ($fingerprint === null) {
             throw new LogicException('The child definition has no immutable fingerprint.');
         }
@@ -233,7 +239,7 @@ final class ChildReservationStore
         // Persisted data does not choose a class to autoload. First bind the
         // supplied descriptor to the host-authorized reservation under its lock.
         if (TypeRegistry::for($call->workflow) !== $identity->childWorkflowType
-            || WorkflowDefinition::fingerprint($call->workflow) !== $reservation->definitionFingerprint) {
+            || ! WorkflowDefinition::matchesFingerprint($call->workflow, $reservation->definitionFingerprint)) {
             throw new LogicException('The native child definition differs from its reserved source.');
         }
         return $child;

@@ -2,6 +2,73 @@
 
 ## Unreleased
 
+- The business state-machine API is explicitly experimental (#1069). Every
+  public class, interface and enum in `Workflow\V2\StateMachine`, native child
+  start (`Workflow::startChild()`, `startChild()` and `StartedChildWorkflow`) and
+  `DurableScope::reserveChild()` are marked `@experimental`. They may change
+  incompatibly in a minor release, never in a patch release.
+  `docs/api-stability.md#state-machines` lists them and the release each first
+  shipped in: the transition contract and `TransitionRunner` in 2.23.0, and the
+  definitions, rules, budgets, child bindings and native child start in 2.29.0.
+  Docblocks and documentation only; no behavior changes.
+
+- Workflow definition and `await()` condition fingerprints are versioned, and
+  a new opt-in version 2 makes comment-only and whitespace-only edits replay-safe
+  (#1227). The prefix names the version:
+  - Version 1, `sha256:`, hashes raw source lines, as before. Editing a comment
+    in a workflow class, its traits or parent workflow classes, or an `await()`
+    condition closure changes it: a missing `getVersion()` or `patched()`
+    marker then takes `DEFAULT_VERSION`, and a waiting condition fails replay.
+  - Version 2, `sha256-tokens:`, hashes the PHP code tokens without comments
+    and whitespace, so those edits no longer change replay.
+  - This release compares both versions, each run by the version it recorded,
+    and new runs still **record version 1** by default. Set
+    `DW_DEFINITION_FINGERPRINT_VERSION=v2` (`workflows.definition_fingerprint_version`)
+    to record version 2, **only after every worker that can claim these runs
+    is on this release or later**. Any other value stops the application or
+    worker at boot; recording never fails a run over this setting. An older worker compares a version 2 run
+    by version 1, sees a changed definition, and takes the legacy default for
+    a missing marker; a newer worker would then take the current branch for
+    the same run. Switching back to `v1` is safe: existing runs keep the
+    version they recorded. Rolling a worker back below this release requires
+    draining the runs that recorded version 2 first. A later release will
+    make version 2 the default.
+  - A run keeps its version for every condition wait it opens, and failed-run
+    redrive keeps the source run's version. Class pinning
+    (`resolveClassForRun()`), run detail drift
+    (`workflow_definition_current_fingerprint` is computed with the recorded
+    version, version 1 when none was recorded) and determinism diagnostics
+    compare by the recorded version.
+  - Compensation root and child reservation descriptors and recovery-run
+    admission receipts stay version 1 under either setting, so a comment edit
+    to a workflow they bind still invalidates them, as before.
+  - `CompiledWorkflowDefinition` uses the recording version for
+    `source.workflow_definition_fingerprint` and the default
+    `definition_version`. Under `v2` both become `sha256-tokens:` values, so the
+    same code compiles to a new version string once, and comment-only edits no
+    longer produce a new one.
+- **Upgrade 2.32.0 hosts to 2.33.0.** On 2.32.0, a run that waits for a signal
+  after it consumed a child's result receives a no-op workflow task on every
+  watchdog pass, for as long as it waits (#1219). The business state-machine
+  examples hit this: a booked Order waits for `finish` after its payment and
+  booking children complete, so a queue worker run with `--stop-when-empty`
+  never stops. 2.33.0 fixes it. Existing rows self-heal: the watchdog
+  re-projects the run before it would create a task, so the run then reads
+  `waiting_for_signal`. Recorded history is unchanged.
+- CI now installs published 2.33.0 into a new Laravel application and checks
+  the state-machine examples across an upgrade (#1069). Provider-backed and
+  configured Orders are left mid-flight on queue workers with MySQL or
+  PostgreSQL and Redis. One has a cancellation waiting on a processing provider
+  refund. After the upgrade, every recorded run replays, and the Orders finish
+  or recover without repeating a provider effect. The job also checks that
+  schema rollback is refused while their scopes are retained. It checks a
+  package downgrade that keeps that state, followed by an upgrade that recovers
+  it. It runs on pull requests that change the examples, state-machine,
+  compensation or migration code, and on stable release tags against the
+  published package. `docs/business-state-machines.md` describes what it
+  checks. The compensation-scope and state-machine journeys now share
+  `scripts/ci/upgrade-journey-lib.sh`.
+
 ## 2.33.0 - 2026-11-19
 
 Compensation scopes are **stable** from 2.33.0 (#1063). The classes and members

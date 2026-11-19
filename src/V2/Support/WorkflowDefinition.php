@@ -15,7 +15,9 @@ use Workflow\V2\Workflow;
 final class WorkflowDefinition
 {
     /**
-     * @var array<class-string, string|null>
+     * Fingerprints per class, keyed by {@see SourceFingerprint} version.
+     *
+     * @var array<class-string, array<int, string|null>>
      */
     private static array $fingerprints = [];
 
@@ -23,7 +25,9 @@ final class WorkflowDefinition
      * Reverse index of {@see $fingerprints}: fingerprint hash → class-string.
      *
      * Populated lazily by {@see fingerprint()} so any workflow class whose
-     * fingerprint has been computed is resolvable by its recorded hash.
+     * fingerprint has been computed is resolvable by its recorded hash. Every
+     * fingerprint version of a class is indexed together, so a run recorded
+     * with an older version still resolves its class.
      * Used by {@see WorkflowDefinitionFingerprint::resolveClassForRun()} to
      * pin in-flight runs to the definition snapshot captured in their
      * WorkflowStarted history event, even after `workflow_runs.workflow_class`
@@ -312,13 +316,22 @@ final class WorkflowDefinition
     }
 
     /**
+     * The definition fingerprint of a workflow class.
+     *
+     * Without a version this is the version new runs record
+     * ({@see SourceFingerprint::recordingVersion()}). Pass the version of a
+     * recorded fingerprint to recompute the current class with the same
+     * algorithm, or use {@see matchesFingerprint()}.
+     *
      * @param class-string $class
      */
-    public static function fingerprint(string $class): ?string
+    public static function fingerprint(string $class, ?int $version = null): ?string
     {
         if (! self::isWorkflowClass($class)) {
             return null;
         }
+
+        $version = SourceFingerprint::normalizeVersion($version ?? SourceFingerprint::recordingVersion());
 
         if (! array_key_exists($class, self::$fingerprints)) {
             $sources = [];
@@ -327,18 +340,38 @@ final class WorkflowDefinition
             self::collectFingerprintSources(new ReflectionClass($class), $sources, $seen);
             ksort($sources);
 
-            $fingerprint = $sources === []
-                ? null
-                : 'sha256:' . hash('sha256', json_encode($sources, JSON_THROW_ON_ERROR));
+            $fingerprints = [
+                SourceFingerprint::V1 => self::hashSources($sources, SourceFingerprint::V1),
+                SourceFingerprint::V2 => self::hashSources($sources, SourceFingerprint::V2),
+            ];
 
-            self::$fingerprints[$class] = $fingerprint;
+            self::$fingerprints[$class] = $fingerprints;
 
-            if ($fingerprint !== null && ! array_key_exists($fingerprint, self::$classesByFingerprint)) {
-                self::$classesByFingerprint[$fingerprint] = $class;
+            foreach ($fingerprints as $fingerprint) {
+                if ($fingerprint !== null && ! array_key_exists($fingerprint, self::$classesByFingerprint)) {
+                    self::$classesByFingerprint[$fingerprint] = $class;
+                }
             }
         }
 
-        return self::$fingerprints[$class];
+        return self::$fingerprints[$class][$version];
+    }
+
+    /**
+     * Whether a recorded definition fingerprint matches the class as it is
+     * now, compared by the algorithm that produced the recorded value.
+     *
+     * @param class-string $class
+     */
+    public static function matchesFingerprint(string $class, ?string $recorded): bool
+    {
+        if ($recorded === null || $recorded === '') {
+            return false;
+        }
+
+        $current = self::fingerprint($class, SourceFingerprint::versionOf($recorded));
+
+        return $current !== null && hash_equals($recorded, $current);
     }
 
     /**
@@ -386,6 +419,11 @@ final class WorkflowDefinition
 
             return;
         }
+
+        // Compare in the registered fingerprint's version, so the recording
+        // setting cannot make the same definition look re-registered.
+        $fingerprint = self::fingerprint($class, SourceFingerprint::versionOf($existing['fingerprint']))
+            ?? $fingerprint;
 
         if (hash_equals($existing['fingerprint'], $fingerprint)) {
             return;
@@ -854,7 +892,7 @@ final class WorkflowDefinition
     }
 
     /**
-     * @param array<string, array{symbol: string, kind: string, source: string}> $sources
+     * @param array<string, array{symbol: string, kind: string, file: string, start_line: int, end_line: int}> $sources
      * @param array<string, true> $seen
      */
     private static function collectFingerprintSources(
@@ -871,13 +909,13 @@ final class WorkflowDefinition
         $seen[$name] = true;
 
         if ($name !== Workflow::class) {
-            $source = self::reflectionSource($reflection);
+            $location = self::reflectionLocation($reflection);
 
-            if ($source !== null) {
+            if ($location !== null) {
                 $sources[$name] = [
                     'symbol' => $name,
                     'kind' => $reflection->isTrait() ? 'trait' : 'class',
-                    'source' => $source,
+                    ...$location,
                 ];
             }
         }
@@ -893,7 +931,38 @@ final class WorkflowDefinition
         }
     }
 
-    private static function reflectionSource(ReflectionClass $reflection): ?string
+    /**
+     * @param array<string, array{symbol: string, kind: string, file: string, start_line: int, end_line: int}> $sources
+     */
+    private static function hashSources(array $sources, int $version): ?string
+    {
+        $hashed = [];
+
+        foreach ($sources as $name => $location) {
+            $source = $version === SourceFingerprint::V2
+                ? SourceFingerprint::codeTokens($location['file'], $location['start_line'], $location['end_line'])
+                : self::rawLines($location['file'], $location['start_line'], $location['end_line']);
+
+            if ($source === null) {
+                continue;
+            }
+
+            $hashed[$name] = [
+                'symbol' => $location['symbol'],
+                'kind' => $location['kind'],
+                'source' => $source,
+            ];
+        }
+
+        return $hashed === []
+            ? null
+            : SourceFingerprint::prefix($version) . hash('sha256', json_encode($hashed, JSON_THROW_ON_ERROR));
+    }
+
+    /**
+     * @return array{file: string, start_line: int, end_line: int}|null
+     */
+    private static function reflectionLocation(ReflectionClass $reflection): ?array
     {
         $file = $reflection->getFileName();
 
@@ -908,6 +977,18 @@ final class WorkflowDefinition
             return null;
         }
 
+        return [
+            'file' => $file,
+            'start_line' => $startLine,
+            'end_line' => $endLine,
+        ];
+    }
+
+    /**
+     * Version 1 source: the raw lines, comments and whitespace included.
+     */
+    private static function rawLines(string $file, int $startLine, int $endLine): ?string
+    {
         $lines = @file($file);
 
         if (! is_array($lines)) {

@@ -2864,6 +2864,12 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 continue;
             }
 
+            if ($fixture['id'] === 'comment-only-definition-edit-keeps-recorded-branch') {
+                $this->assertCommentOnlyEditKeepsTheRecordedDefinition($fixture);
+
+                continue;
+            }
+
             if ($fixture['id'] === 'parallel-child-parent-resolution-authority') {
                 $this->assertParallelChildParentResolutionAuthority($fixture);
 
@@ -3585,7 +3591,14 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertTrue($admitted['completed'], json_encode($admitted, JSON_THROW_ON_ERROR));
         $link = WorkflowLink::query()->where('parent_workflow_run_id', $parent->runId())->sole();
         $child = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
-        $expected = $fixture['history'][0]['payload']['workflow_definition_fingerprint'];
+        // The fixture pins this definition's version 1 fingerprint; the second
+        // argument selects version 1 (releases before versioned fingerprints
+        // ignore it). A child started now records the current version.
+        $this->assertSame(
+            $fixture['history'][0]['payload']['workflow_definition_fingerprint'],
+            WorkflowDefinition::fingerprint($fixture['workflow']['type'], 1),
+        );
+        $expected = WorkflowDefinition::fingerprint($fixture['workflow']['type']);
         $this->assertSame($expected, WorkflowDefinitionFingerprint::recordedForRun($child));
 
         $childTask = WorkflowTask::query()->where('workflow_run_id', $child->id)->sole();
@@ -5712,6 +5725,43 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             ->where('workflow_run_id', $run->id)
             ->where('event_type', HistoryEventType::VersionMarkerRecorded->value)
             ->exists());
+    }
+
+    /**
+     * The run recorded token fingerprints with a build of its workflow that had
+     * different comments. Query replay and the executor both keep matching its
+     * condition wait and take the current branch for the missing patch marker.
+     *
+     * @param array<string, mixed> $fixture
+     */
+    private function assertCommentOnlyEditKeepsTheRecordedDefinition(array $fixture): void
+    {
+        $run = $this->createRunFromFixture($fixture);
+        $before = WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->get()->toArray();
+
+        $this->assertSame(
+            $fixture['expected']['result'],
+            (new QueryStateReplayer())->query($run->fresh(), 'currentState'),
+        );
+        $this->assertSame(
+            $before,
+            WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)->get()->toArray(),
+        );
+
+        $this->runReadyWorkflowTask($run);
+        $workflow = WorkflowStub::loadRun($run->id);
+        $this->assertTrue($workflow->completed(), (string) $run->fresh()->closed_reason);
+        $this->assertSame($fixture['expected']['result'], $workflow->output());
+        $marker = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::VersionMarkerRecorded->value)
+            ->sole();
+        $this->assertSame('comment-only-fingerprint', $marker->payload['change_id'] ?? null);
+        $this->assertSame(1, $marker->payload['version'] ?? null);
+        $this->assertSame(1, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', HistoryEventType::ConditionWaitOpened->value)
+            ->count());
     }
 
     /**

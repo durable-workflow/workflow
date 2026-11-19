@@ -90,6 +90,8 @@ jobs:
         bash -n \
           scripts/ci/laravel-embedded-upgrade-smoke.sh \
           scripts/ci/compensation-scope-upgrade-smoke.sh \
+          scripts/ci/state-machine-upgrade-smoke.sh \
+          scripts/ci/upgrade-journey-lib.sh \
           scripts/ci/check-packagist-release.sh \
           scripts/ci/check-platform-conformance-mirror.sh \
           scripts/ci/test-platform-conformance-resolver-audit.sh
@@ -100,6 +102,7 @@ jobs:
         php -l scripts/ci/laravel-embedded-upgrade-matrix.php
         php -l scripts/ci/verify-history-export-source-identity.php
         php -l scripts/ci/classify-comment-only-change.php
+        for file in scripts/ci/state-machine-upgrade/*.php; do php -l "$file"; done
         php scripts/ci/check-v2-coverage.php --self-test
         python - <<'PY'
         import ast

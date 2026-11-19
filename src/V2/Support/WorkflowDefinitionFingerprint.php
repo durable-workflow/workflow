@@ -29,21 +29,31 @@ final class WorkflowDefinitionFingerprint
         return self::stringValue(self::workflowStartedEvent($run)?->payload['definition_changed_from'] ?? null);
     }
 
+    /**
+     * The fingerprint algorithm version this run compares by: the version of
+     * its recorded fingerprint. A run that recorded none compares by
+     * version 1, as before versioned fingerprints existed.
+     */
+    public static function versionForRun(WorkflowRun $run): int
+    {
+        return SourceFingerprint::versionOf(self::recordedForRun($run));
+    }
+
+    /**
+     * The current definition's fingerprint, computed with the algorithm of
+     * the run's recorded fingerprint so the two are comparable. A run with no
+     * recorded fingerprint compares by version 1, as {@see versionForRun()}
+     * says.
+     */
     public static function currentForRun(WorkflowRun $run): ?string
     {
-        try {
-            $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
-        } catch (LogicException) {
-            return null;
-        }
-
-        return WorkflowDefinition::fingerprint($workflowClass);
+        return self::currentFor($run, self::recordedForRun($run));
     }
 
     public static function matchesCurrent(WorkflowRun $run): ?bool
     {
         $recorded = self::recordedForRun($run);
-        $current = self::currentForRun($run);
+        $current = self::currentFor($run, $recorded);
 
         if ($recorded === null || $current === null) {
             return null;
@@ -100,7 +110,11 @@ final class WorkflowDefinitionFingerprint
         // Warm the reverse index for the fallback class so repeated calls
         // for a run whose fingerprint matches the current class stay on the
         // fast path (O(1) hash-equals) instead of running a registry lookup.
-        $currentFingerprint = WorkflowDefinition::fingerprint($fallbackClass);
+        // Compare by the algorithm the recorded fingerprint names.
+        $currentFingerprint = WorkflowDefinition::fingerprint(
+            $fallbackClass,
+            SourceFingerprint::versionOf($recorded),
+        );
 
         if ($currentFingerprint !== null && hash_equals($recorded, $currentFingerprint)) {
             return $fallbackClass;
@@ -113,6 +127,17 @@ final class WorkflowDefinitionFingerprint
         }
 
         return $fallbackClass;
+    }
+
+    private static function currentFor(WorkflowRun $run, ?string $recorded): ?string
+    {
+        try {
+            $workflowClass = TypeRegistry::resolveWorkflowClass($run->workflow_class, $run->workflow_type);
+        } catch (LogicException) {
+            return null;
+        }
+
+        return WorkflowDefinition::fingerprint($workflowClass, SourceFingerprint::versionOf($recorded));
     }
 
     private static function pinningEnabled(): bool

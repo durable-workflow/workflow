@@ -6,6 +6,10 @@ namespace Workflow\V2\StateMachine\Rules;
 
 use InvalidArgumentException;
 
+/**
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
+ */
 final readonly class Decision
 {
     /**

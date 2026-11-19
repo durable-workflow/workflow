@@ -7,12 +7,17 @@ namespace Tests\Unit\V2;
 use PHPUnit\Framework\TestCase;
 use ReflectionFunction;
 use Workflow\V2\Support\ConditionWaitDefinition;
+use Workflow\V2\Support\SourceFingerprint;
 
 /**
  * Pins what the condition-wait fingerprint reads. The regression-corpus comment-only exemption
- * (scripts/ci/classify-comment-only-change.php) relies on it hashing only the raw text of the lines a
- * callable spans: comments and blank lines outside those lines must not change it. await() turns any
- * callable into a closure, so method callables and invokables are fingerprinted by their method's lines.
+ * (scripts/ci/classify-comment-only-change.php) relies on it hashing only the lines a callable spans:
+ * comments and blank lines outside those lines must not change it. await() turns any callable into a
+ * closure, so method callables and invokables are fingerprinted by their method's lines.
+ *
+ * Version 1 hashes the raw text of those lines, so a comment inside them changes it. Runs recorded with
+ * version 1 keep that comparison, which is why the exemption still refuses such comments. Version 2 hashes
+ * only their code tokens.
  */
 final class ConditionWaitDefinitionFingerprintTest extends TestCase
 {
@@ -82,13 +87,15 @@ PHP;
                 (new ReflectionFunction($before))->getStartLine(),
                 (new ReflectionFunction($after))->getStartLine(),
             );
-            // ... and the fingerprint does not.
-            $this->assertNotNull(ConditionWaitDefinition::fingerprint($before));
-            $this->assertSame(
-                ConditionWaitDefinition::fingerprint($before),
-                ConditionWaitDefinition::fingerprint($after),
-                $method,
-            );
+            // ... and neither fingerprint version does.
+            foreach ([SourceFingerprint::V1, SourceFingerprint::V2] as $version) {
+                $this->assertNotNull(ConditionWaitDefinition::fingerprint($before, $version));
+                $this->assertSame(
+                    ConditionWaitDefinition::fingerprint($before, $version),
+                    ConditionWaitDefinition::fingerprint($after, $version),
+                    "{$method} v{$version}",
+                );
+            }
         }
     }
 
@@ -111,18 +118,26 @@ PHP;
         );
 
         foreach (array_keys(self::callables($plain)) as $method) {
-            $this->assertNotSame(
-                ConditionWaitDefinition::fingerprint(self::callables($plain)[$method]),
-                ConditionWaitDefinition::fingerprint(self::callables($changed)[$method]),
-                $method,
-            );
+            foreach ([SourceFingerprint::V1, SourceFingerprint::V2] as $version) {
+                $this->assertNotSame(
+                    ConditionWaitDefinition::fingerprint(self::callables($plain)[$method], $version),
+                    ConditionWaitDefinition::fingerprint(self::callables($changed)[$method], $version),
+                    "{$method} v{$version}",
+                );
+            }
         }
-        // A comment inside a callable's lines is part of the fingerprint, so the exemption refuses it. This
-        // includes the body of a method passed to await() as a callable or an invokable object.
+        // A comment inside a callable's lines is part of the version 1 fingerprint, so the exemption refuses
+        // it. This includes the body of a method passed to await() as a callable or an invokable object.
+        // Version 2 ignores it.
         foreach (['block', 'ready', 'invokable'] as $method) {
             $this->assertNotSame(
-                ConditionWaitDefinition::fingerprint(self::callables($plain)[$method]),
-                ConditionWaitDefinition::fingerprint(self::callables($commentedInside)[$method]),
+                ConditionWaitDefinition::fingerprint(self::callables($plain)[$method], SourceFingerprint::V1),
+                ConditionWaitDefinition::fingerprint(self::callables($commentedInside)[$method], SourceFingerprint::V1),
+                $method,
+            );
+            $this->assertSame(
+                ConditionWaitDefinition::fingerprint(self::callables($plain)[$method], SourceFingerprint::V2),
+                ConditionWaitDefinition::fingerprint(self::callables($commentedInside)[$method], SourceFingerprint::V2),
                 $method,
             );
         }

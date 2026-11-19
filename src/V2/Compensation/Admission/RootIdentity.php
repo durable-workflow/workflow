@@ -11,6 +11,7 @@ use Workflow\V2\Compensation\Definition\ScopeIdentity;
 use Workflow\V2\StartOptions;
 use Workflow\V2\StateMachine\Binding\ChildReservation;
 use Workflow\V2\Support\RoutingResolver;
+use Workflow\V2\Support\SourceFingerprint;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\Workflow;
@@ -58,7 +59,9 @@ final readonly class RootIdentity
         if (! is_a($workflow, Workflow::class, true)) {
             throw new InvalidArgumentException('Root admission requires a native V2 workflow.');
         }
-        $fingerprint = WorkflowDefinition::fingerprint($workflow);
+        // Root descriptors are immutable and byte-compared, so they keep the
+        // version 1 definition fingerprint they have always recorded.
+        $fingerprint = WorkflowDefinition::fingerprint($workflow, SourceFingerprint::V1);
         $metadata = new WorkflowMetadata($arguments);
         $connection = RoutingResolver::workflowConnection($workflow, $metadata) ?? config('queue.default');
         $queue = RoutingResolver::workflowQueue($workflow, $metadata);
