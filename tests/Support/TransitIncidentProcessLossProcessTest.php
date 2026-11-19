@@ -14,34 +14,26 @@ use DurableWorkflow\Examples\ProviderStateMachines\MachineStore;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
-use LogicException;
 use Orchestra\Testbench\TestCase;
 use PDO;
-use ReflectionProperty;
 use Workflow\Providers\WorkflowServiceProvider;
-use Workflow\V2\Compensation\Execution\ForwardResult;
-use Workflow\V2\Compensation\Execution\HandlerRegistry;
-use Workflow\V2\Compensation\Execution\OperationContext;
-use Workflow\V2\Compensation\Execution\Resolution;
-use Workflow\V2\Compensation\Execution\ScopedOperation;
+use Workflow\V2\Compensation\Definition\ScopeIdentity;
+use Workflow\V2\Compensation\Persistence\ScopeRepository;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
-use Workflow\V2\Jobs\RunActivityTask;
-use Workflow\V2\Jobs\RunTimerTask;
-use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
-use Workflow\V2\TaskWatchdog;
 
 require_once __DIR__ . '/../../examples/provider-state-machines/bootstrap.php';
 
 /**
- * A fresh worker for one transit incident. A crash phase recovers any earlier abandoned lease, then dies
- * with SIGKILL inside the selected incident operation after its provider effect commits and before DW
- * records the outcome. Every phase is a new process: the production watchdog repairs abandoned leases.
+ * A fresh worker for one transit incident; see WorkerLossDriver for the crash and resume phases. A resume
+ * phase stops once the cut operation is recovered, or when the incident ends or waits.
  */
 final class TransitIncidentProcessLossProcessTest extends TestCase
 {
+    use WorkerLossDriver;
+
     public function testRunTheOriginalIncidentWorker(): void
     {
         $input = $this->input();
@@ -49,15 +41,12 @@ final class TransitIncidentProcessLossProcessTest extends TestCase
         Queue::fake();
         $this->configure($input);
         if ($input['phase'] === 'crash') {
-            $this->armCut($input);
-        }
-        // A replacement worker starts after any abandoned activity lease expired.
-        $leases = WorkflowTask::query()->where('status', TaskStatus::Leased)->pluck('lease_expires_at')->filter();
-        if ($leases->isNotEmpty()) {
-            Carbon::setTestNow($leases->max()->copy()->addSecond());
+            $this->armWorkerLoss($input['handler'], 'forward', $input['report']);
+        } else {
+            $this->startReplacementWorker();
         }
         for ($step = 0; $step < 800; ++$step) {
-            if ($input['phase'] === 'resume' && ($this->incidentRun($input)->status->isTerminal() || $this->idle())) {
+            if ($input['phase'] === 'resume' && ($this->recovered($input) || $this->workerIdle(Catalogue::NAMESPACE))) {
                 file_put_contents($input['report'], json_encode([
                     'pid' => getmypid(),
                     'status' => $this->incidentRun($input)
@@ -67,7 +56,8 @@ final class TransitIncidentProcessLossProcessTest extends TestCase
                 ], JSON_THROW_ON_ERROR));
                 return;
             }
-            $this->nextTask();
+            $this->retryWhenOnlyTheOrderIsReoffered();
+            $this->runNextTask(Catalogue::NAMESPACE);
         }
         $this->fail('The bounded original incident worker did not reach its selected cut or outcome.');
     }
@@ -79,18 +69,7 @@ final class TransitIncidentProcessLossProcessTest extends TestCase
 
     protected function defineEnvironment($app): void
     {
-        $input = $this->input();
-        $app['config']->set([
-            'workflows.v2.namespaces' => [Catalogue::NAMESPACE],
-            'workflows.v2.task_dispatch_mode' => 'queue',
-            'database.default' => 'incident_process',
-            'database.connections.incident_process' => $input['database'],
-            'database.redis' => $input['redis'],
-            'workflows.storage.connection' => 'incident_process',
-            'queue.default' => 'redis',
-            'cache' => $input['cache'],
-            'logging.default' => 'null',
-        ]);
+        $this->workerLossEnvironment($app, $this->input(), Catalogue::NAMESPACE);
     }
 
     private function configure(array $input): MachineStore
@@ -113,105 +92,43 @@ final class TransitIncidentProcessLossProcessTest extends TestCase
         );
     }
 
+    /**
+     * After its Shipment child closed, the Order's remedy wait is re-offered by every watchdog pass (#1219),
+     * so due work never runs out. Once every lease is repaired, move on to the next activity retry.
+     */
+    private function retryWhenOnlyTheOrderIsReoffered(): void
+    {
+        $open = WorkflowTask::query()->whereRelation('run', 'namespace', Catalogue::NAMESPACE)
+            ->whereIn('status', [TaskStatus::Ready, TaskStatus::Leased])->get();
+        $retry = $open->where('task_type', TaskType::Activity)->sortBy('available_at')->first();
+        if ($retry !== null && $open->every(static fn (WorkflowTask $task): bool => $task->status === TaskStatus::Ready
+            && $task->available_at?->isFuture())) {
+            Carbon::setTestNow($retry->available_at->copy()->addSecond());
+        }
+    }
+
+    private function recovered(array $input): bool
+    {
+        if ($this->incidentRun($input)->status->isTerminal()) {
+            return true;
+        }
+        $ledger = (new ScopeRepository())->inspect(ScopeIdentity::fromArray($input['scope']));
+        foreach ($ledger['obligations'] as $row) {
+            if ($row['id'] === $input['operationId']) {
+                return $row['forward_status'] === 'observed';
+            }
+        }
+        return false;
+    }
+
     private function incidentRun(array $input): WorkflowRun
     {
         $row = DB::table(IncidentStore::TABLE)->where('id', $input['key'])->sole();
         return WorkflowRun::query()->findOrFail($row->native_run);
     }
 
-    private function armCut(array $input): void
-    {
-        $handlers = (new ReflectionProperty(HandlerRegistry::class, 'handlers'))->getValue(
-            app(HandlerRegistry::class)
-        );
-        $target = $handlers[$input['handler']]['1'] ?? throw new LogicException('The cut handler is unavailable.');
-        $handlers[$input['handler']]['1'] = new class($target, $input['report']) implements ScopedOperation {
-            public function __construct(
-                private readonly ScopedOperation $inner,
-                private readonly string $report,
-            ) {
-            }
-
-            public function assertInput(array $input): void
-            {
-                $this->inner->assertInput($input);
-            }
-
-            public function execute(OperationContext $context): ForwardResult
-            {
-                $result = $this->inner->execute($context);
-                if ($result->observed) {
-                    // The provider committed and acknowledged; no DW outcome is returned or recorded.
-                    file_put_contents($this->report, json_encode([
-                        'pid' => getmypid(),
-                        'scope' => $context->scope->toArray(),
-                        'operationId' => $context->operationId,
-                        'clock' => now()
-                            ->toISOString(),
-                    ], JSON_THROW_ON_ERROR));
-                    posix_kill(getmypid(), SIGKILL);
-                    throw new LogicException('The worker-loss signal did not terminate this process.');
-                }
-                return $result;
-            }
-
-            public function compensate(OperationContext $context): Resolution
-            {
-                return $this->inner->compensate($context);
-            }
-        };
-        $this->app->instance(HandlerRegistry::class, new HandlerRegistry($handlers));
-    }
-
-    private function nextTask(): void
-    {
-        $task = $this->readyTask();
-        if ($task === null) {
-            TaskWatchdog::runPass(respectThrottle: false);
-            $task = $this->readyTask();
-        }
-        $this->assertNotNull($task, 'The original incident has no runnable task before its selected cut or outcome.');
-        if ($task->available_at !== null && $task->available_at->isFuture()) {
-            Carbon::setTestNow($task->available_at->copy()->addSecond());
-        }
-        $job = match ($task->task_type) {
-            TaskType::Workflow => new RunWorkflowTask($task->id),
-            TaskType::Activity => new RunActivityTask($task->id),
-            TaskType::Timer => new RunTimerTask($task->id),
-        };
-        try {
-            $this->app->call([$job, 'handle']);
-        } catch (\RuntimeException $error) {
-            // Like a queue worker: the engine already recorded this activity attempt's failure or retry.
-            if ($task->task_type !== TaskType::Activity) {
-                throw $error;
-            }
-        }
-    }
-
-    private function idle(): bool
-    {
-        if ($this->readyTask() !== null) {
-            return false;
-        }
-        TaskWatchdog::runPass(respectThrottle: false);
-        return $this->readyTask() === null
-            && ! WorkflowTask::query()->where('status', TaskStatus::Leased)->exists();
-    }
-
-    private function readyTask(): ?WorkflowTask
-    {
-        return WorkflowTask::query()->whereRelation('run', 'namespace', Catalogue::NAMESPACE)
-            ->where('status', TaskStatus::Ready)->orderBy('available_at')->orderBy('created_at')->orderBy('id')
-            ->first();
-    }
-
     private function input(): array
     {
-        $path = getenv('DWF_INCIDENT_PROCESS_INPUT');
-        if (! is_string($path) || $path === '') {
-            $this->markTestSkipped('Invoked only by the transit incident process-loss control.');
-        }
-        return json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        return $this->workerLossInput('DWF_INCIDENT_PROCESS_INPUT');
     }
 }
