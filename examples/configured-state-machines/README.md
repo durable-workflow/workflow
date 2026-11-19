@@ -108,9 +108,12 @@ The host must resume an accepted cancellation intent if it loses the routing
 acknowledgement, and call the finalization milestone after recovery verifies.
 Reevaluate that same original request after the reported route progresses. A
 parent can close with compensation unresolved while its genuine child recovery
-is still running. Child verification alone does not resume the closed parent;
-the next host request routes its retained recovery. A failed recovery execution
-keeps its failure and requires the explicitly reported fresh authorized request.
+is still running. The task watchdog then routes the accepted request to the
+parent's canonical recovery under the re-authorized original principal (#1205).
+Child verification wakes that recovery's waiting retry. A refused re-authorization
+is recorded as `recovery_authorization_failed`, and a failed recovery execution
+keeps its failure. Either one requires the explicitly reported fresh authorized
+request.
 This example supplies neither a background intent dispatcher nor cross-store
 atomicity. Shipment's recorded business completion remains historical; retained
 compensation is inspected separately from that completed state.
