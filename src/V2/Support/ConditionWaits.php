@@ -320,6 +320,11 @@ final class ConditionWaits
         }
     }
 
+    public static function conditionKeyForSequence(WorkflowRun $run, int $sequence): ?string
+    {
+        return self::conditionDefinitionForSequence($run, $sequence)['condition_key'];
+    }
+
     /**
      * The call's fingerprint as the recorded one's algorithm computes it, so a
      * mismatch reports two comparable values.
@@ -334,11 +339,6 @@ final class ConditionWaits
 
         return ConditionWaitDefinition::fingerprint($call->condition, $version)
             ?? $call->conditionDefinitionFingerprint;
-    }
-
-    public static function conditionKeyForSequence(WorkflowRun $run, int $sequence): ?string
-    {
-        return self::conditionDefinitionForSequence($run, $sequence)['condition_key'];
     }
 
     /**
