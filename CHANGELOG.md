@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 2.33.0 - 2026-11-19
+
+Compensation scopes are **stable** from 2.33.0 (#1063). The classes and members
+listed in `docs/api-stability.md#compensation-scopes` are now `@api` and follow
+the 2.x compatibility policy. So do recorded compensation histories, which
+replay on every later 2.x release, the ledger storage, and the documented
+minimum limits, which never shrink. These stay **experimental** and may change
+in a minor release: `DurableScope::reserveChild()`, original root admission
+(`Admission\*`), parallel compensation and deeper nesting.
+
 - Compensation scopes are stable `@api` (#1063). Exactly the members listed in
   `docs/api-stability.md#compensation-scopes` are covered:
   - authoring: `DurableScope`, `RegisteredObligation`, `Obligation`, `ScopeIdentity`;
@@ -12,8 +22,33 @@
     the result enums, which may gain cases in a minor release.
 
   They now follow the 2.x compatibility policy, as do their recorded replay
-  identities, ledger storage and minimum limits. `DurableScope::reserveChild()` and
-  original root admission remain experimental.
+  identities, ledger storage and minimum limits. `DurableScope::reserveChild()`,
+  original root admission, parallel compensation and deeper nesting remain
+  experimental.
+
+  - **Upgrading from 2.29, 2.30 or 2.31.** Workflow 2.32.0 changed the
+    then-experimental API after its independent review (#1216); the 2.32.0
+    section lists every change. Code written against 2.29 to 2.31 needs these
+    upgrade notes:
+    - `Resolution::verified($evidence, true)` still works and raises an
+      `E_USER_DEPRECATED` notice; the flag is ignored. `verified($evidence, false)`
+      returns `unknown('late-forward-possible')`. Drop the second argument.
+    - `OperationContext::$uncertainForward` is replaced by `reconcileBeforeForward`
+      (when executing) and `forwardOutcomeUnconfirmed` (when compensating).
+    - An outcome that breaks the handler contract throws `HandlerContractViolation`.
+      The activity fails with non-retryable `scope_handler_contract_violation`
+      instead of being reported as `provider-outcome-unknown` and retried.
+    - The forward value limit (11,264 bytes, 400 values, depth 7) applies only to
+      runs that record the `dw.compensation.registration-checks` patch. Runs
+      recorded before it keep the earlier envelope limit.
+    - The five result enums (`ScopeStatus`, `RecoveryRoute`, `NextAction`,
+      `AutomaticRecovery`, `ObligationStatus`) may gain cases in a minor release.
+      Handle unknown values with a default branch.
+    - Only `ScopeAuthorizationRefused` refuses permanently. Any other exception
+      from `ScopeAuthorization` is transient and retried, and automatic recovery
+      stays on.
+    - The `ScopeRecovery` and `ScopeRetention` constructors are `@internal`;
+      resolve both from the container.
 
 - A run waiting for a signal is no longer given a no-op workflow task on every
   watchdog pass after a child closed that cannot resume it (#1219). This
@@ -58,6 +93,11 @@
   before anything is written. Before, the earlier member's error came first. Checks
   that are repeated keep their order: an earlier invalid activity class or attempt
   count, or an earlier timer over the pending-timer limit, still wins.
+- The state-machine examples no longer check the result of
+  `verifyCompensation()` for a status other than `verified` (#1221). That branch
+  could never run: the call returns `verified` or fails its recorded activity.
+  The activity calls and their order are unchanged, so recorded commands are the
+  same. Examples only.
 
 ## 2.32.0 - 2026-11-19
 
