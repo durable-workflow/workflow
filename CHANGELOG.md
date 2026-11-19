@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- A workflow task that keeps losing its lease without completing no longer
+  retries silently forever (#1231). This usually happens when a pcntl
+  `queue:work` kills it at the job timeout, which is 60 s by default.
+  - Task repair counts each lost lease on the task (`lost_lease_count`,
+    `last_lease_lost_at`; new migration). The next claim logs a typed
+    `workflow_task_lease_lost` diagnostic. No history is written, and run
+    semantics are unchanged.
+  - After three consecutive lost leases
+    (`workflows.v2.workflow_task_lost_leases.attention_threshold`), the run
+    reports `repair_blocked_reason` `workflow_task_lease_lost` ("Task Timing
+    Out") with repair attention in the summary, describe and Waterline. Operator
+    metrics add `runs.workflow_task_lease_lost`, `tasks.lease_lost_repeatedly`
+    and `tasks.max_lost_lease_count`.
+  - Opt-in (`workflows.v2.workflow_task_lost_leases.fail_run`, off by default):
+    at the threshold, the next claim fails the run with a typed
+    `WorkflowTaskLeaseLostException` (`task_failure`) instead of retrying.
+  - A queue worker that starts with pcntl and a `--timeout` below the workflow
+    task lease logs one warning. The README documents running workflow
+    workers with `--timeout=0` or above the longest workflow task.
+
 - Workflow definition and `await()` condition fingerprints are versioned, and
   a new opt-in version 2 makes comment-only and whitespace-only edits replay-safe
   (#1227). The prefix names the version:

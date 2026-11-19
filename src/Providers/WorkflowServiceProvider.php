@@ -79,6 +79,7 @@ use Workflow\V2\Support\SourceFingerprint;
 use Workflow\V2\Support\SqliteSavepointRelease;
 use Workflow\V2\Support\TaskFairnessState;
 use Workflow\V2\Support\TypeRegistry;
+use Workflow\V2\Support\WorkerTimeoutAdvisory;
 use Workflow\V2\Support\WorkflowModeGuard;
 use Workflow\Watchdog;
 
@@ -236,6 +237,19 @@ final class WorkflowServiceProvider extends ServiceProvider
 
         // Validate cache backend for multi-node deployments
         $this->validateCacheBackend();
+
+        if (class_exists(\Illuminate\Queue\Events\WorkerStarting::class)) {
+            // A job timeout below the workflow task lease can kill a workflow
+            // task on every retry; warn once per worker (#1231).
+            Event::listen(
+                \Illuminate\Queue\Events\WorkerStarting::class,
+                static function (object $event): void {
+                    if (isset($event->workerOptions) && is_object($event->workerOptions)) {
+                        WorkerTimeoutAdvisory::workerStarting($event->workerOptions);
+                    }
+                },
+            );
+        }
 
         Event::listen(Looping::class, static function (Looping $event) use ($v1Enabled): void {
             if ($v1Enabled) {

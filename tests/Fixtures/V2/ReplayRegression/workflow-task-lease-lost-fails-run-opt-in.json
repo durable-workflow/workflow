@@ -1,0 +1,90 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "workflow-task-lease-lost-fails-run-opt-in",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestGreetingWorkflow",
+    "arguments": [
+      "Taylor"
+    ],
+    "payload_codec": "avro"
+  },
+  "workflow_task_lease_lost": {
+    "issue": "durable-workflow/workflow#1231",
+    "attention_threshold": 3,
+    "fail_run": true,
+    "note": "The run's only workflow task lost its lease three times without completing, as when a pcntl queue worker kills it at the job timeout. With workflows.v2.workflow_task_lost_leases.fail_run enabled, the next claim fails the run with the typed WorkflowTaskLeaseLostException (task_failure) before any workflow code runs. Lost leases themselves write no history; with fail_run off the same run keeps retrying and only shows workflow_task_lease_lost repair attention."
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {
+        "memo": null,
+        "business_key": null,
+        "workflow_type": "test-greeting-workflow",
+        "workflow_class": "Tests\\Fixtures\\V2\\TestGreetingWorkflow",
+        "run_deadline_at": null,
+        "workflow_run_id": "lost-lease-run",
+        "declared_queries": [],
+        "declared_signals": [],
+        "declared_updates": [],
+        "search_attributes": null,
+        "visibility_labels": null,
+        "declared_entry_mode": "canonical",
+        "run_timeout_seconds": null,
+        "workflow_command_id": "lost-lease-start-command",
+        "workflow_instance_id": "lost-lease-instance",
+        "declared_entry_method": "handle",
+        "execution_deadline_at": null,
+        "declared_query_contracts": [],
+        "declared_signal_contracts": [],
+        "declared_update_contracts": [],
+        "execution_timeout_seconds": null,
+        "declared_entry_declaring_class": "Tests\\Fixtures\\V2\\TestGreetingWorkflow",
+        "workflow_definition_fingerprint": "sha256:d938f655e9a8d2d1074d252bdd2004c611304acb5db649367a21552784f7fa2c"
+      },
+      "recorded_at": "2026-11-19T00:00:00.000000Z"
+    },
+    {
+      "sequence": 2,
+      "event_type": "WorkflowFailed",
+      "payload": {
+        "message": "Workflow task lost-lease-task lost its lease 3 times without completing. Its queue worker may be killing it at the job timeout; run workers with --timeout=0 or above the longest workflow task.",
+        "exception": {
+          "code": 0,
+          "file": "/app/src/V2/Support/WorkflowTaskLeaseLoss.php",
+          "line": 152,
+          "class": "Workflow\\V2\\Exceptions\\WorkflowTaskLeaseLostException",
+          "trace": [],
+          "message": "Workflow task lost-lease-task lost its lease 3 times without completing. Its queue worker may be killing it at the job timeout; run workers with --timeout=0 or above the longest workflow task."
+        },
+        "source_id": "lost-lease-run",
+        "failure_id": "lost-lease-failure",
+        "source_kind": "workflow_run",
+        "non_retryable": false,
+        "exception_type": null,
+        "exception_class": "Workflow\\V2\\Exceptions\\WorkflowTaskLeaseLostException",
+        "failure_category": "task_failure"
+      },
+      "recorded_at": "2026-11-19T00:00:01.000000Z"
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "schedule_activity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity"
+      }
+    ]
+  }
+}

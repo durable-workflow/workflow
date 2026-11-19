@@ -61,8 +61,20 @@ existing tables.
 Run a Laravel queue worker or Horizon to execute workflows and activities:
 
 ```bash
-php artisan queue:work
+php artisan queue:work --timeout=0
 ```
+
+With the `pcntl` extension, `queue:work` kills a job after `--timeout` seconds
+(60 by default). A workflow task that runs longer, such as one that schedules or
+finishes a wide `all()`, is rolled back and retried after its lease expires, so it
+never finishes. Run workers with `--timeout=0` or a value above your longest
+workflow task, and keep `workflows.v2.workflow_task_lease_seconds` (300 by
+default) above it; Horizon's `timeout` option is the same setting. A worker
+started with a shorter timeout logs a warning. Each lease a workflow task loses
+is counted, and after three in a row (`DW_V2_WORKFLOW_TASK_LOST_LEASE_ATTENTION_THRESHOLD`)
+the run reports `repair_blocked_reason` `workflow_task_lease_lost` with repair
+attention. Set `DW_V2_WORKFLOW_TASK_LOST_LEASE_FAIL_RUN=true` to fail such a run
+with a typed task failure instead.
 
 For the default database queue on SQLite, failed reservation writes preserve
 unclaimed work after a proven rollback. See [SQLite queue reservations](docs/sqlite-queue-reservations.md)

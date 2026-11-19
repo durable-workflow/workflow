@@ -375,6 +375,17 @@ return [
             Workflow\V2\Support\WorkflowTaskLease::DEFAULT_SECONDS,
         ),
 
+        // A workflow task whose lease expires without completing, typically
+        // because the queue worker killed it at its job timeout, is retried
+        // after task repair. After this many consecutive lost leases the run
+        // shows as needing attention (repair_blocked_reason
+        // workflow_task_lease_lost). With fail_run enabled, the next claim
+        // instead fails the run with a typed task failure. Off by default.
+        'workflow_task_lost_leases' => [
+            'attention_threshold' => (int) env('DW_V2_WORKFLOW_TASK_LOST_LEASE_ATTENTION_THRESHOLD', 3),
+            'fail_run' => (bool) env('DW_V2_WORKFLOW_TASK_LOST_LEASE_FAIL_RUN', false),
+        ],
+
         // Runtime ownership, not an activity execution timeout. Valid values
         // are 1..86400 seconds; invalid values resolve to the 300-second default.
         // A live runtime renews the same attempt without inventing user progress.

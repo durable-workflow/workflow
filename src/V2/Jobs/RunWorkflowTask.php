@@ -35,6 +35,7 @@ use Workflow\V2\Support\WorkflowContinuationCache;
 use Workflow\V2\Support\WorkflowExecutor;
 use Workflow\V2\Support\WorkflowSignalReadScope;
 use Workflow\V2\Support\WorkflowTaskLease;
+use Workflow\V2\Support\WorkflowTaskLeaseLoss;
 
 final class RunWorkflowTask implements ShouldQueue
 {
@@ -149,6 +150,15 @@ final class RunWorkflowTask implements ShouldQueue
 
                 if (in_array($run->status->value, ['completed', 'failed', 'cancelled', 'terminated'], true)) {
                     $this->settleTerminalTask($task, $run);
+
+                    return null;
+                }
+
+                if (WorkflowTaskLeaseLoss::failsRunAt($task)) {
+                    // Opt-in: a task that keeps losing its lease fails its
+                    // run with a typed task failure instead of retrying (#1231).
+                    $continuation?->disable('workflow_task_lease_lost');
+                    $executor->failAfterLostLeases($run, $task);
 
                     return null;
                 }
@@ -274,6 +284,12 @@ final class RunWorkflowTask implements ShouldQueue
 
             ServiceCallWorkflowDelivery::recordForClaim($task, $run);
             $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+
+            // A retry after lost leases records its typed diagnostic (#1231).
+            $leaseLoss = WorkflowTaskLeaseLoss::claimDiagnostic($task);
+            if ($leaseLoss !== null) {
+                WorkflowTaskLeaseLoss::reportClaim($leaseLoss);
+            }
 
             return [$task->setRelation('run', $run), null, $claimedAttempt];
         });

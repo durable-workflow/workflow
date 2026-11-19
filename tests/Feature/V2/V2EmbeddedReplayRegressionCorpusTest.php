@@ -501,6 +501,77 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     }
 
     /**
+     * A workflow task that lost its lease three times, as when a pcntl worker
+     * kills it at the job timeout, fails its run with the typed lease-lost
+     * failure on the next claim when fail_run is enabled (#1231). The run's
+     * history is exactly the evidence: no lost lease writes history.
+     */
+    public function testWorkflowTaskLeaseLostCorpusFailsTheRunWhenOptedIn(): void
+    {
+        $path = self::FIXTURE_DIR . '/workflow-task-lease-lost-fails-run-opt-in.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The workflow task lease-lost evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        self::stopWorkers();
+        config([
+            'queue.default' => 'redis',
+            'workflows.v2.workflow_task_lost_leases.fail_run' => true,
+            'workflows.v2.workflow_task_lost_leases.attention_threshold' => $fixture['workflow_task_lease_lost']['attention_threshold'],
+        ]);
+        Queue::fake();
+
+        $workflow = WorkflowStub::make($fixture['workflow']['type'], 'regression-workflow-task-lease-lost');
+        $workflow->start(...$fixture['workflow']['arguments']);
+        $runId = $workflow->runId();
+
+        for ($lost = 0; $lost < $fixture['workflow_task_lease_lost']['attention_threshold']; $lost++) {
+            $task = WorkflowTask::query()
+                ->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Workflow->value)
+                ->where('status', TaskStatus::Ready->value)
+                ->sole();
+            $task->forceFill([
+                'status' => TaskStatus::Leased,
+                'leased_at' => now()
+                    ->subMinutes(10),
+                'lease_owner' => $task->id,
+                'lease_expires_at' => now()
+                    ->subMinute(),
+                'attempt_count' => $task->attempt_count + 1,
+            ])->save();
+            Cache::forget(TaskWatchdog::LOOP_THROTTLE_KEY);
+            TaskWatchdog::runPass(connection: 'redis', queue: 'default', respectThrottle: false);
+        }
+
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+        $this->app->call([new RunWorkflowTask($task->id), 'handle']);
+
+        $this->assertSame(
+            array_map(static fn (array $event): array => [
+                $event['event_type'],
+                $event['payload']['failure_category'] ?? null,
+                $event['payload']['exception_class'] ?? null,
+            ], $fixture['history']),
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->where('event_type', '!=', HistoryEventType::StartAccepted->value)
+                ->orderBy('sequence')
+                ->get()
+                ->map(static fn (WorkflowHistoryEvent $event): array => [
+                    $event->event_type->value,
+                    $event->payload['failure_category'] ?? null,
+                    $event->payload['exception_class'] ?? null,
+                ])
+                ->all(),
+        );
+    }
+
+    /**
      * The partial-group history 2.32.0 recorded for the same refusal still
      * replays through the embedded replayer to the all(), while a new run of
      * the same workflow writes only the refusal (#1232).

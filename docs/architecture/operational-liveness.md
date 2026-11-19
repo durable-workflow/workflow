@@ -350,12 +350,19 @@ Repair:
   batch path.
 
 The repair path MUST be explicit about why it cannot act. The
-`RepairBlockedReason::catalog()` enumerates the five frozen reason
-codes that a caller may observe:
+`RepairBlockedReason::catalog()` enumerates the six reason codes that
+a caller may observe:
 
 - `unsupported_history` — the run's history contains events the
   current engine build cannot interpret; the operator must roll
   forward a compatible worker or manually resolve.
+- `workflow_task_lease_lost` — repair keeps returning the open
+  workflow task to ready, but it has lost its lease without completing
+  `workflows.v2.workflow_task_lost_leases.attention_threshold` times in
+  a row (3 by default), usually because the queue worker kills it at its
+  job timeout. The operator must raise the worker's `--timeout` (or use
+  `--timeout=0`). With `workflow_task_lost_leases.fail_run` enabled, the
+  next claim fails the run with a typed task failure instead (#1231).
 - `waiting_for_compatible_worker` — a task exists, but no live
   worker advertises the required compatibility marker.
 - `selected_run_not_current` — the caller selected a historical
