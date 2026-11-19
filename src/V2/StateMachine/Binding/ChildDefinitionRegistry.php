@@ -11,7 +11,10 @@ use Workflow\V2\Workflow;
 /**
  * Trusted host configuration selects a child definition by its pinned type and policy.
  *
- * @experimental Stored activity arguments never choose a class to autoload.
+ * Stored activity arguments never choose a class to autoload.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
  */
 final readonly class ChildDefinitionRegistry
 {

@@ -231,6 +231,39 @@ Members marked `@internal`, including the `ScopeRecovery` and `ScopeRetention` c
 [durable compensation scopes](compensation-scopes.md). Existing run-local Saga and its stability contract
 are unchanged.
 
+## State machines
+
+The business state-machine API is **experimental**. It is not covered by the
+semver guarantee in this document. Every public class, interface and enum in
+`Workflow\V2\StateMachine` is marked `@experimental`, and so are native child
+start (`Workflow::startChild()`, the `Workflow\V2\startChild()` function and the
+`StartedChildWorkflow` receipt) and `DurableScope::reserveChild()`. These may
+change incompatibly in a minor release. A patch release does not change them
+incompatibly. That is stricter than the platform `experimental` level, which
+allows a change in any release, so it does not contradict the platform
+authority. Release notes call out every change.
+
+They first shipped in two steps:
+
+- **2.23.0:** the transition contract (`Transition\*`, `Execution\ExecutionReceipt`,
+  `ExecutionReference`, `TransitionResult`, `TransitionStatus`, `TransitionRuntime`,
+  `ActivityTransitionRuntime`), `Persistence\CommitResult`, `Rules\Decision`,
+  `Rules\Verdict`, `Definition\PolicyProfile`, `Definition\TransitionDefinition`
+  and `TransitionRunner`.
+- **2.29.0:** shared machine definitions (`MachineDefinition`, `MachineState`,
+  `ChildSlot`), conditions and registered rules (`ConditionDefinition`,
+  `RuleReference`, `Rules\ConditionRule`, `RuleRegistry`, `RecordedFacts`,
+  `RuleEvaluation`, `ConditionEvaluation`, `MachineAssessment`), budgets
+  (`DefinitionLimits`, `ExecutionLimits`, `Execution\ResourceLimitExceeded`),
+  child bindings (`Binding\*`) and native child start.
+
+Members marked `@internal`, such as `Execution\ExecutionBudget`, are
+implementation details. Recorded histories of state-machine runs replay under
+the general replay contract. The API defines no migration of an in-flight
+execution to a new definition, profile, rule or handler version. It also defines
+no recursive or shared child machines. See
+[business state machines](business-state-machines.md).
+
 ## What is covered
 
 A class, interface, method, constant, or property is part of the public API

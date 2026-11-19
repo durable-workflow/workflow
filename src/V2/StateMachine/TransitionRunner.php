@@ -25,7 +25,8 @@ use Workflow\V2\Workflow;
 /**
  * Composes the four-step business protocol with the existing V2 runtime and native Saga.
  *
- * @experimental The StateMachine API may change in a minor release until its nested slices land.
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
  */
 final class TransitionRunner
 {

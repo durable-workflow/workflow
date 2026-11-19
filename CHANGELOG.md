@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- The business state-machine API is explicitly experimental (#1069). Every
+  public class, interface and enum in `Workflow\V2\StateMachine`, native child
+  start (`Workflow::startChild()`, `startChild()` and `StartedChildWorkflow`) and
+  `DurableScope::reserveChild()` are marked `@experimental`. They may change
+  incompatibly in a minor release, never in a patch release.
+  `docs/api-stability.md#state-machines` lists them and the release each first
+  shipped in: the transition contract and `TransitionRunner` in 2.23.0, and the
+  definitions, rules, budgets, child bindings and native child start in 2.29.0.
+  Docblocks and documentation only; no behavior changes.
+
 - Workflow definition and `await()` condition fingerprints are versioned, and
   a new opt-in version 2 makes comment-only and whitespace-only edits replay-safe
   (#1227). The prefix names the version:

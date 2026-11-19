@@ -7,7 +7,12 @@ namespace Workflow\V2\StateMachine\Definition;
 use InvalidArgumentException;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 
-/** A named machine-level slot; native admission and joint ownership remain host-authorized. */
+/**
+ * A named machine-level slot; native admission and joint ownership remain host-authorized.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
+ */
 final readonly class ChildSlot
 {
     /**

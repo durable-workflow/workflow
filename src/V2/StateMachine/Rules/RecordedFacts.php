@@ -7,7 +7,12 @@ namespace Workflow\V2\StateMachine\Rules;
 use InvalidArgumentException;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 
-/** Facts and provenance collected by a recorded activity. This value performs no live reads. */
+/**
+ * Facts and provenance collected by a recorded activity. This value performs no live reads.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
+ */
 final readonly class RecordedFacts
 {
     /**

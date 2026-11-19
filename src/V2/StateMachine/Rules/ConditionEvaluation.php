@@ -8,7 +8,12 @@ use InvalidArgumentException;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 use Workflow\V2\StateMachine\Definition\ConditionDefinition;
 
-/** Complete immutable explanation; compound verdicts are derived from their correlated children. */
+/**
+ * Complete immutable explanation; compound verdicts are derived from their correlated children.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
+ */
 final readonly class ConditionEvaluation
 {
     /**
