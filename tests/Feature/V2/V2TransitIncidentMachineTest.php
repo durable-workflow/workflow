@@ -410,8 +410,8 @@ final class V2TransitIncidentMachineTest extends TestCase
         $this->hint($this->shipment(), 'original-loss');
         $this->current();
         $this->replacementCarrier($commands, 'handed-over');
-        // Carrier progress without delivery or a confirmed failure, past the bounded recorded wait.
-        for ($wake = 0; $wake < 32; ++$wake) {
+        // Carrier progress without delivery or a confirmed failure, past the grant's bounded recorded wait.
+        for ($wake = 0; $wake < self::TRANSIT_WAKES; ++$wake) {
             $this->hintIncident('replacement-progress-' . $wake);
         }
 
@@ -421,12 +421,7 @@ final class V2TransitIncidentMachineTest extends TestCase
         $this->assertSame([], $this->payouts(), 'A replacement that may still arrive is not refunded automatically.');
         $this->assertTrue($this->incidentRun()->status->isTerminal());
         $this->assertSame([...self::DELIVERED, 'reserve', 'ship-book', 'carrier-claim'], $this->effects());
-        $order = WorkflowRun::query()->findOrFail($origin->runId());
-        $this->assertSame('completed', $order->status->value, $this->progress());
-        $this->assertSame('unsettled', $order->workflowOutput()['businessOutcome']);
-        $this->assertSame('pending', $order->workflowOutput()['transition']['status']);
-        $this->assertSame('ready', $this->subjectState('order'));
-        $this->assertCancellationRefused('cancel-owed-remedy', 'owed');
+        $this->assertOwedOrder($origin->runId(), 'cancel-owed-remedy');
         $this->assertReplayQuiet($origin->runId(), $this->shipment()->id);
     }
 
@@ -446,6 +441,82 @@ final class V2TransitIncidentMachineTest extends TestCase
         $this->assertSame('completed', $order->status->value, $this->progress());
         $this->assertSame('unsettled', $order->workflowOutput()['businessOutcome']);
         $this->assertSame('ready', $this->subjectState('order'));
+    }
+
+    public function testSlowRefundEndsExplicitlyOwedAndItsLaterProviderConfirmationPaysOnce(): void
+    {
+        [$origin] = $this->handedOver();
+        $commands = $this->slowRefund(self::TRANSIT_WAKES);
+
+        // The provider still processes the refund when the bounded wait ends: explicitly owed, never a failure.
+        $outcome = $this->incidentOutcome();
+        $this->assertSame('owed', $outcome['status']);
+        $this->assertSame('refund-unresolved', $outcome['resolution']);
+        $this->assertSame([], $outcome['refundedUnits']);
+        $this->assertSame([], $this->payouts());
+        $this->assertSame('completed', $this->incidentRun()->status->value, $this->progress());
+        $this->assertSame([...self::DELIVERED, 'carrier-claim'], $this->effects());
+        $this->assertOwedOrder($origin->runId(), 'cancel-unresolved-refund');
+
+        // The provider confirms later; a retry of the same refund identity is the same single payout.
+        $this->unitRefunds->resolve($commands['refund'], Status::Confirmed);
+        $this->unitRefunds->attempt($commands['refund']);
+        $this->assertSame([
+            'refund' => 'transit-lost',
+            'commandId' => $commands['refund']->id(),
+            'status' => Status::Confirmed->value,
+            'confirmedUnits' => [0, 1, 2],
+            'payoutMinor' => 1499,
+        ], app(IncidentStore::class)->refund($this->terms->subjectKey()));
+        $this->assertSame([1499], $this->payouts());
+        $this->assertSame($outcome, $this->incidentOutcome(), 'The decided customer outcome never changes.');
+        $this->assertSame('ready', $this->subjectState('order'));
+        $this->assertReplayQuiet($origin->runId(), $this->shipment()->id);
+    }
+
+    public function testRefundConfirmedWhenTheBoundedWaitEndsSettlesTheSameRefund(): void
+    {
+        [$origin] = $this->handedOver();
+        $commands = $this->slowRefund(self::TRANSIT_WAKES - 1);
+        $this->unitRefunds->resolve($commands['refund'], Status::Confirmed);
+        $this->hintIncident('refund-progress-last');
+
+        $this->assertSame('remedied', $this->subjectState('order'), $this->progress());
+        $outcome = $this->incidentOutcome();
+        $this->assertSame('settled', $outcome['status']);
+        $this->assertSame('refunded', $outcome['resolution']);
+        $this->assertSame(1499, $outcome['refundPayoutMinor']);
+        $this->assertSame([1499], $this->payouts());
+        $this->assertReplayQuiet($origin->runId(), $this->shipment()->id);
+    }
+
+    /**
+     * An owed remedy completes the Order unsettled, with its remedy transition pending, and closes cancellation.
+     */
+    private function assertOwedOrder(string $run, string $cancellation): void
+    {
+        $order = WorkflowRun::query()->findOrFail($run);
+        $this->assertSame('completed', $order->status->value, $this->progress());
+        $this->assertSame('unsettled', $order->workflowOutput()['businessOutcome']);
+        $this->assertSame('pending', $order->workflowOutput()['transition']['status']);
+        $this->assertSame('ready', $this->subjectState('order'));
+        $this->assertCancellationRefused($cancellation, 'owed');
+    }
+
+    /**
+     * A lost parcel whose refund the provider keeps processing across the given recorded incident wakes.
+     */
+    private function slowRefund(int $wakes): array
+    {
+        $commands = $this->planIncident('lost', refund: Status::Processing);
+        $this->record('lost');
+        $this->hint($this->shipment(), 'original-loss');
+        $this->current();
+        for ($wake = 0; $wake < $wakes; ++$wake) {
+            $this->assertNull($this->incidentRow()->remedy, $this->progress());
+            $this->hintIncident('refund-progress-' . $wake);
+        }
+        return $commands;
     }
 
     private function assertReplayQuiet(string ...$runs): void

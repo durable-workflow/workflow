@@ -26,6 +26,8 @@ trait TransitIncidentFixture
         tearDown as private tearDownReturns;
     }
 
+    protected const TRANSIT_WAKES = 4;
+
     protected function setUp(): void
     {
         $this->setUpReturns();
@@ -43,6 +45,14 @@ trait TransitIncidentFixture
     protected function transitPolicy(): ?string
     {
         return str_contains($this->name(), 'Replacement') ? TransitPolicy::REPLACE : TransitPolicy::REFUND;
+    }
+
+    /**
+     * A small recorded wake bound keeps the bounded incident waits and their histories short.
+     */
+    protected function transitWakes(): int
+    {
+        return self::TRANSIT_WAKES;
     }
 
     /**

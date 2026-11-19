@@ -10,6 +10,7 @@ use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Status;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\UnitRefundGateway;
 use DurableWorkflow\Examples\ProviderStateMachines\Authority;
 use DurableWorkflow\Examples\ProviderStateMachines\Catalogue;
+use DurableWorkflow\Examples\ProviderStateMachines\IncidentWait;
 use DurableWorkflow\Examples\ProviderStateMachines\MachineStore;
 use DurableWorkflow\Examples\ProviderStateMachines\OrderTerms;
 use Illuminate\Support\Carbon;
@@ -82,7 +83,8 @@ trait ProviderMachineFixture
             ],
             transitPolicies: $this->transitPolicy() === null ? [] : [
                 $this->terms->subjectKey() => $this->transitPolicy(),
-            ]
+            ],
+            transitWakes: $this->transitWakes()
         );
         if ($this->unitAmounts() !== []) {
             $this->unitRefunds = new UnitRefundGateway($this->providerDb, $this->terms->client);
@@ -157,6 +159,14 @@ trait ProviderMachineFixture
     protected function transitPolicy(): ?string
     {
         return null;
+    }
+
+    /**
+     * Recorded transit incident wake bound of the test grant.
+     */
+    protected function transitWakes(): int
+    {
+        return IncidentWait::WAKES;
     }
 
     protected function providerClock(): ?\Closure

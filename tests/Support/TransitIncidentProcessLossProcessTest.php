@@ -83,7 +83,7 @@ final class TransitIncidentProcessLossProcessTest extends TestCase
             $key => $input['unitAmounts'],
         ], transitPolicies: [
             $key => $input['policy'],
-        ]);
+        ], transitWakes: $input['wakes']);
         return MachineStore::configure(
             $this->app,
             $authority,
