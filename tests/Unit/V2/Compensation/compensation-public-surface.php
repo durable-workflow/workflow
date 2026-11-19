@@ -6,6 +6,7 @@ declare(strict_types=1);
 
 return [
     \Workflow\V2\Compensation\DurableScope::class => [
+        'kind final readonly class',
         '__construct(Workflow\\V2\\Workflow $workflow, Workflow\\V2\\Compensation\\Definition\\ScopeIdentity $identity, string $principal)',
         'execute(Workflow\\V2\\Compensation\\Definition\\Obligation $obligation, ?Workflow\\V2\\Support\\ActivityOptions $options = null): array',
         'register(Workflow\\V2\\Compensation\\Definition\\Obligation $obligation): Workflow\\V2\\Compensation\\RegisteredObligation',
@@ -13,10 +14,12 @@ return [
         'verifyCompensation(): array',
     ],
     \Workflow\V2\Compensation\RegisteredObligation::class => [
+        'kind final readonly class',
         'execute(?Workflow\\V2\\Support\\ActivityOptions $options = null): array',
         'compensate(?Workflow\\V2\\Support\\ActivityOptions $options = null): void',
     ],
     \Workflow\V2\Compensation\Definition\Obligation::class => [
+        'kind final readonly class',
         'property string $key',
         'property string $handlerType',
         'property string $handlerVersion',
@@ -24,6 +27,7 @@ return [
         '__construct(string $key, string $handlerType, string $handlerVersion, array $input)',
     ],
     \Workflow\V2\Compensation\Definition\ScopeIdentity::class => [
+        'kind final readonly class',
         'property string $application',
         'property ?string $namespace',
         'property string $key',
@@ -34,11 +38,13 @@ return [
         'static fromArray(array $value): self',
     ],
     \Workflow\V2\Compensation\Execution\ScopedOperation::class => [
+        'kind interface',
         'assertInput(array $input): void',
         'execute(Workflow\\V2\\Compensation\\Execution\\OperationContext $context): Workflow\\V2\\Compensation\\Execution\\ForwardResult',
         'compensate(Workflow\\V2\\Compensation\\Execution\\OperationContext $context): Workflow\\V2\\Compensation\\Execution\\Resolution',
     ],
     \Workflow\V2\Compensation\Execution\OperationContext::class => [
+        'kind final readonly class',
         'property Workflow\\V2\\Compensation\\Definition\\ScopeIdentity $scope',
         'property Workflow\\V2\\Compensation\\Definition\\Obligation $obligation',
         'property string $operationId',
@@ -51,6 +57,7 @@ return [
         'property bool $forwardOutcomeUnconfirmed',
     ],
     \Workflow\V2\Compensation\Execution\ForwardResult::class => [
+        'kind final readonly class',
         'const OBSERVED = \'observed\'',
         'const UNKNOWN = \'unknown\'',
         'const REJECTED = \'rejected\'',
@@ -64,6 +71,7 @@ return [
         'static rejected(string $reason, array $evidence = []): self',
     ],
     \Workflow\V2\Compensation\Execution\Resolution::class => [
+        'kind final readonly class',
         'const VERIFIED = \'verified\'',
         'const UNKNOWN = \'unknown\'',
         'const FAILED = \'failed\'',
@@ -75,35 +83,47 @@ return [
         'static unknown(string $reason): self',
         'static failed(string $reason, array $evidence = []): self',
     ],
+    \Workflow\V2\Compensation\Execution\HandlerContractViolation::class => [
+        'kind final class extends InvalidArgumentException',
+        '__construct(string $message, ?Throwable $previous = null)',
+    ],
     \Workflow\V2\Compensation\Execution\HandlerRegistry::class => [
+        'kind final readonly class',
         'const RESERVED_PREFIX = \'dw.\'',
         '__construct(array $handlers = [])',
     ],
     \Workflow\V2\Compensation\Security\ScopeAuthorization::class => [
+        'kind interface',
         'assertAllowed(Workflow\\V2\\Compensation\\Definition\\ScopeIdentity $scope, string $principal, string $operation): string',
     ],
     \Workflow\V2\Compensation\Security\ScopeAuthorizationRefused::class => [
+        'kind final class extends LogicException',
         '__construct(string $message = \'The compensation scope operation was refused.\', ?Throwable $previous = null)',
     ],
     \Workflow\V2\Compensation\Recovery\ScopeRecovery::class => [
+        'kind final readonly class',
         'request(Workflow\\V2\\Compensation\\Definition\\ScopeIdentity $scope, string $requestKey, string $principal, string $reason, ?Workflow\\V2\\StartOptions $profile = null): array',
         'describe(Workflow\\V2\\Compensation\\Definition\\ScopeIdentity $scope, string $principal): array',
     ],
     \Workflow\V2\Compensation\Recovery\ScopeRetention::class => [
+        'kind final readonly class',
         'release(Workflow\\V2\\Compensation\\Definition\\ScopeIdentity $scope, string $principal): void',
     ],
     \Workflow\V2\Compensation\Recovery\ScopeStatus::class => [
+        'kind enum: string',
         'case Open = \'open\'',
         'case Requested = \'requested\'',
         'case Verified = \'verified\'',
         'case Released = \'released\'',
     ],
     \Workflow\V2\Compensation\Recovery\RecoveryRoute::class => [
+        'kind enum: string',
         'case Origin = \'origin\'',
         'case Recovery = \'recovery\'',
         'case Verified = \'verified\'',
     ],
     \Workflow\V2\Compensation\Recovery\NextAction::class => [
+        'kind enum: string',
         'case None = \'none\'',
         'case ObserveOrigin = \'observe_origin\'',
         'case ObserveRecovery = \'observe_recovery\'',
@@ -112,18 +132,21 @@ return [
         'case InspectUnresolvedObligations = \'inspect_unresolved_obligations\'',
     ],
     \Workflow\V2\Compensation\Recovery\AutomaticRecovery::class => [
+        'kind enum: string',
         'case NotNeeded = \'not_needed\'',
         'case Pending = \'pending\'',
         'case Routed = \'routed\'',
         'case RecoveryAuthorizationFailed = \'recovery_authorization_failed\'',
     ],
     \Workflow\V2\Compensation\Recovery\ObligationStatus::class => [
+        'kind enum: string',
         'case Pending = \'pending\'',
         'case Unresolved = \'unresolved\'',
         'case Failed = \'failed\'',
         'case Verified = \'verified\'',
     ],
     \Workflow\V2\Support\ActivityOptions::class => [
+        'kind final class',
         'property ?int $priority',
         'property ?string $fairnessKey',
         'property ?int $fairnessWeight',
@@ -143,6 +166,7 @@ return [
         'withFairness(?string $fairnessKey, ?int $fairnessWeight = null): self',
     ],
     \Workflow\V2\StartOptions::class => [
+        'kind final class',
         'property Workflow\\V2\\Enums\\DuplicateStartPolicy $duplicateStartPolicy',
         'property ?string $businessKey',
         'property array $labels',

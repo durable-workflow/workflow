@@ -50,6 +50,7 @@ final class CompensationPublicSurfaceTest extends TestCase
             [\Workflow\V2\Compensation\Definition\ScopeIdentity::class, 'recoveryInstanceId'],
             [\Workflow\V2\Compensation\Execution\ForwardResult::class, 'fromArray'],
             [\Workflow\V2\Compensation\Execution\Resolution::class, 'fromArray'],
+            [\Workflow\V2\Compensation\Execution\ForwardResult::class, 'assertValueWithinLimits'],
         ] as [$class, $name]) {
             $this->assertStringContainsString(
                 '@internal',
@@ -66,15 +67,18 @@ final class CompensationPublicSurfaceTest extends TestCase
     {
         $reflection = new ReflectionClass($class);
         if ($reflection->isEnum()) {
-            return array_map(
-                static fn ($case): string => 'case ' . $case->getName() . ' = ' . var_export(
-                    $case->getBackingValue(),
-                    true
+            $enum = new ReflectionEnum($class);
+            return [
+                'kind enum: ' . self::type($enum->getBackingType()),
+                ...array_map(
+                    static fn ($case): string => 'case ' . $case->getName() . ' = ' . self::value(
+                        $case->getBackingValue()
+                    ),
+                    $enum->getCases(),
                 ),
-                (new ReflectionEnum($class))->getCases(),
-            );
+            ];
         }
-        $members = [];
+        $members = ['kind ' . self::kind($reflection)];
         foreach ($reflection->getReflectionConstants() as $constant) {
             if ($constant->isPublic() && $constant->getDeclaringClass()->getName() === $class) {
                 $members[] = 'const ' . $constant->getName() . ' = ' . self::value($constant->getValue());
@@ -96,6 +100,24 @@ final class CompensationPublicSurfaceTest extends TestCase
                 . ($method->hasReturnType() ? ': ' . self::type($method->getReturnType(), $class) : '');
         }
         return $members;
+    }
+
+    /**
+     * Pins final, readonly, abstract and interface-ness, and the parent class.
+     */
+    private static function kind(ReflectionClass $reflection): string
+    {
+        if ($reflection->isInterface()) {
+            return 'interface';
+        }
+        $parent = $reflection->getParentClass();
+        return implode(' ', array_filter([
+            $reflection->isAbstract() ? 'abstract' : null,
+            $reflection->isFinal() ? 'final' : null,
+            $reflection->isReadOnly() ? 'readonly' : null,
+            'class',
+            $parent === false ? null : 'extends ' . $parent->getName(),
+        ]));
     }
 
     private static function excluded(string|false $doc): bool

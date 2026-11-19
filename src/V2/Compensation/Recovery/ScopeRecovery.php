@@ -164,18 +164,18 @@ final readonly class ScopeRecovery
     }
 
     /**
-     * @internal Maps a retained scope status to its public value; reserved roots are not opened scopes.
+     * Maps a retained scope status to its public value; reserved roots are not opened scopes.
      */
-    public static function scopeStatus(string $stored): ScopeStatus
+    private static function scopeStatus(string $stored): ScopeStatus
     {
         return ScopeStatus::tryFrom($stored)
             ?? throw new LogicException('The compensation scope has not been opened.');
     }
 
     /**
-     * @internal Maps a retained compensation status to its public value.
+     * Maps a retained compensation status to its public value.
      */
-    public static function obligationStatus(string $stored): ObligationStatus
+    private static function obligationStatus(string $stored): ObligationStatus
     {
         return match ($stored) {
             'verified' => ObligationStatus::Verified,

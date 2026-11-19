@@ -142,7 +142,7 @@ Nothing else in the `Workflow\V2\Compensation` namespace is stable.
 - `Definition\Obligation`: `__construct(string $key, string $handlerType, string $handlerVersion, array $input)`
   and its four readonly properties.
 - `Definition\ScopeIdentity`: `__construct(string $application, ?string $namespace, string $key, string $generation)`,
-  its four readonly properties, `id()`, `toArray()` and `fromArray()`.
+  its four readonly properties, `id()`, and `toArray()`/`fromArray()`, its public portable version-1 form.
 
 **Handler contract**
 
@@ -156,7 +156,14 @@ Nothing else in the `Workflow\V2\Compensation` namespace is stable.
   properties `outcome`, `observed`, `value`, `evidence`, `reason`.
 - `Execution\Resolution`: `verified(array $evidence)`, `unknown(string $reason)`,
   `failed(string $reason, array $evidence = [])`; constants `VERIFIED`, `UNKNOWN`, `FAILED`; readonly
-  properties `outcome`, `verified`, `reason`, `evidence`.
+  properties `outcome`, `verified`, `reason`, `evidence`. A second boolean argument to `verified()`, the
+  `forwardSettled` flag of earlier releases, is deprecated: `true` is ignored with an `E_USER_DEPRECATED`
+  notice, and `false` returns `unknown('late-forward-possible')`.
+- `Execution\HandlerContractViolation`, thrown by the `ForwardResult` and `Resolution` factories for an
+  invalid reason, evidence or value. When a handler throws it, or an observed value exceeds the forward
+  value limit, the outcome is recorded as unknown and the activity fails with non-retryable
+  `scope_handler_contract_violation` followed by its message. It is never reported as an unknown
+  provider outcome.
 - `Execution\HandlerRegistry`: `__construct(array $handlers = [])` as `[type => [version => ScopedOperation]]`,
   and `RESERVED_PREFIX` (`dw.`).
 
@@ -170,7 +177,9 @@ Nothing else in the `Workflow\V2\Compensation` namespace is stable.
 - `Recovery\ScopeRecovery`: `request()` and `describe()`. Resolve it from the container
   (`app(ScopeRecovery::class)`). Their exact result keys and value sets are documented on the methods
   and use the `ScopeStatus`, `RecoveryRoute`, `NextAction`, `AutomaticRecovery` and `ObligationStatus`
-  enums.
+  enums. Unlike `Workflow\V2\Enums`, these five enums may gain cases in a minor release. Callers must
+  handle values they do not recognize with a default branch (for example `tryFrom()` returning null, or a
+  `default` arm in `match`). Existing cases and their values do not change.
 - `Recovery\ScopeRetention::release(ScopeIdentity, string $principal): void`, resolved from the container.
 - `Support\ActivityOptions` and `StartOptions` as used in these signatures. Their constructors,
   readonly properties and `with*()` methods are `@api`.
@@ -181,9 +190,13 @@ Nothing else in the `Workflow\V2\Compensation` namespace is stable.
   `A-Z a-z 0-9 . _ : / -`, starting with a letter or digit. `namespace` is a native namespace, or null
   for the default namespace; null is never replaced by an alias.
 - `handlerType`: 1 to 128 characters from `a-z 0-9 . _ -`, starting with a lowercase letter. Types
-  starting with `dw.` are reserved for the engine.
+  starting with `dw.` are reserved for the engine: workflows that record the
+  `dw.compensation.registration-checks` patch cannot register them. A `HandlerRegistry` may still map a
+  `dw.` type an earlier history registered, so those obligations stay compensable.
 - Obligation `input`: at most 15,360 bytes as JSON, 500 values and depth 7.
-- Forward result `value`: at most 11,264 bytes, 400 values and depth 7.
+- Forward result `value`: at most 11,264 bytes, 400 values and depth 7. The limit applies to workflows
+  that record the `dw.compensation.registration-checks` patch; runs recorded before it keep the envelope
+  limit.
 - Evidence: at most 32 references of at most 128 bytes per outcome.
 - Envelope overhead is reserved above these limits, so they never shrink.
 - 256 obligations per scope, including at most 16 child participants and one nesting level.
@@ -211,8 +224,9 @@ These remain `@experimental` and may change in a minor release:
 - parallel compensation and deeper nesting.
 
 Members marked `@internal`, including the `ScopeRecovery` and `ScopeRetention` constructors,
-`Obligation::fromStored()`, `HandlerRegistry::resolve()`, `ScopeIdentity::recoveryInstanceId()` and the
-`fromArray()`/`toArray()` envelope codecs, are implementation details. See
+`Obligation::fromStored()`, `HandlerRegistry::resolve()`, `ScopeIdentity::recoveryInstanceId()`,
+`ForwardResult::assertValueWithinLimits()` and the ledger envelope codecs (`fromArray()`/`toArray()` on
+`ForwardResult`, `Resolution` and `Obligation`), are implementation details. See
 [durable compensation scopes](compensation-scopes.md). Existing run-local Saga and its stability contract
 are unchanged.
 

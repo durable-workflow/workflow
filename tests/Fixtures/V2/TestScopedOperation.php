@@ -29,6 +29,12 @@ final class TestScopedOperation implements ScopedOperation
         if (($context->obligation->input['mode'] ?? null) === 'lost-ack') {
             return ForwardResult::unknown('ack-lost');
         }
+        if (($context->obligation->input['mode'] ?? null) === 'oversized') {
+            // Above the 11,264-byte caller value limit, within the envelope limit of earlier releases.
+            return ForwardResult::observed([
+                'receipt' => str_repeat('r', 12_000),
+            ], ['provider:' . $context->operationId]);
+        }
         return ForwardResult::observed([
             'reference' => $context->operationId,
         ], ['provider:' . $context->operationId]);
@@ -54,6 +60,13 @@ final class TestScopedOperation implements ScopedOperation
         Cache::forget('test:scope:effect:' . $context->operationId);
         if (Cache::get('test:scope:late-forward-possible', false)) {
             return Resolution::unknown('late-forward-possible');
+        }
+        if ($context->obligation->key === 'first' && Cache::get('test:scope:invalid-resolution', false)) {
+            return Resolution::verified([]);
+        }
+        if (Cache::get('test:scope:legacy-verified', false)) {
+            // A handler written for earlier releases passes the removed forwardSettled flag.
+            return call_user_func([Resolution::class, 'verified'], ['provider-undo:' . $context->operationId], true);
         }
         return Resolution::verified(['provider-undo:' . $context->operationId]);
     }

@@ -55,23 +55,20 @@ final readonly class ForwardResult
     }
 
     /**
+     * @param array $value at most 11,264 bytes as JSON, 400 values and depth 7. The engine enforces this limit
+     *                     when it records the outcome of a workflow that records the
+     *                     `dw.compensation.registration-checks` patch.
      * @param list<string> $evidence 1 to 32 references of at most 128 bytes
      */
     public static function observed(array $value, array $evidence): self
     {
-        PortableDescriptor::userData(
-            $value,
-            'forward value',
-            PortableDescriptor::USER_VALUE_MAX_BYTES,
-            PortableDescriptor::USER_VALUE_MAX_VALUES,
-            PortableDescriptor::USER_VALUE_MAX_DEPTH,
-        );
-        return new self(self::OBSERVED, $value, $evidence, 'observed');
+        return self::make(self::OBSERVED, $value, $evidence, 'observed');
     }
+
 
     public static function unknown(string $reason): self
     {
-        return new self(self::UNKNOWN, [], [], $reason);
+        return self::make(self::UNKNOWN, [], [], $reason);
     }
 
     /**
@@ -79,7 +76,26 @@ final readonly class ForwardResult
      */
     public static function rejected(string $reason, array $evidence = []): self
     {
-        return new self(self::REJECTED, [], $evidence, $reason);
+        return self::make(self::REJECTED, [], $evidence, $reason);
+    }
+
+    /**
+     * @internal Applies the caller value limit. Histories recorded before the registration-checks patch keep
+     * only the envelope limit.
+     */
+    public function assertValueWithinLimits(): void
+    {
+        try {
+            PortableDescriptor::userData(
+                $this->value,
+                'forward value',
+                PortableDescriptor::USER_VALUE_MAX_BYTES,
+                PortableDescriptor::USER_VALUE_MAX_VALUES,
+                PortableDescriptor::USER_VALUE_MAX_DEPTH,
+            );
+        } catch (InvalidArgumentException $violation) {
+            throw new HandlerContractViolation($violation->getMessage(), $violation);
+        }
     }
 
     /**
@@ -126,5 +142,14 @@ final readonly class ForwardResult
             return new self($value['outcome'], $value['value'], $value['evidence'], $value['reason']);
         }
         throw new InvalidArgumentException('Unsupported compensation forward-result format.');
+    }
+
+    private static function make(string $outcome, array $value, array $evidence, string $reason): self
+    {
+        try {
+            return new self($outcome, $value, $evidence, $reason);
+        } catch (InvalidArgumentException $violation) {
+            throw new HandlerContractViolation($violation->getMessage(), $violation);
+        }
     }
 }

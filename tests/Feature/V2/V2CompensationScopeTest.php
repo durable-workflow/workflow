@@ -7,6 +7,7 @@ namespace Tests\Feature\V2;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\Cache;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Fixtures\V2\TestPrePatchForwardWorkflow;
 use Tests\Fixtures\V2\TestRetainedScopeWorkflow;
 use Tests\Fixtures\V2\TestScopedOperation;
 use Tests\TestCase;
@@ -17,6 +18,7 @@ use Workflow\V2\Compensation\Recovery\RecoveryWorkflow;
 use Workflow\V2\Compensation\Recovery\ScopeRecovery;
 use Workflow\V2\Compensation\Recovery\ScopeRetention;
 use Workflow\V2\Compensation\Security\ScopeAuthorization;
+use Workflow\V2\Compensation\Security\ScopeAuthorizationRefused;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -924,6 +926,139 @@ final class V2CompensationScopeTest extends TestCase
         $retry = app(ScopeRecovery::class)->request($scope, 'cancel-2', 'operator-a', 'order-cancelled');
         $this->driveNativeRetries($retry['runId']);
         $this->assertSame('verified', (new ScopeRepository())->inspect($scope)['status']);
+    }
+
+    public function testOversizedForwardValueIsAHandlerContractViolationNotAnUnknownOutcome(): void
+    {
+        WorkflowStub::fake();
+        $scope = $this->identity();
+        $workflow = WorkflowStub::make(TestRetainedScopeWorkflow::class, 'oversized-origin', 'client-a');
+        $workflow->start($scope->toArray(), 'oversized');
+        // The workflow caught the non-retryable violation, compensated and verified the scope.
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame('verified', $workflow->output()['status']);
+        $failure = \Workflow\V2\Models\WorkflowFailure::query()->where('workflow_run_id', $workflow->runId())->sole();
+        $this->assertSame(
+            'scope_handler_contract_violation: Compensation forward value exceeds 11264 bytes.',
+            $failure->message
+        );
+        $row = (new ScopeRepository())->inspect($scope)['obligations'][0];
+        $this->assertSame('unknown', $row['forward_status']);
+        $this->assertSame('handler-contract-violation', json_decode(
+            $row['forward_result'],
+            true,
+            flags: JSON_THROW_ON_ERROR
+        )['reason']);
+        // The provider was called once; compensation still reconciled the possible effect.
+        $this->assertSame(1, Cache::get('test:scope:effect-count'));
+        $this->assertSame(['first'], Cache::get('test:scope:undo-log'));
+    }
+
+    public function testRunsRecordedBeforeTheRegistrationChecksPatchKeepTheEnvelopeValueLimit(): void
+    {
+        WorkflowStub::fake();
+        $scope = $this->identity();
+        $workflow = WorkflowStub::make(TestPrePatchForwardWorkflow::class, 'pre-patch-origin', 'client-a');
+        $workflow->start($scope->toArray(), 'oversized');
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame([
+            'receiptBytes' => 12_000,
+        ], $workflow->output());
+        $this->assertSame('observed', (new ScopeRepository())->inspect($scope)['obligations'][0]['forward_status']);
+    }
+
+    public function testDeprecatedForwardSettledFlagStillVerifies(): void
+    {
+        [$scope] = $this->completedOrigin();
+        Cache::put('test:scope:legacy-verified', true);
+        $deprecations = [];
+        set_error_handler(static function (int $level, string $message) use (&$deprecations): bool {
+            $deprecations[] = $message;
+            return true;
+        }, E_USER_DEPRECATED);
+        try {
+            app(ScopeRecovery::class)->request($scope, 'cancel-1', 'operator-a', 'order-cancelled');
+        } finally {
+            restore_error_handler();
+        }
+        $this->assertSame('verified', (new ScopeRepository())->inspect($scope)['status']);
+        $this->assertSame(['second', 'first'], Cache::get('test:scope:undo-log'));
+        $this->assertCount(2, $deprecations);
+        $this->assertStringContainsString(
+            'Passing forwardSettled to Resolution::verified() is deprecated',
+            $deprecations[0]
+        );
+    }
+
+    public function testInvalidResolutionIsAHandlerContractViolationAndIsNotRetried(): void
+    {
+        [$scope] = $this->completedOrigin();
+        Cache::put('test:scope:invalid-resolution', true);
+        $result = app(ScopeRecovery::class)->request($scope, 'cancel-1', 'operator-a', 'order-cancelled');
+        $this->driveNativeRetries($result['runId']);
+        $this->assertSame('failed', WorkflowRun::query()->findOrFail($result['runId'])->status->value);
+        // One call: a contract violation is not retried as an unknown provider outcome.
+        $this->assertSame(['second', 'first'], Cache::get('test:scope:undo-log'));
+        $this->assertSame(
+            'scope_handler_contract_violation: Verified compensation requires authoritative evidence.',
+            \Workflow\V2\Models\WorkflowFailure::query()->where('workflow_run_id', $result['runId'])
+                ->where('message', 'like', 'scope_handler_contract_violation%')
+                ->sole()
+                ->message
+        );
+        $this->assertSame([[
+            'key' => 'first',
+            'status' => 'unresolved',
+            'reason' => 'handler-contract-violation',
+        ]], app(ScopeRecovery::class)->describe($scope, 'operator-a')['unresolved']);
+    }
+
+    public function testRefusedChildCompensationIsPermanentUntilAFreshRequest(): void
+    {
+        WorkflowStub::fake();
+        $this->app->instance(ScopeAuthorization::class, new class() implements ScopeAuthorization {
+            public function assertAllowed(ScopeIdentity $scope, string $principal, string $operation): string
+            {
+                if ($scope->key === 'refused-child' && $operation === 'compensate'
+                    && Cache::get('test:scope:refuse-child', false)) {
+                    throw new ScopeAuthorizationRefused('Child compensation refused.');
+                }
+                return 'test-policy-1';
+            }
+        });
+        $child = new ScopeIdentity('shop', 'client-a', 'refused-child', '1');
+        WorkflowStub::make(TestRetainedScopeWorkflow::class, 'refused-child-origin', 'client-a')
+            ->start($child->toArray(), 'complete');
+        $parent = new ScopeIdentity('shop', 'client-a', 'refusing-parent', '1');
+        WorkflowStub::make(TestRetainedScopeWorkflow::class, 'refusing-parent-origin', 'client-a')
+            ->start($parent->toArray(), 'with-child', $child->toArray());
+        Cache::put('test:scope:refuse-child', true);
+        $recovery = app(ScopeRecovery::class)->request($parent, 'parent-1', 'operator-a', 'cancel');
+        $this->driveNativeRetries($recovery['runId']);
+        $this->assertSame('failed', WorkflowRun::query()->findOrFail($recovery['runId'])->status->value);
+        $this->assertSame(
+            1,
+            \Workflow\V2\Models\WorkflowFailure::query()->where('workflow_run_id', $recovery['runId'])
+                ->where('message', 'scope_authorization_refused')
+                ->count()
+        );
+        $this->assertSame(
+            0,
+            WorkflowRun::query()->where('workflow_instance_id', $child->recoveryInstanceId())->count()
+        );
+        $view = app(ScopeRecovery::class)->describe($parent, 'operator-a');
+        $this->assertSame([[
+            'key' => 'delivery',
+            'status' => 'failed',
+            'reason' => 'authorization-refused',
+        ]], $view['unresolved']);
+        $this->assertSame('submit_fresh_authorized_request', $view['nextAction']);
+
+        Cache::forget('test:scope:refuse-child');
+        $retry = app(ScopeRecovery::class)->request($parent, 'parent-2', 'operator-a', 'cancel');
+        $this->driveNativeRetries($retry['runId']);
+        $this->assertSame('verified', (new ScopeRepository())->inspect($parent)['status']);
+        $this->assertSame('verified', (new ScopeRepository())->inspect($child)['status']);
     }
 
     public function testRequestAndDescribeReturnExactlyTheirDocumentedKeys(): void

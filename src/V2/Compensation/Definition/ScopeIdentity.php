@@ -53,6 +53,10 @@ final readonly class ScopeIdentity
         return 'dw-compensation-' . $this->id();
     }
 
+    /**
+     * The portable version-1 form, `['version' => 1, 'application', 'namespace', 'key', 'generation']`.
+     * Unlike the ledger envelope codecs, it is public and stable with this class.
+     */
     public function toArray(): array
     {
         return [
@@ -64,6 +68,9 @@ final readonly class ScopeIdentity
         ];
     }
 
+    /**
+     * Accepts exactly the toArray() form.
+     */
     public static function fromArray(array $value): self
     {
         $keys = array_keys($value);

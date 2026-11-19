@@ -52,21 +52,34 @@ final readonly class Resolution
     }
 
     /**
+     * Passing a second boolean argument, the forwardSettled flag of earlier releases, is deprecated and
+     * accepted for compatibility: `true` is ignored, and `false` returns unknown('late-forward-possible').
+     *
      * @param list<string> $evidence 1 to 32 references of at most 128 bytes
      */
     public static function verified(array $evidence): self
     {
         if (func_num_args() > 1) {
-            throw new InvalidArgumentException(
-                'Resolution::verified() takes only evidence. Return unknown() while a late forward effect is possible.'
+            $forwardSettled = func_get_arg(1);
+            if (func_num_args() > 2 || ! is_bool($forwardSettled)) {
+                throw new HandlerContractViolation('Resolution::verified() takes only evidence.');
+            }
+            trigger_error(
+                'Passing forwardSettled to Resolution::verified() is deprecated. Return verified($evidence) when no '
+                . 'late forward effect is possible, and unknown() otherwise.',
+                E_USER_DEPRECATED
             );
+            if (! $forwardSettled) {
+                return self::make(self::UNKNOWN, 'late-forward-possible', []);
+            }
         }
-        return new self(self::VERIFIED, 'verified', $evidence);
+        return self::make(self::VERIFIED, 'verified', $evidence);
     }
+
 
     public static function unknown(string $reason): self
     {
-        return new self(self::UNKNOWN, $reason, []);
+        return self::make(self::UNKNOWN, $reason, []);
     }
 
     /**
@@ -74,7 +87,7 @@ final readonly class Resolution
      */
     public static function failed(string $reason, array $evidence = []): self
     {
-        return new self(self::FAILED, $reason, $evidence);
+        return self::make(self::FAILED, $reason, $evidence);
     }
 
     /**
@@ -122,5 +135,14 @@ final readonly class Resolution
             return new self($value['outcome'], $value['reason'], $value['evidence']);
         }
         throw new InvalidArgumentException('Unsupported compensation resolution format.');
+    }
+
+    private static function make(string $outcome, string $reason, array $evidence): self
+    {
+        try {
+            return new self($outcome, $reason, $evidence);
+        } catch (InvalidArgumentException $violation) {
+            throw new HandlerContractViolation($violation->getMessage(), $violation);
+        }
     }
 }

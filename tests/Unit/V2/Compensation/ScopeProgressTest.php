@@ -86,13 +86,6 @@ final class ScopeProgressTest extends TestCase
         $progress->finish($scope);
     }
 
-    public function testVerifiedTakesOnlyEvidence(): void
-    {
-        $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('Return unknown() while a late forward effect is possible');
-        call_user_func([Resolution::class, 'verified'], ['undo-ack'], false);
-    }
-
     public function testCompensationCannotOverwriteAnotherNativeAttempt(): void
     {
         [$scope, $id] = $this->registered();

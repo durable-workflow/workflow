@@ -76,6 +76,16 @@ final class V2StableCompensationExampleTest extends TestCase
             $this->assertSame('none', $view['nextAction']);
             $this->assertSame([], $view['unresolved']);
         }
+
+        // Both runs have closed and every obligation is verified, so the host retires the retained scopes.
+        foreach ([
+            OrderCompensation::shipmentScope('order-1', 'g1'),
+            OrderCompensation::orderScope('order-1', 'g1'),
+        ] as $scope) {
+            OrderCompensation::release($scope);
+            OrderCompensation::release($scope);
+            $this->assertSame('released', OrderCompensation::describe($scope)['scopeStatus']);
+        }
     }
 
     public function testCancellationWhileTheOrderWaitsCompensatesThroughItsSaga(): void
@@ -114,6 +124,7 @@ final class V2StableCompensationExampleTest extends TestCase
             'Workflow\\V2\\Compensation\\Execution\\Resolution',
             'Workflow\\V2\\Compensation\\Execution\\ScopedOperation',
             'Workflow\\V2\\Compensation\\Recovery\\ScopeRecovery',
+            'Workflow\\V2\\Compensation\\Recovery\\ScopeRetention',
             'Workflow\\V2\\Compensation\\Security\\ScopeAuthorization',
             'Workflow\\V2\\Compensation\\Security\\ScopeAuthorizationRefused',
         ];
