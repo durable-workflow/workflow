@@ -98,14 +98,6 @@ follows in a later minor release (#1063).
   each effect commits once, with the original obligation identity, descriptor
   and deadline. Cancellation cuts settle through automatic recovery without a
   fresh request. These are test-only changes, apart from the example README.
-- The provider state-machine example documents and tests cancelling an Order
-  while its full parcel is in transit (#1217). Both native runs still fail with
-  `scope_compensation_unknown` while the parcel is out, and automatic recovery
-  gives up until it returns. After receipt and an accepted inspection, one
-  fresh authorized `CancellationStore::request()` restocks, refunds and
-  releases once each, and the `CancellationFinalizer` commits `cancelled`. See
-  "Cancellation after handover" in `examples/provider-state-machines/README.md`.
-  Test and documentation only; no workflow or provider code changed.
 
 ## 2.31.0 - 2026-11-19
 
