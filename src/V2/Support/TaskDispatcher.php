@@ -31,9 +31,10 @@ final class TaskDispatcher
     private const COALESCED_BATCH_SIZE = 50;
 
     /**
-     * Publishes committed inside the active coalescing scope, in commit order.
+     * Publishes and post-commit writes registered inside the active coalescing
+     * scope, in commit order.
      *
-     * @var list<array{task_id: string, queue_timer_wakeup: bool, bounded: bool}>|null
+     * @var list<array{task_id: string, queue_timer_wakeup: bool, bounded: bool}|\Closure(): void>|null
      */
     private static ?array $deferredPublishes = null;
 
@@ -128,6 +129,39 @@ final class TaskDispatcher
         self::publish($task->id, false, $boundedWorkflowTaskProjection);
     }
 
+    /**
+     * Run a best-effort projection write after the connection's current
+     * commit, reporting rather than throwing its failure. Inside a coalescing
+     * scope the write joins the scope's batched post-commit work, ahead of
+     * the tasks published after it, instead of committing alone (#1203: one
+     * child-call row per started child).
+     *
+     * @param \Closure(): void $write
+     */
+    public static function afterCommitWrite(Connection $connection, \Closure $write): void
+    {
+        AfterCommit::on($connection, static function () use ($connection, $write): void {
+            if (self::$deferredPublishes !== null && ! WorkflowStub::faked()) {
+                self::$deferredPublishes[] = static function () use ($connection, $write): void {
+                    try {
+                        // Its own savepoint keeps the batch usable after a failure.
+                        $connection->transaction(static fn () => $write());
+                    } catch (Throwable $throwable) {
+                        report($throwable);
+                    }
+                };
+
+                return;
+            }
+
+            try {
+                $write();
+            } catch (Throwable $throwable) {
+                report($throwable);
+            }
+        });
+    }
+
     private static function publishOrDefer(
         string $taskId,
         bool $queueTimerWakeup,
@@ -154,18 +188,34 @@ final class TaskDispatcher
         self::$flushingPublishes = true;
 
         try {
-            foreach (array_chunk($publishes, self::COALESCED_BATCH_SIZE) as $batch) {
-                $failure = self::inBatchTransaction(
-                    $batch[0]['task_id'],
-                    array_map(
-                        static fn (array $publish): \Closure => static fn () => self::publish(
-                            $publish['task_id'],
-                            $publish['queue_timer_wakeup'],
-                            $publish['bounded'],
-                        ),
-                        $batch,
+            $admissionTaskId = null;
+            foreach ($publishes as $publish) {
+                if (is_array($publish)) {
+                    $admissionTaskId = $publish['task_id'];
+
+                    break;
+                }
+            }
+            $steps = array_map(
+                static fn (array|\Closure $publish): \Closure => $publish instanceof \Closure
+                    ? $publish
+                    : static fn () => self::publish(
+                        $publish['task_id'],
+                        $publish['queue_timer_wakeup'],
+                        $publish['bounded'],
                     ),
-                ) ?? $failure;
+                $publishes,
+            );
+
+            if ($admissionTaskId === null) {
+                // Writes alone keep their own transactions.
+                foreach ($steps as $step) {
+                    $step();
+                }
+            } else {
+                foreach (array_chunk($steps, self::COALESCED_BATCH_SIZE) as $batch) {
+                    $failure = self::inBatchTransaction($admissionTaskId, $batch) ?? $failure;
+                }
             }
         } finally {
             self::$flushingPublishes = false;

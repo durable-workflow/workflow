@@ -9,7 +9,6 @@ use Illuminate\Support\Collection;
 use RuntimeException;
 use Throwable;
 use Workflow\Serializers\Serializer;
-use Workflow\Support\AfterCommit;
 use Workflow\V2\Enums\ChildCallStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\ParentClosePolicy;
@@ -790,24 +789,20 @@ final class ChildRunHistory
 
     private static function afterAuthoritativeCommit(callable $projection): void
     {
-        $callback = static function () use ($projection): void {
-            try {
-                $projection();
-            } catch (Throwable $throwable) {
-                report($throwable);
-            }
-        };
-
         if (ConfiguredV2Models::connection()->transactionLevel() > 0) {
             // The projection writes one child-call row after commit, outside
             // the completion's meter: charge it now, before any write (#1116).
             HistoryTransactionMeter::current()?->chargeCompletionRows(1);
-            AfterCommit::on(ConfiguredV2Models::connection(), $callback);
+            TaskDispatcher::afterCommitWrite(ConfiguredV2Models::connection(), static fn () => $projection());
 
             return;
         }
 
-        $callback();
+        try {
+            $projection();
+        } catch (Throwable $throwable) {
+            report($throwable);
+        }
     }
 
     /**
