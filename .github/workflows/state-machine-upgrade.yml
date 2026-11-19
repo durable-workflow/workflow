@@ -1,7 +1,7 @@
 name: State machine upgrade
 
 # Installed upgrade journey for the #1069 state-machine examples: published
-# 2.32.0 to this source with MySQL or PostgreSQL and Redis queue workers,
+# 2.33.0 to this source with MySQL or PostgreSQL and Redis queue workers,
 # recovery of runs left mid-flight, schema rollback refusal while their
 # compensation scopes are retained, and a package downgrade followed by an
 # upgrade. Release tags run the same journey against the published package in
@@ -92,7 +92,7 @@ jobs:
         extensions: pdo_mysql, pdo_sqlite, redis
         tools: composer
 
-    - name: Run the published 2.32.0 to source state machine journey
+    - name: Run the published 2.33.0 to source state machine journey
       env:
         LARAVEL_VERSION: ${{ matrix.laravel }}
         WORKFLOW_CANDIDATE_PATH: ${{ github.workspace }}
@@ -140,7 +140,7 @@ jobs:
         extensions: pdo_pgsql, pdo_sqlite, redis
         tools: composer
 
-    - name: Run the published 2.32.0 to source state machine journey
+    - name: Run the published 2.33.0 to source state machine journey
       env:
         LARAVEL_VERSION: '13.*'
         WORKFLOW_CANDIDATE_PATH: ${{ github.workspace }}

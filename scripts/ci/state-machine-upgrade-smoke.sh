@@ -2,7 +2,7 @@
 
 # Installed upgrade journey for the #1069 state-machine examples.
 #
-# Installs published 2.32.0 into a fresh Laravel application with a MySQL or
+# Installs published 2.33.0 into a fresh Laravel application with a MySQL or
 # PostgreSQL database and Redis queues. The application copies the
 # provider-backed and configured Order/Shipment examples out of that installed
 # package, leaves real runs mid-flight on queue workers, upgrades the package
@@ -18,10 +18,13 @@ script_root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # shellcheck source=scripts/ci/upgrade-journey-lib.sh
 . "$script_root/upgrade-journey-lib.sh"
-# 2.32.0 is the first release whose compensation API matches the stable one,
-# so its example sources run unchanged after the upgrade. The 2.29.0 to 2.31.0
-# examples read OperationContext::$uncertainForward, which 2.32.0 removed.
-upgrade_journey_init 2.32.0
+# The baseline must run the examples unchanged after the upgrade and keep its
+# queues drainable. The 2.29.0 to 2.31.0 examples read
+# OperationContext::$uncertainForward, which 2.32.0 removed. 2.32.0 gives a
+# booked Order, which consumed its children before waiting for `finish`, a
+# no-op workflow task on every watchdog pass (#1219), so its queue never
+# empties. 2.33.0 carries the fix.
+upgrade_journey_init 2.33.0
 
 db_connection="${DB_CONNECTION:-mysql}"
 case "$db_connection" in
@@ -59,40 +62,6 @@ databases() {
     '
 }
 
-# A runaway writer must fail with evidence, not by filling the runner's disk.
-# The guard reports the largest files and stops the journey below the floor.
-disk_guard() {
-  local floor_kb=$(( ${STATE_MACHINE_MIN_FREE_MB:-2048} * 1024 ))
-  local free_kb largest ticks=0
-  while sleep 15; do
-    free_kb=$(df -Pk "$fixture_root" | awk 'NR == 2 { print $4 }')
-    ticks=$((ticks + 1))
-    if (( ticks % 2 == 0 )); then
-      echo "Journey heartbeat: $((free_kb / 1024)) MB free; $(du -sh "$fixture_root" 2>/dev/null | cut -f1) fixture;" \
-        "$(find "$fixture_root" -name '*.log' -printf '%f=%s ' 2>/dev/null)" >&2
-    fi
-    if (( free_kb >= floor_kb )); then
-      continue
-    fi
-    largest=$(find "$fixture_root" "${HOME:-/root}" /tmp -xdev -type f -size +20M -printf '%s %p\n' 2>/dev/null \
-      | sort -rn | head -n 5)
-    {
-      echo "Disk guard: ${free_kb} KB free below the ${floor_kb} KB floor. Largest files:"
-      echo "$largest"
-      while read -r _ file; do
-        [[ -n "$file" ]] || continue
-        echo "--- last 4000 bytes of $file"
-        tail -c 4000 "$file"
-      done <<<"$(echo "$largest" | head -n 2)"
-    } >&2
-    kill -TERM "$journey_pid"
-    return
-  done
-}
-journey_pid=$$
-disk_guard &
-disk_guard_pid=$!
-
 # Prints the example's run summaries and latest workflow tasks, so a worker
 # that never empties its queue shows which runs keep receiving work.
 task_report() {
@@ -119,7 +88,6 @@ task_report() {
 }
 
 cleanup() {
-  kill "$disk_guard_pid" 2>/dev/null || true
   if [[ "${KEEP_UPGRADE_FIXTURE:-0}" == 1 ]]; then
     printf 'Preserving diagnostic fixture: app=%s databases=%s_*\n' "$app_path" "$database_prefix" >&2
     return

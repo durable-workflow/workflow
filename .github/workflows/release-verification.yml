@@ -368,7 +368,7 @@ jobs:
           extensions: pdo_mysql, pdo_sqlite, redis
           tools: composer
 
-      - name: Run the published 2.32.0 to release state machine journey
+      - name: Run the published 2.33.0 to release state machine journey
         env:
           LARAVEL_VERSION: ${{ matrix.laravel }}
           RELEASE_TAG: ${{ needs.published-package.outputs.release_tag }}
@@ -380,10 +380,10 @@ jobs:
           REDIS_HOST: 127.0.0.1
           REDIS_PORT: ${{ job.services.redis.ports['6379'] }}
         run: |
-          # The journey starts from the 2.32.0 example sources, which use the
-          # compensation API as revised in 2.32.0 (#1069).
-          if php -r 'exit(version_compare(getenv("RELEASE_TAG"), "2.32.0", "<=") ? 0 : 1);'; then
-            echo "Release ${RELEASE_TAG} is not newer than the 2.32.0 baseline; nothing to qualify."
+          # The journey starts from the published 2.33.0 example sources; see
+          # state-machine-upgrade-smoke.sh for why (#1069, #1219).
+          if php -r 'exit(version_compare(getenv("RELEASE_TAG"), "2.33.0", "<=") ? 0 : 1);'; then
+            echo "Release ${RELEASE_TAG} is not newer than the 2.33.0 baseline; nothing to qualify."
             exit 0
           fi
           WORKFLOW_CANDIDATE_VERSION="$RELEASE_TAG" scripts/ci/state-machine-upgrade-smoke.sh
