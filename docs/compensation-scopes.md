@@ -3,8 +3,9 @@
 Implementation of the embedded, sequential scope design in
 [retained compensation proposal](https://github.com/durable-workflow/workflow/issues/1063), preparing the
 nested-machine integration in [business state-machine proposal](https://github.com/durable-workflow/workflow/issues/1069).
-These APIs first shipped in 2.29.0 as experimental. From 2.32.0 the authoring,
-handler-contract and host APIs are stable; see
+These APIs first shipped in 2.29.0 as experimental. From the release that ships
+their promotion (after 2.32.0; see the CHANGELOG), the authoring, handler-contract
+and host APIs are stable; see
 [API stability](api-stability.md#compensation-scopes) for the exact members and
 guarantees. Reserved child admission (`reserveChild()`) and original root
 admission remain experimental. Existing run-local Saga and the four-method

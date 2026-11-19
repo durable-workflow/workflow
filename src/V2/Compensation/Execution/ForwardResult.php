@@ -15,7 +15,7 @@ use Workflow\V2\Compensation\Definition\PortableDescriptor;
  * - rejected(): the provider definitely made no effect. The workflow receives a non-retryable
  *   `scope_forward_rejected` failure, and compensation of this obligation verifies without a provider call.
  *
- * @api Stable compensation-scope API from 2.32.0 (#1063). See docs/api-stability.md#compensation-scopes.
+ * @api Stable compensation-scope API (#1063). See docs/api-stability.md#compensation-scopes.
  */
 final readonly class ForwardResult
 {

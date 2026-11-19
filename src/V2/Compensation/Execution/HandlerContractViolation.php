@@ -16,7 +16,7 @@ use Throwable;
  * error carrying this message. It is never reported as an unknown provider outcome. The message is
  * diagnostic text and is not machine-stable.
  *
- * @api Stable compensation-scope API from 2.32.0 (#1063). See docs/api-stability.md#compensation-scopes.
+ * @api Stable compensation-scope API (#1063). See docs/api-stability.md#compensation-scopes.
  */
 final class HandlerContractViolation extends InvalidArgumentException
 {

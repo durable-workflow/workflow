@@ -126,8 +126,9 @@ marked `@experimental` as described below.
 
 ## Compensation scopes
 
-From 2.32.0 (the minor release that first ships this promotion) exactly the
-members below are stable `@api` and follow the semver guarantee in this document.
+From the release that first ships this promotion (after 2.32.0; see the CHANGELOG)
+exactly the members below are stable `@api` and follow the semver guarantee in this
+document.
 `tests/Unit/V2/Compensation/CompensationPublicSurfaceTest.php` pins their signatures.
 Nothing else in the `Workflow\V2\Compensation` namespace is stable.
 

@@ -7,7 +7,7 @@ namespace Workflow\V2\Compensation\Recovery;
 /**
  * What an operator or host should do next with a scope.
  *
- * @api Stable compensation-scope API from 2.32.0 (#1063). See docs/api-stability.md#compensation-scopes.
+ * @api Stable compensation-scope API (#1063). See docs/api-stability.md#compensation-scopes.
  */
 enum NextAction: string
 {

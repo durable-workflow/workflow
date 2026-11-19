@@ -16,7 +16,7 @@ use Workflow\V2\Compensation\Definition\PortableDescriptor;
  * - failed(): compensation definitely cannot complete. The obligation stays unresolved with status
  *   `failed`, without further retries in this run, until a new authorized request.
  *
- * @api Stable compensation-scope API from 2.32.0 (#1063). See docs/api-stability.md#compensation-scopes.
+ * @api Stable compensation-scope API (#1063). See docs/api-stability.md#compensation-scopes.
  */
 final readonly class Resolution
 {

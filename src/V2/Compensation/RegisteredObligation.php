@@ -20,7 +20,7 @@ use Workflow\V2\Workflow;
  * Public authoring API: DurableScope::register() returns it, and workflow code
  * calls execute() and compensate() on it. Only its constructor is internal.
  *
- * @api Stable compensation-scope API from 2.32.0 (#1063). See docs/api-stability.md#compensation-scopes.
+ * @api Stable compensation-scope API (#1063). See docs/api-stability.md#compensation-scopes.
  */
 final readonly class RegisteredObligation
 {
