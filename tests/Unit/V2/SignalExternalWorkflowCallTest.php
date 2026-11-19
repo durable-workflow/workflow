@@ -155,7 +155,6 @@ final class SignalExternalWorkflowCallTest extends TestCase
         $call = new SignalExternalWorkflowCall('order-42', 'approve', ['Ada', 2]);
         $histories = [
             'outcome without request' => [['ExternalSignalDelivered', $this->delivered()]],
-            'request without outcome' => [['ExternalSignalRequested', $this->requested($call)]],
             'two outcomes' => [
                 ['ExternalSignalRequested', $this->requested($call)],
                 ['ExternalSignalDelivered', $this->delivered()],
@@ -196,6 +195,24 @@ final class SignalExternalWorkflowCallTest extends TestCase
                 $this->assertStringContainsString('external_signal_history_invalid', $exception->getMessage(), $label);
             }
         }
+    }
+
+    public function testRequestWithoutOutcomeIsPendingDelivery(): void
+    {
+        $call = new SignalExternalWorkflowCall('order-42', 'approve', ['Ada', 2]);
+        $run = $this->runWithHistory([['ExternalSignalRequested', $this->requested($call)]]);
+
+        $this->assertSame([
+            'status' => ExternalSignalHistory::PENDING,
+            'result' => null,
+        ], ExternalSignalHistory::lookup($run, 1, $call));
+        $this->assertSame([1], array_keys(ExternalSignalHistory::pendingRequests($run)));
+
+        $delivered = new SignalExternalWorkflowCall('order-42', 'approve', ['Ada', 2]);
+        $requested = ExternalSignalHistory::callFromRequest($run->historyEvents->first());
+        $this->assertSame($delivered->arguments, $requested->arguments);
+        $this->assertSame('order-42', $requested->workflowId);
+        $this->assertNull($requested->runId);
     }
 
     /**

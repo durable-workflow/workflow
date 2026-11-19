@@ -99,6 +99,28 @@ final class WorkflowTaskPayload
     }
 
     /**
+     * The sender's turn for a durable signal-external outcome, or the delayed
+     * turn that re-attempts a pending delivery (.github#223).
+     *
+     * @return array<string, mixed>
+     */
+    public static function forExternalSignal(WorkflowHistoryEvent|int $source, int $deliveryAttempt = 0): array
+    {
+        $event = $source instanceof WorkflowHistoryEvent ? $source : null;
+        $payload = is_array($event?->payload) ? $event->payload : [];
+        $sequence = $event === null ? (int) $source : self::intValue($payload['sequence'] ?? null);
+
+        return array_filter([
+            'workflow_wait_kind' => 'external_signal',
+            'open_wait_id' => $sequence === null ? null : sprintf('external-signal:%d', $sequence),
+            'resume_source_kind' => 'external_signal',
+            'workflow_sequence' => $sequence,
+            'workflow_event_type' => $event?->event_type?->value,
+            'external_signal_delivery_attempt' => $deliveryAttempt > 0 ? $deliveryAttempt : null,
+        ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public static function forConditionResolution(WorkflowHistoryEvent $event): array

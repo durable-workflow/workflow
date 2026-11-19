@@ -445,7 +445,8 @@ final class QueryStateReplayer
                 $this->applyRecordedUpdates($run, $workflow, $historySequence);
                 WorkflowStepHistory::assertCompatible($run, $historySequence, WorkflowStepHistory::EXTERNAL_SIGNAL);
 
-                // Query replay reads a recorded outcome and never delivers.
+                // Query replay reads a recorded outcome and never delivers;
+                // a pending request stops replay like a pending activity.
                 $result = ExternalSignalHistory::recordedResult($run, $historySequence, $current);
 
                 if ($result === null) {

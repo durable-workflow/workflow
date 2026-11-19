@@ -7,10 +7,12 @@ namespace Tests\Feature\V2;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestSignalExternalChildHandleWorkflow;
+use Tests\Fixtures\V2\TestSignalExternalCleanupWorkflow;
 use Tests\Fixtures\V2\TestSignalExternalInvalidNameWorkflow;
 use Tests\Fixtures\V2\TestSignalExternalSenderWorkflow;
 use Tests\Fixtures\V2\TestSignalExternalTargetWorkflow;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
@@ -31,6 +33,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\WorkflowReplayer;
+use Workflow\V2\Webhooks;
 use Workflow\V2\WorkflowStub;
 
 /**
@@ -138,10 +141,12 @@ final class V2SignalExternalWorkflowTest extends TestCase
             ->sole();
 
         // The sender's task runs completely, then its transaction is lost.
+        // Delivery waits for the sender's commit, so nothing reached the target.
         DB::beginTransaction();
         try {
             $this->app->call([new RunWorkflowTask($task->id), 'handle']);
-            $this->assertSame(1, WorkflowSignal::query()->where('workflow_run_id', $target->runId())->count());
+            $this->assertSame(1, $this->eventCount($sender->runId(), HistoryEventType::ExternalSignalRequested));
+            $this->assertSame(0, WorkflowSignal::query()->where('workflow_run_id', $target->runId())->count());
         } finally {
             DB::rollBack();
         }
@@ -340,6 +345,63 @@ final class V2SignalExternalWorkflowTest extends TestCase
             ->accepted());
     }
 
+    public function testCleanupAfterACancellationRequestCannotSignalAnotherWorkflow(): void
+    {
+        $target = $this->startTarget('sx-cleanup-target');
+        $sender = WorkflowStub::make(TestSignalExternalCleanupWorkflow::class, 'sx-cleanup-sender');
+        $sender->start('sx-cleanup-target');
+        $this->drainReadyTasks();
+
+        $this->assertTrue($sender->requestCancellation('stop', 30)->accepted());
+        $this->drainReadyTasks();
+
+        $this->assertTrue($sender->refresh()->cancelled());
+        $this->assertSame(0, $this->eventCount($sender->runId(), HistoryEventType::ExternalSignalRequested));
+        $this->assertSame(
+            'cancellation_cleanup_command_not_available',
+            Serializer::unserializeWithCodec(
+                'avro',
+                $this->event($sender->runId(), HistoryEventType::SideEffectRecorded)->payload['result'],
+            ),
+        );
+        $this->assertSame(0, WorkflowSignal::query()->where('workflow_run_id', $target->runId())->count());
+    }
+
+    public function testReservedPrefixRefusalsCarryTheServerBody(): void
+    {
+        $this->startTarget('sx-body-target');
+        $message = 'The request_id prefix [workflow-signal:] is reserved for signals sent by workflow code.';
+
+        $controlPlane = $this->app->make(WorkflowControlPlane::class)->signal('sx-body-target', 'approve', [
+            'request_id' => 'workflow-signal:run:9',
+            'arguments' => ['forged'],
+        ]);
+        $this->assertSame('request_id_reserved', $controlPlane['reason']);
+        $this->assertSame('rejected_request_id_reserved', $controlPlane['outcome']);
+        $this->assertFalse($controlPlane['accepted']);
+        $this->assertSame($message, $controlPlane['message']);
+
+        config([
+            'workflows.webhook_auth.method' => 'none',
+        ]);
+        Webhooks::routes([TestSignalExternalTargetWorkflow::class]);
+
+        $this->withHeader('X-Request-Id', 'workflow-signal:run:10')
+            ->postJson('/webhooks/instances/sx-body-target/signals/approve', [
+                'arguments' => ['forged'],
+            ])
+            ->assertStatus(422)
+            ->assertJsonPath('reason', 'request_id_reserved')
+            ->assertJsonPath('outcome', 'rejected_request_id_reserved')
+            ->assertJsonPath('accepted', false)
+            ->assertJsonPath('message', $message);
+
+        $this->assertSame(0, WorkflowCommand::query()
+            ->where('workflow_instance_id', 'sx-body-target')
+            ->where('command_type', CommandType::Signal->value)
+            ->count());
+    }
+
     private function startTarget(string $id): WorkflowStub
     {
         $target = WorkflowStub::make(TestSignalExternalTargetWorkflow::class, $id);
@@ -394,12 +456,16 @@ final class V2SignalExternalWorkflowTest extends TestCase
 
         while (microtime(true) < $deadline) {
             /** @var WorkflowTask|null $task */
+            // Due tasks only: a delayed delivery retry waits for its time.
             $task = WorkflowTask::query()
                 ->where('status', TaskStatus::Ready->value)
+                ->orderBy('available_at')
                 ->orderBy('created_at')
-                ->first();
+                ->get()
+                ->first(static fn (WorkflowTask $ready): bool => $ready->available_at === null
+                    || ! $ready->available_at->isFuture());
 
-            if ($task === null || ($task->available_at !== null && $task->available_at->isFuture())) {
+            if ($task === null) {
                 return;
             }
 

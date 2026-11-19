@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
   "fixture_schema": "durable-workflow.replay-regression/v1",
-  "id": "signal-external-request-without-outcome",
+  "id": "signal-external-outcome-without-request",
   "protocol_version": "1.20",
   "bindings": [
     "php"
@@ -35,18 +35,17 @@
     },
     {
       "sequence": 2,
-      "event_type": "ExternalSignalRequested",
+      "event_type": "ExternalSignalDelivered",
       "payload": {
         "sequence": 1,
         "target_workflow_instance_id": "order-42",
-        "target_workflow_run_id": null,
+        "target_workflow_run_id": "01j00000000000000000000t01",
         "signal_name": "approve",
-        "arguments": {
-          "codec": "avro",
-          "blob": "wwHioz3/VYAiNwwCCgZBZGEA"
-        },
-        "payload_codec": "avro",
-        "request_id": "workflow-signal:01j00000000000000000000s01:1"
+        "request_id": "workflow-signal:01j00000000000000000000s01:1",
+        "outcome": "delivered",
+        "target_command_id": "01j00000000000000000000c01",
+        "target_signal_id": "01j00000000000000000000g01",
+        "retained": false
       },
       "recorded_at": "2026-11-19T12:00:01Z"
     }

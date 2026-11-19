@@ -1353,29 +1353,6 @@ final class WorkflowStub
         return $result;
     }
 
-    /**
-     * Admit one durable signal-external delivery from workflow code.
-     *
-     * The runtime calls this inside the sending workflow task's transaction,
-     * keyed on the target as `workflow-signal:<sender run>:<sequence>`, so the
-     * sender's history and the target's admission commit or roll back
-     * together. Applications cannot use that key prefix themselves.
-     *
-     * @internal
-     * @param array<int|string, mixed> $arguments
-     */
-    public function attemptExternalWorkflowSignal(string $requestId, string $name, array $arguments): CommandResult
-    {
-        if (! ExternalSignalHistory::isReservedRequestId($requestId)) {
-            throw new LogicException('A durable signal-external delivery requires its reserved command key.');
-        }
-
-        $clone = $this->withRequestId($requestId);
-        $clone->externalSignalRequestId = $requestId;
-
-        return $clone->attemptSignalWithArguments($name, $arguments);
-    }
-
     public function attemptSignal(string $name, ...$arguments): CommandResult
     {
         return $this->attemptSignalWithArguments($name, $arguments);
@@ -1802,6 +1779,31 @@ final class WorkflowStub
         }
 
         return new CommandResult($command);
+    }
+
+    /**
+     * Admit one durable signal-external delivery from workflow code.
+     *
+     * The runtime's delivery calls this after the sender recorded its request,
+     * in the target's own transaction, keyed on the target as
+     * `workflow-signal:<sender run>:<sequence>`. A repeated delivery returns
+     * the retained receipt. Applications cannot use that key prefix.
+     *
+     * Private: only the runtime's delivery reaches it, through a scoped
+     * closure, so no caller can admit a reserved key.
+     *
+     * @param array<int|string, mixed> $arguments
+     */
+    private function attemptExternalWorkflowSignal(string $requestId, string $name, array $arguments): CommandResult
+    {
+        if (! ExternalSignalHistory::isReservedRequestId($requestId)) {
+            throw new LogicException('A durable signal-external delivery requires its reserved command key.');
+        }
+
+        $clone = $this->withRequestId($requestId);
+        $clone->externalSignalRequestId = $requestId;
+
+        return $clone->attemptSignalWithArguments($name, $arguments);
     }
 
     private function admitOrdinaryStart(

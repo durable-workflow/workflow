@@ -580,28 +580,36 @@ final class WorkflowFiberRunner
             }
 
             if ($current instanceof SignalExternalWorkflowCall) {
-                // Replay returns the recorded outcome. A new delivery needs the
-                // embedded executor's transaction; this runner never sends one.
+                // Replay returns the recorded outcome and waits on a pending
+                // request. A new request needs the embedded executor's outbox;
+                // this runner never sends one.
                 $historySequence = $this->historySequenceForCurrentPosition();
-                $result = null;
+                $recorded = null;
                 if ($historySequence !== null) {
                     WorkflowStepHistory::assertCompatible(
                         $this->workflow->run,
                         $historySequence,
                         WorkflowStepHistory::EXTERNAL_SIGNAL,
                     );
-                    $result = ExternalSignalHistory::recordedResult($this->workflow->run, $historySequence, $current);
+                    $recorded = ExternalSignalHistory::lookup($this->workflow->run, $historySequence, $current);
                 }
 
-                if ($result === null) {
+                if ($recorded === null || $recorded['status'] === ExternalSignalHistory::NONE) {
                     throw new UnsupportedWorkflowYieldException(
                         'Durable signal-external currently requires embedded native execution.'
                     );
                 }
 
+                if ($recorded['status'] === ExternalSignalHistory::PENDING) {
+                    $this->waitingForHistory = true;
+
+                    return WorkflowStep::waiting($current)
+                        ->withPrependedCommands($immediateCommands);
+                }
+
                 ++$this->sequence;
                 $this->sendToWorkflow(
-                    $result,
+                    $recorded['result'],
                     RedriveReplayClock::recordedAt(
                         ExternalSignalHistory::resolutionEvent($this->workflow->run, $historySequence),
                     ),

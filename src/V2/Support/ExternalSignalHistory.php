@@ -35,6 +35,12 @@ final class ExternalSignalHistory
 
     public const SHAPE = 'external signal';
 
+    public const NONE = 'none';
+
+    public const PENDING = 'pending';
+
+    public const RESOLVED = 'resolved';
+
     public static function requestId(string $senderRunId, int $sequence): string
     {
         return self::REQUEST_ID_PREFIX . $senderRunId . ':' . $sequence;
@@ -46,14 +52,13 @@ final class ExternalSignalHistory
     }
 
     /**
-     * The recorded outcome for this command, or null when nothing is recorded
-     * at the sequence yet.
+     * What history records for this command at the sequence: nothing yet, a
+     * request whose delivery has not recorded its outcome, or the outcome.
+     *
+     * @return array{status: self::NONE|self::PENDING|self::RESOLVED, result: ExternalSignalResult|null}
      */
-    public static function recordedResult(
-        WorkflowRun $run,
-        int $sequence,
-        SignalExternalWorkflowCall $call,
-    ): ?ExternalSignalResult {
+    public static function lookup(WorkflowRun $run, int $sequence, SignalExternalWorkflowCall $call): array
+    {
         $requested = self::events($run, $sequence, HistoryEventType::ExternalSignalRequested);
         $resolutions = [
             ...self::events($run, $sequence, HistoryEventType::ExternalSignalDelivered),
@@ -61,7 +66,10 @@ final class ExternalSignalHistory
         ];
 
         if ($requested === [] && $resolutions === []) {
-            return null;
+            return [
+                'status' => self::NONE,
+                'result' => null,
+            ];
         }
 
         if (count($requested) !== 1) {
@@ -73,13 +81,83 @@ final class ExternalSignalHistory
         $request = $requested[0];
         self::assertSameIntent($sequence, $request, $call);
 
-        if (count($resolutions) !== 1) {
-            self::invalid($sequence, $resolutions === []
-                ? 'An external signal request was recorded without its outcome.'
-                : 'More than one external signal outcome was recorded at one sequence.');
+        if ($resolutions === []) {
+            return [
+                'status' => self::PENDING,
+                'result' => null,
+            ];
         }
 
-        return self::resultFor($sequence, $request, $resolutions[0]);
+        if (count($resolutions) !== 1) {
+            self::invalid($sequence, 'More than one external signal outcome was recorded at one sequence.');
+        }
+
+        return [
+            'status' => self::RESOLVED,
+            'result' => self::resultFor($sequence, $request, $resolutions[0]),
+        ];
+    }
+
+    /**
+     * The recorded outcome for this command, or null when nothing is
+     * resolved at the sequence yet.
+     */
+    public static function recordedResult(
+        WorkflowRun $run,
+        int $sequence,
+        SignalExternalWorkflowCall $call,
+    ): ?ExternalSignalResult {
+        return self::lookup($run, $sequence, $call)['result'];
+    }
+
+    /**
+     * The signal a recorded request describes, for its delivery.
+     */
+    public static function callFromRequest(WorkflowHistoryEvent $request): SignalExternalWorkflowCall
+    {
+        $payload = is_array($request->payload) ? $request->payload : [];
+        $arguments = $payload['arguments'] ?? null;
+        $codec = is_array($arguments) && is_string($arguments['codec'] ?? null)
+            ? $arguments['codec']
+            : (is_string($payload['payload_codec'] ?? null) ? $payload['payload_codec'] : null);
+        $blob = is_array($arguments) ? ($arguments['blob'] ?? null) : $arguments;
+        $decoded = is_string($blob) ? Serializer::unserializeWithCodec($codec, $blob) : [];
+
+        return new SignalExternalWorkflowCall(
+            (string) ($payload['target_workflow_instance_id'] ?? ''),
+            (string) ($payload['signal_name'] ?? ''),
+            is_array($decoded) ? $decoded : [],
+            is_string($payload['target_workflow_run_id'] ?? null) ? $payload['target_workflow_run_id'] : null,
+        );
+    }
+
+    /**
+     * Requests recorded on this run that have no outcome yet, by sequence.
+     *
+     * @return array<int, WorkflowHistoryEvent>
+     */
+    public static function pendingRequests(WorkflowRun $run): array
+    {
+        $pending = [];
+        $resolved = [];
+
+        foreach ($run->historyEvents as $event) {
+            $sequence = self::intValue($event->payload['sequence'] ?? null);
+            if ($sequence === null) {
+                continue;
+            }
+
+            if ($event->event_type === HistoryEventType::ExternalSignalRequested) {
+                $pending[$sequence] ??= $event;
+            } elseif (in_array($event->event_type, [
+                HistoryEventType::ExternalSignalDelivered,
+                HistoryEventType::ExternalSignalFailed,
+            ], true)) {
+                $resolved[$sequence] = true;
+            }
+        }
+
+        return array_diff_key($pending, $resolved);
     }
 
     /**

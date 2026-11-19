@@ -271,35 +271,50 @@ its namespace. It is **experimental**: the
 `Workflow\V2\signalExternalWorkflow()` function, the
 `Workflow::signalExternalWorkflow()` facade method,
 `ChildWorkflowHandle::signalDurably()`, `ExternalSignalResult`,
-`Enums\ExternalSignalOutcome` and `Exceptions\InvalidExternalSignalException`
-are marked `@experimental` and may change incompatibly in a minor release, never
-in a patch release. They are not part of the stable facade list above.
+`Enums\ExternalSignalOutcome`, `Exceptions\InvalidExternalSignalException` and
+`Exceptions\ExternalSignalRefusedException` are marked `@experimental` and may
+change incompatibly in a minor release, never in a patch release. They are not
+part of the stable facade list above.
 
 They are experimental, not stable, because the embedded surface is new while
 the contract it implements is not. The command, its history events, the
 `workflow-signal:` key and its outcomes follow the shipped Server 3.15.0
 contract (`docs/contracts/signal-external-workflow.md` in the server
 repository) and the published Python, PHP SDK and Rust SDKs. The PHP authoring
-names and result type have not shipped in any release. The embedded runtime
-also differs from Server in ways a later minor release may still align:
+names and result type have not shipped in any release, and the
+worker-protocol runner (`WorkflowFiberRunner`, used by external PHP workers)
+replays recorded requests and outcomes but refuses a new command with
+`UnsupportedWorkflowYieldException`; embedded does not advertise
+`signal_external_workflow`.
 
-- Delivery is synchronous in the sending workflow task, so the sender needs no
-  extra workflow task (Server's `external_signal` turn) and continues at once.
-- The worker-protocol runner (`WorkflowFiberRunner`, used by external PHP
-  workers) replays recorded outcomes but refuses a new command with
-  `UnsupportedWorkflowYieldException`. It does not advertise
-  `signal_external_workflow`.
-- Embedded does not refuse the command while a run is cleaning up after a
-  cancellation request. Server refuses it then
-  (`signal_external_not_at_checkpoint`).
+Delivery is an outbox, as on the Server and in Temporal:
+
+- The sending workflow task records `ExternalSignalRequested` and commits. It
+  locks only the sender's rows, and workflow code waits for the outcome as it
+  waits for an activity result.
+- After that commit, delivery admits an ordinary signal on the target in the
+  target's own transaction, keyed `workflow-signal:<sender run id>:<sequence>`
+  and attributed to the sender through `CommandContext::workflow()`. It then
+  locks the sender's run on its own, appends exactly one
+  `ExternalSignalDelivered` or `ExternalSignalFailed` at the request's
+  sequence, and gives the sender a workflow task. A repeated delivery returns
+  the target's retained receipt (`retained: true`) instead of signalling
+  twice.
+- A deadlock, lock wait timeout or lost connection is retried, and never fails
+  the sender. While a request is pending, the sender keeps a delayed workflow
+  task that replays to the request and delivers it again, so a process that
+  dies between the sender's commit and the delivery is recovered by the
+  ordinary task repair. Only definitive answers (not found, closed, rejected)
+  are recorded as failures.
+- While a run cleans up after a cancellation request, the command throws
+  `ExternalSignalRefusedException` (`cancellation_cleanup_command_not_available`)
+  in workflow code and records nothing, as the Server refuses every command
+  but activities, timers and side effects then.
 
 The history events are frozen like every other event (see the table below):
 once a run records them, every later release must replay them. The command
-takes one workflow sequence. `ExternalSignalRequested` and exactly one of
-`ExternalSignalDelivered` or `ExternalSignalFailed` are recorded at that
-sequence in the same transaction that admits the signal on the target, keyed
-on the target as `workflow-signal:<sender run id>:<sequence>`. Replay, query
-replay and cold replay read the recorded outcome and never send again. A
+takes one workflow sequence. Replay, query replay and cold replay read the
+recorded outcome and never send again; a request without an outcome waits. A
 changed target, run, signal name or arguments at a recorded sequence, or
 malformed resolution history, is a `HistoryEventShapeMismatchException`. A
 failed outcome (`target_not_found`, `target_closed` or `rejected`, with the
@@ -307,9 +322,10 @@ Server's reasons) is a returned value, not an exception.
 
 Callers cannot use the `workflow-signal:` request-id prefix for a signal or
 signal-with-start. Embedded calls throw `InvalidCommandRequestIdException` with
-`reason()` `request_id_reserved`; control-plane signals and embedded signal
-webhooks return 422 with `reason: "request_id_reserved"`. Nothing is read or
-written for the refused request.
+`reason()` `request_id_reserved`. Control-plane signals and embedded signal
+webhooks return the Server's 422 body: `reason: "request_id_reserved"`,
+`outcome: "rejected_request_id_reserved"`, `accepted: false` and its message.
+Nothing is read or written for the refused request.
 
 ## What is covered
 

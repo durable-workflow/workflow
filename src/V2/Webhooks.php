@@ -935,8 +935,11 @@ final class Webhooks
             throw $exception;
         }
 
+        // The Server's body for the same refusal, plus Laravel's errors map.
         return response()->json([
             'reason' => $exception->reason(),
+            'outcome' => $exception->outcome(),
+            'accepted' => false,
             'message' => $exception->getMessage(),
             'errors' => $exception->validationErrors(),
         ], 422);

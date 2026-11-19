@@ -6,24 +6,38 @@
   can signal another workflow in its namespace with
   `signalExternalWorkflow($workflowId, $signalName, $arguments, $runId)` (also
   `Workflow::signalExternalWorkflow()`), or its child with
-  `ChildWorkflowHandle::signalDurably()`. The request and its outcome are
-  recorded once in the sender's history (`ExternalSignalRequested`, then
-  `ExternalSignalDelivered` or `ExternalSignalFailed`, at one sequence) in the
-  same transaction that admits an ordinary signal on the target, keyed
-  `workflow-signal:<sender run>:<sequence>` and attributed to the sender through
-  `CommandContext::workflow()`. Replay returns the recorded
-  `ExternalSignalResult` and never sends again. A missing, closed or refusing
-  target is a returned outcome (`target_not_found`, `target_closed` or
-  `rejected`, with Server's reasons, including `self_target` and
-  `runtime_reserved_signal`), not an exception. Signal names follow Server's
-  rules and are refused in workflow code with
-  `InvalidExternalSignalException` before anything is recorded. Callers can no
-  longer use the `workflow-signal:` request-id prefix for signals or
-  signal-with-start (`request_id_reserved`). The existing child-handle
-  `signal()` still sends directly. External PHP workers replay recorded
-  outcomes but refuse new commands. No database migration.
-  `docs/api-stability.md#durable-signal-external` explains why the API is
-  experimental and how embedded differs from Server.
+  `ChildWorkflowHandle::signalDurably()`, and receives an
+  `ExternalSignalResult`. Delivery is an outbox: the sending task records
+  `ExternalSignalRequested` and commits, touching only its own run. Delivery
+  then admits an ordinary signal on the target in the target's own
+  transaction, keyed `workflow-signal:<sender run>:<sequence>` and attributed
+  through `CommandContext::workflow()`, and appends one
+  `ExternalSignalDelivered` or `ExternalSignalFailed` to the sender, which
+  resumes in a new workflow task. Deadlocks, lock timeouts and lost
+  connections are retried and never fail the sender; a delayed sender task
+  re-attempts a pending delivery after a crash. Replay returns the recorded
+  outcome and never sends again. A missing, closed or refusing target is a
+  returned outcome (`target_not_found`, `target_closed` or `rejected`, with
+  Server's reasons, including `self_target` and `runtime_reserved_signal`),
+  not an exception. Signal names follow Server's rules and are refused in
+  workflow code with `InvalidExternalSignalException` before anything is
+  recorded. During cleanup after a cancellation request the command throws
+  `ExternalSignalRefusedException` (`cancellation_cleanup_command_not_available`),
+  as on Server. The existing child-handle `signal()` still sends directly.
+  External PHP workers replay recorded outcomes but refuse new commands. No
+  database migration. `docs/api-stability.md#durable-signal-external` explains
+  why the API is experimental.
+
+  **Upgrade note:** request IDs starting with `workflow-signal:` are now
+  reserved. A signal or signal-with-start that uses one, through
+  `withRequestId()`, the control plane's `request_id` or a signal webhook's
+  `X-Request-Id`, is refused before anything is read or written: embedded
+  calls throw `InvalidCommandRequestIdException` (`reason()`
+  `request_id_reserved`); the control plane and signal webhooks return 422
+  with `reason: "request_id_reserved"`, `outcome:
+  "rejected_request_id_reserved"` and `accepted: false`, the Server's body.
+  Callers that already use that prefix must choose another before upgrading.
+  Commands admitted earlier under such a key are unchanged.
 
 - The business state-machine API is explicitly experimental (#1069). Every
   public class, interface and enum in `Workflow\V2\StateMachine`, native child

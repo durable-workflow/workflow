@@ -25,7 +25,7 @@ final class InvalidCommandRequestIdException extends InvalidArgumentException
     public static function reserved(string $prefix): self
     {
         return new self(
-            sprintf('The request ID prefix [%s] is reserved for durable workflow-to-workflow signals.', $prefix),
+            sprintf('The request_id prefix [%s] is reserved for signals sent by workflow code.', $prefix),
             self::REASON_RESERVED,
         );
     }
@@ -36,6 +36,15 @@ final class InvalidCommandRequestIdException extends InvalidArgumentException
     public function reason(): string
     {
         return $this->reason;
+    }
+
+    /**
+     * The command outcome the Server reports for a reserved key
+     * (`rejected_request_id_reserved`); null for an invalid key.
+     */
+    public function outcome(): ?string
+    {
+        return $this->reason === self::REASON_RESERVED ? 'rejected_request_id_reserved' : null;
     }
 
     /**
