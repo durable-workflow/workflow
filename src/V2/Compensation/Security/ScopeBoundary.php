@@ -61,9 +61,16 @@ final readonly class ScopeBoundary
         // decision before the native attempt and ledger rows are locked.
         try {
             $policyVersion = $this->authorization->assertAllowed($scope, $principal, $operation);
+        } catch (ScopeAuthorizationRefused) {
+            throw new NonRetryableException('scope_authorization_refused');
+        } catch (\Throwable $unavailable) {
+            // Only ScopeAuthorizationRefused is permanent; anything else is retried.
+            throw new \RuntimeException('scope_authorization_unavailable', previous: $unavailable);
+        }
+        try {
             PortableDescriptor::identifier($policyVersion, 'authorization policy version');
         } catch (\Throwable) {
-            throw new NonRetryableException('scope_authorization_refused');
+            throw new NonRetryableException('scope_authorization_policy_version_invalid');
         }
         $this->assertUnlockedHostContext();
         $beforeTransaction?->__invoke();

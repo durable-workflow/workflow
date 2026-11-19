@@ -221,7 +221,7 @@ final class RetainedChildScopeTest extends TestCase
         });
         $result = $resolver->resolve($reservation->participation->parent, $obligation, 'recovery-1');
         $this->assertFalse($result->verified);
-        $this->assertFalse($result->forwardSettled);
+        $this->assertNotSame('verified', $result->outcome);
         $this->assertSame('reserved-child-descriptor-incompatible', $result->reason);
         $this->assertSame([], $queries);
     }
@@ -239,7 +239,7 @@ final class RetainedChildScopeTest extends TestCase
         });
         $result = $resolver->resolve($reservation->participation->parent, $obligation, 'recovery-1');
         $this->assertFalse($result->verified);
-        $this->assertFalse($result->forwardSettled);
+        $this->assertNotSame('verified', $result->outcome);
         $this->assertSame('reserved-child-owner-mismatch', $result->reason);
         $this->assertSame([], $queries);
     }
@@ -603,7 +603,7 @@ final class RetainedChildScopeTest extends TestCase
         $resolution = $this->resolver()
             ->resolve($reservation->participation->parent, $this->obligation($reservation), 'operation-1');
         $this->assertTrue($resolution->verified);
-        $this->assertTrue($resolution->forwardSettled);
+        $this->assertSame('verified', $resolution->outcome);
         $this->assertStringStartsWith('native-child-never-admitted:', $resolution->evidence[0]);
         $this->assertFalse(
             DB::table('workflow_compensation_scopes')->where('id', $reservation->participation->child->id())->exists()
@@ -626,7 +626,7 @@ final class RetainedChildScopeTest extends TestCase
         $resolution = $this->resolver()
             ->resolve($reservation->participation->parent, $this->obligation($reservation), 'operation-1');
         $this->assertFalse($resolution->verified);
-        $this->assertFalse($resolution->forwardSettled);
+        $this->assertNotSame('verified', $resolution->outcome);
         $this->assertFalse(
             DB::table('workflow_compensation_scopes')->where('id', $reservation->participation->child->id())->exists()
         );
@@ -645,7 +645,7 @@ final class RetainedChildScopeTest extends TestCase
         $resolution = $this->resolver()
             ->resolve($reservation->participation->parent, $this->obligation($reservation), 'operation-1');
         $this->assertTrue($resolution->verified);
-        $this->assertTrue($resolution->forwardSettled);
+        $this->assertSame('verified', $resolution->outcome);
         DB::table('workflow_compensation_scopes')->where('id', $reservation->participation->child->id())->update([
             'original_run_id' => 'foreign-run',
         ]);

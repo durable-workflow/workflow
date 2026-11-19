@@ -884,6 +884,100 @@ final class V2CompensationScopeTest extends TestCase
         );
     }
 
+    public function testRejectedForwardFailsTheWorkflowAndCompensatesWithoutAProviderCall(): void
+    {
+        WorkflowStub::fake();
+        $scope = $this->identity();
+        $workflow = WorkflowStub::make(TestRetainedScopeWorkflow::class, 'rejected-origin', 'client-a');
+        $workflow->start($scope->toArray(), 'rejected');
+        // The workflow caught the non-retryable rejection, compensated and verified the scope.
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame('verified', $workflow->output()['status']);
+        $ledger = (new ScopeRepository())->inspect($scope);
+        $this->assertSame('rejected', $ledger['obligations'][0]['forward_status']);
+        $this->assertSame('verified', $ledger['obligations'][0]['compensation_status']);
+        $this->assertNull(Cache::get('test:scope:undo-log'));
+        $this->assertNull(Cache::get('test:scope:effect-count'));
+        $failure = \Workflow\V2\Models\WorkflowFailure::query()->where('workflow_run_id', $workflow->runId())->sole();
+        $this->assertSame('scope_forward_rejected', $failure->message);
+    }
+
+    public function testFailedCompensationStopsRetriesAndStaysVisible(): void
+    {
+        [$scope] = $this->completedOrigin();
+        Cache::put('test:scope:failed-first', true);
+        $result = app(ScopeRecovery::class)->request($scope, 'cancel-1', 'operator-a', 'order-cancelled');
+        $this->driveNativeRetries($result['runId']);
+        $this->assertSame('failed', WorkflowRun::query()->findOrFail($result['runId'])->status->value);
+        // The definite failure was not retried.
+        $this->assertSame(['second', 'first'], Cache::get('test:scope:undo-log'));
+        $view = app(ScopeRecovery::class)->describe($scope, 'operator-a');
+        $this->assertSame('requested', $view['scopeStatus']);
+        $this->assertSame('submit_fresh_authorized_request', $view['nextAction']);
+        $this->assertSame([[
+            'key' => 'first',
+            'status' => 'failed',
+            'reason' => 'provider-refused-undo',
+        ]], $view['unresolved']);
+        // A fresh authorized request retries the failed obligation once the provider allows it.
+        Cache::forget('test:scope:failed-first');
+        $retry = app(ScopeRecovery::class)->request($scope, 'cancel-2', 'operator-a', 'order-cancelled');
+        $this->driveNativeRetries($retry['runId']);
+        $this->assertSame('verified', (new ScopeRepository())->inspect($scope)['status']);
+    }
+
+    public function testRequestAndDescribeReturnExactlyTheirDocumentedKeys(): void
+    {
+        $requestKeys = ['route', 'runId', 'commandId', 'recoveryStatus', 'scopeStatus', 'nextAction'];
+        $describeKeys = [
+            'scopeStatus', 'originStatus', 'recoveryRunId', 'recoveryStatus', 'automaticRecovery', 'refusal',
+            'nextAction', 'unresolved',
+        ];
+        [$scope] = $this->completedOrigin();
+        $recovery = app(ScopeRecovery::class)->request($scope, 'cancel-1', 'operator-a', 'order-cancelled');
+        $this->assertSame($requestKeys, array_keys($recovery));
+        $this->assertSame('recovery', $recovery['route']);
+        $verified = app(ScopeRecovery::class)->request($scope, 'cancel-2', 'operator-a', 'order-cancelled');
+        $this->assertSame($requestKeys, array_keys($verified));
+        $this->assertSame([
+            'route' => 'verified',
+            'runId' => null,
+            'commandId' => null,
+            'recoveryStatus' => null,
+            'scopeStatus' => 'verified',
+            'nextAction' => 'none',
+        ], $verified);
+        $view = app(ScopeRecovery::class)->describe($scope, 'operator-a');
+        $this->assertSame($describeKeys, array_keys($view));
+        $this->assertContains(
+            $view['scopeStatus'],
+            array_column(\Workflow\V2\Compensation\Recovery\ScopeStatus::cases(), 'value')
+        );
+        $this->assertContains(
+            $view['nextAction'],
+            array_column(\Workflow\V2\Compensation\Recovery\NextAction::cases(), 'value')
+        );
+        $this->assertContains(
+            $view['automaticRecovery'],
+            array_column(\Workflow\V2\Compensation\Recovery\AutomaticRecovery::cases(), 'value')
+        );
+    }
+
+    public function testRequestRoutedToAnOpenOriginReturnsTheSameKeys(): void
+    {
+        [$scope] = $this->waitingClosureRaceOrigin();
+        $routed = app(ScopeRecovery::class)->request($scope, 'cancel-open', 'operator-a', 'order-cancelled');
+        $this->assertSame(
+            ['route', 'runId', 'commandId', 'recoveryStatus', 'scopeStatus', 'nextAction'],
+            array_keys($routed)
+        );
+        $this->assertSame('origin', $routed['route']);
+        $this->assertSame('requested', $routed['scopeStatus']);
+        $this->assertSame('observe_origin', $routed['nextAction']);
+        $this->assertNull($routed['recoveryStatus']);
+        $this->assertIsString($routed['commandId']);
+    }
+
     public function testReleaseRefusesUnresolvedWorkThenRetainsAnUnreusableTombstone(): void
     {
         [$scope] = $this->completedOrigin();

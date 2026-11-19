@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Compensation\Activities;
 
 use Throwable;
+use Workflow\Exceptions\NonRetryableException;
 use Workflow\V2\Activity;
 use Workflow\V2\Attributes\Type;
 use Workflow\V2\Compensation\Definition\Obligation;
@@ -51,13 +52,17 @@ final class ForwardOperationActivity extends Activity
                 $row = app(ScopeRepository::class)->obligation($scope, $id);
                 $validatedFingerprint = $row['fingerprint'];
                 // Cached forward results require no handler lookup or host I/O.
-                if ($row['forward_status'] !== 'observed') {
+                if (! in_array($row['forward_status'], ['observed', 'rejected'], true)) {
                     $handler = app(HandlerRegistry::class)->resolve(Obligation::fromStored($row));
                 }
             },
         );
         if ($admission['cached'] !== null) {
-            return $admission['cached']['value'];
+            $cached = ForwardResult::fromArray($admission['cached']);
+            if ($cached->outcome === ForwardResult::REJECTED) {
+                throw new NonRetryableException('scope_forward_rejected');
+            }
+            return $cached->value;
         }
         if (! $handler instanceof ScopedOperation) {
             throw new \LogicException('The forward handler was not validated before dispatch.');
@@ -70,7 +75,7 @@ final class ForwardOperationActivity extends Activity
             $this->runId(),
             $this->activityId(),
             $this->attemptId(),
-            $admission['uncertain']
+            reconcileBeforeForward: $admission['uncertain'],
         );
         try {
             $result = $handler->execute($context);
@@ -84,6 +89,9 @@ final class ForwardOperationActivity extends Activity
             $principal,
             fn () => app(ScopeProgress::class)->forwardResult($scope, $id, $this->attemptId(), $result)
         );
+        if ($result->outcome === ForwardResult::REJECTED) {
+            throw new NonRetryableException('scope_forward_rejected');
+        }
         if (! $result->observed) {
             throw new \RuntimeException('scope_forward_unknown');
         }

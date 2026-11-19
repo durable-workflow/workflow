@@ -37,7 +37,9 @@ final readonly class UnitPaymentOperation implements ScopedOperation
         // This independent provider transaction precedes original capture admission.
         $this->refunds->register($command->original);
         $capture = $command->original->capture;
-        $result = $context->uncertainForward ? $this->provider->lookup($capture) : $this->provider->attempt($capture);
+        $result = $context->reconcileBeforeForward ? $this->provider->lookup($capture) : $this->provider->attempt(
+            $capture
+        );
         if ($result->status === Status::Unknown || (($result->status === Status::Confirmed) !== ($result->effectId !== null))) {
             return ForwardResult::unknown('unit-payment-forward-unknown');
         }
@@ -57,7 +59,7 @@ final readonly class UnitPaymentOperation implements ScopedOperation
         $capture = $command->original->capture;
         $original = $this->provider->closeAdmission($capture);
         if (in_array($original->status, [Status::NotExecuted, Status::Refused], true) && $original->effectId === null) {
-            return Resolution::verified(['unit-payment-fenced:' . $capture->identity->key()], true);
+            return Resolution::verified(['unit-payment-fenced:' . $capture->identity->key()]);
         }
         if ($original->status !== Status::Confirmed || $original->effectId === null) {
             return Resolution::unknown('unit-payment-forward-' . $original->status->value);
@@ -69,7 +71,7 @@ final readonly class UnitPaymentOperation implements ScopedOperation
             || $result['confirmedAmountMinor'] !== $capture->terms['amountMinor']) {
             return Resolution::unknown('unit-payment-refund-' . $result['status']);
         }
-        return Resolution::verified([$original->effectId, 'unit-refund-receipts:' . $result['receiptsSha256']], true);
+        return Resolution::verified([$original->effectId, 'unit-refund-receipts:' . $result['receiptsSha256']]);
     }
 
     private function command(array $input): UnitRefundCommand

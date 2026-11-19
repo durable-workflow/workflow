@@ -126,62 +126,95 @@ marked `@experimental` as described below.
 
 ## Compensation scopes
 
-From 2.31.0 these `Workflow\V2\Compensation` classes are stable `@api` and follow
-the semver guarantee below (#1063):
+From 2.32.0 (the minor release that first ships this promotion, #1063) exactly the
+members below are stable `@api` and follow the semver guarantee in this document.
+`tests/Unit/V2/Compensation/CompensationPublicSurfaceTest.php` pins their signatures.
+Nothing else in the `Workflow\V2\Compensation` namespace is stable.
 
-- Authoring: `DurableScope` (`execute()`, `register()`, `participate()`,
-  `verifyCompensation()`), `RegisteredObligation` (`execute()`, `compensate()`),
-  `Definition\Obligation` and `Definition\ScopeIdentity`.
-- Handler contract: `Execution\ScopedOperation`, `Execution\OperationContext`,
-  `Execution\ForwardResult` (`observed()`, `unknown()`), `Execution\Resolution`
-  (`verified()`, `unknown()`) and `Execution\HandlerRegistry`.
-- Host: `Security\ScopeAuthorization`, which is called with the operations
-  `register`, `forward`, `compensate`, `participate`, `request`, `release` and
-  `inspect`; `Recovery\ScopeRecovery::request()` and `describe()`, including their
-  result keys and `nextAction` values; and `Recovery\ScopeRetention::release()`.
+**Authoring**
 
-The stable contract also covers:
+- `DurableScope`: `__construct(Workflow $workflow, ScopeIdentity $identity, string $principal)`,
+  `execute(Obligation, ?ActivityOptions = null): array`, `register(Obligation): RegisteredObligation`,
+  `participate(string $key, ScopeIdentity $child): void`, `verifyCompensation(): array`.
+  `verifyCompensation()` returns `['scopeId' => string, 'status' => 'verified']`. It does not return
+  while any obligation is unresolved; its recorded activity fails instead.
+- `RegisteredObligation`: `execute(?ActivityOptions = null): array`, `compensate(?ActivityOptions = null): void`.
+- `Definition\Obligation`: `__construct(string $key, string $handlerType, string $handlerVersion, array $input)`
+  and its four readonly properties.
+- `Definition\ScopeIdentity`: `__construct(string $application, ?string $namespace, string $key, string $generation)`,
+  its four readonly properties, `id()`, `toArray()` and `fromArray()`.
 
-- **Replay.** The recorded `dw.compensation.*.v1` activity types, the
-  `dw.compensation.scope-activities` and `dw.compensation.recovery-activities`
-  version markers, the `dw.compensation.recovery-lease-repair-retry` patch marker,
-  and the version-1 scope, obligation, forward-result and resolution envelopes
-  replay on every later 2.x release. New behavior arrives only behind a new
-  recorded marker.
-- **Storage.** Ledger migrations only add. A schema rollback refuses while the
-  ledger holds any scope, released tombstones are permanent, and nothing expires
-  automatically.
-- **Behavior.**
-  - Obligations are registered before their effect.
-  - Forward ownership stays with the original run and generation.
-  - Sequential compensation is child-first.
-  - After the origin closes, an accepted unverified request routes to recovery
-    automatically under the re-authorized original principal, or records
-    `recovery_authorization_failed`.
-  - Unresolved, unknown and failed outcomes stay explicit, and a persistent
-    failure fails the recovery run.
-  - Handlers can run more than once per operation and must be idempotent by
-    operation ID. Exactly-once external effects are not promised.
-- **Minimum limits**, which may rise but will not fall: 256 obligations per scope,
-  16 child scopes per parent, one nesting level, 128 requests per scope, 16 KiB
-  and 512 values at depth 8 per descriptor, and 32 evidence references of at most
-  128 bytes per outcome.
+**Handler contract**
 
-Not covered: watchdog timing, exact retry intervals beyond outlasting one activity
-lease plus one repair pass, journal row layout beyond the documented kinds, and
-every class marked `@internal`.
+- `Execution\ScopedOperation`: `assertInput(array)`, `execute(OperationContext): ForwardResult`,
+  `compensate(OperationContext): Resolution`.
+- `Execution\OperationContext`: readonly properties `scope`, `obligation`, `operationId`, `originalRunId`,
+  `activityId`, `attemptId`, `reconcileBeforeForward`, `forwardActivityId`, `forwardAttemptId` and
+  `forwardOutcomeUnconfirmed`.
+- `Execution\ForwardResult`: `observed(array $value, array $evidence)`, `unknown(string $reason)`,
+  `rejected(string $reason, array $evidence = [])`; constants `OBSERVED`, `UNKNOWN`, `REJECTED`; readonly
+  properties `outcome`, `observed`, `value`, `evidence`, `reason`.
+- `Execution\Resolution`: `verified(array $evidence)`, `unknown(string $reason)`,
+  `failed(string $reason, array $evidence = [])`; constants `VERIFIED`, `UNKNOWN`, `FAILED`; readonly
+  properties `outcome`, `verified`, `reason`, `evidence`.
+- `Execution\HandlerRegistry`: `__construct(array $handlers = [])` as `[type => [version => ScopedOperation]]`,
+  and `RESERVED_PREFIX` (`dw.`).
+
+**Host**
+
+- `Security\ScopeAuthorization::assertAllowed(ScopeIdentity, string $principal, string $operation): string`.
+  It is called with `register`, `forward`, `compensate`, `participate`, `request`, `release` and
+  `inspect`. Implementations must refuse unknown operation names.
+- `Security\ScopeAuthorizationRefused`: the only exception that means a permanent refusal. Any other
+  exception from `assertAllowed()` is transient and retried, and automatic recovery stays on.
+- `Recovery\ScopeRecovery`: `request()` and `describe()`. Resolve it from the container
+  (`app(ScopeRecovery::class)`). Their exact result keys and value sets are documented on the methods
+  and use the `ScopeStatus`, `RecoveryRoute`, `NextAction`, `AutomaticRecovery` and `ObligationStatus`
+  enums.
+- `Recovery\ScopeRetention::release(ScopeIdentity, string $principal): void`, resolved from the container.
+- `Support\ActivityOptions` and `StartOptions` as used in these signatures. Their constructors,
+  readonly properties and `with*()` methods are `@api`.
+
+**Identifiers and limits**
+
+- `application`, `key`, `generation`, obligation `key` and `handlerVersion`: 1 to 128 characters from
+  `A-Z a-z 0-9 . _ : / -`, starting with a letter or digit. `namespace` is a native namespace, or null
+  for the default namespace; null is never replaced by an alias.
+- `handlerType`: 1 to 128 characters from `a-z 0-9 . _ -`, starting with a lowercase letter. Types
+  starting with `dw.` are reserved for the engine.
+- Obligation `input`: at most 15,360 bytes as JSON, 500 values and depth 7.
+- Forward result `value`: at most 11,264 bytes, 400 values and depth 7.
+- Evidence: at most 32 references of at most 128 bytes per outcome.
+- Envelope overhead is reserved above these limits, so they never shrink.
+- 256 obligations per scope, including at most 16 child participants and one nesting level.
+- 128 requests per scope. Host requests and engine requests share this budget: a parent issues one child
+  request per run that compensates it, and automatic recovery reuses the primary request.
+
+**Recorded identities, replay and storage**
+
+Recorded compensation histories replay on every later 2.x release, and new behavior
+arrives only behind a new recorded marker. Ledger migrations only add. A schema
+rollback refuses while the ledger holds any scope, released tombstones are permanent,
+and nothing expires automatically. These recorded identities are covered:
+
+- The `dw.compensation.*.v1` activity types and the `dw.compensation.recovery.v1` workflow type.
+- The `dw.compensation.scope-activities` and `dw.compensation.recovery-activities` version markers.
+- The `dw.compensation.recovery-lease-repair-retry` and `dw.compensation.registration-checks` patch markers.
+- Version-1 envelopes, and version-2 envelopes for `rejected` and `failed` outcomes.
+- `ScopeIdentity::id()` is the lowercase hex SHA-256 of the canonical JSON of `toArray()`. The canonical
+  recovery workflow instance is `dw-compensation-` followed by that ID.
 
 These remain `@experimental` and may change in a minor release:
 
-- `DurableScope::reserveChild()`, which depends on the experimental
-  `StateMachine\Binding` types (#1069);
-- original root admission (`Admission\RootReservationStore` and the `Admission`
-  value types);
-- parallel compensation and nesting deeper than one level, which are not
-  supported.
+- `DurableScope::reserveChild()`, which depends on the `StateMachine\Binding` types (#1069);
+- original root admission (`Admission\*`);
+- parallel compensation and deeper nesting.
 
-See [durable compensation scopes](compensation-scopes.md). Existing run-local
-Saga and its stability contract are unchanged.
+Members marked `@internal`, including the `ScopeRecovery` and `ScopeRetention` constructors,
+`Obligation::fromStored()`, `HandlerRegistry::resolve()`, `ScopeIdentity::recoveryInstanceId()` and the
+`fromArray()`/`toArray()` envelope codecs, are implementation details. See
+[durable compensation scopes](compensation-scopes.md). Existing run-local Saga and its stability contract
+are unchanged.
 
 ## What is covered
 

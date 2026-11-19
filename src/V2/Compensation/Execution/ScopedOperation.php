@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace Workflow\V2\Compensation\Execution;
 
 /**
- * Host-owned provider semantics. Reconcile uncertainForward before any unsafe reissue.
+ * Host-owned provider semantics. Reconcile by operation ID (see OperationContext) before any unsafe reissue.
  *
- * @api Stable compensation-scope API from 2.31.0 (#1063). See docs/api-stability.md#compensation-scopes.
+ * @api Stable compensation-scope API from 2.32.0 (#1063). See docs/api-stability.md#compensation-scopes.
  */
 interface ScopedOperation
 {

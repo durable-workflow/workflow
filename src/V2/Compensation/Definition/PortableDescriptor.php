@@ -22,6 +22,24 @@ final class PortableDescriptor
 
     public const MAX_VALUES = 512;
 
+    /**
+     * Limits on an obligation's own input, below the descriptor limit so envelope growth never shrinks them.
+     */
+    public const USER_INPUT_MAX_BYTES = 15_360;
+
+    public const USER_INPUT_MAX_VALUES = 500;
+
+    public const USER_INPUT_MAX_DEPTH = 7;
+
+    /**
+     * Limits on a forward result's own value, leaving room for 32 evidence references.
+     */
+    public const USER_VALUE_MAX_BYTES = 11_264;
+
+    public const USER_VALUE_MAX_VALUES = 400;
+
+    public const USER_VALUE_MAX_DEPTH = 7;
+
     public static function encode(array $value): string
     {
         $count = 0;
@@ -43,6 +61,26 @@ final class PortableDescriptor
         return $json;
     }
 
+    /**
+     * Validate caller data against its own documented limits, independent of the envelope it travels in.
+     */
+    public static function userData(array $value, string $name, int $maxBytes, int $maxValues, int $maxDepth): void
+    {
+        $count = 0;
+        self::measure($value, 0, $count, $maxValues, $maxDepth, $name);
+        try {
+            $json = json_encode($value, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION | JSON_UNESCAPED_UNICODE);
+        } catch (JsonException $error) {
+            throw new InvalidArgumentException(
+                "Compensation {$name} must be valid portable UTF-8 data.",
+                previous: $error
+            );
+        }
+        if (strlen($json) > $maxBytes) {
+            throw new InvalidArgumentException("Compensation {$name} exceeds {$maxBytes} bytes.");
+        }
+    }
+
     public static function identifier(string $value, string $name): void
     {
         if ($value === '' || strlen($value) > 128 || ! preg_match('/\A[a-zA-Z0-9][a-zA-Z0-9._:\/-]*\z/D', $value)) {
@@ -62,6 +100,34 @@ final class PortableDescriptor
         /** @var T $snapshot */
         $snapshot = self::normalize($value, 0, $count);
         return $snapshot;
+    }
+
+    private static function measure(
+        mixed $value,
+        int $depth,
+        int &$count,
+        int $maxValues,
+        int $maxDepth,
+        string $name
+    ): void {
+        if (++$count > $maxValues || $depth > $maxDepth) {
+            throw new InvalidArgumentException(
+                "Compensation {$name} exceeds {$maxValues} values or depth {$maxDepth}."
+            );
+        }
+        if (is_array($value)) {
+            foreach ($value as $child) {
+                self::measure($child, $depth + 1, $count, $maxValues, $maxDepth, $name);
+            }
+            return;
+        }
+        if ($value === null || is_bool($value) || is_int($value) || is_string($value)
+            || (is_float($value) && is_finite($value))) {
+            return;
+        }
+        throw new InvalidArgumentException(
+            'Compensation data cannot contain objects, resources or non-finite numbers.'
+        );
     }
 
     private static function normalize(mixed $value, int $depth, int &$count): mixed

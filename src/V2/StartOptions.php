@@ -11,6 +11,13 @@ use Workflow\V2\Support\TaskFairnessKey;
 use Workflow\V2\Support\TaskPriority;
 use Workflow\V2\Support\WorkflowInstanceId;
 
+/**
+ * Start configuration for a workflow run: duplicate-start policy, visibility, timeouts and scheduling.
+ *
+ * @api Stable v2 authoring API: the constructors, the public readonly properties and the with*() methods.
+ *      ScopeRecovery::request() uses the visibility, timeout, priority and fairness fields as the initial
+ *      recovery profile; its duplicate-start policy is not part of that profile.
+ */
 final class StartOptions
 {
     public readonly DuplicateStartPolicy $duplicateStartPolicy;

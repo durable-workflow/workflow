@@ -13,6 +13,7 @@ use Workflow\V2\Compensation\Definition\ScopeIdentity;
 use Workflow\V2\Compensation\Persistence\ChildScopes;
 use Workflow\V2\Compensation\Persistence\ScopeStorage;
 use Workflow\V2\Compensation\Security\ScopeAuthorization;
+use Workflow\V2\Compensation\Security\ScopeAuthorizationRefused;
 use Workflow\V2\Compensation\Security\ScopeBoundary;
 
 /**
@@ -51,6 +52,12 @@ final class RegisterChildScopeActivity extends Activity
             beforeTransaction: static function () use ($child, $principal, &$policy): void {
                 try {
                     $policy = app(ScopeAuthorization::class)->assertAllowed($child, $principal, 'participate');
+                } catch (ScopeAuthorizationRefused) {
+                    throw new NonRetryableException('scope_child_authorization_refused');
+                } catch (Throwable $unavailable) {
+                    throw new \RuntimeException('scope_child_authorization_unavailable', previous: $unavailable);
+                }
+                try {
                     PortableDescriptor::identifier($policy, 'authorization policy version');
                 } catch (Throwable) {
                     throw new NonRetryableException('scope_child_authorization_refused');

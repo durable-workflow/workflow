@@ -18,6 +18,9 @@ final class TestScopedOperation implements ScopedOperation
 
     public function execute(OperationContext $context): ForwardResult
     {
+        if (($context->obligation->input['mode'] ?? null) === 'rejected') {
+            return ForwardResult::rejected('provider-refused', ['refusal:' . $context->operationId]);
+        }
         $key = 'test:scope:effect:' . $context->operationId;
         if (! Cache::has($key)) {
             Cache::forever($key, $context->obligation->key);
@@ -39,6 +42,9 @@ final class TestScopedOperation implements ScopedOperation
         $log = Cache::get('test:scope:undo-log', []);
         $log[] = $context->obligation->key;
         Cache::forever('test:scope:undo-log', $log);
+        if ($context->obligation->key === 'first' && Cache::get('test:scope:failed-first', false)) {
+            return Resolution::failed('provider-refused-undo');
+        }
         if ($context->obligation->key === 'first' && Cache::get('test:scope:unknown-first', false)) {
             return Resolution::unknown('provider-unavailable');
         }
@@ -46,9 +52,9 @@ final class TestScopedOperation implements ScopedOperation
             \Illuminate\Support\Carbon::setTestNow(now()->addMinutes(10));
         }
         Cache::forget('test:scope:effect:' . $context->operationId);
-        return Resolution::verified(
-            ['provider-undo:' . $context->operationId],
-            ! Cache::get('test:scope:late-forward-possible', false)
-        );
+        if (Cache::get('test:scope:late-forward-possible', false)) {
+            return Resolution::unknown('late-forward-possible');
+        }
+        return Resolution::verified(['provider-undo:' . $context->operationId]);
     }
 }

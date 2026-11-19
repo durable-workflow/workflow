@@ -40,14 +40,51 @@
     example adds `CancellationFinalizer` as the recommended pattern: it calls
     `finish()` when the Order's recovery verifies.
 
-- Compensation scopes are stable `@api` (#1063). This covers `DurableScope`,
-  `RegisteredObligation`, `Obligation`, `ScopeIdentity`, the handler contract
-  (`ScopedOperation`, `OperationContext`, `ForwardResult`, `Resolution`,
-  `HandlerRegistry`), `ScopeAuthorization`, `ScopeRecovery::request()` and
-  `describe()`, and `ScopeRetention::release()`. They now follow the 2.x
-  compatibility policy, as do their recorded replay identities, ledger storage
-  and minimum limits. `DurableScope::reserveChild()` and original root admission
-  remain experimental. See `docs/api-stability.md#compensation-scopes`.
+- The experimental compensation-scope API was prepared for promotion after an
+  independent review (#1063). These are breaking changes to an experimental API:
+  - **Outcomes.**
+    - `Resolution::verified()` takes only evidence. Return `unknown()` while a late
+      forward effect is possible; the new `Resolution::failed()` stops retries for a
+      definite failure.
+    - `ForwardResult::rejected()` reports a definite no-effect outcome. The workflow
+      receives non-retryable `scope_forward_rejected`, and compensation verifies
+      without a provider call.
+    - Ledger rows from earlier releases decode unchanged. Only `rejected` and
+      `failed` outcomes use a version-2 envelope.
+  - **Context.** `OperationContext::$uncertainForward` is split into
+    `reconcileBeforeForward` (when executing) and `forwardOutcomeUnconfirmed` (when
+    compensating).
+  - **Authorization.** Only `ScopeAuthorizationRefused` refuses permanently. Any other
+    exception from `ScopeAuthorization` is transient and retried, and automatic
+    recovery stays on.
+  - **Results.** `ScopeRecovery::request()` and `describe()` return exactly
+    documented keys with enum value sets (`ScopeStatus`, `RecoveryRoute`,
+    `NextAction`, `AutomaticRecovery`, `ObligationStatus`). `describe()` reports a
+    refusal as a stable code plus a non-machine-stable message.
+  - **Registration checks.** New registrations reserve the `dw.` handler prefix and
+    enforce the caller input limit (15,360 bytes, 500 values, depth 7). They are gated
+    by a patch marker, so recorded histories replay unchanged.
+  - **Internal members.** Engine-facing members are `@internal`: the `ScopeRecovery`
+    and `ScopeRetention` constructors (resolve them from the container),
+    `Obligation::fromStored()`, `HandlerRegistry::resolve()`,
+    `ScopeIdentity::recoveryInstanceId()` and the envelope codecs.
+  - **Options.** `ActivityOptions` and `StartOptions` are marked `@api`.
+  - **Surface test.** A test pins the planned public surface.
+  - **New example.** A new example, `examples/compensation-scopes`, uses only that
+    surface, with `participate()` instead of `reserveChild()`.
+
+- Compensation scopes are stable `@api` (#1063). Exactly the members listed in
+  `docs/api-stability.md#compensation-scopes` are covered:
+  - authoring: `DurableScope`, `RegisteredObligation`, `Obligation`, `ScopeIdentity`;
+  - handler contract: `ScopedOperation`, `OperationContext`, `ForwardResult`,
+    `Resolution`, `HandlerRegistry`;
+  - host: `ScopeAuthorization`, `ScopeAuthorizationRefused`,
+    `ScopeRecovery::request()` and `describe()`, `ScopeRetention::release()`, and
+    the result enums.
+
+  They now follow the 2.x compatibility policy, as do their recorded replay
+  identities, ledger storage and minimum limits. `DurableScope::reserveChild()` and
+  original root admission remain experimental.
 
 ## 2.30.0 - 2026-11-18
 

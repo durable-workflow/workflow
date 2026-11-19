@@ -66,7 +66,7 @@ final class SqlEffectOperationTest extends TestCase
         ]);
         $resolution = $operation->compensate($this->context(uncertain: true));
         $this->assertTrue($resolution->verified);
-        $this->assertTrue($resolution->forwardSettled);
+        $this->assertSame('verified', $resolution->outcome);
         $this->assertNotEmpty($resolution->evidence);
         DB::table('example_machine_subjects')->update([
             'cancellation_requested' => false,
@@ -84,7 +84,7 @@ final class SqlEffectOperationTest extends TestCase
         $operation = $this->operation();
         $resolution = $operation->compensate($this->context());
         $this->assertTrue($resolution->verified);
-        $this->assertTrue($resolution->forwardSettled);
+        $this->assertSame('verified', $resolution->outcome);
         $this->assertSame('absent', $operation->execute($this->context(uncertain: true))->value['status']);
         $this->assertSame(0, DB::table('example_machine_effects')->where('status', 'active')->count());
     }
@@ -95,7 +95,7 @@ final class SqlEffectOperationTest extends TestCase
         $operation->execute($this->context());
         $resolution = $operation->compensate($this->context());
         $this->assertFalse($resolution->verified);
-        $this->assertFalse($resolution->forwardSettled);
+        $this->assertNotSame('verified', $resolution->outcome);
         $this->assertSame('business_cancellation_required', $resolution->reason);
         $this->assertSame('active', DB::table('example_machine_effects')->value('status'));
     }

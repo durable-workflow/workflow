@@ -53,9 +53,10 @@ final class CompensateObligationActivity extends Activity
             $origin,
             $this->activityId(),
             $this->attemptId(),
-            $row['forward_status'] !== 'observed',
-            $row['forward_activity_id'],
-            $row['forward_attempt_id'],
+            reconcileBeforeForward: false,
+            forwardActivityId: $row['forward_activity_id'],
+            forwardAttemptId: $row['forward_attempt_id'],
+            forwardOutcomeUnconfirmed: $row['forward_status'] !== 'observed',
         );
         $unavailable = false;
         try {
@@ -65,9 +66,12 @@ final class CompensateObligationActivity extends Activity
                 $result = app(ReservedChildResolution::class)->resolve($scope, $obligation, $id, $this->runId());
             } else {
                 $handler = app(HandlerRegistry::class)->resolve($obligation);
-                $result = $row['forward_status'] === 'registered'
-                    ? Resolution::verified(['never-dispatched:' . $id], true)
-                    : $handler->compensate($context);
+                $result = match ($row['forward_status']) {
+                    'registered' => Resolution::verified(['never-dispatched:' . $id]),
+                    // The handler reported that the provider definitely made no effect.
+                    'rejected' => Resolution::verified(['forward-rejected:' . $id]),
+                    default => $handler->compensate($context),
+                };
             }
         } catch (NonRetryableException) {
             $unavailable = true;
@@ -84,6 +88,9 @@ final class CompensateObligationActivity extends Activity
         );
         if ($unavailable) {
             throw new NonRetryableException('scope_handler_unavailable');
+        }
+        if ($result->outcome === Resolution::FAILED) {
+            throw new NonRetryableException('scope_compensation_failed');
         }
         if (! $result->verified) {
             throw new \RuntimeException('scope_compensation_unknown');

@@ -39,7 +39,7 @@ final class ScopeProgress
             if ($validatedFingerprint !== null && ! hash_equals($row['fingerprint'], $validatedFingerprint)) {
                 throw new NonRetryableException('scope_forward_descriptor_changed');
             }
-            if ($row['forward_status'] === 'observed') {
+            if (in_array($row['forward_status'], ['observed', 'rejected'], true)) {
                 return [
                     'cached' => ForwardResult::fromArray(
                         json_decode($row['forward_result'], true, flags: JSON_THROW_ON_ERROR),
@@ -79,20 +79,22 @@ final class ScopeProgress
             if ($row['forward_attempt_id'] !== $attemptId) {
                 throw new LogicException('The forward result belongs to another native attempt.');
             }
-            if ($row['forward_result'] === $payload && $row['forward_status'] === ($result->observed ? 'observed' : 'unknown')) {
+            if ($row['forward_result'] === $payload && $row['forward_status'] === $result->outcome) {
                 return;
             }
-            if ($row['forward_status'] === 'observed' || $row['compensation_status'] === 'verified') {
+            if (in_array($row['forward_status'], ['observed', 'rejected'], true)
+                || $row['compensation_status'] === 'verified') {
                 throw new LogicException('A terminal scope outcome cannot be replaced.');
             }
             $database->table(ScopeStorage::OBLIGATIONS)->where('id', $id)->update([
-                'forward_status' => $result->observed ? 'observed' : 'unknown',
+                'forward_status' => $result->outcome,
                 'forward_result' => $payload,
             ]);
             ScopeStorage::append($scope, 'forward_outcome', [
                 'obligationId' => $id,
                 'attemptId' => $attemptId,
                 'observed' => $result->observed,
+                'outcome' => $result->outcome,
                 'reason' => $result->reason,
                 'evidence' => $result->evidence,
             ]);
@@ -143,20 +145,21 @@ final class ScopeProgress
             if ($row['compensation_attempt_id'] !== $attemptId) {
                 throw new LogicException('The compensation outcome belongs to another native attempt.');
             }
-            if ($row['evidence'] === $payload && $row['compensation_status'] === ($result->verified ? 'verified' : 'unknown')) {
+            if ($row['evidence'] === $payload && $row['compensation_status'] === $result->outcome) {
                 return;
             }
-            if ($row['compensation_status'] === 'verified' || ($result->verified && ! $result->forwardSettled)) {
-                throw new LogicException('Compensation is not verified while a late forward effect is still possible.');
+            if ($row['compensation_status'] === 'verified') {
+                throw new LogicException('A verified compensation outcome cannot be replaced.');
             }
             $database->table(ScopeStorage::OBLIGATIONS)->where('id', $id)->update([
-                'compensation_status' => $result->verified ? 'verified' : 'unknown',
+                'compensation_status' => $result->outcome,
                 'evidence' => $payload,
             ]);
             ScopeStorage::append($scope, 'compensation_outcome', [
                 'obligationId' => $id,
                 'attemptId' => $attemptId,
                 'verified' => $result->verified,
+                'outcome' => $result->outcome,
                 'reason' => $result->reason,
                 'evidence' => $result->evidence,
             ]);

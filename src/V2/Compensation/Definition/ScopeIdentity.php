@@ -7,7 +7,17 @@ namespace Workflow\V2\Compensation\Definition;
 use InvalidArgumentException;
 
 /**
- * @api Stable compensation-scope API from 2.31.0 (#1063). See docs/api-stability.md#compensation-scopes.
+ * Identity of one compensation scope: `(application, namespace, key, generation)`.
+ *
+ * - application, key and generation: 1 to 128 characters from `A-Z a-z 0-9 . _ : / -`, starting with a
+ *   letter or digit. Use a generation unique to the originating run.
+ * - namespace: the native workflow namespace of the originating run, or null for the default
+ *   namespace. Null is kept as null and never replaced by a configured alias.
+ *
+ * id() is the lowercase hex SHA-256 of the canonical JSON of toArray() (keys sorted, unescaped
+ * Unicode). It names the scope in the ledger.
+ *
+ * @api Stable compensation-scope API from 2.32.0 (#1063). See docs/api-stability.md#compensation-scopes.
  */
 final readonly class ScopeIdentity
 {
@@ -35,6 +45,9 @@ final readonly class ScopeIdentity
         return hash('sha256', PortableDescriptor::encode($this->toArray()));
     }
 
+    /**
+     * @internal `dw-compensation-` followed by id(): the native instance of the canonical recovery workflow.
+     */
     public function recoveryInstanceId(): string
     {
         return 'dw-compensation-' . $this->id();

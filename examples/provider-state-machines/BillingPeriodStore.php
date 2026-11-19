@@ -62,7 +62,15 @@ final readonly class BillingPeriodStore
 
             public function assertAllowed(ScopeIdentity $scope, string $principal, string $operation): string
             {
-                return $this->store->authorizeScope($scope, $principal, $operation);
+                try {
+                    return $this->store->authorizeScope($scope, $principal, $operation);
+                } catch (\LogicException $refused) {
+                    // Policy refusals are permanent; other failures stay retryable.
+                    throw new \Workflow\V2\Compensation\Security\ScopeAuthorizationRefused(
+                        $refused->getMessage(),
+                        $refused
+                    );
+                }
             }
         });
         $payment = new RetainedOperation(
@@ -391,7 +399,7 @@ final readonly class BillingPeriodStore
         if ($mode === 'forward' && ! $owner && (bool) $subject->cancellation_requested) {
             throw new LogicException('The original period forward path is closed.');
         }
-        if ($mode === 'forward' && ! $owner && ! $context->uncertainForward
+        if ($mode === 'forward' && ! $owner && ! $context->reconcileBeforeForward
             && Carbon::now()->getTimestamp() >= $period->paymentDeadline) {
             throw new LogicException('The original period first-charge deadline has elapsed.');
         }
