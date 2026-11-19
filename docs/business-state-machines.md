@@ -355,13 +355,57 @@ Tests exercise refusal/unknown outcomes, source and scope substitution, changed 
 | 8 | Retained original operation evidence, partial failure and recovery after worker loss | Installed package/provider qualification |
 | 9–13 | Original-generation bindings, confirmed admission/await, reserved retained child participation | General graph/depth/resource policy |
 | 14–16 | SQL cancellation/commit fencing, lost acknowledgement and verified child-first recovery | Provider-specific reconciliation and publication delivery |
-| 17 | Cold replay of transitions, child admission and retained recovery | Installed upgrade/recovery journey |
+| 17 | Cold replay of transitions, child admission and retained recovery; installed 2.32.0 upgrade, rollback and downgrade journey for the examples | Real-provider qualification |
 | 18 | Joint binding/scope authorization, generation and protected SQL substitution controls | Application authentication and authorization deployment |
 | 19 | Invalid definitions and unavailable pinned handlers refuse | Budgets and explicit migration policy |
 | 20 | Structured decisions, complete condition explanations and retained ledger inspection | Application-facing operational tooling |
 | 21–22 | Recorded two-profile example, native persistence/crash tests, existing APIs preserved | Final package, installed qualification and versioned publication |
 
 This table reports scope, not completion of the issue's unchecked acceptance criteria.
+
+### Installed upgrade, schema rollback and downgrade
+
+`scripts/ci/state-machine-upgrade-smoke.sh` installs published 2.32.0 into a new
+Laravel application with MySQL or PostgreSQL and Redis queue workers. 2.32.0 is the
+first release whose experimental compensation API matches the current one; the
+2.29.0 to 2.31.0 examples use `OperationContext::$uncertainForward`, which 2.32.0
+removed. The package ships `examples/`, so the application copies the provider-backed
+and configured examples out of the installed 2.32.0 package. That application code
+stays the same through every package change below. Each example runs with its own
+database and queue, because both bind the engine's handler registry and scope
+authorization.
+
+The journey checks these steps:
+
+- **Runs left mid-flight on 2.32.0.** Two provider-backed checkout Orders are booked
+  and wait for `finish`. One of them has an accepted cancellation whose provider
+  refund is still processing, so its retained scopes are `requested`. A configured
+  Order hosts its completed Shipment and waits for `finish`.
+- **Upgrade to the candidate.** Migrations run and the workers restart. Every
+  recorded run replays without querying business tables or calling the provider. A
+  replayed failed run reproduces its recorded failure.
+- **Recovery on the candidate.** The waiting Orders finish. The refund is confirmed,
+  and a fresh cancellation request verifies the root and child scopes. The finalizer
+  then commits `cancelled`. The synthetic provider journal records each effect once,
+  in the original compensation order. Histories of runs that were closed before the
+  upgrade do not change.
+- **Schema rollback.** `migrate:rollback` is refused before any migration runs while
+  the ledger holds retained scopes or native child reservation fences. Package and
+  application tables are unchanged. The example tables are application migrations,
+  so a package rollback never reaches them.
+- **Package downgrade to 2.32.0.** The ledger, business tables and histories are kept,
+  and rollback is still refused. The downgraded engine books a new checkout Order on
+  the same schema.
+- **Upgrade again.** That Order finishes. Cancellations of the closed Orders take the
+  recovery route, verify, and publish `cancelled`, again without repeating a provider
+  effect.
+
+The journey does not cover runs started by the candidate and then resumed by an older
+engine. Do not downgrade while such runs or their recovery runs are open. It does not
+qualify a real provider either: the provider journal is the examples' SQLite
+simulator. The journey runs on pull requests that change the state-machine or
+compensation code, the examples or migrations, and on stable release tags against the
+published package.
 
 ## Native child reservation boundary
 
