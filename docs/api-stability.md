@@ -267,7 +267,7 @@ no recursive or shared child machines. See
 ## Durable signal-external
 
 Durable signal-external lets embedded workflow code signal another workflow in
-its namespace (.github#223). It is **experimental**: the
+its namespace. It is **experimental**: the
 `Workflow\V2\signalExternalWorkflow()` function, the
 `Workflow::signalExternalWorkflow()` facade method,
 `ChildWorkflowHandle::signalDurably()`, `ExternalSignalResult`,
