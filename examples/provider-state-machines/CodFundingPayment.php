@@ -39,7 +39,7 @@ final class CodFundingPayment extends Workflow
             $step = new FundingStep($machine->initialization['recipe'], $duties);
             return $this->finishFunding($machine, $step);
         } catch (WorkflowCancellationRequestedException|BusinessCancellationRequested $error) {
-            return $this->compensateFunding($machine, $error);
+            return $this->compensateFunding($machine);
         }
     }
 }

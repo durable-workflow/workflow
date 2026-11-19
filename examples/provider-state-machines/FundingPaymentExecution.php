@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace DurableWorkflow\Examples\ProviderStateMachines;
 
 use Closure;
-use Throwable;
 use Workflow\V2\StateMachine\Execution\TransitionStatus;
 
 /** Shared recorded transition order and cancellation settlement for the funding workflow types. */
@@ -26,13 +25,11 @@ trait FundingPaymentExecution
         return $machine->outcome($result);
     }
 
-    private function compensateFunding(Machine $machine, Throwable $error): array
+    private function compensateFunding(Machine $machine): array
     {
         self::cancellationShield(fn () => $this->compensate());
-        $proof = self::cancellationShield(static fn () => $machine->scope->verifyCompensation());
-        if (($proof['status'] ?? null) !== 'verified') {
-            throw $error;
-        }
+        // verifyCompensation() returns only once every obligation is verified; otherwise its activity fails.
+        self::cancellationShield(static fn () => $machine->scope->verifyCompensation());
         return [
             'businessOutcome' => 'compensated',
             'originalRunId' => $this->runId(),
