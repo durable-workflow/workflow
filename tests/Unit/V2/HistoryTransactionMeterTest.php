@@ -32,6 +32,8 @@ final class HistoryTransactionMeterTest extends NonDatabaseTestCase
             HistoryTransactionMeter::EVENTS => 1,
             HistoryTransactionMeter::BYTES => strlen('ActivityStarted') + strlen('{"a":"b/é"}'),
             HistoryTransactionMeter::ROWS => 3,
+            // Statements are charged by the storage hook, not by chargeRows().
+            HistoryTransactionMeter::COMPLETION_ROWS => 0,
             HistoryTransactionMeter::STAGED_BYTES => 0,
         ], $used);
     }
