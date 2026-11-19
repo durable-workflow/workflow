@@ -12,7 +12,8 @@ use Workflow\V2\Compensation\Execution\Resolution;
 use Workflow\V2\Compensation\Execution\ScopedOperation;
 
 /**
- * A customer unit return request or its restocking. Both are monotonic physical facts:
+ * A customer unit return request or its restocking, a damaged-parcel recovery, a carrier claim or the release
+ * of an unused replacement reservation. All are monotonic physical, stock or claim facts:
  * compensation fences an unadmitted command or verifies the committed one, never reverses goods movement.
  */
 final readonly class UnitReturnOperation implements ScopedOperation
@@ -25,7 +26,17 @@ final readonly class UnitReturnOperation implements ScopedOperation
         private Closure $authorize,
         private string $action,
     ) {
-        if (! in_array($action, [UnitReturnTerms::REQUEST, UnitReturnTerms::RESTOCK], true)) {
+        if (! in_array(
+            $action,
+            [
+                UnitReturnTerms::REQUEST,
+                UnitReturnTerms::RESTOCK,
+                UnitReturnTerms::RECOVER,
+                ShipmentLedger::CLAIM,
+                UnitReturnTerms::RELEASE,
+            ],
+            true
+        )) {
             throw new InvalidArgumentException('The trusted unit return stage is unavailable.');
         }
     }

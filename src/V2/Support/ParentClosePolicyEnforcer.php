@@ -35,27 +35,50 @@ final class ParentClosePolicyEnforcer
      *
      * @return list<string> Instance IDs of children that had policy applied
      */
-    public static function enforce(WorkflowRun $run): array
+    public static function enforce(WorkflowRun $run, ?int $limit = null, ?bool &$complete = null): array
     {
+        $complete = true;
+
         return $run->getConnection()
-            ->transaction(static function () use ($run): array {
+            ->transaction(static function () use ($run, $limit, &$complete): array {
                 /** @var WorkflowRun $lockedRun */
                 $lockedRun = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                     ->lockForUpdate()
                     ->findOrFail($run->id);
 
-                return self::enforceLocked($lockedRun);
+                return self::enforceLocked($lockedRun, $limit, $complete);
             }, 3);
     }
 
     /**
      * @return list<string>
      */
-    private static function enforceLocked(WorkflowRun $run): array
+    /**
+     * With a limit (a bounded deadline close, #1116), at most that many
+     * children are acted on, in link order. A child this run already
+     * recorded a policy outcome for is skipped, so a later transaction
+     * continues where this one stopped; $complete reports whether any
+     * child is left.
+     */
+    private static function enforceLocked(WorkflowRun $run, ?int $limit = null, bool &$complete = true): array
     {
         $appliedTo = [];
+        $acted = 0;
+        $complete = true;
+        // Children this run already recorded a policy outcome for, read once.
+        $settled = $limit === null ? [] : array_flip(array_filter(
+            $run->historyEvents()
+                ->whereIn('event_type', [
+                    HistoryEventType::ParentClosePolicyApplied->value,
+                    HistoryEventType::ParentClosePolicyFailed->value,
+                ])
+                ->get()
+                ->map(static fn (WorkflowHistoryEvent $event): mixed => $event->payload['child_run_id'] ?? null)
+                ->all(),
+            'is_string',
+        ));
 
-        foreach (self::targets($run) as $target) {
+        foreach (self::targets($run, $limit !== null) as $target) {
             $policy = ParentClosePolicy::tryFrom($target['policy']);
 
             if ($policy === null || $policy === ParentClosePolicy::Abandon) {
@@ -71,6 +94,18 @@ final class ParentClosePolicyEnforcer
             // Only act on non-terminal children.
             if (ChildSupervision::isTerminal($childRun)) {
                 continue;
+            }
+
+            if ($limit !== null) {
+                if (isset($settled[$childRun->id])) {
+                    continue;
+                }
+                if ($acted >= $limit) {
+                    $complete = false;
+
+                    break;
+                }
+                ++$acted;
             }
 
             $childInstanceId = $target['child_instance_id'];
@@ -185,7 +220,7 @@ final class ParentClosePolicyEnforcer
      *     origin_run_id: string
      * }>
      */
-    private static function targets(WorkflowRun $run): array
+    private static function targets(WorkflowRun $run, bool $ordered = false): array
     {
         $targets = [];
 
@@ -193,6 +228,7 @@ final class ParentClosePolicyEnforcer
             ->where('parent_workflow_run_id', $run->id)
             ->where('link_type', 'child_workflow')
             ->where('parent_close_policy', '!=', ParentClosePolicy::Abandon->value)
+            ->when($ordered, static fn ($query) => $query->orderBy('id'))
             ->get();
 
         foreach ($childLinks as $link) {

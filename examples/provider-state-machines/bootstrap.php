@@ -25,7 +25,7 @@ require_once __DIR__ . '/CartLeaseOperation.php';
 require_once __DIR__ . '/BindingPlan.php';
 foreach ([
     'CartPolicy', 'OrderPeriodPolicy', 'OrderPeriodPaymentReceipt', 'OrderBillingPeriodStore',
-    'RootPolicy', 'RootCancellationStore', 'UnitMoneyPolicy', 'StockAllocation', 'StockWarehouse', 'StockPolicy',
+    'RootPolicy', 'RootCancellationStore', 'UnitMoneyPolicy', 'StockAllocation', 'StockWarehouse', 'StockPolicy', 'TransitPolicy',
     'Authority', 'OwnerOperation', 'CartOrderReceipt', 'CartStore', 'MachineStore', 'AssessmentStore', 'CancellationStore', 'CancellationFinalizer',
     'FinancialInspectionStore', 'FinancialInspectionActivity', 'FinancialAuthority',
     'IncomingPaymentInspectionStore', 'IncomingPaymentInspectionActivity',
@@ -39,6 +39,8 @@ foreach ([
     'ShipmentAuthority', 'ShipmentBoundaryStore', 'ShipmentBoundaryActivity', 'ShipmentStep', 'FullShipment', 'FulfillmentStep',
     'PostDeliveryRecords', 'ReturnStore', 'ReturnBoundaryActivity', 'ReturnWait', 'UnitReturn',
     'ExchangeStore', 'ExchangeBoundaryActivity', 'ExchangeWait', 'UnitExchange',
+    'TransitIncidentObserved', 'TransitRemedyStep', 'IncidentStore', 'IncidentBoundaryActivity', 'IncidentWait',
+    'TransitIncident',
 ] as $class) {
     require_once __DIR__ . '/' . $class . '.php';
 }

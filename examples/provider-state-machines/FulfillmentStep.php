@@ -55,6 +55,10 @@ final class FulfillmentStep extends AssessedTransitionStep
                     'original-delivery:' . $value['publication']['id'],
                 ]);
             }
+            if ($value['incident'] ?? false) {
+                // Opted-in remedy policy: the carrier confirmed loss or damage of the original parcel.
+                throw new TransitIncidentObserved('The original parcel has a confirmed carrier incident.');
+            }
             if (! $value['originOpen']) {
                 throw new LogicException('The original full Shipment closed without recipient delivery.');
             }

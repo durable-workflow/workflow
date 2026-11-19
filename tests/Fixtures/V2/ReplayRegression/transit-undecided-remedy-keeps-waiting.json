@@ -1,0 +1,45 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "transit-undecided-remedy-keeps-waiting",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestTransitSettlementReplayWorkflow",
+    "arguments": [
+      false
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 2,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4CDGFjdGlvbgoId2FpdAA=",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "open_signal_wait",
+        "signal_name": "incident-milestone"
+      }
+    ]
+  }
+}

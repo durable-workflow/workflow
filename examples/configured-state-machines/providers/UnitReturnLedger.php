@@ -22,7 +22,11 @@ final readonly class UnitReturnLedger
 
     public static function handles(Request $request): bool
     {
-        return in_array($request->action, [UnitReturnTerms::REQUEST, UnitReturnTerms::RESTOCK], true);
+        return in_array(
+            $request->action,
+            [UnitReturnTerms::REQUEST, UnitReturnTerms::RESTOCK, UnitReturnTerms::RECOVER],
+            true
+        );
     }
 
     public function install(): void
@@ -42,12 +46,13 @@ final readonly class UnitReturnLedger
     {
         [$booking, $return, $descriptor] = $this->chain($request);
         $terms = UnitReturnTerms::fromArray($request->terms);
-        if ($request->action === UnitReturnTerms::REQUEST) {
+        if ($request->action !== UnitReturnTerms::RESTOCK) {
             $events = $this->shipments->events($booking);
             // A request is permission to send goods back; it is not receipt, acceptance or settlement.
-            $permitted = $this->shipments->confirmed(
-                $booking
-            ) && isset($events['delivered']) && ! isset($events['lost'])
+            // Carrier recovery of a parcel damaged before handover is never a delivered-goods return.
+            $stage = $request->action === UnitReturnTerms::REQUEST ? isset($events['delivered'])
+                : isset($events['damaged']) && ! isset($events['delivered']);
+            $permitted = $this->shipments->confirmed($booking) && $stage && ! isset($events['lost'])
                 && ! $this->admitted($descriptor->return) && ! $this->overlaps($booking, $request, $terms->units);
             if ($permitted) {
                 $this->query(
@@ -105,7 +110,8 @@ final readonly class UnitReturnLedger
         array $saleable
     ): array {
         PortableDescriptor::identifier($eventId, 'original unit return event');
-        if ($return->action !== UnitReturnTerms::REQUEST || ! $this->shipments->confirmed($return)) {
+        if (! in_array($return->action, [UnitReturnTerms::REQUEST, UnitReturnTerms::RECOVER], true)
+            || ! $this->shipments->confirmed($return)) {
             throw new LogicException('Warehouse receipt needs its confirmed original unit return.');
         }
         $this->chain($return);
@@ -174,22 +180,21 @@ final readonly class UnitReturnLedger
         if ($request->action === UnitReturnTerms::RESTOCK) {
             $return = $this->shipments->originalTarget($request);
             $terms = UnitReturnTerms::fromArray($request->terms);
-            if ($return->action !== UnitReturnTerms::REQUEST
+            if (! in_array($return->action, [UnitReturnTerms::REQUEST, UnitReturnTerms::RECOVER], true)
                 || UnitReturnTerms::restock($return, $terms->units)->fingerprint() !== $request->fingerprint()) {
                 throw new LogicException('Unit restocking must name its original unit return.');
             }
         }
-        if ($return->action !== UnitReturnTerms::REQUEST) {
+        if (! in_array($return->action, [UnitReturnTerms::REQUEST, UnitReturnTerms::RECOVER], true)) {
             throw new LogicException('The unit return operation is unavailable.');
         }
         $booking = $this->shipments->originalTarget($return);
         $terms = UnitReturnTerms::fromArray($return->terms);
+        $factory = $return->action === UnitReturnTerms::REQUEST ? UnitReturnTerms::request(...)
+            : UnitReturnTerms::recovery(...);
         if ($booking->action !== 'ship-book'
-            || UnitReturnTerms::request(
-                $booking,
-                $terms->returnKey,
-                $terms->units
-            )->fingerprint() !== $return->fingerprint()) {
+            || $factory($booking, $terms->returnKey, $terms->units)
+                ->fingerprint() !== $return->fingerprint()) {
             throw new LogicException('A unit return must name its original booking, owner and terms.');
         }
         $root = $this->shipments->root($booking);

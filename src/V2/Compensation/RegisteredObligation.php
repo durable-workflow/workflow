@@ -17,6 +17,10 @@ use Workflow\V2\Workflow;
  * A recorded obligation whose forward operation has not necessarily been dispatched.
  * Engine-owned activity authority and the original scope gate still apply to every execution.
  *
+ * Public authoring API: DurableScope::register() returns it, and workflow code
+ * calls execute() and compensate() on it. Only its constructor is internal.
+ * It is part of the API planned to become stable in a later minor release (#1063).
+ *
  * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
  */
 final readonly class RegisteredObligation

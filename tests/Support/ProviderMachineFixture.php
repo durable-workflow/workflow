@@ -79,6 +79,9 @@ trait ProviderMachineFixture
             reservedRoots: $this->reservedRoot() ? [$this->terms->subjectKey()] : [],
             unitAmounts: $this->unitAmounts() === [] ? [] : [
                 $this->terms->subjectKey() => $this->unitAmounts(),
+            ],
+            transitPolicies: $this->transitPolicy() === null ? [] : [
+                $this->terms->subjectKey() => $this->transitPolicy(),
             ]
         );
         if ($this->unitAmounts() !== []) {
@@ -146,6 +149,14 @@ trait ProviderMachineFixture
     protected function unitAmounts(): array
     {
         return [];
+    }
+
+    /**
+     * Trusted transit remedy policy for a lost or damaged original parcel; null keeps legacy behavior.
+     */
+    protected function transitPolicy(): ?string
+    {
+        return null;
     }
 
     protected function providerClock(): ?\Closure

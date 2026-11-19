@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 2.31.0 - 2026-11-19
+
+Compensation scopes remain **experimental** in 2.31.0, without a
+compatibility promise; see `docs/api-stability.md`. Their promotion to stable
+API is planned for a later minor release (#1063).
+
 - A refused schema rollback no longer leaves part of its batch rolled back
   (#1063). Before the migrator runs any `down()`, the package now checks every
   guarded migration in the rollback or reset: the compensation ledger, the
@@ -15,7 +21,12 @@
   replay fixtures recorded from these runs pin the recovery histories.
 
 - A single worker crash during compensation now settles without operator
-  action (#1205):
+  action (#1205). This changes the experimental compensation contract: a
+  compensation request accepted before its origin closes now starts recovery
+  automatically after the origin closes, so hosts no longer resubmit it. A
+  manual `ScopeRecovery::request()` is needed only after the automatic route
+  is refused (`recovery_authorization_failed`), after a recovery run fails, or
+  for a request first made after closure:
   - **Automatic recovery after closure.** When an origin closes with an
     accepted but unverified compensation request, the task watchdog routes
     that request to canonical recovery. It re-authorizes the original
@@ -39,6 +50,102 @@
     application's `CancellationStore::finish()`. The provider state-machine
     example adds `CancellationFinalizer` as the recommended pattern: it calls
     `finish()` when the Order's recovery verifies.
+
+- A workflow task completion now counts every row it inserts, updates or
+  deletes against a new limit, `completion_rows`
+  (`DW_V2_LIMIT_COMPLETION_ROWS`) (#1116). Task, run, timer, activity,
+  child, signal, update, continue-as-new, memo, search attribute and
+  projection writes all count. Each statement is charged before it runs, and
+  a write that can change several existing rows is counted first with a
+  bounded read. Before its first write, a completion is also checked against
+  an estimate computed from its command list. If over the limit, it is
+  refused with `completion_budget_exceeded` without writing anything, and its
+  task keeps its lease.
+  **Two settings, no upgrade action needed:**
+  - `history_transaction_rows` (`DW_V2_LIMIT_HISTORY_TRANSACTION_ROWS`,
+    default 20,000) keeps its 2.29.x and 2.30.0 meaning and default. It still
+    counts two rows per history event plus local activity records. A
+    `config/workflows.php` published from 2.29.x or 2.30.0, which pins it at
+    20,000, behaves the same after upgrading.
+  - `completion_rows` is new and unset by default. Unset, it is derived
+    from the event limit (`DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE`, default
+    5,000): 103 rows per
+    event × 5,000 + 5,000 = 520,000. 103 is the most rows any first-party
+    command writes per history event (an upsert of a run's full 100 memos or
+    search attributes), so it never refuses a completion the event limit
+    admits. For example, 1,000 children and 1,000 activities is 4,000
+    events, 25,003 completion rows and at least 4,000 history rows. Set
+    `completion_rows` only to bound real rows more tightly; a value you set
+    is honored as is, and 0 disables it.
+- An ordinary run past its execution or run deadline whose workflow task sits
+  Ready and unclaimed, or whose lease expired, is now timed out by the
+  watchdog instead of staying open. A live lease still leaves the close to that
+  worker's completion. Opted-in timeout cleanup is unchanged.
+- An ordinary deadline close with more open work than one completion's
+  budget now runs in bounded batches. Each batch cancels open activities,
+  timers and tasks with the same history the single close writes, releases
+  the workflow task, and answers the worker with
+  `reason: run_deadline_closing`. The watchdog finishes the close without a
+  worker. Accepted updates failed by the close, and children its parent-close
+  policy acts on, are settled in bounded batches too. While they are, the
+  run already reads Failed, and its closing task stays Leased by
+  `deadline-close-settlement`. No worker can claim it, a stale worker's
+  completion or failure leaves it alone, and only the settlement can
+  release it. The watchdog continues the settlement within its own scope,
+  oldest first. A failed pass records its error and retries with backoff;
+  it is never dropped. Pending and stuck settlements appear in operator
+  metrics, queue visibility (`deadline_close_settlements`) and run describe
+  (`deadline_close_settlement`). Retention keeps the run until the
+  settlement completes. A run's history equals a single close's, and
+  histories recorded by earlier versions replay unchanged.
+- The watchdog takes expired runs oldest deadline first. It no longer
+  selects runs it cannot close yet, such as a pending cooperative
+  cancellation with an open workflow task, so they cannot starve other
+  runs.
+- The experimental provider state-machine example adds two recipes after
+  delivery, each a separate native process with its own compensation scope
+  that leaves the original Order and Shipment histories unchanged (#1069):
+  - **Partial return** (`UnitReturn`, `ReturnStore`): a customer returns
+    some delivered units. Accepted, saleable units are restocked and their
+    original amounts refunded; rejected or unsaleable units are recorded as
+    discrepancies. A unit belongs to at most one return, so nothing is
+    refunded or restocked twice. `authorization-after-stock` can opt into an
+    explicit unit quote so cancellation refunds only outstanding units;
+    recipes without the opt-in are unchanged.
+  - **Same-price exchange** (`UnitExchange`, `ExchangeStore`): a delivered
+    unit is returned and a replacement of another size is reserved, booked
+    and delivered. A refused replacement reservation refunds the original
+    unit; an unknown provider outcome is reconciled, never treated as a
+    refusal.
+
+  New replay fixtures pin the recorded histories. See
+  `examples/provider-state-machines/README.md`.
+- Payment families have real worker-loss coverage (#1069). A worker killed by
+  SIGKILL after the provider commits a subscription period charge or refund,
+  or after admission and before the provider call, recovers through the
+  production watchdog: each effect commits once, the period keeps its run,
+  deadline and provider commit time, and an admitted but uncalled payment
+  settles only through business cancellation. Races between a lost period
+  charge and `cancel()`, `cancelFuture()`, re-admission or a duplicate signal
+  are covered too. These are test-only changes; no defect was found. The
+  shared crash harness now lets the watchdog repair abandoned leases before
+  advancing the test clock to a later timer.
+- Docblocks only, no behavior change (#1063): `RegisteredObligation` is
+  documented as public authoring API and `RootReservationStore` as
+  host-facing. Both remain `@experimental`. The static native-fence hook
+  `RootReservationStore::assertOrdinaryStartAllowed()` is now marked
+  `@internal`.
+- `docs/architecture/continue-as-new-promoted-build.md` defines the contract
+  for letting continue-as-new opt in to starting its successor on the
+  currently promoted build (#880): the `target_build` field (`inherited` by
+  default, or `promoted`), its refusals (`promoted_build_unavailable`,
+  `invalid_target_build`, `unsupported_target_build`), the recorded build
+  transition that replay never re-resolves, and conformance vectors.
+  Documentation only: nothing is implemented or advertised, and a unit test
+  pins that the capability stays off.
+- CI splits the MySQL feature suite into 22 shards (was 16) and PostgreSQL
+  into 14 (was 10), from recomputed hosted timings. Each shard also uploads a
+  timed event log, so a timeout shows which test held the time.
 
 ## 2.30.0 - 2026-11-18
 

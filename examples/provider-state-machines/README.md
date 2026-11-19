@@ -354,6 +354,119 @@ admission deadline, so no deadline can restart.
 vendor/bin/phpunit tests/Feature/V2/V2ExchangeMachineTest.php
 ```
 
+## Carrier loss or transport damage before handover
+
+The same authorization-after-stock recipe with explicit unit money can opt into
+one customer remedy for an original parcel that the carrier confirms lost or
+damaged after handover and before recipient delivery. The policy is part of
+the immutable business grant; workflow arguments and signals cannot select or
+replace it. Install `incident-schema.php` after `return-schema.php`:
+
+```php
+$authority = new Authority($businessDb, $workerPrincipal, [$terms->subjectKey()], [
+    $terms->subjectKey() => FinancialCatalogue::AFTER_STOCK,
+], unitAmounts: [$terms->subjectKey() => [500, 500, 499]], transitPolicies: [
+    $terms->subjectKey() => TransitPolicy::REFUND, // or TransitPolicy::REPLACE
+]);
+```
+
+Only opted-in grants use a versioned Order definition with one more state,
+`remedied` (`ready -> remedied`, transition `remedy`). Legacy grants keep the
+original Order, Payment and Shipment definitions, initializations and recorded
+waits. While the original full Shipment waits for recipient delivery, a
+recorded boundary checks the carrier's own `lost` or `damaged` event. A
+tracking delay (no event) changes nothing; the original deadline still applies.
+A confirmed incident admits one separate native `TransitIncident` for the Order
+generation and ends the Shipment run with business outcome `lost` or `damaged`.
+The Shipment state stays `in-transit`, and the handover and stock-deduction
+evidence stays historical. The Order leaves its delivery wait and waits,
+without the fulfillment deadline, for the incident's recorded remedy decision.
+A settled remedy commits `remedied`. An owed remedy (below) leaves the Order
+`ready`, with business outcome `unsettled` and a pending `remedy` transition,
+instead of failing the run. It is never `delivered` or `cancelled`.
+
+| Policy | Selected remedy |
+| --- | --- |
+| `refund` | `provider.incident.refund` repays every original unit (request key `transit-<incident>`) through the unit gateway. Lost goods are never restocked or awaited. |
+| `replace` | `provider.incident.reserve` reserves the original SKU and quantity (`transit.<incident>.reserve`), `provider.incident.book` books it on its own graph and the remedy settles at the replacement's recipient delivery. A definitively refused reservation refunds instead (`refunded-replacement-unavailable`). An unknown reservation is reconciled, never treated as unavailability. |
+
+Every remedy ends with one explicit, immutable decision (`settlement`), and
+the incident waits for it with recorded observations:
+
+| Situation | Decision |
+| --- | --- |
+| Refund processing | The incident keeps waiting for the gateway outcome. The claim is filed only after the decision. |
+| Refund refused or not executed | `owed`, `refund-refused`. Nothing is paid, and the customer is explicitly owed an operator decision. |
+| Replacement booking refused | `provider.incident.release` releases the unused reservation (`transit.<incident>.release`). Then every original unit is refunded: `settled`, `refunded-replacement-failed`, `replacementFailure` `booking-refused`. |
+| Replacement confirmed lost, damaged or not collected by the carrier | Every original unit is refunded: `settled`, `refunded-replacement-failed`, `replacementFailure` names the carrier event. The reservation is not released, because the stock left with the replacement parcel. |
+| Replacement neither delivered nor failed within the bounded recorded wait (32 carrier-progress wakes) | `owed`, `replacement-unresolved`. Nothing is refunded automatically, because the parcel may still arrive. |
+
+A fallback refund uses the same refund identity. The gateway's repayment
+accounting pays each unit at most once.
+
+After the customer remedy is decided, the incident files `provider.incident.claim`:
+a carrier claim with its own identity (`shipment.full.carrier-claim.<incident>`).
+The provider admits it only for the confirmed incident. The carrier's later
+decision is a separate provider fact (`IncidentStore::claim()`). Neither a
+refused claim nor its settlement gates or changes the customer outcome.
+For damage, `provider.incident.recover` then asks the carrier to return the
+damaged units (`recover-damaged-units`). The provider refuses it after a loss
+or delivery. A recorded wait needs the warehouse receipt and then its
+inspection; receipt alone keeps waiting. `provider.incident.restock` restocks
+only accepted saleable units. The recovery also blocks a later full-parcel
+return, so nothing is restocked twice. The immutable incident outcome keeps the
+original booking, carrier event, refund or replacement identities, claim,
+recovery, received, accepted, saleable and restocked units.
+
+Handlers check the native incident run, its scope, the exact registered
+obligation and the stored assignment before provider I/O. A booking requires
+the recorded confirmed reservation. A release requires that reservation and
+the recorded refused booking. A replacement-policy refund requires a refused
+reservation, a released refused booking, or the carrier's confirmed
+replacement failure. The incident has no admission deadline, so no deadline
+can restart.
+
+**Cancellation after an incident is refused.** Once an incident is admitted,
+`CancellationStore::request()` returns `status` `refused`, reason
+`transit_incident_owns_remedy` and `remedy` `pending`, `settled` or `owed`.
+It records no intent, no fence and no compensation request, so it can neither
+wedge nor fail the Order. Incident admission and the cancellation request
+serialize on the Order lock. A cancellation that commits first keeps its own
+route, and the incident is never admitted. Settling the cancellation after the
+remedy is not offered. The Order's cancellation compensation is defined over
+the original parcel: a full-parcel return and restock, then a refund of the
+captured payment. A lost or damaged parcel cannot be returned that way, and
+the payment refund cannot see a delivered replacement. Accepting the
+cancellation would either leave compensation unknown or pay a second remedy.
+The refusal keeps every payout single. A customer who no longer wants a
+delivered replacement needs a separate return policy.
+
+`V2TransitIncidentMachineTest` covers:
+- both loss policies, unavailable replacement, and damage with recovery;
+- a tracking delay and a refused claim;
+- cancellation refused during a pending replacement, during a processing
+  refund and after settlement;
+- a refused replacement booking and a failed replacement delivery;
+- the unresolved-replacement and refused-refund owed outcomes;
+- replay and substitution.
+
+`V2TransitIncidentProcessLossTest` kills real workers after each of these
+commits: the refund, claim, recovery, restock, replacement reservation and
+replacement booking, and the release and fallback refund after a refused
+booking. A fresh process recovers each effect exactly once.
+
+These are synthetic recorded-task fixtures, not installed-package,
+real-carrier or real-warehouse qualification. Open policy:
+- partial loss of some units;
+- recovery or claim of a failed replacement parcel;
+- claim proceeds accounting and customer-facing claim deadlines;
+- replacement stock deduction;
+- returning a delivered replacement.
+
+```shell
+vendor/bin/phpunit tests/Feature/V2/V2TransitIncidentMachineTest.php
+```
+
 ## Disposable application assembly
 
 Load `bootstrap.php` in the Laravel client and worker bootstrap, and include
@@ -498,6 +611,17 @@ reservation is not released. A fresh authorized recovery request
 (`CancellationStore::request()` with a new recovery key) then resumes the same
 obligations, and `CancellationStore::finish()` starts the proof-only finalizer.
 Replay of that original root reproduces its recorded compensation failure.
+
+A worker can also die after DW admitted the capture attempt and before the
+provider was called. The provider then has no operation for that capture. The
+remaining native attempts only look it up. A missing operation is unknown, not
+success and not proof of non-execution, so the forward stays unresolved, the
+Order stays `received`, and its technical run fails. The example operations
+never re-send an uncertain forward command. Business cancellation, with
+`CancellationStore::finish()`, settles the Order through the retained recovery
+route. Compensation closes provider admission for the capture and verifies the
+fenced non-execution. No capture or refund exists, and a delayed capture
+command arriving after the fence creates no effect.
 
 Every case ends in verified business cancellation of the same original
 obligation. Each provider effect is committed once, and repayments total the
@@ -1004,9 +1128,9 @@ Run `vendor/bin/phpunit tests/Feature/V2/V2ServiceBillingPeriodTest.php tests/Fe
 for the native service-only and Order source scenarios, and
 `vendor/bin/phpunit tests/Unit/V2/StateMachine/BillingPeriodTest.php tests/Unit/V2/StateMachine/BillingPeriodReceiptTest.php`
 for contract and provider-receipt controls. These are synthetic source tests.
-Worker loss during a period charge or refund is covered below. The remaining
-race matrix, installed recovery, upgrade/rollback and publication acceptance
-remain unfinished. This source increment does not complete PAY-06, SUB-01
+Worker loss during a period charge or refund, and its races with cancellation
+and admission, are covered below. The rest of the race matrix, installed
+recovery, upgrade/rollback and publication acceptance remain unfinished. This source increment does not complete PAY-06, SUB-01
 through SUB-04 or the full matrix.
 
 For period adapters, a fresh synthetic `Journal` can explicitly select
@@ -1040,6 +1164,24 @@ production `TaskWatchdog`, using the same immutable period grants. Cuts:
 - service period: the refund committed after cancelling a paid period;
 - genuine period Order, grace: the Order's capture committed on time, and the
   replacement starts only after the deadline.
+
+The same controls cover PAY-06 races while the charge's worker is lost after the
+provider committed:
+
+- `cancel()` of the service period: recovery reconciles that original charge
+  through the compensation admission fence and refunds it once;
+- `cancel()` of the genuine period Order: the same capture is refunded once,
+  and no stock is reserved;
+- `cancelFuture()`: the paid current period keeps its charge and access, and
+  the next period cannot be admitted;
+- repeated admission and a duplicate `payment-observed` signal, with the next
+  period admitted before recovery: re-admission returns the original run,
+  and each period has exactly one charge of its own.
+
+If the worker dies after DW admitted the service charge and before the provider
+was called, recovery leaves the charge unresolved and the period run fails
+without access. `cancel()` then settles it through the provider admission fence,
+with no charge or refund.
 
 Each effect commits once, and the period keeps its original native run,
 obligation, deadline and provider commit time. While no worker is alive, live

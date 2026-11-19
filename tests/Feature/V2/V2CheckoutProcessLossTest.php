@@ -85,17 +85,7 @@ final class V2CheckoutProcessLossTest extends TestCase
         [$cut, $resumed] = $this->loseWorkerThenRecover(
             'tests/Support/CheckoutProcessLossProcessTest.php',
             'DWF_CHECKOUT_PROCESS_INPUT',
-            [
-                'key' => $key,
-                'policy' => StockAllocation::PARTIAL,
-                'unitAmounts' => $this->unitAmounts(),
-                'handler' => $handler,
-                'mode' => $mode,
-                'until' => 'cancelled',
-                'provider' => $this->providerPath,
-                'clock' => now()
-                    ->toISOString(),
-            ],
+            $this->lossInput($key, $handler, $mode, 'cancelled'),
             function (array $cut, array $data) use (
                 $mode,
                 $until,
@@ -168,6 +158,93 @@ final class V2CheckoutProcessLossTest extends TestCase
         $this->assertSame($requests, $this->providerRequests());
     }
 
+    /**
+     * DW admitted the original capture attempt and the worker died before calling the provider. Recovery only
+     * looks the capture up; a missing provider operation is unknown, never success or non-execution. The
+     * business cancellation settles it through the provider's authoritative admission fence, without effects.
+     */
+    public function testWorkerLostAfterAdmittingTheCaptureBeforeTheProviderCall(): void
+    {
+        $this->requireWorkerLossSupport();
+        $stub = $this->begin();
+        $key = $this->order->subjectKey();
+        $original = $this->authority->unitMoney->original($this->order);
+        $capture = $original->capture;
+        $captureRequests = fn (string $kind): int => (int) $this->providerDb->query(
+            "SELECT COUNT(*) FROM provider_requests WHERE kind = '{$kind}' AND operation_id = '"
+            . $capture->identity->key() . "'"
+        )->fetchColumn();
+        $row = null;
+        [$cut, $resumed] = $this->loseWorkerThenRecover(
+            'tests/Support/CheckoutProcessLossProcessTest.php',
+            'DWF_CHECKOUT_PROCESS_INPUT',
+            $this->lossInput($key, 'provider.unit-payment', 'before', 'cancelled'),
+            function (array $cut, array $data) use ($captureRequests, &$row): array {
+                $row = $this->obligation($cut);
+                // The attempt is admitted; the provider has neither a command nor an operation for it.
+                $this->assertSame('in_flight', $row['forward_status']);
+                $this->assertSame([0, 1], [$captureRequests('command'), $captureRequests('lookup')]);
+                $this->assertSame(0, (int) $this->providerDb->query('SELECT COUNT(*) FROM provider_operations')
+                    ->fetchColumn());
+                $this->assertSame([], $this->effects());
+                return [
+                    ...$data,
+                    'clock' => $cut['clock'],
+                ];
+            },
+        );
+        \Illuminate\Support\Carbon::setTestNow($resumed['clock']);
+        // Native recovery stopped without settlement: the forward is unresolved, not success or non-execution.
+        $this->assertTrue($resumed['idle']);
+        $this->assertSame('received', $resumed['state']);
+        $unresolved = $this->obligation($cut);
+        $this->assertSame([$row['id'], $row['fingerprint']], [$unresolved['id'], $unresolved['fingerprint']]);
+        $this->assertSame('unknown', $unresolved['forward_status']);
+        $this->assertSame('pending', $unresolved['compensation_status']);
+        $this->assertSame('failed', WorkflowRun::query()->findOrFail($stub->runId())->status->value);
+        $this->assertSame([], $this->effects());
+        // The two remaining native attempts of the three-attempt budget only looked the capture up.
+        $this->assertSame([0, 3], [$captureRequests('command'), $captureRequests('lookup')]);
+
+        $cancellation = app(CancellationStore::class);
+        $this->assertSame('requested', $cancellation->request(
+            $key,
+            $stub->runId(),
+            'cancel-admitted-capture'
+        )['status']);
+        $this->drainLikeAWorker();
+        $this->assertSame(
+            'started',
+            $cancellation->finish($key, $stub->runId(), 'cancel-admitted-capture')['status'],
+            $this->progress()
+        );
+        $this->drainLikeAWorker();
+        $this->assertSame('cancelled', $this->authority->subject($key, 'order')->state, $this->progress());
+        $settled = $this->obligation($cut);
+        $this->assertSame($row['id'], $settled['id']);
+        $this->assertSame('unknown', $settled['forward_status']);
+        $this->assertSame('verified', $settled['compensation_status']);
+        $this->assertSame(
+            ['unit-payment-fenced:' . $capture->identity->key()],
+            json_decode($settled['evidence'], true)['evidence']
+        );
+        $this->assertSame([], $this->effects());
+        $this->assertSame([], $this->payouts());
+        $this->assertSame(2, $this->warehouse->inventory('shop-a', 'sku-1')['available']);
+        $requests = $this->providerRequests();
+        try {
+            app(WorkflowReplayer::class)->replay(WorkflowRun::query()->findOrFail($stub->runId()));
+            $this->fail('The original root must replay its recorded forward failure.');
+        } catch (\RuntimeException $error) {
+            $this->assertSame('scope_forward_unknown', $error->getMessage());
+        }
+        $this->assertSame($requests, $this->providerRequests());
+        // A delayed forward command arriving after the fence cannot create the capture.
+        $late = $this->provider->attempt($capture);
+        $this->assertSame([Status::NotExecuted, null, true], [$late->status, $late->effectId, $late->admissionClosed]);
+        $this->assertSame([], $this->effects());
+    }
+
     protected function recipe(): string
     {
         return Catalogue::PAYMENT_FIRST;
@@ -227,6 +304,40 @@ final class V2CheckoutProcessLossTest extends TestCase
         $stub = WorkflowStub::make(CheckoutOrder::class, 'provider-order-' . $key, Catalogue::NAMESPACE);
         $stub->start($key);
         return $stub;
+    }
+
+    /**
+     * Queue-worker semantics: a recorded activity failure (for example a child scope not yet verified) is
+     * retried by the engine; the worker keeps draining instead of stopping.
+     */
+    private function drainLikeAWorker(): void
+    {
+        for ($pass = 0; $pass < 16; ++$pass) {
+            try {
+                $this->drain();
+                return;
+            } catch (\RuntimeException $error) {
+                if ($error->getMessage() !== 'scope_compensation_unknown') {
+                    throw $error;
+                }
+            }
+        }
+        $this->fail('The fresh retained recovery did not settle within its bounded worker passes.');
+    }
+
+    private function lossInput(string $key, string $handler, string $mode, string $until): array
+    {
+        return [
+            'key' => $key,
+            'policy' => StockAllocation::PARTIAL,
+            'unitAmounts' => $this->unitAmounts(),
+            'handler' => $handler,
+            'mode' => $mode,
+            'until' => $until,
+            'provider' => $this->providerPath,
+            'clock' => now()
+                ->toISOString(),
+        ];
     }
 
     private function obligation(array $cut): array

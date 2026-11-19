@@ -17,6 +17,16 @@ final readonly class UnitReturnTerms
 
     public const RESTOCK = 'restock-units';
 
+    /**
+     * Recovery of a carrier-damaged parcel before recipient handover; never a customer return.
+     */
+    public const RECOVER = 'recover-damaged-units';
+
+    /**
+     * Release of an unused replacement reservation; it targets that original reservation.
+     */
+    public const RELEASE = 'release';
+
     public array $units;
 
     public function __construct(
@@ -91,11 +101,25 @@ final readonly class UnitReturnTerms
     }
 
     /**
-     * Restocking names only accepted saleable units of that same return.
+     * The carrier returns a parcel confirmed damaged before handover; same owner, distinct recovery identity.
+     */
+    public static function recovery(Request $booking, string $recoveryKey, array $units): Request
+    {
+        $request = self::request($booking, $recoveryKey, $units);
+        return new Request(
+            self::identity($booking, 'recover-units', $recoveryKey),
+            self::RECOVER,
+            $request->terms,
+            $booking->identity
+        );
+    }
+
+    /**
+     * Restocking names only accepted saleable units of that same return or damaged-parcel recovery.
      */
     public static function restock(Request $return, array $units): Request
     {
-        if ($return->action !== self::REQUEST) {
+        if (! in_array($return->action, [self::REQUEST, self::RECOVER], true)) {
             throw new InvalidArgumentException('Unit restocking must name its original unit return.');
         }
         $original = self::fromArray($return->terms);
@@ -104,7 +128,11 @@ final readonly class UnitReturnTerms
             throw new InvalidArgumentException('Unit restocking cannot name units outside its original return.');
         }
         return new Request(
-            self::identity($return, 'restock-units', $original->returnKey),
+            self::identity(
+                $return,
+                $return->action === self::RECOVER ? 'restock-recovered-units' : 'restock-units',
+                $original->returnKey
+            ),
             self::RESTOCK,
             $terms->toArray(),
             $return->identity
