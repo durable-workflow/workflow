@@ -67,7 +67,7 @@ final class ScopeDescriptorTest extends TestCase
         ));
         $this->assertSame('8e9b39641e72e2dd9b9f16c457c2d988f619e4fe17fae0586ed72f2d1ec92790', hash(
             'sha256',
-            PortableDescriptor::encode(Resolution::verified(['provider:proof'], true)->toArray()),
+            PortableDescriptor::encode(Resolution::verified(['provider:proof'])->toArray()),
         ));
     }
 
@@ -91,22 +91,22 @@ final class ScopeDescriptorTest extends TestCase
     public function testStoredResolutionsPreserveAuthoritativeEvidenceAndSettlement(): void
     {
         foreach ([
-            Resolution::verified(['provider:proof'], true),
-            Resolution::verified(['provider:proof'], false),
+            Resolution::verified(['provider:proof']),
+            Resolution::unknown('late-forward-possible'),
             Resolution::unknown('provider-unavailable'),
         ] as $result) {
             $stored = PortableDescriptor::encode($result->toArray());
             $restored = Resolution::fromArray(json_decode($stored, true, flags: JSON_THROW_ON_ERROR));
             $this->assertSame($stored, PortableDescriptor::encode($restored->toArray()));
             $this->assertSame($result->verified, $restored->verified);
-            $this->assertSame($result->forwardSettled, $restored->forwardSettled);
+            $this->assertSame($result->outcome, $restored->outcome);
         }
     }
 
     public static function claimsWithoutEvidence(): iterable
     {
         yield 'observed-forward' => ['forward', ForwardResult::observed([], ['proof'])->toArray()];
-        yield 'verified-compensation' => ['resolution', Resolution::verified(['proof'], true)->toArray()];
+        yield 'verified-compensation' => ['resolution', Resolution::verified(['proof'])->toArray()];
     }
 
     #[DataProvider('claimsWithoutEvidence')]
@@ -215,7 +215,7 @@ final class ScopeDescriptorTest extends TestCase
         $references = array_fill(0, 33, 'proof');
         foreach ([
             static fn () => ForwardResult::observed([], $references),
-            static fn () => Resolution::verified($references, true),
+            static fn () => Resolution::verified($references),
         ] as $result) {
             try {
                 $result();

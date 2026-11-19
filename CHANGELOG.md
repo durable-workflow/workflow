@@ -2,6 +2,103 @@
 
 ## Unreleased
 
+## 2.32.0 - 2026-11-19
+
+Compensation scopes remain **experimental** in 2.32.0, without a
+compatibility promise; see `docs/api-stability.md`. This release applies the
+review changes that prepare them for promotion; their promotion to stable API
+follows in a later minor release (#1063).
+
+- The experimental compensation-scope API was prepared for promotion after an
+  independent review (#1063). These are breaking changes to an experimental API:
+  - **Outcomes.**
+    - `Resolution::verified()` takes only evidence (see the upgrade notes). Return
+      `unknown()` while a late forward effect is possible; the new
+      `Resolution::failed()` stops retries for a definite failure.
+    - `ForwardResult::rejected()` reports a definite no-effect outcome. The workflow
+      receives non-retryable `scope_forward_rejected`, and compensation verifies
+      without a provider call.
+    - Ledger rows from earlier releases decode unchanged. Only `rejected` and
+      `failed` outcomes use a version-2 envelope.
+  - **Context.** `OperationContext::$uncertainForward` is split into
+    `reconcileBeforeForward` (when executing) and `forwardOutcomeUnconfirmed` (when
+    compensating).
+  - **Authorization.** Only `ScopeAuthorizationRefused` refuses permanently. Any other
+    exception from `ScopeAuthorization` is transient and retried, and automatic
+    recovery stays on.
+  - **Results.** `ScopeRecovery::request()` and `describe()` return exactly
+    documented keys with enum value sets (`ScopeStatus`, `RecoveryRoute`,
+    `NextAction`, `AutomaticRecovery`, `ObligationStatus`). `describe()` reports a
+    refusal as a stable code plus a non-machine-stable message.
+  - **Registration checks.** New registrations reserve the `dw.` handler prefix and
+    enforce the caller input limit (15,360 bytes, 500 values, depth 7). They are gated
+    by the `dw.compensation.registration-checks` patch marker, so recorded histories
+    replay unchanged. A `HandlerRegistry` may still map a `dw.` type that an earlier
+    history registered, so those obligations stay compensable; only the engine's own
+    child-scope types are refused.
+  - **Child refusals.** A `ScopeAuthorizationRefused` while compensating a child
+    participant is permanent: the parent obligation is `failed` with reason
+    `authorization-refused`, and the activity fails with non-retryable
+    `scope_authorization_refused`. It was previously retried as unknown.
+  - **Result enums.** The five result enums may gain cases in a minor release.
+    Handle unknown values with a default branch.
+  - **Internal members.** Engine-facing members are `@internal`: the `ScopeRecovery`
+    and `ScopeRetention` constructors (resolve them from the container),
+    `Obligation::fromStored()`, `HandlerRegistry::resolve()`,
+    `ScopeIdentity::recoveryInstanceId()` and the envelope codecs.
+  - **Options.** `ActivityOptions` and `StartOptions` are marked `@api`.
+  - **Surface test.** A test pins the planned public surface.
+  - **New example.** A new example, `examples/compensation-scopes`, uses only that
+    surface, with `participate()` instead of `reserveChild()`.
+  - **Upgrade notes for existing handlers.**
+    - `Resolution::verified($evidence, true)` still works and raises an
+      `E_USER_DEPRECATED` notice; the flag is ignored. `verified($evidence, false)`
+      returns `unknown('late-forward-possible')`, matching the earlier refusal to
+      verify. Drop the second argument.
+    - The forward value limit (11,264 bytes, 400 values, depth 7) applies only to
+      workflows that record the `dw.compensation.registration-checks` patch. Runs
+      recorded before it keep the earlier envelope limit, so an existing workflow's
+      provider result is not reclassified.
+    - An outcome that breaks the handler contract (an invalid reason, evidence or
+      value, or a value over the limit above) throws the new
+      `HandlerContractViolation`. The engine records the outcome as unknown and
+      fails the activity with non-retryable `scope_handler_contract_violation`
+      followed by the violation message. It is no longer reported as
+      `provider-outcome-unknown` and retried.
+
+- The experimental provider state-machine example settles a carrier-confirmed
+  parcel loss, or confirmed transport damage before handover, with an explicit
+  customer remedy (#1069). A trusted bootstrap opts a business generation into
+  `TransitPolicy` (`refund` or `replace`), accepted only for
+  `authorization-after-stock` with unit money; grants without it keep the
+  earlier behavior. A confirmed `lost` or `damaged` carrier event starts one
+  separate native `TransitIncident` run, and the Order gains one state,
+  `remedied`:
+  - **Refund** repays every original unit. Lost goods are never restocked or
+    waited for.
+  - **Replace** reserves, books and delivers a replacement. A refused
+    reservation or booking, or a failed replacement delivery, refunds instead;
+    an unknown reservation outcome is reconciled, never treated as a refusal.
+  - **Every remedy ends explicitly** as `settled` or `owed` (for example
+    `refund-refused` or `replacement-unresolved`). An owed remedy leaves the
+    Order `ready` and unsettled instead of failing its run.
+  - **Claims and damaged goods.** The carrier claim is filed after the remedy
+    and never blocks or changes it. A damaged parcel is returned and
+    inspected, and only accepted saleable units are restocked.
+  - **Cancellation is refused** once an incident is admitted:
+    `CancellationStore::request()` returns `refused`
+    (`transit_incident_owns_remedy`) and records nothing.
+
+  New replay fixtures pin the recorded histories. See
+  `examples/provider-state-machines/README.md`.
+- Authorized payments, cash on delivery and carrier-collected balances have
+  real worker-loss coverage (#1069). A worker killed with SIGKILL after the
+  provider commits an authorization, capture, void, collection registration,
+  collection close or payer refund recovers through the production watchdog:
+  each effect commits once, with the original obligation identity, descriptor
+  and deadline. Cancellation cuts settle through automatic recovery without a
+  fresh request. These are test-only changes, apart from the example README.
+
 ## 2.31.0 - 2026-11-19
 
 Compensation scopes remain **experimental** in 2.31.0, without a

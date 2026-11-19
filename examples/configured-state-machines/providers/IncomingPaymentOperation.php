@@ -70,7 +70,7 @@ final readonly class IncomingPaymentOperation implements ScopedOperation
             return Resolution::unknown('incoming-admission-open');
         }
         // The independently retained provider journal resolves each original transfer/command/effect in this digest.
-        return Resolution::verified([$closed['evidence'], 'incoming-refunds:' . hash_final($evidence)], true);
+        return Resolution::verified([$closed['evidence'], 'incoming-refunds:' . hash_final($evidence)]);
     }
 
     public static function refundRequest(

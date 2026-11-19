@@ -156,8 +156,10 @@ create another stock deduction.
 The source cases are `V2AuthorizedPaymentMachineTest`,
 `V2PhysicalShipmentMachineTest` and `V2DeliveryCaptureMachineTest`. They are
 synthetic recorded-task fixtures, not installed-package, real-provider or full
-33-scenario acceptance. The remaining payment, subscription, partial-stock,
-return/replacement, crash/race and installed/publication criteria remain open.
+33-scenario acceptance. [Payment worker loss](#payment-worker-loss) covers
+authorization, both capture policies and void under real worker loss. The
+remaining payment, subscription, partial-stock, return/replacement, race and
+installed/publication criteria remain open.
 
 `FinancialInspectionActivity` requires an explicitly bound
 `FinancialInspectionStore`. Its mandatory host callback must authorize the
@@ -952,8 +954,10 @@ and restocking before money recovery.
 Run `vendor/bin/phpunit tests/Feature/V2/V2CodFundingMachineTest.php tests/Feature/V2/V2CodMerchantSettlementTest.php` and
 `vendor/bin/phpunit tests/Unit/V2/StateMachine/RetainedCodPaymentOperationTest.php`
 for the native route and direct retained-operation controls. These are synthetic
-source fixtures, not real carrier integrations, cold-process/installed proofs,
-full 33-scenario acceptance or release qualification.
+source fixtures, not real carrier integrations, installed proofs, full
+33-scenario acceptance or release qualification. Carrier registration, closure
+and payer refund under real worker loss are in
+[Payment worker loss](#payment-worker-loss).
 
 ### Bank advance and carrier-collected balance
 
@@ -991,9 +995,42 @@ that no later payment is possible.
 Run `vendor/bin/phpunit tests/Feature/V2/V2AdvanceBalanceMachineTest.php tests/Feature/V2/V2AdvanceBalanceRefundTest.php` for the
 native staged-payment routes and cancellation, and
 `vendor/bin/phpunit tests/Unit/V2/StateMachine/AdvanceBalanceProviderTest.php`
-for original portion and refund controls. These synthetic source cases do not
-complete PAY-05, its interruption/concurrency coverage, the full customer
-matrix, installed recovery/upgrade acceptance or publication qualification.
+for original portion and refund controls. Real worker loss on the bank-advance
+refund is in `V2AdvanceBalanceColdRecoveryTest`, and on the carrier balance in
+[Payment worker loss](#payment-worker-loss). These synthetic source cases do not
+complete PAY-05, its concurrency coverage, the full customer matrix, installed
+recovery/upgrade acceptance or publication qualification.
+
+### Payment worker loss
+
+`V2AuthorizedPaymentProcessLossTest`, `V2CodProcessLossTest` and
+`V2AdvanceBalanceProcessLossTest` apply TECH-01 to PAY-02, PAY-04 and the
+carrier-balance side of PAY-05. A real worker process stops with `SIGKILL`
+inside the native payment operation, after the provider commits and before DW
+records the outcome. A new process starts after the abandoned lease expires and
+recovers the same obligation through the production `TaskWatchdog`. Cuts:
+
+- PAY-02: authorization; capture after stock; capture requested by the Order's
+  delivery-capture instruction; void during cancellation before capture;
+- PAY-04 (before-handover policy): collection reference registered; collection
+  closed during cancellation before payer collection; payer refund after
+  collection;
+- PAY-05 (before-handover policy): balance reference registered; balance
+  collection closed and payer refunded during cancellation.
+
+Each effect commits once while request attempts may repeat. The obligation
+keeps its original identity, and payment waits keep their fixed original
+deadlines. Forward cuts reach `captured`/`ready` or `fulfilled`, or the full
+collection and remittance with `paid` and `fulfilled`. Cancellation cuts follow
+the closed-child pattern [described above](#worker-loss-on-the-common-payment-first-checkout).
+The Order's in-origin compensation attempts expire while the payment worker is
+lost, so it closes unsettled without a false cancellation. The replacement
+worker's watchdog routes the accepted request to recovery, and the worker's
+`CancellationFinalizer` commits the cancellation. A collected payer's refund
+also recovers, but the carrier's outstanding merchant debt keeps the Order
+unsettled until it is remitted; an authorized recovery request and the
+proof-only finalizer then settle it. Replay performs no provider I/O. Like the other process-loss controls, these need a shared
+application database and POSIX signals, and skip otherwise.
 
 ### Subscription periods
 

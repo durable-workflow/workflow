@@ -40,7 +40,9 @@ final readonly class UnitCaptureOperation implements ScopedOperation
         // The quote is pinned in the independent payment service before capture admission.
         $this->refunds->register($command->original);
         $capture = $financial->capture;
-        $observed = $context->uncertainForward ? $this->provider->lookup($capture) : $this->provider->attempt($capture);
+        $observed = $context->reconcileBeforeForward ? $this->provider->lookup($capture) : $this->provider->attempt(
+            $capture
+        );
         if ($observed->status === Status::Unknown || (($observed->status === Status::Confirmed)
             !== ($observed->effectId !== null))) {
             return ForwardResult::unknown('financial-forward-unknown');
@@ -61,7 +63,7 @@ final readonly class UnitCaptureOperation implements ScopedOperation
         $capture = $this->provider->closeAdmission($financial->capture);
         if ($capture->admissionClosed && $capture->effectId === null
             && in_array($capture->status, [Status::NotExecuted, Status::Refused], true)) {
-            return Resolution::verified(['provider-fenced:' . $financial->capture->identity->key()], true);
+            return Resolution::verified(['provider-fenced:' . $financial->capture->identity->key()]);
         }
         if ($capture->status !== Status::Confirmed || $capture->effectId === null) {
             return Resolution::unknown('financial-capture-' . $capture->status->value);
@@ -71,7 +73,7 @@ final readonly class UnitCaptureOperation implements ScopedOperation
             || $result['confirmedAmountMinor'] !== $financial->capture->terms['amountMinor']) {
             return Resolution::unknown('unit-capture-refund-' . $result['status']);
         }
-        return Resolution::verified([$capture->effectId, 'unit-refund-receipts:' . $result['receiptsSha256']], true);
+        return Resolution::verified([$capture->effectId, 'unit-refund-receipts:' . $result['receiptsSha256']]);
     }
 
     /**

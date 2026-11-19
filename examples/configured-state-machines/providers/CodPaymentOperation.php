@@ -112,13 +112,13 @@ final readonly class CodPaymentOperation implements ScopedOperation
             return Resolution::unknown('cod-original-merchant-settlement-open');
         }
         if ($receipts === []) {
-            return Resolution::verified([$closed['evidence']], true);
+            return Resolution::verified([$closed['evidence']]);
         }
         $snapshot = $this->provider->collections->inspect($original);
         return $snapshot['facts']['outstanding_remittance_minor'] === 0 ? Resolution::verified([
             $closed['evidence'],
             'cod-merchant-remittance:' . hash('sha256', PortableDescriptor::encode($snapshot['receipts'])),
-        ], true) : Resolution::unknown('cod-original-merchant-settlement-open');
+        ]) : Resolution::unknown('cod-original-merchant-settlement-open');
     }
 
     private function refundPayer(
@@ -140,6 +140,6 @@ final readonly class CodPaymentOperation implements ScopedOperation
             ])));
         }
         return $closed === null ? Resolution::unknown('cod-original-collection-admission-open')
-            : Resolution::verified([$closed['evidence'], 'cod-customer-refunds:' . hash_final($evidence)], true);
+            : Resolution::verified([$closed['evidence'], 'cod-customer-refunds:' . hash_final($evidence)]);
     }
 }

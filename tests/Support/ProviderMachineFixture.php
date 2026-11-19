@@ -254,6 +254,25 @@ trait ProviderMachineFixture
         ], JSON_THROW_ON_ERROR);
     }
 
+    /**
+     * Queue-worker semantics: a recorded activity failure (for example a child scope not yet verified) is
+     * retried by the engine; the worker keeps draining instead of stopping.
+     */
+    protected function drainLikeAWorker(): void
+    {
+        for ($pass = 0; $pass < 16; ++$pass) {
+            try {
+                $this->drain();
+                return;
+            } catch (\RuntimeException $error) {
+                if ($error->getMessage() !== 'scope_compensation_unknown') {
+                    throw $error;
+                }
+            }
+        }
+        $this->fail('The fresh retained recovery did not settle within its bounded worker passes.');
+    }
+
     protected function drain(?\Closure $stop = null, ?string $pausedInstance = null): void
     {
         for ($i = 0; $i < 800; ++$i) {

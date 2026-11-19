@@ -87,8 +87,8 @@ final class RetainedFinancialOperationTest extends TestCase
             ->compensate($this->context('capture'));
         $authorization = $this->operation('authorize')
             ->compensate($this->context('authorize'));
-        $this->assertTrue($capture->verified && $capture->forwardSettled);
-        $this->assertTrue($authorization->verified && $authorization->forwardSettled);
+        $this->assertTrue($capture->verified);
+        $this->assertTrue($authorization->verified);
         foreach (['authorize', 'capture'] as $key) {
             $result = $this->provider->attempt($this->request($key));
             $this->assertSame(Status::NotExecuted, $result->status);
@@ -104,7 +104,7 @@ final class RetainedFinancialOperationTest extends TestCase
         $this->assertTrue($this->operation('capture')->compensate($this->context('capture'))->verified);
         $result = $this->operation('authorize')
             ->compensate($this->context('authorize'));
-        $this->assertTrue($result->verified && $result->forwardSettled);
+        $this->assertTrue($result->verified);
         $this->assertSame(['authorize', 'void-authorization'], $this->actions());
         $this->assertSame(Status::Confirmed, $this->provider->lookup($this->request('authorize'))->status);
         $this->assertSame(Status::NotExecuted, $this->provider->attempt($this->request('capture'))->status);
@@ -133,7 +133,7 @@ final class RetainedFinancialOperationTest extends TestCase
         foreach (['capture', 'authorize'] as $stage) {
             $result = $this->operation($stage)
                 ->compensate($this->context($stage));
-            $this->assertFalse($result->verified || $result->forwardSettled);
+            $this->assertFalse($result->verified);
             $this->assertSame('financial-capture-unknown', $result->reason);
         }
         $this->assertSame(['authorize'], $this->actions());
@@ -182,7 +182,7 @@ final class RetainedFinancialOperationTest extends TestCase
         $this->provider->plan($this->request('refund'), $status);
         $money = $this->operation('capture')
             ->compensate($this->context('capture'));
-        $this->assertFalse($money->verified || $money->forwardSettled);
+        $this->assertFalse($money->verified);
         $this->assertSame('financial-compensation-' . $status->value, $money->reason);
         // Permission was consumed; verifying only this obligation does not verify the unresolved money obligation.
         $this->assertTrue($this->operation('authorize')->compensate($this->context('authorize'))->verified);
@@ -196,7 +196,7 @@ final class RetainedFinancialOperationTest extends TestCase
         $this->provider->plan($this->request('void'), $status);
         $result = $this->operation('authorize')
             ->compensate($this->context('authorize'));
-        $this->assertFalse($result->verified || $result->forwardSettled);
+        $this->assertFalse($result->verified);
         $this->assertSame('financial-compensation-' . $status->value, $result->reason);
         $this->assertSame(['authorize'], $this->actions());
     }
@@ -216,7 +216,7 @@ final class RetainedFinancialOperationTest extends TestCase
             $result = $this->operation('capture')
                 ->compensate($this->context('capture', true, 'replacement'));
         }
-        $this->assertTrue($result->verified && $result->forwardSettled);
+        $this->assertTrue($result->verified);
         $this->assertSame(['authorize', 'capture-authorized', 'refund-authorized'], $this->actions());
     }
 

@@ -11,11 +11,13 @@ use Workflow\V2\Compensation\Execution\Resolution;
 use Workflow\V2\Compensation\Persistence\ChildScopes;
 use Workflow\V2\Compensation\Persistence\ScopeRepository;
 use Workflow\V2\Compensation\Security\ScopeAuthorization;
+use Workflow\V2\Compensation\Security\ScopeAuthorizationRefused;
 
 /**
  * @internal Compensation format or engine implementation.
  *
- * Child request acknowledgement never substitutes for verified business compensation.
+ * Child request acknowledgement never substitutes for verified business compensation. A permanent
+ * authorization refusal propagates as ScopeAuthorizationRefused; any other failure is a retried unknown.
  *
  * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
  */
@@ -53,11 +55,13 @@ final readonly class ChildResolution
                 'parent-compensation'
             );
             $snapshot = $this->repository->inspect($child);
+        } catch (ScopeAuthorizationRefused $refusal) {
+            throw $refusal;
         } catch (Throwable) {
             return Resolution::unknown('child-unresolved');
         }
         return $snapshot['status'] === 'verified'
-            ? Resolution::verified(['scope-verified:' . $child->id()], true)
+            ? Resolution::verified(['scope-verified:' . $child->id()])
             : Resolution::unknown('child-unresolved');
     }
 }

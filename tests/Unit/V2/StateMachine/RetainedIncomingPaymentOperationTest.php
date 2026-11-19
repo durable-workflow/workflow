@@ -48,7 +48,7 @@ final class RetainedIncomingPaymentOperationTest extends TestCase
     {
         $result = $this->handler()
             ->compensate($this->context());
-        $this->assertTrue($result->verified && $result->forwardSettled);
+        $this->assertTrue($result->verified);
         $this->assertSame([], $this->effects());
         $this->handler()
             ->execute($this->context());
@@ -75,7 +75,7 @@ final class RetainedIncomingPaymentOperationTest extends TestCase
         $this->provider->plan($request, Status::Confirmed);
         $result = $this->handler()
             ->compensate($this->context());
-        $this->assertTrue($result->verified && $result->forwardSettled);
+        $this->assertTrue($result->verified);
         $this->assertSame(['refund-incoming'], $this->effects());
         $snapshot = $this->incoming->receipts
             ->inspect($this->original());
@@ -128,7 +128,7 @@ final class RetainedIncomingPaymentOperationTest extends TestCase
         );
         $result = $this->handler()
             ->compensate($context);
-        $this->assertFalse($result->verified || $result->forwardSettled);
+        $this->assertFalse($result->verified);
         $this->assertSame('incoming-admission-open', $result->reason);
         $this->assertSame(['refund-incoming'], $this->effects());
         $this->receive($this->receipt('later-transfer', 1));
@@ -152,7 +152,7 @@ final class RetainedIncomingPaymentOperationTest extends TestCase
         $this->provider->plan($request, $status);
         $result = $this->handler()
             ->compensate($this->context());
-        $this->assertFalse($result->verified || $result->forwardSettled);
+        $this->assertFalse($result->verified);
         $this->assertSame('incoming-refund-' . $status->value, $result->reason);
         $this->assertSame([], $this->effects());
         if (in_array($status, [Status::Processing, Status::Unknown], true)) {

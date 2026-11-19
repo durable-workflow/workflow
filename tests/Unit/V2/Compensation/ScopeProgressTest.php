@@ -65,10 +65,10 @@ final class ScopeProgressTest extends TestCase
             $this->assertSame('requested', $repository->inspect($scope)['status']);
         }
         $progress->beginCompensation($scope, $second, 'native-undo-3');
-        $progress->resolve($scope, $second, 'native-undo-3', Resolution::verified(['proof-second'], true));
+        $progress->resolve($scope, $second, 'native-undo-3', Resolution::verified(['proof-second']));
         $this->assertNull($progress->beginCompensation($scope, $second, 'native-undo-4'));
         $progress->beginCompensation($scope, $first, 'native-undo-5');
-        $progress->resolve($scope, $first, 'native-undo-5', Resolution::verified(['proof-first'], true));
+        $progress->resolve($scope, $first, 'native-undo-5', Resolution::verified(['proof-first']));
         $this->assertSame('verified', $progress->finish($scope)['status']);
     }
 
@@ -79,8 +79,11 @@ final class ScopeProgressTest extends TestCase
         $progress->admitForward($scope, $id, 'native-forward');
         (new ScopeRepository())->request($scope, 'request', 'operator', 'cancel');
         $progress->beginCompensation($scope, $id, 'native-undo');
+        // A late forward effect may still arrive, so the outcome stays unresolved and the scope cannot finish.
+        $progress->resolve($scope, $id, 'native-undo', Resolution::unknown('late-forward-possible'));
+        $this->assertSame('unknown', (new ScopeRepository())->inspect($scope)['obligations'][0]['compensation_status']);
         $this->expectException(LogicException::class);
-        $progress->resolve($scope, $id, 'native-undo', Resolution::verified(['undo-ack'], false));
+        $progress->finish($scope);
     }
 
     public function testCompensationCannotOverwriteAnotherNativeAttempt(): void
@@ -91,7 +94,7 @@ final class ScopeProgressTest extends TestCase
         $progress->beginCompensation($scope, $id, 'native-undo-1');
         $progress->beginCompensation($scope, $id, 'native-undo-2');
         $this->expectException(LogicException::class);
-        $progress->resolve($scope, $id, 'native-undo-1', Resolution::verified(['proof'], true));
+        $progress->resolve($scope, $id, 'native-undo-1', Resolution::verified(['proof']));
     }
 
     public function testMaximumEvidenceReferencesFitForwardAndCompensationJournals(): void
@@ -104,7 +107,7 @@ final class ScopeProgressTest extends TestCase
         $progress->forwardResult($scope, $id, str_repeat('f', 26), ForwardResult::observed([], $references));
         $repository->request($scope, 'request', 'operator', 'cancel');
         $progress->beginCompensation($scope, $id, str_repeat('c', 26));
-        $progress->resolve($scope, $id, str_repeat('c', 26), Resolution::verified($references, true));
+        $progress->resolve($scope, $id, str_repeat('c', 26), Resolution::verified($references));
         $records = array_values(array_filter(
             $repository->journal($scope),
             static fn (array $row): bool => in_array($row['kind'], ['forward_outcome', 'compensation_outcome'], true)
