@@ -44,7 +44,7 @@ final readonly class OwnerOperation implements ScopedOperation
     public function compensate(OperationContext $context): Resolution
     {
         $this->assertInput($context->obligation->input);
-        return $this->store->owner($context) ? Resolution::verified(['owner-fenced:' . $context->operationId], true)
+        return $this->store->owner($context) ? Resolution::verified(['owner-fenced:' . $context->operationId])
             : Resolution::unknown('business_cancellation_required');
     }
 }

@@ -12,6 +12,7 @@ use Workflow\V2\Compensation\Definition\ScopeIdentity;
 use Workflow\V2\Compensation\Persistence\ScopeRepository;
 use Workflow\V2\Compensation\Persistence\ScopeStorage;
 use Workflow\V2\Compensation\Security\ScopeAuthorization;
+use Workflow\V2\Compensation\Security\ScopeAuthorizationRefused;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\ConfiguredV2Models;
@@ -27,9 +28,11 @@ use Workflow\V2\Support\NamespaceScope;
  * admission to the canonical recovery instance returns an existing active run,
  * so concurrent passes or a racing manual request still start one run.
  *
- * The primary principal is authorized again first. If that fails, nothing is
- * started; a recovery_authorization_failed journal entry records the refusal
- * once, and a fresh authorized request can still route recovery manually.
+ * The primary principal is authorized again first. If the host throws
+ * ScopeAuthorizationRefused, nothing is started; a recovery_authorization_failed
+ * journal entry records the refusal once, and a fresh authorized request can
+ * still route recovery manually. Any other exception is transient: the pass
+ * reports it and a later pass tries again.
  *
  * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
  */
@@ -79,7 +82,9 @@ final class CompensationAutoRecovery
         try {
             $policy = app(ScopeAuthorization::class)->assertAllowed($scope, $request['principal'], 'request');
             PortableDescriptor::identifier($policy, 'authorization policy version');
-        } catch (Throwable $refusal) {
+        } catch (ScopeAuthorizationRefused $refusal) {
+            // Only the dedicated refusal is permanent. Any other exception propagates as a
+            // transient failure, and a later watchdog pass tries again.
             ScopeStorage::mutate($scope, static function (array $locked, Connection $database) use (
                 $request,
                 $refusal
@@ -92,7 +97,8 @@ final class CompensationAutoRecovery
                 ScopeStorage::append($locked, self::REFUSED, [
                     'requestKey' => $request['key'],
                     'principal' => $request['principal'],
-                    'reason' => substr($refusal->getMessage(), 0, 256),
+                    'code' => self::REFUSED,
+                    'message' => substr($refusal->getMessage(), 0, 256),
                 ]);
             });
             return 'refused';

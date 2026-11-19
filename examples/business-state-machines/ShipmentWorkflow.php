@@ -40,10 +40,8 @@ final class ShipmentWorkflow extends Workflow
             ]);
         } catch (WorkflowCancellationRequestedException|BusinessCancellationRequested $error) {
             self::cancellationShield(fn () => $this->compensate());
+            // verifyCompensation() returns only once every obligation is verified; otherwise its activity fails.
             $result = self::cancellationShield(static fn () => $scope->verifyCompensation());
-            if (($result['status'] ?? null) !== 'verified') {
-                throw $error;
-            }
             return [
                 'businessOutcome' => 'compensated',
                 'scope' => $result,

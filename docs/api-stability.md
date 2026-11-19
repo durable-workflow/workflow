@@ -126,21 +126,105 @@ marked `@experimental` as described below.
 
 ## Experimental compensation scopes
 
-The `Workflow\V2\Compensation` authoring helpers and host handler/authorization
-contracts are experimental. Their API and persisted storage contract may change
-in a minor release while the first increment is evaluated. The scope, obligation,
-forward-result and resolution envelopes carry an explicit format version; unknown
-versions refuse interpretation. Activity types and activity-sequence markers are
-recorded identities and must be changed through explicit deterministic versioning.
-`@internal` activities, format utilities and engine classes remain implementation
-details rather than supported host entry points.
+The `Workflow\V2\Compensation` API is experimental. Its API and persisted storage
+contract may change in a minor release until it is promoted. Promotion is
+planned for a later minor release. It covers exactly the members below, which
+`tests/Unit/V2/Compensation/CompensationPublicSurfaceTest.php` pins. Nothing else in
+the namespace is planned for promotion.
 
-This increment supports embedded Laravel, sequential compensation, one nesting
-level and explicit release. It does not transfer forward scope ownership across
-continue-as-new, originating-run redrive or child retry. Use a distinct generation
-for each originating run. Retained obligations stay attached to that run and remain
-recoverable through `ScopeRecovery`. See [durable compensation scopes](compensation-scopes.md).
-Existing run-local Saga and its stability contract remain unchanged.
+**Authoring**
+
+- `DurableScope`: `__construct(Workflow $workflow, ScopeIdentity $identity, string $principal)`,
+  `execute(Obligation, ?ActivityOptions = null): array`, `register(Obligation): RegisteredObligation`,
+  `participate(string $key, ScopeIdentity $child): void`, `verifyCompensation(): array`.
+  `verifyCompensation()` returns `['scopeId' => string, 'status' => 'verified']`. It does not return
+  while any obligation is unresolved; its recorded activity fails instead.
+- `RegisteredObligation`: `execute(?ActivityOptions = null): array`, `compensate(?ActivityOptions = null): void`.
+- `Definition\Obligation`: `__construct(string $key, string $handlerType, string $handlerVersion, array $input)`
+  and its four readonly properties.
+- `Definition\ScopeIdentity`: `__construct(string $application, ?string $namespace, string $key, string $generation)`,
+  its four readonly properties, `id()`, and `toArray()`/`fromArray()`, its public portable version-1 form.
+
+**Handler contract**
+
+- `Execution\ScopedOperation`: `assertInput(array)`, `execute(OperationContext): ForwardResult`,
+  `compensate(OperationContext): Resolution`.
+- `Execution\OperationContext`: readonly properties `scope`, `obligation`, `operationId`, `originalRunId`,
+  `activityId`, `attemptId`, `reconcileBeforeForward`, `forwardActivityId`, `forwardAttemptId` and
+  `forwardOutcomeUnconfirmed`.
+- `Execution\ForwardResult`: `observed(array $value, array $evidence)`, `unknown(string $reason)`,
+  `rejected(string $reason, array $evidence = [])`; constants `OBSERVED`, `UNKNOWN`, `REJECTED`; readonly
+  properties `outcome`, `observed`, `value`, `evidence`, `reason`.
+- `Execution\Resolution`: `verified(array $evidence)`, `unknown(string $reason)`,
+  `failed(string $reason, array $evidence = [])`; constants `VERIFIED`, `UNKNOWN`, `FAILED`; readonly
+  properties `outcome`, `verified`, `reason`, `evidence`. A second boolean argument to `verified()`, the
+  `forwardSettled` flag of earlier releases, is deprecated: `true` is ignored with an `E_USER_DEPRECATED`
+  notice, and `false` returns `unknown('late-forward-possible')`.
+- `Execution\HandlerContractViolation`, thrown by the `ForwardResult` and `Resolution` factories for an
+  invalid reason, evidence or value. When a handler throws it, or an observed value exceeds the forward
+  value limit, the outcome is recorded as unknown and the activity fails with non-retryable
+  `scope_handler_contract_violation` followed by its message. It is never reported as an unknown
+  provider outcome.
+- `Execution\HandlerRegistry`: `__construct(array $handlers = [])` as `[type => [version => ScopedOperation]]`,
+  and `RESERVED_PREFIX` (`dw.`).
+
+**Host**
+
+- `Security\ScopeAuthorization::assertAllowed(ScopeIdentity, string $principal, string $operation): string`.
+  It is called with `register`, `forward`, `compensate`, `participate`, `request`, `release` and
+  `inspect`. Implementations must refuse unknown operation names.
+- `Security\ScopeAuthorizationRefused`: the only exception that means a permanent refusal. Any other
+  exception from `assertAllowed()` is transient and retried, and automatic recovery stays on.
+- `Recovery\ScopeRecovery`: `request()` and `describe()`. Resolve it from the container
+  (`app(ScopeRecovery::class)`). Their exact result keys and value sets are documented on the methods
+  and use the `ScopeStatus`, `RecoveryRoute`, `NextAction`, `AutomaticRecovery` and `ObligationStatus`
+  enums. Unlike `Workflow\V2\Enums`, these five enums may gain cases in a minor release. Callers must
+  handle values they do not recognize with a default branch (for example `tryFrom()` returning null, or a
+  `default` arm in `match`). Existing cases and their values do not change.
+- `Recovery\ScopeRetention::release(ScopeIdentity, string $principal): void`, resolved from the container.
+- `Support\ActivityOptions` and `StartOptions` as used in these signatures. Their constructors,
+  readonly properties and `with*()` methods are `@api`.
+
+**Identifiers and limits**
+
+- `application`, `key`, `generation`, obligation `key` and `handlerVersion`: 1 to 128 characters from
+  `A-Z a-z 0-9 . _ : / -`, starting with a letter or digit. `namespace` is a native namespace, or null
+  for the default namespace; null is never replaced by an alias.
+- `handlerType`: 1 to 128 characters from `a-z 0-9 . _ -`, starting with a lowercase letter. Types
+  starting with `dw.` are reserved for the engine: workflows that record the
+  `dw.compensation.registration-checks` patch cannot register them. A `HandlerRegistry` may still map a
+  `dw.` type an earlier history registered, so those obligations stay compensable.
+- Obligation `input`: at most 15,360 bytes as JSON, 500 values and depth 7.
+- Forward result `value`: at most 11,264 bytes, 400 values and depth 7. The limit applies to workflows
+  that record the `dw.compensation.registration-checks` patch; runs recorded before it keep the envelope
+  limit.
+- Evidence: at most 32 references of at most 128 bytes per outcome.
+- Envelope overhead is reserved above these limits, so they never shrink.
+- 256 obligations per scope, including at most 16 child participants and one nesting level.
+- 128 requests per scope. Host requests and engine requests share this budget: a parent issues one child
+  request per run that compensates it, and automatic recovery reuses the primary request.
+
+**Recorded identities**
+
+- The `dw.compensation.*.v1` activity types and the `dw.compensation.recovery.v1` workflow type.
+- The `dw.compensation.scope-activities` and `dw.compensation.recovery-activities` version markers.
+- The `dw.compensation.recovery-lease-repair-retry` and `dw.compensation.registration-checks` patch markers.
+- Version-1 envelopes, and version-2 envelopes for `rejected` and `failed` outcomes.
+- `ScopeIdentity::id()` is the lowercase hex SHA-256 of the canonical JSON of `toArray()`. The canonical
+  recovery workflow instance is `dw-compensation-` followed by that ID.
+
+Experimental, and not planned for this promotion:
+
+- `DurableScope::reserveChild()`, which depends on the experimental `StateMachine\Binding` types;
+- original root admission (`Admission\*`);
+- parallel compensation and deeper nesting.
+
+Members marked `@internal`, including the `ScopeRecovery` and `ScopeRetention` constructors,
+`Obligation::fromStored()`, `HandlerRegistry::resolve()`, `ScopeIdentity::recoveryInstanceId()`,
+`ForwardResult::assertValueWithinLimits()` and the ledger envelope codecs (`fromArray()`/`toArray()` on
+`ForwardResult`, `Resolution` and `Obligation`), are implementation details. See
+[durable compensation scopes](compensation-scopes.md). Existing run-local Saga and its stability contract
+are unchanged.
 
 ## What is covered
 

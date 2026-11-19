@@ -10,6 +10,7 @@ use Workflow\V2\Activity;
 use Workflow\V2\Attributes\Type;
 use Workflow\V2\Compensation\Definition\Obligation;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
+use Workflow\V2\Compensation\Execution\HandlerContractViolation;
 use Workflow\V2\Compensation\Execution\HandlerRegistry;
 use Workflow\V2\Compensation\Execution\OperationContext;
 use Workflow\V2\Compensation\Execution\Resolution;
@@ -17,6 +18,7 @@ use Workflow\V2\Compensation\Persistence\ChildScopes;
 use Workflow\V2\Compensation\Persistence\ScopeProgress;
 use Workflow\V2\Compensation\Recovery\ChildResolution;
 use Workflow\V2\Compensation\Recovery\ReservedChildResolution;
+use Workflow\V2\Compensation\Security\ScopeAuthorizationRefused;
 use Workflow\V2\Compensation\Security\ScopeBoundary;
 
 /**
@@ -53,11 +55,14 @@ final class CompensateObligationActivity extends Activity
             $origin,
             $this->activityId(),
             $this->attemptId(),
-            $row['forward_status'] !== 'observed',
-            $row['forward_activity_id'],
-            $row['forward_attempt_id'],
+            reconcileBeforeForward: false,
+            forwardActivityId: $row['forward_activity_id'],
+            forwardAttemptId: $row['forward_attempt_id'],
+            forwardOutcomeUnconfirmed: $row['forward_status'] !== 'observed',
         );
         $unavailable = false;
+        $violation = null;
+        $refused = false;
         try {
             if ($obligation->handlerType === ChildScopes::TYPE) {
                 $result = app(ChildResolution::class)->resolve($scope, $obligation, $id, $this->runId());
@@ -65,13 +70,23 @@ final class CompensateObligationActivity extends Activity
                 $result = app(ReservedChildResolution::class)->resolve($scope, $obligation, $id, $this->runId());
             } else {
                 $handler = app(HandlerRegistry::class)->resolve($obligation);
-                $result = $row['forward_status'] === 'registered'
-                    ? Resolution::verified(['never-dispatched:' . $id], true)
-                    : $handler->compensate($context);
+                $result = match ($row['forward_status']) {
+                    'registered' => Resolution::verified(['never-dispatched:' . $id]),
+                    // The handler reported that the provider definitely made no effect.
+                    'rejected' => Resolution::verified(['forward-rejected:' . $id]),
+                    default => $handler->compensate($context),
+                };
             }
         } catch (NonRetryableException) {
             $unavailable = true;
             $result = Resolution::unknown('handler-unavailable');
+        } catch (ScopeAuthorizationRefused) {
+            // A permanent refusal leaves the obligation failed until a new authorized request.
+            $refused = true;
+            $result = Resolution::failed('authorization-refused');
+        } catch (HandlerContractViolation $thrown) {
+            $violation = $thrown;
+            $result = Resolution::unknown('handler-contract-violation');
         } catch (Throwable) {
             $result = Resolution::unknown('provider-outcome-unknown');
         }
@@ -84,6 +99,19 @@ final class CompensateObligationActivity extends Activity
         );
         if ($unavailable) {
             throw new NonRetryableException('scope_handler_unavailable');
+        }
+        if ($refused) {
+            throw new NonRetryableException('scope_authorization_refused');
+        }
+        if ($violation !== null) {
+            throw new NonRetryableException(
+                'scope_handler_contract_violation: ' . $violation->getMessage(),
+                0,
+                $violation
+            );
+        }
+        if ($result->outcome === Resolution::FAILED) {
+            throw new NonRetryableException('scope_compensation_failed');
         }
         if (! $result->verified) {
             throw new \RuntimeException('scope_compensation_unknown');

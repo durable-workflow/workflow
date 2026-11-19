@@ -18,6 +18,9 @@ final class TestScopedOperation implements ScopedOperation
 
     public function execute(OperationContext $context): ForwardResult
     {
+        if (($context->obligation->input['mode'] ?? null) === 'rejected') {
+            return ForwardResult::rejected('provider-refused', ['refusal:' . $context->operationId]);
+        }
         $key = 'test:scope:effect:' . $context->operationId;
         if (! Cache::has($key)) {
             Cache::forever($key, $context->obligation->key);
@@ -25,6 +28,12 @@ final class TestScopedOperation implements ScopedOperation
         }
         if (($context->obligation->input['mode'] ?? null) === 'lost-ack') {
             return ForwardResult::unknown('ack-lost');
+        }
+        if (($context->obligation->input['mode'] ?? null) === 'oversized') {
+            // Above the 11,264-byte caller value limit, within the envelope limit of earlier releases.
+            return ForwardResult::observed([
+                'receipt' => str_repeat('r', 12_000),
+            ], ['provider:' . $context->operationId]);
         }
         return ForwardResult::observed([
             'reference' => $context->operationId,
@@ -39,6 +48,9 @@ final class TestScopedOperation implements ScopedOperation
         $log = Cache::get('test:scope:undo-log', []);
         $log[] = $context->obligation->key;
         Cache::forever('test:scope:undo-log', $log);
+        if ($context->obligation->key === 'first' && Cache::get('test:scope:failed-first', false)) {
+            return Resolution::failed('provider-refused-undo');
+        }
         if ($context->obligation->key === 'first' && Cache::get('test:scope:unknown-first', false)) {
             return Resolution::unknown('provider-unavailable');
         }
@@ -46,9 +58,16 @@ final class TestScopedOperation implements ScopedOperation
             \Illuminate\Support\Carbon::setTestNow(now()->addMinutes(10));
         }
         Cache::forget('test:scope:effect:' . $context->operationId);
-        return Resolution::verified(
-            ['provider-undo:' . $context->operationId],
-            ! Cache::get('test:scope:late-forward-possible', false)
-        );
+        if (Cache::get('test:scope:late-forward-possible', false)) {
+            return Resolution::unknown('late-forward-possible');
+        }
+        if ($context->obligation->key === 'first' && Cache::get('test:scope:invalid-resolution', false)) {
+            return Resolution::verified([]);
+        }
+        if (Cache::get('test:scope:legacy-verified', false)) {
+            // A handler written for earlier releases passes the removed forwardSettled flag.
+            return call_user_func([Resolution::class, 'verified'], ['provider-undo:' . $context->operationId], true);
+        }
+        return Resolution::verified(['provider-undo:' . $context->operationId]);
     }
 }
