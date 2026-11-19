@@ -19,10 +19,7 @@ use PDO;
 use Workflow\Providers\WorkflowServiceProvider;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
 use Workflow\V2\Compensation\Persistence\ScopeRepository;
-use Workflow\V2\Enums\TaskStatus;
-use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowRun;
-use Workflow\V2\Models\WorkflowTask;
 
 require_once __DIR__ . '/../../examples/provider-state-machines/bootstrap.php';
 
@@ -56,7 +53,6 @@ final class TransitIncidentProcessLossProcessTest extends TestCase
                 ], JSON_THROW_ON_ERROR));
                 return;
             }
-            $this->retryWhenOnlyTheOrderIsReoffered();
             $this->runNextTask(Catalogue::NAMESPACE);
         }
         $this->fail('The bounded original incident worker did not reach its selected cut or outcome.');
@@ -90,21 +86,6 @@ final class TransitIncidentProcessLossProcessTest extends TestCase
             $provider,
             unitRefunds: new UnitRefundGateway($db, 'shop-a')
         );
-    }
-
-    /**
-     * After its Shipment child closed, the Order's remedy wait is re-offered by every watchdog pass (#1219),
-     * so due work never runs out. Once every lease is repaired, move on to the next activity retry.
-     */
-    private function retryWhenOnlyTheOrderIsReoffered(): void
-    {
-        $open = WorkflowTask::query()->whereRelation('run', 'namespace', Catalogue::NAMESPACE)
-            ->whereIn('status', [TaskStatus::Ready, TaskStatus::Leased])->get();
-        $retry = $open->where('task_type', TaskType::Activity)->sortBy('available_at')->first();
-        if ($retry !== null && $open->every(static fn (WorkflowTask $task): bool => $task->status === TaskStatus::Ready
-            && $task->available_at?->isFuture())) {
-            Carbon::setTestNow($retry->available_at->copy()->addSecond());
-        }
     }
 
     private function recovered(array $input): bool
