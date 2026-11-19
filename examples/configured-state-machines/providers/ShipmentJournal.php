@@ -158,6 +158,28 @@ final readonly class ShipmentJournal
         });
     }
 
+    /**
+     * Synthetic carrier decision on a filed claim; never an application command or workflow signal.
+     */
+    public function recordClaimOutcome(Request $claim, string $outcome, int $amountMinor): array
+    {
+        $this->authorizeRequest($claim);
+        return $this->transaction(fn (): array => (new ShipmentLedger($this->db))->recordClaimOutcome(
+            $claim,
+            $outcome,
+            $amountMinor
+        ));
+    }
+
+    /**
+     * Invoke through an authorized host boundary; the carrier decision may arrive at any later time.
+     */
+    public function claimOutcome(Request $claim): ?array
+    {
+        $this->authorizeRequest($claim);
+        return $this->transaction(fn (): ?array => (new ShipmentLedger($this->db))->claimOutcome($claim));
+    }
+
     private function authorizeRequest(Request $request): void
     {
         if ($request->identity->client !== $this->client) {

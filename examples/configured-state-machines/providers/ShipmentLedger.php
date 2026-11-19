@@ -11,9 +11,13 @@ use Workflow\V2\Compensation\Definition\PortableDescriptor;
 /** Called inside the provider's own transaction, never the application or DW transaction. */
 final readonly class ShipmentLedger
 {
+    public const CLAIM = 'carrier-claim';
+
+    public const INCIDENTS = ['lost', 'damaged'];
+
     public const ACTIONS = [
         'ship-book', 'ship-cancel-booking', 'request-return', 'restock', 'deduct-stock',
-        UnitReturnTerms::REQUEST, UnitReturnTerms::RESTOCK,
+        UnitReturnTerms::REQUEST, UnitReturnTerms::RESTOCK, UnitReturnTerms::RECOVER, self::CLAIM,
     ];
 
     public function __construct(
@@ -30,6 +34,9 @@ final readonly class ShipmentLedger
             'CREATE TABLE provider_shipment_events (id TEXT PRIMARY KEY, booking_id TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL, payload_sha256 TEXT NOT NULL, UNIQUE(booking_id, kind))'
         );
         $this->db->exec('CREATE TABLE provider_shipment_admissions (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL)');
+        $this->db->exec(
+            'CREATE TABLE provider_carrier_claim_outcomes (claim_id TEXT PRIMARY KEY, payload TEXT NOT NULL, payload_sha256 TEXT NOT NULL)'
+        );
         $this->units()
             ->install();
     }
@@ -51,8 +58,90 @@ final readonly class ShipmentLedger
         }
     }
 
+    /**
+     * A carrier claim for one confirmed incident of the original parcel; its own identity, never a customer remedy.
+     */
+    public static function claim(Request $booking, string $incident): Request
+    {
+        if ($booking->action !== 'ship-book') {
+            throw new LogicException('A carrier claim must name its original booking.');
+        }
+        return new Request(new Identity(
+            $booking->identity->client,
+            $booking->identity->subject,
+            $booking->identity->generation,
+            'shipment.full.carrier-claim.' . $incident
+        ), self::CLAIM, [
+            'incident' => $incident,
+            'shipment' => $booking->terms,
+        ], $booking->identity);
+    }
+
+    public static function claimTerms(array $terms): void
+    {
+        $keys = array_keys($terms);
+        sort($keys);
+        if ($keys !== ['incident', 'shipment'] || ! in_array($terms['incident'], self::INCIDENTS, true)
+            || ! is_array($terms['shipment'])) {
+            throw new \InvalidArgumentException('The carrier claim terms are malformed.');
+        }
+        ShipmentTerms::fromArray($terms['shipment']);
+    }
+
+    /**
+     * Provider-fixture carrier decision on a filed claim. It never changes the customer remedy.
+     */
+    public function recordClaimOutcome(Request $claim, string $outcome, int $amountMinor): array
+    {
+        if ($claim->action !== self::CLAIM || ! $this->confirmed($claim)
+            || ! in_array($outcome, ['accepted', 'rejected'], true) || $amountMinor < 0
+            || ($outcome === 'rejected' && $amountMinor !== 0)) {
+            throw new LogicException('A claim outcome needs its confirmed original claim and a bounded amount.');
+        }
+        $this->claimBooking($claim);
+        $payload = PortableDescriptor::encode([
+            'claim' => $claim->identity->key(),
+            'outcome' => $outcome,
+            'amountMinor' => $amountMinor,
+        ]);
+        $this->query(
+            'INSERT INTO provider_carrier_claim_outcomes (claim_id, payload, payload_sha256) VALUES (?, ?, ?) ON CONFLICT DO NOTHING',
+            [$claim->identity->key(), $payload, hash('sha256', $payload)]
+        );
+        $stored = $this->claimOutcome($claim);
+        if ($stored === null || PortableDescriptor::encode($stored) !== $payload) {
+            throw new LogicException('A carrier claim outcome cannot change.');
+        }
+        return $stored;
+    }
+
+    public function claimOutcome(Request $claim): ?array
+    {
+        $row = $this->query('SELECT * FROM provider_carrier_claim_outcomes WHERE claim_id = ?', [
+            $claim->identity->key(),
+        ])->fetch(PDO::FETCH_ASSOC);
+        if ($row === false) {
+            return null;
+        }
+        if (! hash_equals($row['payload_sha256'], hash('sha256', $row['payload']))) {
+            throw new LogicException('The original carrier claim outcome was substituted.');
+        }
+        return json_decode($row['payload'], true, flags: JSON_THROW_ON_ERROR);
+    }
+
     public function admit(Request $request, Status $planned): Status
     {
+        if ($request->action === self::CLAIM) {
+            $booking = $this->claimBooking($request);
+            $events = $this->events($booking);
+            // A claim needs the carrier's own confirmed incident; a tracking delay is no incident.
+            if (! $this->confirmed($booking) || ! isset($events[$request->terms['incident']])
+                || isset($events['delivered'])) {
+                return Status::Refused;
+            }
+            $this->recordAdmission($request);
+            return $planned;
+        }
         if (UnitReturnLedger::handles($request)) {
             return $this->units()
                 ->admit($request, $planned);
@@ -78,6 +167,15 @@ final readonly class ShipmentLedger
 
     public function assertCompletion(Request $request): void
     {
+        if ($request->action === self::CLAIM) {
+            $this->claimBooking($request);
+            if ($this->query('SELECT fingerprint FROM provider_shipment_admissions WHERE id = ?', [
+                $request->identity->key(),
+            ])->fetchColumn() !== $request->fingerprint()) {
+                throw new LogicException('The original carrier claim admission is unavailable or changed.');
+            }
+            return;
+        }
         if (UnitReturnLedger::handles($request)) {
             $this->units()
                 ->assertCompletion($request);
@@ -346,6 +444,17 @@ final readonly class ShipmentLedger
             throw new LogicException('Physical settlement must name its original booking and terms.');
         }
         return $target;
+    }
+
+    private function claimBooking(Request $claim): Request
+    {
+        $booking = $this->originalTarget($claim);
+        if ($booking->action !== 'ship-book'
+            || self::claim($booking, $claim->terms['incident'])->fingerprint() !== $claim->fingerprint()) {
+            throw new LogicException('A carrier claim must name its original booking, owner and terms.');
+        }
+        $this->root($booking);
+        return $booking;
     }
 
     private function assertOriginalRequest(Request $request, array $root): void
