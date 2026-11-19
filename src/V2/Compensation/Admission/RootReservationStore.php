@@ -26,7 +26,7 @@ use Workflow\V2\WorkflowStub;
  * close() and closeIntent() from an authorized host boundary or a recorded
  * activity, never from workflow replay. The methods marked @internal are native
  * admission hooks that the engine calls. Root admission stays experimental after
- * the 2.31.0 compensation-scope promotion (#1063).
+ * the planned compensation-scope promotion (#1063).
  *
  * @experimental Host/activity boundary, never a replay API. The permanent native
  * instance fence and reserved scope serialize original admission against closure.
