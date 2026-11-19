@@ -22,6 +22,12 @@ use Workflow\V2\Support\WorkflowFiberContext;
 use Workflow\V2\WorkflowStub;
 
 /**
+ * Host-facing original root admission. Hosts call reserve(), load(), start(),
+ * close() and closeIntent() from an authorized host boundary or a recorded
+ * activity, never from workflow replay. The methods marked @internal are native
+ * admission hooks that the engine calls. Root admission stays experimental after
+ * the 2.31.0 compensation-scope promotion (#1063).
+ *
  * @experimental Host/activity boundary, never a replay API. The permanent native
  * instance fence and reserved scope serialize original admission against closure.
  */
@@ -180,6 +186,9 @@ final readonly class RootReservationStore
         return $binding;
     }
 
+    /**
+     * @internal Ordinary start, retry, redrive, import and continue-as-new paths call this native fence check.
+     */
     public static function assertOrdinaryStartAllowed(WorkflowInstance $instance): void
     {
         if ($instance->getRawOriginal('native_root_reservation') !== null) {

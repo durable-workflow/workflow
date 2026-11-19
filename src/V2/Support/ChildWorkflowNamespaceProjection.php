@@ -96,15 +96,15 @@ final class ChildWorkflowNamespaceProjection
 
             /** @var class-string<WorkflowTask> $taskModel */
             $taskModel = ConfiguredV2Models::resolve('task_model', WorkflowTask::class);
-            $updated += $taskModel::query()
+            $tasks = $taskModel::query()
                 ->where('workflow_run_id', $childRunId)
                 ->where(static function (Builder $query): void {
                     $query->whereNull('namespace')
                         ->orWhere('namespace', '');
-                })
-                ->update([
-                    'namespace' => $namespace,
-                ]);
+                });
+            $updated += HistoryTransactionMeter::affecting($tasks, static fn (): int => $tasks->update([
+                'namespace' => $namespace,
+            ]));
         }
 
         if ($updated > 0) {
