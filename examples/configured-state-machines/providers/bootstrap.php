@@ -34,6 +34,8 @@ foreach ([
     'ShipmentSnapshot',
     'LostAcknowledgement',
     'AuthorizationLedger',
+    'UnitReturnTerms',
+    'UnitReturnLedger',
     'ShipmentLedger',
     'ShipmentJournal',
     'IncomingPaymentJournal',
@@ -55,6 +57,8 @@ foreach ([
     'RetainedOperation',
     'FinancialOperation',
     'ShipmentOperation',
+    'UnitCaptureOperation',
+    'UnitReturnOperation',
 ] as $class) {
     require_once __DIR__ . '/' . $class . '.php';
 }

@@ -2,8 +2,8 @@
 
 declare(strict_types=1);
 
+use Illuminate\Database\Connection;
 use Illuminate\Database\Schema\Blueprint;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Workflow\Support\WorkflowMigration;
 
@@ -84,7 +84,7 @@ return new class() extends WorkflowMigration {
         });
     }
 
-    public function down(): void
+    public function rollbackRefusal(Connection $connection): ?string
     {
         // Unresolved obligations have no other durable record, and released
         // tombstones keep old scope generations and request keys unusable.
@@ -96,10 +96,16 @@ return new class() extends WorkflowMigration {
             'workflow_compensation_children',
             'workflow_compensation_journal',
         ] as $table) {
-            if (Schema::hasTable($table) && DB::table($table)->exists()) {
-                throw new LogicException('Retained compensation scopes cannot be discarded by a schema rollback.');
+            if ($connection->getSchemaBuilder()->hasTable($table) && $connection->table($table)->exists()) {
+                return 'Retained compensation scopes cannot be discarded by a schema rollback.';
             }
         }
+        return null;
+    }
+
+    public function down(): void
+    {
+        $this->refuseRetainedRollback();
         Schema::dropIfExists('workflow_compensation_journal');
         Schema::dropIfExists('workflow_compensation_obligations');
         Schema::dropIfExists('workflow_compensation_requests');
