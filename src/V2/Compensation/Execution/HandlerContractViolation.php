@@ -16,7 +16,7 @@ use Throwable;
  * error carrying this message. It is never reported as an unknown provider outcome. The message is
  * diagnostic text and is not machine-stable.
  *
- * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
+ * @api Stable compensation-scope API (#1063). See docs/api-stability.md#compensation-scopes.
  */
 final class HandlerContractViolation extends InvalidArgumentException
 {

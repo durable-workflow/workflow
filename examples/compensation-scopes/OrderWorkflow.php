@@ -13,7 +13,7 @@ use Workflow\V2\Exceptions\WorkflowCancellationRequestedException;
 use Workflow\V2\Workflow;
 
 /**
- * Uses only the compensation API planned for promotion: DurableScope, Obligation, ScopeIdentity and participate().
+ * Uses only the stable compensation API: DurableScope, Obligation, ScopeIdentity and participate().
  */
 #[Type('example.compensation.order')]
 #[Signal('finish')]

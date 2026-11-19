@@ -6,6 +6,8 @@ namespace Workflow\V2\Compensation\Recovery;
 
 /**
  * Where ScopeRecovery::request() sent an accepted request.
+ *
+ * @api Stable compensation-scope API (#1063). See docs/api-stability.md#compensation-scopes.
  */
 enum RecoveryRoute: string
 {

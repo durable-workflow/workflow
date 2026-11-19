@@ -6,6 +6,8 @@ namespace Workflow\V2\Compensation\Recovery;
 
 /**
  * Public compensation status of one obligation.
+ *
+ * @api Stable compensation-scope API (#1063). See docs/api-stability.md#compensation-scopes.
  */
 enum ObligationStatus: string
 {

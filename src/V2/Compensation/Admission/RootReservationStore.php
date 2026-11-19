@@ -25,8 +25,8 @@ use Workflow\V2\WorkflowStub;
  * Host-facing original root admission. Hosts call reserve(), load(), start(),
  * close() and closeIntent() from an authorized host boundary or a recorded
  * activity, never from workflow replay. The methods marked @internal are native
- * admission hooks that the engine calls. Root admission stays experimental after
- * the planned compensation-scope promotion (#1063).
+ * admission hooks that the engine calls. Root admission is not part of the
+ * compensation-scope stability guarantee (#1063).
  *
  * @experimental Host/activity boundary, never a replay API. The permanent native
  * instance fence and reserved scope serialize original admission against closure.

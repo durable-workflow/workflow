@@ -473,6 +473,78 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         );
     }
 
+    /**
+     * An all() whose member is over payload_size_bytes is refused before its
+     * first member is written (#1232): the run's history is exactly the
+     * evidence, the typed refusal and no member event.
+     */
+    public function testOversizedFanOutMemberCorpusIsRefusedBeforeFirstWrite(): void
+    {
+        $path = self::FIXTURE_DIR . '/all-oversized-member-refused-before-first-write.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The oversized fan-out member evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+
+        $run = $this->runOversizedFanOutMemberScenario($fixture, 'regression-oversized-fan-out-member');
+
+        $this->assertSame(
+            array_map(static fn (array $event): array => [
+                $event['event_type'],
+                $event['payload']['structural_limit_kind'] ?? null,
+                $event['payload']['message'] ?? null,
+            ], $fixture['history']),
+            $this->oversizedFanOutMemberHistory($run),
+        );
+        $this->assertSame(0, ActivityExecution::query()->where('workflow_run_id', $run->id)->count());
+        $this->assertSame(1, (new WorkflowReplayer())->replay($run->fresh(['historyEvents']))->sequence);
+    }
+
+    /**
+     * The partial-group history 2.32.0 recorded for the same refusal still
+     * replays through the embedded replayer to the all(), while a new run of
+     * the same workflow writes only the refusal (#1232).
+     */
+    public function testLegacyOversizedFanOutMemberCorpusStillReplays(): void
+    {
+        $path = self::FIXTURE_DIR . '/legacy-all-oversized-member-scheduled-then-cancelled.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The legacy oversized fan-out member evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        config()
+            ->set('queue.default', 'database');
+        Queue::fake();
+
+        $legacy = $this->createRunFromFixture($fixture);
+        $this->assertSame(
+            array_column($fixture['history'], 'event_type'),
+            $legacy->historyEvents()
+                ->where('event_type', '!=', HistoryEventType::StartAccepted->value)
+                ->orderBy('sequence')
+                ->get()
+                ->map(static fn (WorkflowHistoryEvent $event): string => $event->event_type->value)
+                ->all(),
+        );
+        $state = (new WorkflowReplayer())->replay($legacy->fresh(['historyEvents']));
+        $this->assertSame(1, $state->sequence);
+        $this->assertInstanceOf(\Workflow\V2\Support\AllCall::class, $state->current);
+
+        $run = $this->runOversizedFanOutMemberScenario($fixture, 'regression-legacy-oversized-fan-out-member');
+        $refusal = $fixture['history'][array_key_last($fixture['history'])];
+        $this->assertSame(
+            [
+                [HistoryEventType::WorkflowStarted->value, null, null],
+                [
+                    HistoryEventType::WorkflowFailed->value,
+                    $refusal['payload']['structural_limit_kind'],
+                    $refusal['payload']['message'],
+                ],
+            ],
+            $this->oversizedFanOutMemberHistory($run),
+        );
+    }
+
     public function testTimeoutCleanupContinueAsNewCorpusKeepsTheWorkDeadline(): void
     {
         $path = self::FIXTURE_DIR . '/timeout-cleanup-continue-as-new-inheritance.json';
@@ -3112,6 +3184,49 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
                 ->count(), $close);
         }
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function runOversizedFanOutMemberScenario(array $fixture, string $instanceId): WorkflowRun
+    {
+        config()
+            ->set('queue.default', 'database');
+        config()
+            ->set(
+                'workflows.v2.structural_limits.payload_size_bytes',
+                $fixture['oversized_fan_out_member']['payload_size_bytes'],
+            );
+        Queue::fake();
+
+        $stub = WorkflowStub::make($fixture['workflow']['type'], $instanceId);
+        $stub->start(...$fixture['workflow']['arguments']);
+        $this->runReadyTaskOfType($stub->runId(), TaskType::Workflow);
+
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $this->assertSame(RunStatus::Failed, $run->status);
+
+        return $run;
+    }
+
+    /**
+     * @return list<array{0: string, 1: mixed, 2: mixed}>
+     */
+    private function oversizedFanOutMemberHistory(WorkflowRun $run): array
+    {
+        return WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('event_type', '!=', HistoryEventType::StartAccepted->value)
+            ->orderBy('sequence')
+            ->get()
+            ->map(static fn (WorkflowHistoryEvent $event): array => [
+                $event->event_type->value,
+                $event->payload['structural_limit_kind'] ?? null,
+                $event->payload['message'] ?? null,
+            ])
+            ->values()
+            ->all();
     }
 
     /**

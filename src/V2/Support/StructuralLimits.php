@@ -320,31 +320,57 @@ final class StructuralLimits
 
     public static function guardPendingActivities(WorkflowRun $run): void
     {
-        $limit = self::pendingActivityLimit();
-
-        if ($limit <= 0) {
+        if (self::pendingActivityLimit() <= 0) {
             return;
         }
 
-        $count = ActivityExecution::query()
-            ->where('workflow_run_id', $run->id)
-            ->whereIn('status', [ActivityStatus::Pending->value, ActivityStatus::Running->value])
-            ->count();
+        self::guardPendingActivityCount(self::pendingActivityCount($run));
+    }
 
-        if ($count >= $limit) {
+    /**
+     * Refuses one more activity when $count are already pending.
+     */
+    public static function guardPendingActivityCount(int $count): void
+    {
+        $limit = self::pendingActivityLimit();
+
+        if ($limit > 0 && $count >= $limit) {
             throw StructuralLimitExceededException::pendingActivityCount($count, $limit);
         }
     }
 
+    public static function pendingActivityCount(WorkflowRun $run): int
+    {
+        return ActivityExecution::query()
+            ->where('workflow_run_id', $run->id)
+            ->whereIn('status', [ActivityStatus::Pending->value, ActivityStatus::Running->value])
+            ->count();
+    }
+
     public static function guardPendingChildren(WorkflowRun $run): void
     {
-        $limit = self::pendingChildLimit();
-
-        if ($limit <= 0) {
+        if (self::pendingChildLimit() <= 0) {
             return;
         }
 
-        $count = WorkflowLink::query()
+        self::guardPendingChildCount(self::pendingChildCount($run));
+    }
+
+    /**
+     * Refuses one more child when $count are already open.
+     */
+    public static function guardPendingChildCount(int $count): void
+    {
+        $limit = self::pendingChildLimit();
+
+        if ($limit > 0 && $count >= $limit) {
+            throw StructuralLimitExceededException::pendingChildCount($count, $limit);
+        }
+    }
+
+    public static function pendingChildCount(WorkflowRun $run): int
+    {
+        return WorkflowLink::query()
             ->where('parent_workflow_run_id', $run->id)
             ->where('link_type', 'child_workflow')
             ->whereHas('childRun', static function ($query) {
@@ -356,10 +382,6 @@ final class StructuralLimits
                 ]);
             })
             ->count();
-
-        if ($count >= $limit) {
-            throw StructuralLimitExceededException::pendingChildCount($count, $limit);
-        }
     }
 
     public static function guardPendingTimers(WorkflowRun $run): void
@@ -370,14 +392,19 @@ final class StructuralLimits
             return;
         }
 
-        $count = WorkflowTimer::query()
-            ->where('workflow_run_id', $run->id)
-            ->where('status', TimerStatus::Pending->value)
-            ->count();
+        $count = self::pendingTimerCount($run);
 
         if ($count >= $limit) {
             throw StructuralLimitExceededException::pendingTimerCount($count, $limit);
         }
+    }
+
+    public static function pendingTimerCount(WorkflowRun $run): int
+    {
+        return WorkflowTimer::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('status', TimerStatus::Pending->value)
+            ->count();
     }
 
     public static function guardPendingSignals(WorkflowRun $run): void
