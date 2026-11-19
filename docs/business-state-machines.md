@@ -369,8 +369,8 @@ This table reports scope, not completion of the issue's unchecked acceptance cri
 Laravel application with MySQL or PostgreSQL and Redis queue workers. The 2.29.0 to
 2.31.0 examples use `OperationContext::$uncertainForward`, which 2.32.0 removed. On
 2.32.0 a booked Order that consumed its children and waits for `finish` receives a
-no-op workflow task on every watchdog pass (#1219), so its queue never empties;
-2.33.0 fixes that. The package ships `examples/`, so the application copies the
+no-op workflow task on every watchdog pass, so its queue never empties; 2.33.0
+fixes that. The package ships `examples/`, so the application copies the
 provider-backed and configured examples out of the installed 2.33.0 package. That application code
 stays the same through every package change below. Each example runs with its own
 database and queue, because both bind the engine's handler registry and scope
