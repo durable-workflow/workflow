@@ -76,7 +76,6 @@ final readonly class Resolution
         return self::make(self::VERIFIED, 'verified', $evidence);
     }
 
-
     public static function unknown(string $reason): self
     {
         return self::make(self::UNKNOWN, $reason, []);
