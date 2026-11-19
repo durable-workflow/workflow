@@ -200,6 +200,43 @@ remain pinned. Provider operation keys do not depend on task/attempt IDs.
 retained scope pair together; a trusted live ownership callback is still
 mandatory before native storage. Portable descriptors alone grant no authority.
 
+### Cancellation after handover
+
+Business cancellation after the original carrier handover cannot settle until
+the parcel is back in the warehouse and inspected. This is the intended outcome
+of the full-parcel policy, both while the parcel is in transit and after
+delivery. The original runs do not wait for the return; retained recovery
+settles it afterwards.
+
+1. While the Order and FullShipment runs are open, `CancellationStore::request()`
+   returns `requested` with the `origin` route. FullShipment requests the
+   full-parcel return (`request-return`). Its `shipment.fulfillment` obligation
+   stays `unknown` with reason `shipment-physical-return-unsettled`, and the
+   Order's shipment obligation stays `unknown` with `reserved-child-unresolved`.
+   The captured Payment is not refunded and the reservation is not released.
+   Both native runs fail with `scope_compensation_unknown`. The Order keeps its
+   business state (`ready` in transit) and never reports `cancelled`. For a
+   delivered Order whose runs have closed, the request routes directly to
+   recovery, which stays unsettled in the same way.
+2. The task watchdog routes the accepted request to retained recovery (#1205).
+   That recovery retries for one bounded window, then fails while the parcel is
+   still out. A warehouse receipt alone is not settlement: nothing is restocked
+   or refunded.
+3. `ScopeRecovery::describe()` for the Order's root scope then reports
+   `submit_fresh_authorized_request`. The Shipment's child scope lists
+   `shipment.fulfillment` with `shipment-physical-return-unsettled`. Once the
+   warehouse has recorded the receipt and an inspection that accepts the full
+   quantity as saleable, submit one fresh authorized cancellation request key.
+   Recovery confirms the return, restocks the inspected units once, refunds the
+   original capture and releases the original reservation, in that order.
+4. With `CancellationFinalizer` registered, the Order commits `cancelled` when
+   that recovery completes. Without it, call `CancellationStore::finish()`.
+
+A partial, damaged or missing return keeps the scope unresolved and needs its
+own settlement decision. Recovery does not change the original Order or
+Shipment histories. `V2PhysicalInTransitCancellationTest` covers the in-transit
+case end to end. `V2PhysicalShipmentMachineTest` covers the delivered parcel.
+
 ## Partial customer return after delivery
 
 The `authorization-after-stock` recipe can opt into the same explicit unit
