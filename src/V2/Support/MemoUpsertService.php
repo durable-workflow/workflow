@@ -32,9 +32,9 @@ class MemoUpsertService
             foreach ($call->memos as $key => $value) {
                 if ($value === null) {
                     // Null value means delete
-                    WorkflowMemo::where('workflow_run_id', $run->id)
-                        ->where('key', $key)
-                        ->delete();
+                    $deleted = WorkflowMemo::where('workflow_run_id', $run->id)
+                        ->where('key', $key);
+                    HistoryTransactionMeter::affecting($deleted, static fn (): mixed => $deleted->delete());
 
                     continue;
                 }

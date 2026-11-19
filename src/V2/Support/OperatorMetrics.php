@@ -48,6 +48,13 @@ final class OperatorMetrics
             ]),
             'runs' => self::runMetrics($now, $namespace),
             'tasks' => self::taskMetrics($now, $namespace),
+            // Bounded deadline closes still settling updates and children
+            // (#1116); stuck counts those that failed repeatedly.
+            'deadline_close_settlements' => DeadlineCloseSettlement::metrics(
+                $namespace === null ? null : static function ($query) use ($namespace): void {
+                    $query->where('namespace', $namespace);
+                }
+            ),
             'activities' => self::activityMetrics($now, $namespace),
             'backlog' => self::backlogMetrics($now, $namespace),
             'repair' => $namespace === null ? TaskRepairCandidates::snapshot($now) : self::emptyRepairSnapshot(),

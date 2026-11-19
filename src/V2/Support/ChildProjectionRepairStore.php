@@ -170,14 +170,14 @@ final class ChildProjectionRepairStore
 
         $timestamp = now();
 
-        self::query()
+        $repairs = self::query()
             ->where('workflow_run_id', $run->id)
             ->whereKey(array_values(array_unique($eventIds)))
-            ->whereNull('failed_child_counted_at')
-            ->update([
-                'failed_child_counted_at' => $timestamp,
-                'updated_at' => $timestamp,
-            ]);
+            ->whereNull('failed_child_counted_at');
+        HistoryTransactionMeter::affecting($repairs, static fn (): int => $repairs->update([
+            'failed_child_counted_at' => $timestamp,
+            'updated_at' => $timestamp,
+        ]));
     }
 
     /**
@@ -195,14 +195,14 @@ final class ChildProjectionRepairStore
 
         $timestamp = now();
 
-        self::query()
+        $repairs = self::query()
             ->where('workflow_run_id', $run->id)
             ->whereIn('failure_id', array_values(array_unique($failureIds)))
-            ->whereNull('failed_child_counted_at')
-            ->update([
-                'failed_child_counted_at' => $timestamp,
-                'updated_at' => $timestamp,
-            ]);
+            ->whereNull('failed_child_counted_at');
+        HistoryTransactionMeter::affecting($repairs, static fn (): int => $repairs->update([
+            'failed_child_counted_at' => $timestamp,
+            'updated_at' => $timestamp,
+        ]));
     }
 
     /**

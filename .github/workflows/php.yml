@@ -960,7 +960,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
 
     services:
       mysql:
@@ -1062,7 +1062,7 @@ jobs:
         php scripts/ci/split-feature-tests.php \
           --dir=tests/Feature \
           --shard=${{ matrix.shard }} \
-          --shards=16 \
+          --shards=22 \
           --weights=.github/feature-test-timings.json \
           --weight-profile=mysql \
           --summary="build/test-results/mysql-shard-${{ matrix.shard }}-summary.txt" \
@@ -1077,6 +1077,7 @@ jobs:
           vendor/bin/phpunit --configuration phpunit.feature-coverage.xml --testdox --testsuite feature \
           --coverage-clover "build/test-results/mysql-shard-${{ matrix.shard }}-coverage.xml" \
           --log-events-text "build/test-results/mysql-shard-${{ matrix.shard }}-events.log" \
+          --log-events-verbose-text "build/test-results/mysql-shard-${{ matrix.shard }}-events-timed.log" \
           --with-telemetry \
           --log-junit "build/test-results/mysql-shard-${{ matrix.shard }}.xml"
         status=$?
@@ -1141,7 +1142,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
 
     services:
       postgres:
@@ -1229,7 +1230,7 @@ jobs:
         php scripts/ci/split-feature-tests.php \
           --dir=tests/Feature \
           --shard=${{ matrix.shard }} \
-          --shards=10 \
+          --shards=14 \
           --weights=.github/feature-test-timings.json \
           --weight-profile=postgresql \
           --summary="build/test-results/pgsql-shard-${{ matrix.shard }}-summary.txt" \
@@ -1240,6 +1241,7 @@ jobs:
         set +e
         timeout --foreground --kill-after=10s 20m xargs -a /tmp/pgsql-shard-files \
           vendor/bin/phpunit --testdox --testsuite feature \
+          --log-events-verbose-text "build/test-results/pgsql-shard-${{ matrix.shard }}-events-timed.log" \
           --log-junit "build/test-results/pgsql-shard-${{ matrix.shard }}.xml"
         status=$?
         elapsed=$(( $(date +%s) - started_at ))
@@ -1603,6 +1605,12 @@ jobs:
         --clover=build/feature-coverage/mysql-shard-13-coverage.xml
         --clover=build/feature-coverage/mysql-shard-14-coverage.xml
         --clover=build/feature-coverage/mysql-shard-15-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-16-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-17-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-18-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-19-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-20-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-21-coverage.xml
 
     - name: Send Clover reports to the isolated Sonar job
       id: sonar_coverage
@@ -1627,6 +1635,12 @@ jobs:
           build/feature-coverage/mysql-shard-13-coverage.xml
           build/feature-coverage/mysql-shard-14-coverage.xml
           build/feature-coverage/mysql-shard-15-coverage.xml
+          build/feature-coverage/mysql-shard-16-coverage.xml
+          build/feature-coverage/mysql-shard-17-coverage.xml
+          build/feature-coverage/mysql-shard-18-coverage.xml
+          build/feature-coverage/mysql-shard-19-coverage.xml
+          build/feature-coverage/mysql-shard-20-coverage.xml
+          build/feature-coverage/mysql-shard-21-coverage.xml
         if-no-files-found: error
         retention-days: 1
 
@@ -1656,7 +1670,7 @@ jobs:
       with:
         binary: ${{ runner.temp }}/codecovcli
         flags: v2
-        files: ./coverage.xml,./build/feature-coverage/mysql-shard-0-coverage.xml,./build/feature-coverage/mysql-shard-1-coverage.xml,./build/feature-coverage/mysql-shard-2-coverage.xml,./build/feature-coverage/mysql-shard-3-coverage.xml,./build/feature-coverage/mysql-shard-4-coverage.xml,./build/feature-coverage/mysql-shard-5-coverage.xml,./build/feature-coverage/mysql-shard-6-coverage.xml,./build/feature-coverage/mysql-shard-7-coverage.xml,./build/feature-coverage/mysql-shard-8-coverage.xml,./build/feature-coverage/mysql-shard-9-coverage.xml,./build/feature-coverage/mysql-shard-10-coverage.xml,./build/feature-coverage/mysql-shard-11-coverage.xml,./build/feature-coverage/mysql-shard-12-coverage.xml,./build/feature-coverage/mysql-shard-13-coverage.xml,./build/feature-coverage/mysql-shard-14-coverage.xml,./build/feature-coverage/mysql-shard-15-coverage.xml
+        files: ./coverage.xml,./build/feature-coverage/mysql-shard-0-coverage.xml,./build/feature-coverage/mysql-shard-1-coverage.xml,./build/feature-coverage/mysql-shard-2-coverage.xml,./build/feature-coverage/mysql-shard-3-coverage.xml,./build/feature-coverage/mysql-shard-4-coverage.xml,./build/feature-coverage/mysql-shard-5-coverage.xml,./build/feature-coverage/mysql-shard-6-coverage.xml,./build/feature-coverage/mysql-shard-7-coverage.xml,./build/feature-coverage/mysql-shard-8-coverage.xml,./build/feature-coverage/mysql-shard-9-coverage.xml,./build/feature-coverage/mysql-shard-10-coverage.xml,./build/feature-coverage/mysql-shard-11-coverage.xml,./build/feature-coverage/mysql-shard-12-coverage.xml,./build/feature-coverage/mysql-shard-13-coverage.xml,./build/feature-coverage/mysql-shard-14-coverage.xml,./build/feature-coverage/mysql-shard-15-coverage.xml,./build/feature-coverage/mysql-shard-16-coverage.xml,./build/feature-coverage/mysql-shard-17-coverage.xml,./build/feature-coverage/mysql-shard-18-coverage.xml,./build/feature-coverage/mysql-shard-19-coverage.xml,./build/feature-coverage/mysql-shard-20-coverage.xml,./build/feature-coverage/mysql-shard-21-coverage.xml
         fail_ci_if_error: true
         name: v2
         override_branch: ${{ env.COVERAGE_BRANCH }}
