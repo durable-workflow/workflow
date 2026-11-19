@@ -34,6 +34,25 @@ final class ExternalPayloads
         );
     }
 
+    /**
+     * Whether {@see self::externalizeForNamespace()} would move this payload
+     * to external storage, decided without storing it.
+     */
+    public static function wouldExternalizeForNamespace(string $payload, ?string $namespace): bool
+    {
+        if (self::isStoredReference($payload)) {
+            return false;
+        }
+
+        $policy = self::policy();
+        $thresholdBytes = $policy->thresholdBytesFor($namespace);
+
+        return $thresholdBytes !== null
+            && $thresholdBytes >= 1
+            && strlen($payload) > $thresholdBytes
+            && $policy->driverFor($namespace) !== null;
+    }
+
     public static function externalize(
         string $payload,
         ?string $codec,

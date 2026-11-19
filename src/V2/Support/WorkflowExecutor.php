@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 use LogicException;
@@ -2127,6 +2128,14 @@ final class WorkflowExecutor
             $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
             return null;
         }
+        // A structural limit any member would hit refuses the group before
+        // its first member is written (#1232).
+        try {
+            $this->admitParallelGroup($run, $sequence, $dispatchDescriptors);
+        } catch (Throwable $throwable) {
+            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+            return null;
+        }
         $group = new WorkflowParallelDispatch($sequence);
         $group->conditionInputOrder = $conditionInputOrder;
         foreach ($dispatchDescriptors as $descriptor) {
@@ -2135,6 +2144,58 @@ final class WorkflowExecutor
             }
         }
         return $this->finishParallelDispatch($run, $task, $frame, $leafDescriptors, $group);
+    }
+
+    /**
+     * Runs {@see ParallelGroupAdmission} over the members this task would
+     * newly schedule, in dispatch order. A member with any recorded event or
+     * row at its sequence is left to its own dispatch, so admission never
+     * checks a member the dispatch would not schedule. A reserved child is
+     * refused by its own dispatch, so admission stops there.
+     */
+    private function admitParallelGroup(WorkflowRun $run, int $sequence, array $descriptors): void
+    {
+        $recorded = [];
+        foreach ($run->historyEvents as $event) {
+            $eventSequence = is_array($event->payload) ? ($event->payload['sequence'] ?? null) : null;
+            if (is_int($eventSequence)) {
+                $recorded[$eventSequence] = true;
+            }
+        }
+        $rowSequences = static fn (Collection $rows): array => $rows->pluck('sequence')
+            ->filter(static fn (mixed $value): bool => is_numeric($value))
+            ->map(static fn (mixed $value): int => (int) $value)
+            ->flip()
+            ->all();
+        $activityRows = $rowSequences($run->activityExecutions);
+        $timerRows = $rowSequences($run->timers);
+
+        $admission = new ParallelGroupAdmission($run);
+        foreach ($descriptors as $descriptor) {
+            $call = $descriptor['call'];
+            $itemSequence = $sequence + $descriptor['offset'];
+            $isNew = ! isset($recorded[$itemSequence]);
+            if ($call instanceof ActivityCall) {
+                if ($isNew && ! isset($activityRows[$itemSequence])) {
+                    $admission->admitActivity($call);
+                }
+            } elseif ($call instanceof TimerCall) {
+                if ($isNew && $call->seconds !== 0 && ! isset($timerRows[$itemSequence])) {
+                    $admission->admitTimer();
+                }
+            } elseif ($call instanceof AwaitWithTimeoutCall || $call instanceof SignalCall) {
+                if (! $call instanceof SignalCall || $call->timeoutSeconds !== null) {
+                    $admission->timerCountUnknown();
+                }
+            } elseif ($call instanceof ChildWorkflowCall) {
+                if ($call->reservation !== null) {
+                    return;
+                }
+                if ($isNew && ChildRunHistory::childRunForSequence($run, $itemSequence) === null) {
+                    $admission->admitChild($call);
+                }
+            }
+        }
     }
 
     /**
@@ -2962,9 +3023,10 @@ final class WorkflowExecutor
                 ->addSeconds($options->scheduleToCloseTimeout)
             : null;
 
-        [$arguments, $referencePositions] = EntityReferenceArguments::encode($activityCall->arguments);
-        $argumentsCodec = Serializer::chooseCodecForData($run->payload_codec, $arguments);
-        $serializedArguments = Serializer::serializeWithCodec($argumentsCodec, $arguments);
+        [$referencePositions, $argumentsCodec, $serializedArguments] = ParallelGroupAdmission::activityArguments(
+            $run,
+            $activityCall
+        );
         $this->logApproachingLimit(
             StructuralLimits::warnApproachingPayloadSize($serializedArguments),
             $run,
@@ -3188,16 +3250,12 @@ final class WorkflowExecutor
         $now = now();
 
         // Inherit the parent's run codec for the child so the encoded
-        // arguments (next line) match the codec stamped on the child run.
-        // Falling back to the package default when the parent has none
-        // keeps pre-pinned parents working.
-        $preferredChildCodec = is_string($run->payload_codec) && $run->payload_codec !== ''
-            ? $run->payload_codec
-            : CodecRegistry::defaultCodec();
-        // PHP-only objects must be adapted before they reach this public v2
-        // boundary; child payloads never fall back to a legacy serializer.
-        $childCodec = Serializer::chooseCodecForData($preferredChildCodec, $metadata->arguments);
-        $serializedChildArguments = Serializer::serializeWithCodec($childCodec, $metadata->arguments);
+        // arguments match the codec stamped on the child run. Falling back
+        // to the package default when the parent has none keeps pre-pinned
+        // parents working. PHP-only objects must be adapted before they
+        // reach this public v2 boundary; child payloads never fall back to a
+        // legacy serializer.
+        [$childCodec, $serializedChildArguments] = ParallelGroupAdmission::childArguments($run, $metadata);
         $this->logApproachingLimit(
             StructuralLimits::warnApproachingPayloadSize($serializedChildArguments),
             $run,
@@ -4195,12 +4253,6 @@ final class WorkflowExecutor
 
         ChildReservationStore::assertOrdinaryStartAllowed($instance);
 
-        if ($instance->workflow_class !== $workflowClass) {
-            $instance->forceFill([
-                'workflow_class' => $workflowClass,
-            ])->save();
-        }
-
         $runTimeoutSeconds = $run->run_timeout_seconds;
         $executionDeadlineAt = $run->execution_deadline_at;
         $runDeadlineAt = $runTimeoutSeconds !== null
@@ -4223,6 +4275,13 @@ final class WorkflowExecutor
             is_string($run->namespace) ? $run->namespace : null,
         );
         StructuralLimits::guardPayloadSize($storedContinueAsNewArguments);
+
+        // The instance changes only once the continuation is admitted (#1232).
+        if ($instance->workflow_class !== $workflowClass) {
+            $instance->forceFill([
+                'workflow_class' => $workflowClass,
+            ])->save();
+        }
 
         /** @var WorkflowRun $continuedRun */
         $continuedRun = WorkflowRun::query()->create([

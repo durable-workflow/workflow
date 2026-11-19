@@ -15,6 +15,21 @@
   summaries are corrected the next time the run is projected, which the
   watchdog does before it would create a task. Recorded history is
   unchanged.
+- An embedded `all()` that a structural limit refuses is now refused before its
+  first member is written (#1232). Before, a member over `payload_size_bytes` (or
+  one past a pending activity, child or timer count) was refused only when its turn
+  came, so every member before it was already written: activities were recorded
+  `ActivityScheduled` and then cancelled by the run's failure, and children were
+  started and left to the parent-close policy. Now the group's pending counts and
+  each new activity's and child's stored argument size are checked, in member order,
+  before any member is written. The run fails with the same typed `structural_limit`
+  failure, and its history is `WorkflowStarted` then `WorkflowFailed`. A
+  pending-timer refusal inside `all()` is now that typed run failure too;
+  before, it escaped the workflow task and failed the task. A continue-as-new refused for its payload
+  size no longer changes the instance's workflow class first. Recorded histories are
+  unchanged: the partial-group shape that 2.32.0 recorded replays as before
+  (`legacy-all-oversized-member-scheduled-then-cancelled`), and the new shape is
+  `all-oversized-member-refused-before-first-write`.
 
 ## 2.32.0 - 2026-11-19
 

@@ -1,0 +1,85 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "all-oversized-member-refused-before-first-write",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestOversizedFanOutMemberWorkflow",
+    "arguments": [
+      6,
+      3,
+      8192,
+      "activity"
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-19T00:00:00.000000Z"
+    },
+    {
+      "sequence": 2,
+      "event_type": "WorkflowFailed",
+      "payload": {
+        "failure_id": "oversized-member-failure",
+        "source_kind": "workflow_run",
+        "source_id": "oversized-member-run",
+        "failure_category": "structural_limit",
+        "non_retryable": true,
+        "exception_type": null,
+        "exception_class": "Workflow\\V2\\Exceptions\\StructuralLimitExceededException",
+        "message": "Structural limit exceeded: payload size 10948 bytes (limit 4096 bytes).",
+        "failed_step_sequence": 1,
+        "failed_step_kind": "structural_limit",
+        "structural_limit_kind": "payload_size",
+        "structural_limit_value": 10948,
+        "structural_limit_configured": 4096
+      },
+      "recorded_at": "2026-11-19T00:00:01.000000Z"
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "schedule_activity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity"
+      },
+      {
+        "type": "schedule_activity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity"
+      },
+      {
+        "type": "schedule_activity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity"
+      },
+      {
+        "type": "schedule_activity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity"
+      },
+      {
+        "type": "schedule_activity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity"
+      },
+      {
+        "type": "schedule_activity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity"
+      }
+    ]
+  },
+  "oversized_fan_out_member": {
+    "issue": "durable-workflow/workflow#1232",
+    "payload_size_bytes": 4096,
+    "note": "One all() of six activities whose fourth argument serializes over payload_size_bytes. Since #1232 the group is admitted before its first member is written: the task records only WorkflowFailed with the typed payload_size refusal, and no member is scheduled or cancelled. Before #1232 the first three members were recorded ActivityScheduled and then ActivityCancelled by the failure (see legacy-all-oversized-member-scheduled-then-cancelled)."
+  }
+}
