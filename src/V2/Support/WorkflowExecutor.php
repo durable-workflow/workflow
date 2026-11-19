@@ -95,6 +95,16 @@ final class WorkflowExecutor
     }
 
     /**
+     * Fail a run whose claimed workflow task kept losing its lease, when
+     * workflows.v2.workflow_task_lost_leases.fail_run is enabled (#1231).
+     * Called under the task and run locks, before any workflow code runs.
+     */
+    public function failAfterLostLeases(WorkflowRun $run, WorkflowTask $task): void
+    {
+        $this->failRun($run, $task, WorkflowTaskLeaseLoss::exceptionFor($task), 'workflow_run', $run->id);
+    }
+
+    /**
      * Close a run whose server-enforced execution or run deadline elapsed.
      *
      * External worker bridges call this while holding the task and run locks,

@@ -368,6 +368,14 @@ codes that a caller may observe:
 Adding a blocked reason is a protocol change; deleting one is a
 protocol change.
 
+A workflow task that keeps losing its lease without completing (its
+worker was killed, timed out, or lost its connection) is not a blocked
+repair: repair keeps returning it to ready and `can_repair` is unchanged.
+It is reported in the separate, additive `task_attention` field of the
+run summary, list items and describe, set once the open workflow task has
+lost `workflows.v2.workflow_task_lost_leases.attention_threshold` leases
+in a row (3 by default) and null otherwise.
+
 ## Repair cadence and bounded backoff
 
 The repair path is bounded. An automated recovery pass cannot

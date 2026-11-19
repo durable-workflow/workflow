@@ -102,6 +102,8 @@ final class TaskRepair
             'repair_count' => $task->repair_count + 1,
             'repair_available_at' => null,
             'last_error' => null,
+            // A workflow task's expired lease is work that never completed (#1231).
+            ...WorkflowTaskLeaseLoss::repairedAttributes($task),
         ])->save();
 
         return $task;

@@ -12,6 +12,33 @@
   definitions, rules, budgets, child bindings and native child start in 2.29.0.
   Docblocks and documentation only; no behavior changes.
 
+- A workflow task that keeps losing its lease without completing no longer
+  retries silently forever (#1231). A lease is lost when the worker running
+  the task is killed, times out, or loses its connection.
+  - Opt-in `workflows.v2.workflow_task_job_timeout_seconds`
+    (`DW_V2_WORKFLOW_TASK_JOB_TIMEOUT_SECONDS`, unset by default) gives workflow
+    task jobs their own queue timeout, kept 10 s below the connection's
+    `retry_after`, in place of the worker's `--timeout`. Unset, the worker's
+    `--timeout` applies as before. A worker on the workflow queue logs one
+    warning at start when the timeout its workflow tasks run under is below
+    the workflow task lease.
+  - Task repair counts each lost lease on the task (`lost_lease_count`,
+    `last_lease_lost_at`). The next claim logs a typed
+    `workflow_task_lease_lost` diagnostic. No history is written, and run
+    semantics are unchanged.
+  - At three consecutive lost leases
+    (`workflows.v2.workflow_task_lost_leases.attention_threshold`), the run
+    summary, list items and describe carry an additive `task_attention` field
+    (`reason`, `consecutive`, `threshold`), and operator metrics add
+    `runs.task_attention`, `tasks.lease_lost_repeatedly` and
+    `tasks.max_lost_lease_count`. Repair-blocked reasons, repair attention
+    and `can_repair` are unchanged.
+  - Opt-in (`workflows.v2.workflow_task_lost_leases.fail_run`, off by default;
+    boot refuses a threshold below 2): at the threshold, the next claim fails
+    the run with a typed `WorkflowTaskLeaseLostException` (`task_failure`)
+    instead of retrying.
+  - The migration adds the columns outside a transaction under the schema
+    lock budget.
 - Workflow definition and `await()` condition fingerprints are versioned, and
   a new opt-in version 2 makes comment-only and whitespace-only edits replay-safe
   (#1227). The prefix names the version:

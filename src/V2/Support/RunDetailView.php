@@ -265,6 +265,11 @@ final class RunDetailView
                 $repairBlockedReason
             )),
             'repair_blocked' => RepairBlockedReason::metadata($repairBlockedReason),
+            // Additive: a workflow task that keeps losing its lease. Repair
+            // still works and can_repair is unchanged.
+            'task_attention' => $summary !== null && array_key_exists('task_attention', $summary->getAttributes())
+                ? $summary->task_attention
+                : WorkflowTaskLeaseLoss::taskAttention($run),
             'can_archive' => $canArchive,
             'archive_blocked_reason' => $archiveBlockedReason,
             'can_redrive' => $redriveBlockedReason === null,

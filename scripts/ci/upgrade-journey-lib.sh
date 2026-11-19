@@ -145,10 +145,27 @@ artisan_output() {
 
 # Runs migrate:rollback, which must be refused because retained compensation
 # scopes exist. Fails unless the refusal comes from the package preflight.
-expect_rollback_refused() {
-  local rollback_output
+# The migration batch that holds the compensation ledger. A candidate that adds
+# its own migrations runs them in a later batch, which a plain rollback would
+# undo first without reaching the ledger.
+ledger_batch() {
+  COLUMNS=1000 php artisan migrate:status --no-ansi --no-interaction 2>/dev/null \
+    | grep -E '_create_compensation_scopes' \
+    | grep -oE '\[[0-9]+\]' \
+    | tr -d '[]' \
+    | head -n 1 || true
+}
 
-  if rollback_output=$(COLUMNS=1000 php artisan migrate:rollback --force --no-interaction 2>&1 | tr -s ' \n' ' '; exit "${PIPESTATUS[0]}"); then
+expect_rollback_refused() {
+  local rollback_output batch
+  local -a batch_option=()
+
+  batch=$(ledger_batch)
+  if [ -n "$batch" ]; then
+    batch_option=("--batch=$batch")
+  fi
+
+  if rollback_output=$(COLUMNS=1000 php artisan migrate:rollback "${batch_option[@]}" --force --no-interaction 2>&1 | tr -s ' \n' ' '; exit "${PIPESTATUS[0]}"); then
     printf '%s\n' "$rollback_output" >&2
     echo "$1" >&2
     exit 1

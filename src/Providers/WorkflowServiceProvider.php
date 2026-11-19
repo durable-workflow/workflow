@@ -79,7 +79,9 @@ use Workflow\V2\Support\SourceFingerprint;
 use Workflow\V2\Support\SqliteSavepointRelease;
 use Workflow\V2\Support\TaskFairnessState;
 use Workflow\V2\Support\TypeRegistry;
+use Workflow\V2\Support\WorkerTimeoutAdvisory;
 use Workflow\V2\Support\WorkflowModeGuard;
+use Workflow\V2\Support\WorkflowTaskLeaseLoss;
 use Workflow\Watchdog;
 
 final class WorkflowServiceProvider extends ServiceProvider
@@ -222,6 +224,7 @@ final class WorkflowServiceProvider extends ServiceProvider
         // Refuse an unsupported definition fingerprint version before any
         // workflow can run; at runtime the setting never fails a run.
         SourceFingerprint::validateConfiguration();
+        WorkflowTaskLeaseLoss::validateConfiguration();
         $this->configureSqliteStorageConnection();
 
         // Register long-poll wake signal observers
@@ -236,6 +239,23 @@ final class WorkflowServiceProvider extends ServiceProvider
 
         // Validate cache backend for multi-node deployments
         $this->validateCacheBackend();
+
+        if (class_exists(\Illuminate\Queue\Events\WorkerStarting::class)) {
+            // A timeout below the workflow task lease kills workflow tasks that
+            // are then retried only after the lease; warn workflow-queue
+            // workers once.
+            Event::listen(
+                \Illuminate\Queue\Events\WorkerStarting::class,
+                static function (object $event): void {
+                    $options = $event->workerOptions ?? null;
+                    WorkerTimeoutAdvisory::workerStarting(
+                        is_string($event->connectionName ?? null) ? $event->connectionName : null,
+                        is_string($event->queue ?? null) ? $event->queue : null,
+                        is_object($options) && is_numeric($options->timeout ?? null) ? (int) $options->timeout : null,
+                    );
+                },
+            );
+        }
 
         Event::listen(Looping::class, static function (Looping $event) use ($v1Enabled): void {
             if ($v1Enabled) {

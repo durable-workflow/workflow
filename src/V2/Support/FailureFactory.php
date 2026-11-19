@@ -27,6 +27,7 @@ use Workflow\V2\Exceptions\StraightLineWorkflowRequiredException;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
 use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
+use Workflow\V2\Exceptions\WorkflowTaskLeaseLostException;
 
 final class FailureFactory
 {
@@ -361,10 +362,12 @@ final class FailureFactory
             return FailureCategory::StructuralLimit;
         }
 
-        // Task-level failures: determinism violations, unsupported yields, replay shape errors.
+        // Task-level failures: determinism violations, unsupported yields, replay shape errors,
+        // and a workflow task that keeps losing its lease (#1231).
         if (
             $throwable instanceof UnsupportedWorkflowYieldException
             || $throwable instanceof StraightLineWorkflowRequiredException
+            || $throwable instanceof WorkflowTaskLeaseLostException
         ) {
             return FailureCategory::TaskFailure;
         }

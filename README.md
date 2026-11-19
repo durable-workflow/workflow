@@ -64,6 +64,55 @@ Run a Laravel queue worker or Horizon to execute workflows and activities:
 php artisan queue:work
 ```
 
+With the `pcntl` extension, a queue worker kills any job that runs longer than
+its timeout: the worker's `--timeout`, 60 seconds by default. A workflow task
+killed this way is retried only after its lease expires
+(`workflows.v2.workflow_task_lease_seconds`, 300 seconds by default) and is
+counted as a lost lease. A worker that serves the workflow queue logs a warning
+when it starts if its timeout is below the lease. Wide `all()` fan-outs can need
+longer than 60 seconds for one workflow task.
+
+Raise `--timeout` on the workers that serve workflow tasks to cover your
+longest workflow task, keeping the queue connection's `retry_after` above it;
+Laravel requires `retry_after` to exceed every job's timeout. To keep a
+bounded timeout for activities, give them their own queue and workers.
+Activities run on their workflow's connection and queue unless the activity
+class sets `$connection` or `$queue`, or the workflow passes `ActivityOptions`:
+
+```php
+// config/queue.php
+'redis' => [
+    'driver' => 'redis',
+    'connection' => 'default',
+    'queue' => 'default',
+    'retry_after' => 330, // above the workflow task worker's --timeout
+],
+```
+
+```php
+final class ChargeCard extends Activity
+{
+    public ?string $queue = 'activities';
+}
+```
+
+```bash
+php artisan queue:work redis --queue=default --timeout=300     # workflow tasks
+php artisan queue:work redis --queue=activities --timeout=60   # activities, bounded
+```
+
+From Workflow 2.34.0, `DW_V2_WORKFLOW_TASK_JOB_TIMEOUT_SECONDS` can instead give
+workflow task jobs their own timeout, which Laravel's worker uses in place of
+its `--timeout` for those jobs, while activities on the same workers keep the
+worker's `--timeout`. It is kept 10 seconds below the connection's
+`retry_after`, so raise `retry_after` above it. It is unset by default.
+
+If a workflow task loses its lease three times in a row
+(`DW_V2_WORKFLOW_TASK_LOST_LEASE_ATTENTION_THRESHOLD`), the run summary and
+describe carry an additive `task_attention` field, and operator metrics count
+it. Set `DW_V2_WORKFLOW_TASK_LOST_LEASE_FAIL_RUN=true` to fail such a run with a
+typed task failure instead; that requires a threshold of at least 2.
+
 For the default database queue on SQLite, failed reservation writes preserve
 unclaimed work after a proven rollback. See [SQLite queue reservations](docs/sqlite-queue-reservations.md)
 for the supported framework versions and custom-connector boundary.
