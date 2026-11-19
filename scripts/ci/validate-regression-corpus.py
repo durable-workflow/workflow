@@ -33,6 +33,7 @@ SEARCH_ATTRIBUTE_TYPE_IDENTITY_MISMATCH = "search_attribute_type_identity_mismat
 WORKFLOW_HISTORY_SHAPE_MISMATCH = "workflow_history_shape_mismatch"
 VERSION_MARKER_INCOMPATIBLE_RANGE = "version_marker_incompatible_range"
 VERSION_MARKER_HISTORY_RANGE_INVALID = "version_marker_history_range_invalid"
+UNSUPPORTED_COMPENSATION_FORMAT = "unsupported_compensation_format"
 UNSUPPORTED_PAYLOAD_CODEC = "unsupported_payload_codec"
 PHP_GOLDEN_REPLAY_WORKFLOW = "Tests\\Fixtures\\V2\\TestGoldenReplayWorkflow"
 PHP_REPLAY_CONSUMERS = {
@@ -158,12 +159,20 @@ OFFICIAL_BINDING_CONSUMER_SUPPORT = {
         )
     ]: (
         "tests/Feature/V2/V2EmbeddedReplayRegressionCorpusTest.php",
+        "tests/Fixtures/V2/EntityReferences/Order.php",
+        "tests/Fixtures/V2/EntityReferences/OrderReferenceAdapter.php",
+        "tests/Fixtures/V2/EntityReferences/OrderReferenceResolver.php",
+        "tests/Fixtures/V2/EntityReferences/OrderRepository.php",
+        "tests/Fixtures/V2/EntityReferences/OrderStatusActivity.php",
+        "tests/Fixtures/V2/EntityReferences/OrderStatusWorkflow.php",
         "tests/Fixtures/V2/TestConstructorInjectionActivity.php",
         "tests/Fixtures/V2/TestConstructorInjectionWorkflow.php",
         "tests/Fixtures/V2/TestTracingReplayActivity.php",
         "tests/Fixtures/V2/TestTracingReplayWorkflow.php",
         "tests/Fixtures/V2/TestEntryArgumentsMismatchWorkflow.php",
         "tests/Fixtures/V2/TestPortableLocalActivityIdentityWorkflow.php",
+        "tests/Fixtures/V2/TestPortableDescriptorReferencesWorkflow.php",
+        "tests/Fixtures/V2/TestChildAwaitReceiptReplayWorkflow.php",
         "tests/Fixtures/V2/TestParallelChildReplayWorkflow.php",
         "tests/Fixtures/V2/TestSequentialChildReplayWorkflow.php",
         "tests/Fixtures/V2/TestServiceResponseReplayWorkflow.php",
@@ -177,6 +186,9 @@ OFFICIAL_BINDING_CONSUMER_SUPPORT = {
         "tests/Fixtures/V2/TestNexusWaitingCallerWorkflow.php",
         "tests/Fixtures/V2/TestNexusCancellationCleanupCallerWorkflow.php",
         "tests/Fixtures/V2/TestNexusDeadlineCallerWorkflow.php",
+        "tests/Fixtures/V2/TestTimeoutCleanupWorkflow.php",
+        "tests/Fixtures/V2/TestCancellationAfterSignalTimeoutWorkflow.php",
+        "tests/Fixtures/V2/TestRepeatedSignalSelectionWorkflow.php",
         "tests/Support/NexusCallerDeliveryScenario.php",
         "tests/Unit/V2/ReplayRegressionCorpusTest.php",
     ),
@@ -1290,6 +1302,7 @@ def _replay_expected_failure(value: Any, context: str) -> Mapping[str, str]:
         WORKFLOW_HISTORY_SHAPE_MISMATCH,
         VERSION_MARKER_INCOMPATIBLE_RANGE,
         VERSION_MARKER_HISTORY_RANGE_INVALID,
+        UNSUPPORTED_COMPENSATION_FORMAT,
         "activity_retry_policy_mismatch",
         "workflow_entry_arguments_mismatch",
         UNSUPPORTED_PAYLOAD_CODEC,
@@ -2056,7 +2069,9 @@ def _guard_matches(
     )
     for path in matching:
         if path in untracked and (root / path).is_file():
-            diff += "\n" + (root / path).read_text(encoding="utf-8", errors="replace")
+            diff += "\n" + "\n".join(
+                "+" + line for line in (root / path).read_text(encoding="utf-8", errors="replace").splitlines()
+            )
     changed_content = "\n".join(
         line[1:]
         for line in diff.splitlines()

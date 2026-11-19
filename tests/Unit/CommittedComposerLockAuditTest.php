@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
+use Composer\Semver\Semver;
+use Composer\Semver\VersionParser;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
@@ -33,6 +35,44 @@ final class CommittedComposerLockAuditTest extends TestCase
                 $file->isDir() && ! $file->isLink() ? rmdir($file->getPathname()) : unlink($file->getPathname());
             }
             rmdir($this->fixture);
+        }
+    }
+
+    public static function declaredPhpFixtures(): iterable
+    {
+        foreach (['.github/queue-contention', '.github/queue-contention/current',
+            '.github/tracing-performance', 'examples/embedded-http'] as $path) {
+            yield $path => [$path];
+        }
+    }
+
+    #[DataProvider('declaredPhpFixtures')]
+    public function testActiveLockAdmitsItsDeclaredPhpMinimum(string $path): void
+    {
+        $root = dirname(__DIR__, 2);
+        $manifest = json_decode(
+            (string) file_get_contents($root . '/' . $path . '/composer.json'),
+            true,
+            flags: JSON_THROW_ON_ERROR
+        );
+        $lock = json_decode(
+            (string) file_get_contents($root . '/' . $path . '/composer.lock'),
+            true,
+            flags: JSON_THROW_ON_ERROR
+        );
+        $constraint = $manifest['require']['php'];
+        $bound = (new VersionParser())->parseConstraints($constraint)
+            ->getLowerBound();
+        $this->assertTrue($bound->isInclusive());
+        $minimum = str_replace('-dev', '', $bound->getVersion());
+        $this->assertTrue(Semver::satisfies($minimum, $constraint));
+        foreach (array_merge($lock['packages'], $lock['packages-dev'] ?? []) as $package) {
+            if (isset($package['require']['php'])) {
+                $this->assertTrue(
+                    Semver::satisfies($minimum, $package['require']['php']),
+                    $path . ': ' . $package['name'] . ' requires ' . $package['require']['php'] . ', minimum is ' . $minimum,
+                );
+            }
         }
     }
 

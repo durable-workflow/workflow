@@ -1,0 +1,421 @@
+{
+  "description": "Workflow 2.29.0 history: approve() accepted before the condition-timeout TimerFired, workflow task ran after the deadline and recorded ConditionWaitTimedOut; the run completed.",
+  "produced_by": "durable-workflow/workflow 2.29.0 (12687fbd9b986a822c11dcee03fc972eac4179f1)",
+  "workflow_type": "Tests\\Fixtures\\V2\\TestAwaitWithTimeoutWorkflow",
+  "arguments": [],
+  "status": "completed",
+  "output": {
+    "approved": false,
+    "timed_out": true,
+    "stage": "timed-out",
+    "workflow_id": "g230-completed-standalone",
+    "run_id": "01m7q1q1fxf6px1zmay1pha5qn"
+  },
+  "history": [
+    {
+      "id": "01m7q1q1g1smca9rwh6ajje9em",
+      "sequence": 1,
+      "event_type": "StartAccepted",
+      "payload": {
+        "memo": null,
+        "command": {
+          "id": "01m7q1q1fzh90dwfkevvhx809z",
+          "type": "start",
+          "source": "php",
+          "status": "accepted",
+          "outcome": "started_new",
+          "payload": "wwHioz3/VYAiNwwA",
+          "sequence": 1,
+          "applied_at": "2026-11-18T12:00:00.000000Z",
+          "accepted_at": "2026-11-18T12:00:00.000000Z",
+          "auth_method": "none",
+          "auth_status": "not_applicable",
+          "caller_label": "PHP API",
+          "target_scope": "instance",
+          "payload_codec": "avro",
+          "resolved_run_id": "01m7q1q1fxf6px1zmay1pha5qn"
+        },
+        "outcome": "started_new",
+        "business_key": null,
+        "workflow_type": "test-await-timeout-workflow",
+        "workflow_class": "Tests\\Fixtures\\V2\\TestAwaitWithTimeoutWorkflow",
+        "workflow_run_id": "01m7q1q1fxf6px1zmay1pha5qn",
+        "search_attributes": null,
+        "visibility_labels": null,
+        "workflow_command_id": "01m7q1q1fzh90dwfkevvhx809z",
+        "workflow_instance_id": "g230-completed-standalone"
+      },
+      "recorded_at": "2026-11-18T12:00:00+00:00"
+    },
+    {
+      "id": "01m7q1q1g4r6pfy5yxtadw09af",
+      "sequence": 2,
+      "event_type": "WorkflowStarted",
+      "payload": {
+        "memo": null,
+        "command": {
+          "id": "01m7q1q1fzh90dwfkevvhx809z",
+          "type": "start",
+          "source": "php",
+          "status": "accepted",
+          "outcome": "started_new",
+          "payload": "wwHioz3/VYAiNwwA",
+          "sequence": 1,
+          "applied_at": "2026-11-18T12:00:00.000000Z",
+          "accepted_at": "2026-11-18T12:00:00.000000Z",
+          "auth_method": "none",
+          "auth_status": "not_applicable",
+          "caller_label": "PHP API",
+          "target_scope": "instance",
+          "payload_codec": "avro",
+          "resolved_run_id": "01m7q1q1fxf6px1zmay1pha5qn"
+        },
+        "business_key": null,
+        "workflow_type": "test-await-timeout-workflow",
+        "workflow_class": "Tests\\Fixtures\\V2\\TestAwaitWithTimeoutWorkflow",
+        "run_deadline_at": null,
+        "workflow_run_id": "01m7q1q1fxf6px1zmay1pha5qn",
+        "declared_queries": [
+          "currentState"
+        ],
+        "declared_signals": [],
+        "declared_updates": [
+          "approve"
+        ],
+        "search_attributes": null,
+        "visibility_labels": null,
+        "declared_entry_mode": "canonical",
+        "run_timeout_seconds": null,
+        "workflow_command_id": "01m7q1q1fzh90dwfkevvhx809z",
+        "workflow_instance_id": "g230-completed-standalone",
+        "declared_entry_method": "handle",
+        "execution_deadline_at": null,
+        "declared_query_contracts": [
+          {
+            "name": "currentState",
+            "parameters": []
+          }
+        ],
+        "declared_signal_contracts": [],
+        "declared_update_contracts": [
+          {
+            "name": "approve",
+            "parameters": [
+              {
+                "name": "approved",
+                "type": "bool",
+                "default": true,
+                "position": 0,
+                "required": false,
+                "variadic": false,
+                "allows_null": false,
+                "default_available": true
+              }
+            ]
+          }
+        ],
+        "execution_timeout_seconds": null,
+        "declared_entry_declaring_class": "Tests\\Fixtures\\V2\\TestAwaitWithTimeoutWorkflow",
+        "workflow_definition_fingerprint": "sha256:8a2800edbf2801ce37dae7a6c8ac15d44fc2537cfcb6df0db284a0d69dd0bff5"
+      },
+      "recorded_at": "2026-11-18T12:00:00+00:00"
+    },
+    {
+      "id": "01m7q1q1h2m6xbhmb2eadnz4wt",
+      "sequence": 3,
+      "event_type": "ConditionWaitOpened",
+      "payload": {
+        "task": {
+          "id": "01m7q1q1g51e9kyjajt9jr0090",
+          "type": "workflow",
+          "queue": "default",
+          "status": "leased",
+          "leased_at": "2026-11-18T12:00:01.000000Z",
+          "connection": "mysql",
+          "lease_owner": "01m7q1q1g51e9kyjajt9jr0090",
+          "available_at": "2026-11-18T12:00:00.000000Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-18T12:05:01.000000Z",
+          "last_dispatched_at": "2026-11-18T12:00:00.000000Z",
+          "last_dispatch_attempt_at": "2026-11-18T12:00:00.000000Z"
+        },
+        "sequence": 1,
+        "timeout_seconds": 5,
+        "condition_wait_id": "01M7Q1Q1H09JMD6PNE8FQZK968",
+        "condition_definition_fingerprint": "sha256:9ebe318d668d76ccf80c8f665f9f06087ac1004bbf7345cf1ea7bd7a392075f8"
+      },
+      "recorded_at": "2026-11-18T12:00:01+00:00"
+    },
+    {
+      "id": "01m7q1q1h7ck95d1rp8emrd0vb",
+      "sequence": 4,
+      "event_type": "TimerScheduled",
+      "payload": {
+        "task": {
+          "id": "01m7q1q1g51e9kyjajt9jr0090",
+          "type": "workflow",
+          "queue": "default",
+          "status": "leased",
+          "leased_at": "2026-11-18T12:00:01.000000Z",
+          "connection": "mysql",
+          "lease_owner": "01m7q1q1g51e9kyjajt9jr0090",
+          "available_at": "2026-11-18T12:00:00.000000Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-18T12:05:01.000000Z",
+          "last_dispatched_at": "2026-11-18T12:00:00.000000Z",
+          "last_dispatch_attempt_at": "2026-11-18T12:00:00.000000Z"
+        },
+        "fire_at": "2026-11-18T12:00:06.000000Z",
+        "sequence": 1,
+        "timer_id": "01m7q1q1h5ykajjexsbt1ew1sa",
+        "timer_kind": "condition_timeout",
+        "condition_key": null,
+        "delay_seconds": 5,
+        "condition_wait_id": "01M7Q1Q1H09JMD6PNE8FQZK968",
+        "condition_definition_fingerprint": "sha256:9ebe318d668d76ccf80c8f665f9f06087ac1004bbf7345cf1ea7bd7a392075f8"
+      },
+      "recorded_at": "2026-11-18T12:00:01+00:00"
+    },
+    {
+      "id": "01m7q1q1ke1bf95mxxtmm9dw03",
+      "sequence": 5,
+      "event_type": "UpdateAccepted",
+      "payload": {
+        "command": {
+          "id": "01m7q1q1kbw7k2d6mynr5tyr6v",
+          "type": "update",
+          "source": "php",
+          "status": "accepted",
+          "payload": "wwHioz3/VYAiNw4GCG5hbWUKDmFwcHJvdmUSYXJndW1lbnRzDAICAQAidmFsaWRhdGlvbl9lcnJvcnMMAAA=",
+          "sequence": 2,
+          "accepted_at": "2026-11-18T12:00:03.000000Z",
+          "auth_method": "none",
+          "auth_status": "not_applicable",
+          "target_name": "approve",
+          "caller_label": "PHP API",
+          "target_scope": "instance",
+          "payload_codec": "avro",
+          "resolved_run_id": "01m7q1q1fxf6px1zmay1pha5qn",
+          "message_sequence": 1
+        },
+        "arguments": "wwHioz3/VYAiNwwCAgEA",
+        "update_id": "01m7q1q1kc7qpc4jdzq4pqt9pw",
+        "update_name": "approve",
+        "ordering_state": "ready",
+        "workflow_run_id": "01m7q1q1fxf6px1zmay1pha5qn",
+        "workflow_command_id": "01m7q1q1kbw7k2d6mynr5tyr6v",
+        "workflow_instance_id": "g230-completed-standalone",
+        "queued_behind_command_id": null,
+        "queued_behind_command_type": null,
+        "queued_behind_command_sequence": null
+      },
+      "recorded_at": "2026-11-18T12:00:03+00:00"
+    },
+    {
+      "id": "01m7q1q1nxxyswde2xp851mayc",
+      "sequence": 6,
+      "event_type": "TimerFired",
+      "payload": {
+        "task": {
+          "id": "01m7q1q1h9fpeg0rp0fs4fjf4n",
+          "type": "timer",
+          "queue": "default",
+          "status": "leased",
+          "leased_at": "2026-11-18T12:00:06.000000Z",
+          "connection": "mysql",
+          "lease_owner": "01m7q1q1h9fpeg0rp0fs4fjf4n",
+          "available_at": "2026-11-18T12:00:06.000000Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-18T12:05:06.000000Z",
+          "last_dispatched_at": "2026-11-18T12:00:01.000000Z",
+          "last_dispatch_attempt_at": "2026-11-18T12:00:01.000000Z"
+        },
+        "fire_at": "2026-11-18T12:00:06.000000Z",
+        "fired_at": "2026-11-18T12:00:06.000000Z",
+        "sequence": 1,
+        "timer_id": "01m7q1q1h5ykajjexsbt1ew1sa",
+        "timer_kind": "condition_timeout",
+        "delay_seconds": 5,
+        "condition_wait_id": "01M7Q1Q1H09JMD6PNE8FQZK968",
+        "condition_definition_fingerprint": "sha256:9ebe318d668d76ccf80c8f665f9f06087ac1004bbf7345cf1ea7bd7a392075f8"
+      },
+      "recorded_at": "2026-11-18T12:00:06+00:00"
+    },
+    {
+      "id": "01m7q1q1r4pwmsjpw99ej1vbk7",
+      "sequence": 7,
+      "event_type": "UpdateApplied",
+      "payload": {
+        "task": {
+          "id": "01m7q1q1khc0kg5fk4sepaqfg6",
+          "type": "workflow",
+          "queue": "default",
+          "status": "leased",
+          "leased_at": "2026-11-18T12:00:30.000000Z",
+          "connection": "mysql",
+          "lease_owner": "01m7q1q1khc0kg5fk4sepaqfg6",
+          "available_at": "2026-11-18T12:00:03.000000Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-18T12:05:30.000000Z",
+          "last_dispatched_at": "2026-11-18T12:00:03.000000Z",
+          "last_dispatch_attempt_at": "2026-11-18T12:00:03.000000Z"
+        },
+        "command": {
+          "id": "01m7q1q1kbw7k2d6mynr5tyr6v",
+          "type": "update",
+          "source": "php",
+          "status": "accepted",
+          "payload": "wwHioz3/VYAiNw4GCG5hbWUKDmFwcHJvdmUSYXJndW1lbnRzDAICAQAidmFsaWRhdGlvbl9lcnJvcnMMAAA=",
+          "sequence": 2,
+          "accepted_at": "2026-11-18T12:00:03.000000Z",
+          "auth_method": "none",
+          "auth_status": "not_applicable",
+          "target_name": "approve",
+          "caller_label": "PHP API",
+          "target_scope": "instance",
+          "payload_codec": "avro",
+          "resolved_run_id": "01m7q1q1fxf6px1zmay1pha5qn",
+          "message_sequence": 1
+        },
+        "sequence": 1,
+        "arguments": "wwHioz3/VYAiNwwCAgEA",
+        "update_id": "01m7q1q1kc7qpc4jdzq4pqt9pw",
+        "update_name": "approve",
+        "workflow_run_id": "01m7q1q1fxf6px1zmay1pha5qn",
+        "workflow_command_id": "01m7q1q1kbw7k2d6mynr5tyr6v",
+        "workflow_instance_id": "g230-completed-standalone"
+      },
+      "recorded_at": "2026-11-18T12:00:30+00:00"
+    },
+    {
+      "id": "01m7q1q1r7fj2y6539m3hxy0e5",
+      "sequence": 8,
+      "event_type": "UpdateCompleted",
+      "payload": {
+        "task": {
+          "id": "01m7q1q1khc0kg5fk4sepaqfg6",
+          "type": "workflow",
+          "queue": "default",
+          "status": "leased",
+          "leased_at": "2026-11-18T12:00:30.000000Z",
+          "connection": "mysql",
+          "lease_owner": "01m7q1q1khc0kg5fk4sepaqfg6",
+          "available_at": "2026-11-18T12:00:03.000000Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-18T12:05:30.000000Z",
+          "last_dispatched_at": "2026-11-18T12:00:03.000000Z",
+          "last_dispatch_attempt_at": "2026-11-18T12:00:03.000000Z"
+        },
+        "result": "wwHioz3/VYAiNw4GEGFwcHJvdmVkAgESdGltZWRfb3V0AgAKc3RhZ2UKKHdhaXRpbmctZm9yLWFwcHJvdmFsAA==",
+        "command": {
+          "id": "01m7q1q1kbw7k2d6mynr5tyr6v",
+          "type": "update",
+          "source": "php",
+          "status": "accepted",
+          "payload": "wwHioz3/VYAiNw4GCG5hbWUKDmFwcHJvdmUSYXJndW1lbnRzDAICAQAidmFsaWRhdGlvbl9lcnJvcnMMAAA=",
+          "sequence": 2,
+          "accepted_at": "2026-11-18T12:00:03.000000Z",
+          "auth_method": "none",
+          "auth_status": "not_applicable",
+          "target_name": "approve",
+          "caller_label": "PHP API",
+          "target_scope": "instance",
+          "payload_codec": "avro",
+          "resolved_run_id": "01m7q1q1fxf6px1zmay1pha5qn",
+          "message_sequence": 1
+        },
+        "sequence": 1,
+        "update_id": "01m7q1q1kc7qpc4jdzq4pqt9pw",
+        "update_name": "approve",
+        "workflow_run_id": "01m7q1q1fxf6px1zmay1pha5qn",
+        "workflow_command_id": "01m7q1q1kbw7k2d6mynr5tyr6v",
+        "workflow_instance_id": "g230-completed-standalone"
+      },
+      "recorded_at": "2026-11-18T12:00:30+00:00"
+    },
+    {
+      "id": "01m7q1q1rckq6xehrr3rtnrvn1",
+      "sequence": 9,
+      "event_type": "MessageCursorAdvanced",
+      "payload": {
+        "task": {
+          "id": "01m7q1q1khc0kg5fk4sepaqfg6",
+          "type": "workflow",
+          "queue": "default",
+          "status": "leased",
+          "leased_at": "2026-11-18T12:00:30.000000Z",
+          "connection": "mysql",
+          "lease_owner": "01m7q1q1khc0kg5fk4sepaqfg6",
+          "available_at": "2026-11-18T12:00:03.000000Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-18T12:05:30.000000Z",
+          "last_dispatched_at": "2026-11-18T12:00:03.000000Z",
+          "last_dispatch_attempt_at": "2026-11-18T12:00:03.000000Z"
+        },
+        "stream_key": "instance:g230-completed-standalone",
+        "new_position": 1,
+        "previous_position": 0
+      },
+      "recorded_at": "2026-11-18T12:00:30+00:00"
+    },
+    {
+      "id": "01m7q1q1rebdaqemhhe0d326zb",
+      "sequence": 10,
+      "event_type": "ConditionWaitTimedOut",
+      "payload": {
+        "task": {
+          "id": "01m7q1q1khc0kg5fk4sepaqfg6",
+          "type": "workflow",
+          "queue": "default",
+          "status": "leased",
+          "leased_at": "2026-11-18T12:00:30.000000Z",
+          "connection": "mysql",
+          "lease_owner": "01m7q1q1khc0kg5fk4sepaqfg6",
+          "available_at": "2026-11-18T12:00:03.000000Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-18T12:05:30.000000Z",
+          "last_dispatched_at": "2026-11-18T12:00:03.000000Z",
+          "last_dispatch_attempt_at": "2026-11-18T12:00:03.000000Z"
+        },
+        "sequence": 1,
+        "timer_id": "01m7q1q1h5ykajjexsbt1ew1sa",
+        "timeout_seconds": 5,
+        "condition_wait_id": "01M7Q1Q1H09JMD6PNE8FQZK968",
+        "condition_definition_fingerprint": "sha256:9ebe318d668d76ccf80c8f665f9f06087ac1004bbf7345cf1ea7bd7a392075f8"
+      },
+      "recorded_at": "2026-11-18T12:00:30+00:00"
+    },
+    {
+      "id": "01m7q1q1rnk38etjcnjtn9wztw",
+      "sequence": 11,
+      "event_type": "WorkflowCompleted",
+      "payload": {
+        "task": {
+          "id": "01m7q1q1khc0kg5fk4sepaqfg6",
+          "type": "workflow",
+          "queue": "default",
+          "status": "leased",
+          "leased_at": "2026-11-18T12:00:30.000000Z",
+          "connection": "mysql",
+          "lease_owner": "01m7q1q1khc0kg5fk4sepaqfg6",
+          "available_at": "2026-11-18T12:00:03.000000Z",
+          "repair_count": 0,
+          "attempt_count": 1,
+          "lease_expires_at": "2026-11-18T12:05:30.000000Z",
+          "last_dispatched_at": "2026-11-18T12:00:03.000000Z",
+          "last_dispatch_attempt_at": "2026-11-18T12:00:03.000000Z"
+        },
+        "output": "wwHioz3/VYAiNw4KEGFwcHJvdmVkAgASdGltZWRfb3V0AgEKc3RhZ2UKEnRpbWVkLW91dBZ3b3JrZmxvd19pZAoyZzIzMC1jb21wbGV0ZWQtc3RhbmRhbG9uZQxydW5faWQKNDAxbTdxMXExZnhmNnB4MXptYXkxcGhhNXFuAA==",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-18T12:00:30+00:00"
+    }
+  ]
+}

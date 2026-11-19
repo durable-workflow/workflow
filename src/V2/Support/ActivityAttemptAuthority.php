@@ -35,6 +35,12 @@ final class ActivityAttemptAuthority
             return $kind . '_timeout';
         }
 
+        if ($run !== null && ClosingRunOpenWork::abandonedAtClose($run, $execution)) {
+            // The terminal event explicitly retained this independent
+            // lifetime. Its own deadlines and lease still fence the attempt.
+            return null;
+        }
+
         foreach ([
             'run_timeout' => $run?->run_deadline_at,
             'execution_timeout' => $run?->execution_deadline_at,

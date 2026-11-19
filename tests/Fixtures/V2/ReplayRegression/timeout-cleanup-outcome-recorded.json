@@ -1,0 +1,56 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "timeout-cleanup-outcome-recorded",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestTimeoutCleanupWorkflow",
+    "arguments": [
+      "complete"
+    ],
+    "payload_codec": "avro"
+  },
+  "timeout_cleanup_outcome": {
+    "issue": "durable-workflow/workflow#863",
+    "execution_timeout_seconds": 70,
+    "timeout_cleanup_seconds": 10,
+    "outcomes": {
+      "complete": "completed",
+      "fail": "failed",
+      "expire": "expired"
+    },
+    "note": "An opted-in run idle past its work deadline is woken, enters timeout cleanup once (WorkflowTimeoutCleanupStarted), receives the timeout interruption, and ends WorkflowTimedOut with the timeout_cleanup outcome. The admitted allowance replays from WorkflowStarted unchanged."
+  },
+  "history": [
+    {
+      "id": "01m7ehvj4edf10ymbdcjs1rk9x",
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {
+        "timeout_cleanup": {
+          "allowance_seconds": 10,
+          "work_deadlines": {
+            "execution": "2026-11-13T06:01:00+00:00"
+          }
+        }
+      },
+      "recorded_at": "2026-11-13T06:00:00.000000Z"
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "start_timer",
+        "delay_seconds": 3600
+      }
+    ]
+  }
+}

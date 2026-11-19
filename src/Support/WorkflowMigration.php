@@ -6,14 +6,65 @@ namespace Workflow\Support;
 
 use Illuminate\Database\Connection;
 use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\MySqlConnection;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use LogicException;
+use UnexpectedValueException;
 
 abstract class WorkflowMigration extends Migration
 {
+    /**
+     * Why rolling this migration back would discard retained state, or null.
+     *
+     * MigrationRollbackPreflight calls this for every migration in a rollback
+     * before any of them runs down(), so read only through $connection.
+     */
+    public function rollbackRefusal(Connection $connection): ?string
+    {
+        return null;
+    }
+
     public function getConnection(): ?string
     {
         return config('workflows.storage.connection') ?? $this->connection;
+    }
+
+    protected function preserveMariaDbScheduledTimestamp(string $table, string $column, string $refusal): void
+    {
+        $connection = DB::connection($this->getConnection());
+        if (! $connection instanceof MySqlConnection || ! $connection->isMaria()) {
+            return;
+        }
+
+        // Older MariaDB implicitly rewrites its first non-null TIMESTAMP.
+        // Remove only that behavior, preserving the rest of its definition.
+        $metadata = $connection->selectOne(
+            'SELECT COLUMN_TYPE AS column_type, IS_NULLABLE AS is_nullable, COLUMN_DEFAULT AS default_value, '
+            . 'DATETIME_PRECISION AS datetime_precision, EXTRA AS extra FROM information_schema.columns '
+            . 'WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?',
+            [$connection->getTablePrefix() . $table, $column],
+        );
+        if ($metadata === null || ! str_contains(strtolower((string) $metadata->extra), 'on update')) {
+            return;
+        }
+        if (strtolower((string) $metadata->column_type) !== 'timestamp(6)'
+            || $metadata->is_nullable !== 'NO'
+            || strtolower((string) $metadata->default_value) !== 'current_timestamp(6)'
+            || (int) $metadata->datetime_precision !== 6
+            || strtolower((string) $metadata->extra) !== 'on update current_timestamp(6)') {
+            throw new UnexpectedValueException($refusal);
+        }
+
+        $grammar = $connection->getQueryGrammar();
+        $wrappedTable = $grammar->wrapTable($table);
+        $wrappedColumn = $grammar->wrap($column);
+        $this->withSchemaLockBudget(static function () use ($connection, $wrappedTable, $wrappedColumn): void {
+            $connection->statement(
+                "ALTER TABLE {$wrappedTable} MODIFY {$wrappedColumn} TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6), ALGORITHM=INPLACE, LOCK=NONE",
+            );
+        });
     }
 
     /**
@@ -27,9 +78,58 @@ abstract class WorkflowMigration extends Migration
      *
      * @template TResult
      *
-     * @param callable(): TResult $operation
      * @return TResult
      */
+    /**
+     * Refuse this migration's own rollback. The operation-wide preflight has
+     * already checked the whole rollback when the migrator runs it; this
+     * covers a direct down() call.
+     */
+    protected function refuseRetainedRollback(): void
+    {
+        $refusal = $this->rollbackRefusal(DB::connection());
+        if ($refusal !== null) {
+            throw new LogicException($refusal);
+        }
+    }
+
+    /**
+     * Refusal for a nullable column whose non-null values are permanent fences.
+     */
+    protected static function populatedColumnRefusal(
+        Connection $connection,
+        string $table,
+        string $column,
+        string $refusal,
+    ): ?string {
+        return $connection->getSchemaBuilder()
+            ->hasColumn($table, $column)
+            && $connection->table($table)
+                ->whereNotNull($column)
+                ->exists() ? $refusal : null;
+    }
+
+    protected function addNullableJsonColumn(string $table, string $column): void
+    {
+        if (Schema::hasColumn($table, $column)) {
+            return;
+        }
+        $this->withSchemaLockBudget(static function () use ($table, $column): void {
+            Schema::table($table, static function (Blueprint $blueprint) use ($column): void {
+                $blueprint->json($column)
+                    ->nullable();
+            });
+        });
+    }
+
+    protected function dropColumnUnlessRetained(string $table, string $column): void
+    {
+        $this->refuseRetainedRollback();
+        Schema::table($table, static function (Blueprint $blueprint) use ($column): void {
+            $blueprint->dropColumn($column);
+        });
+    }
+
     protected function withSchemaLockBudget(callable $operation): mixed
     {
         $connection = $this->schemaConnection();

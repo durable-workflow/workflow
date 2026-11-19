@@ -8,6 +8,8 @@ RUN docker-php-ext-install -j1 bcmath opcache pcntl \
     && mkdir -p /app \
     && chown 1000:1000 /app
 RUN docker-php-ext-install -j1 sockets
+# CVE-2026-109518 (durable-workflow/.github#295): no APT download retries.
+RUN echo 'Acquire::Retries "0";' > /etc/apt/apt.conf.d/99-no-retries
 RUN apt-get update \
     && apt-get install -y --no-install-recommends unzip \
     && rm -rf /var/lib/apt/lists/*

@@ -11,6 +11,7 @@ use RuntimeException;
 use Throwable;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\CancellationContext;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
@@ -31,6 +32,8 @@ use Workflow\V2\Workflow;
 
 final class QueryStateReplayer
 {
+    private const DELIVERED_CALL_KINDS = ['activity', 'timer', 'signal', 'condition'];
+
     public function query(WorkflowRun $run, string $method, array $arguments = []): mixed
     {
         $workflow = $this->replay($run);
@@ -58,6 +61,7 @@ final class QueryStateReplayer
         $versionDecisions = new VersionDecisions($run);
         $workflowExecution = WorkflowExecution::start($workflow, $arguments, RedriveReplayClock::startedAt($run));
         $historySequencesByPosition = $this->historySequencesByReplayPosition($run);
+        $deliveredCancellations = $this->indexDeliveredCancellations($run);
 
         if (! $workflowExecution->valid()) {
             $this->syncWorkflowCursor($workflow, 0);
@@ -95,6 +99,28 @@ final class QueryStateReplayer
                     $position
                 ),
             );
+
+            $delivery = $this->deliveredCancellation(
+                $deliveredCancellations,
+                $current,
+                $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence),
+            );
+            if ($delivery !== null) {
+                // The executor delivered cancellation to this call before it opened any wait or command.
+                $this->applyRecordedUpdates(
+                    $run,
+                    $workflow,
+                    $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence),
+                );
+                $this->syncWorkflowCursor($workflow, $sequence + 1);
+                $current = $workflowExecution->throw(
+                    \Workflow\V2\Exceptions\WorkflowCancellationRequestedException::forContext($delivery['context']),
+                    $delivery['recorded_at'],
+                );
+                ++$sequence;
+
+                continue;
+            }
 
             if ($current instanceof CancelDurableOperationCall) {
                 $cancelled = $this->selectionOperationCancelledEvent($run, $current->handle);
@@ -523,12 +549,87 @@ final class QueryStateReplayer
                 continue;
             }
 
+            if ($current instanceof StartChildWorkflowCall) {
+                $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
+                $this->applyRecordedUpdates($run, $workflow, $historySequence);
+                WorkflowStepHistory::assertCompatible($run, $historySequence, WorkflowStepHistory::CHILD_WORKFLOW, [
+                    'child_workflow_type' => $current->child->workflow,
+                    'child_completion_mode' => 'started',
+                ]);
+                $receipt = ChildStartHistory::receipt($run, $historySequence);
+                if ($receipt === null) {
+                    $this->syncWorkflowCursor($workflow, $sequence);
+                    return new ReplayState($workflow, $sequence, $current);
+                }
+                \Workflow\V2\StateMachine\Binding\ChildReservationStore::assertRecordedCommand(
+                    ChildRunHistory::scheduledEventForSequence(
+                        $run,
+                        $historySequence
+                    )?->payload['child_reservation'] ?? null,
+                    $current->child->reservation,
+                );
+                $this->syncWorkflowCursor($workflow, $sequence + 1);
+                $current = $workflowExecution->send($receipt, RedriveReplayClock::recordedAt(
+                    ChildRunHistory::scheduledEventForSequence($run, $historySequence)
+                ));
+                ++$sequence;
+                continue;
+            }
+
+            if ($current instanceof AwaitStartedChildWorkflowCall) {
+                $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
+                $this->applyRecordedUpdates($run, $workflow, $historySequence);
+                WorkflowStepHistory::assertCompatible(
+                    $run,
+                    $historySequence,
+                    WorkflowStepHistory::CHILD_WORKFLOW_AWAIT
+                );
+                $child = $current->child;
+                ChildStartHistory::assertReceipt($run, $child, $historySequence);
+                $awaited = ChildStartHistory::awaitedEvent($run, $child, $historySequence);
+                $cancelled = ChildStartHistory::cancellationDelivery($run, $child, $historySequence);
+                if ($cancelled !== null) {
+                    $context = CooperativeCancellationDelivery::context($run);
+                    if ($context === null) {
+                        throw new \LogicException('The child-await cancellation has no canonical context.');
+                    }
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
+                    $current = $workflowExecution->throw(
+                        \Workflow\V2\Exceptions\WorkflowCancellationRequestedException::forContext($context),
+                        $cancelled->recorded_at
+                    );
+                    ++$sequence;
+                    continue;
+                }
+                $resolution = ChildRunHistory::resolutionEventForSequence($run, $child->startSequence);
+                $target = ChildStartHistory::target($run, $child, $resolution, $historySequence);
+                // Live terminal rows do not authorize query replay before the
+                // parent's typed resolution commits.
+                if ($awaited === null || $resolution === null) {
+                    $this->syncWorkflowCursor($workflow, $sequence);
+                    return new ReplayState($workflow, $sequence, $current);
+                }
+                $this->syncWorkflowCursor($workflow, $sequence + 1);
+                $current = $resolution->event_type === HistoryEventType::ChildRunCompleted
+                    ? $workflowExecution->send(
+                        ChildRunHistory::outputForResolution($resolution, $target),
+                        RedriveReplayClock::recordedAt($resolution)
+                    )
+                    : $workflowExecution->throw(
+                        ChildRunHistory::exceptionForResolution($resolution, $target),
+                        RedriveReplayClock::recordedAt($resolution)
+                    );
+                ++$sequence;
+                continue;
+            }
+
             if ($current instanceof ChildWorkflowCall) {
                 $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
 
                 $this->applyRecordedUpdates($run, $workflow, $historySequence);
                 WorkflowStepHistory::assertCompatible($run, $historySequence, WorkflowStepHistory::CHILD_WORKFLOW, [
                     'child_workflow_type' => $current->workflow,
+                    'child_completion_mode' => 'result',
                 ]);
 
                 $resolutionEvent = ChildRunHistory::resolutionEventForSequence($run, $historySequence);
@@ -657,6 +758,7 @@ final class QueryStateReplayer
                                 'activity_type' => $call->activity,
                             ] : ($call instanceof ChildWorkflowCall ? [
                                 'child_workflow_type' => $call->workflow,
+                                'child_completion_mode' => 'result',
                             ] : []),
                     );
 
@@ -1679,6 +1781,8 @@ final class QueryStateReplayer
                 ],
                 true,
             ) && ($event->payload['sequence'] ?? null) === $sequence
+                // The run's own close recorded this; the workflow never saw it (#1117).
+                && ! ClosingRunOpenWork::settledAtClose($event)
         );
 
         return $event;
@@ -1948,7 +2052,9 @@ final class QueryStateReplayer
                 ? $event->event_type->value
                 : $this->stringValue($event->event_type);
 
-            if (! $this->hasWorkflowCommandSequence($eventType)) {
+            if (! $this->hasWorkflowCommandSequence($eventType)
+                && ! ($eventType === HistoryEventType::CooperativeCancellationDelivered->value
+                    && in_array($event->payload['call_kind'] ?? null, self::DELIVERED_CALL_KINDS, true))) {
                 continue;
             }
 
@@ -2000,6 +2106,72 @@ final class QueryStateReplayer
         return $signalId === null ? null : 'signal:' . $signalId;
     }
 
+    /**
+     * Mirrors WorkflowFiberRunner: a recorded cooperative cancellation delivery consumes the interrupted
+     * activity, timer, signal or condition call at its history position, even when that call never opened.
+     *
+     * @return array{context: CancellationContext|null, recorded_at: \Carbon\CarbonInterface|null}|null
+     */
+    private function deliveredCancellation(array $deliveries, mixed $current, int $historySequence): ?array
+    {
+        if ($deliveries === [] || ! isset($deliveries[$historySequence])) {
+            return null;
+        }
+        $callKind = match (true) {
+            $current instanceof ActivityCall => 'activity',
+            $current instanceof TimerCall => 'timer',
+            $current instanceof SignalCall => 'signal',
+            $current instanceof AwaitCall, $current instanceof AwaitWithTimeoutCall => 'condition',
+            default => null,
+        };
+        if ($callKind === null) {
+            return null;
+        }
+        $delivery = $deliveries[$historySequence];
+        if ($delivery['call_kind'] !== $callKind) {
+            throw new RuntimeException('Cooperative cancellation delivery does not match the replayed wait.');
+        }
+
+        return $delivery;
+    }
+
+    /**
+     * One pass over history, as WorkflowFiberRunner indexes it; replay then looks deliveries up by sequence.
+     *
+     * @return array<int, array{call_kind: string, context: CancellationContext|null, recorded_at: \Carbon\CarbonInterface|null}>
+     */
+    private function indexDeliveredCancellations(WorkflowRun $run): array
+    {
+        $contexts = [];
+        $delivered = [];
+        foreach ($run->historyEvents as $event) {
+            if (! $event instanceof WorkflowHistoryEvent) {
+                continue;
+            }
+            $commandId = $event->payload['workflow_command_id'] ?? $event->workflow_command_id;
+            $sequence = $this->intValue($event->payload['sequence'] ?? null);
+            if ($event->event_type === HistoryEventType::CooperativeCancellationRequested
+                && is_array($event->payload['cancellation'] ?? null)) {
+                $contexts[$commandId] = CancellationContext::fromArray($event->payload['cancellation']);
+            } elseif ($event->event_type === HistoryEventType::CooperativeCancellationDelivered
+                && in_array($event->payload['call_kind'] ?? null, self::DELIVERED_CALL_KINDS, true)
+                && $sequence !== null) {
+                $delivered[$sequence] = [$event, $commandId];
+            }
+        }
+        $deliveries = [];
+        foreach ($delivered as $sequence => [$event, $commandId]) {
+            // Legacy requests carry no context; the executor then delivers a context-free cancellation too.
+            $deliveries[$sequence] = [
+                'call_kind' => $event->payload['call_kind'],
+                'context' => $contexts[$commandId] ?? null,
+                'recorded_at' => RedriveReplayClock::recordedAt($event),
+            ];
+        }
+
+        return $deliveries;
+    }
+
     private function hasWorkflowCommandSequence(?string $type): bool
     {
         return in_array($type, [
@@ -2020,6 +2192,7 @@ final class QueryStateReplayer
             HistoryEventType::SignalWaitOpened->value,
             HistoryEventType::SignalApplied->value,
             HistoryEventType::ChildWorkflowScheduled->value,
+            HistoryEventType::ChildWorkflowAwaited->value,
             HistoryEventType::ChildRunStarted->value,
             HistoryEventType::ChildRunCompleted->value,
             HistoryEventType::ChildRunFailed->value,

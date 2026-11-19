@@ -110,6 +110,11 @@ final class ChildRetryStart
             return null;
         }
 
+        if ($childInstance->getRawOriginal('native_child_reservation') !== null
+            || $childInstance->getRawOriginal('native_root_reservation') !== null) {
+            return null;
+        }
+
         $nextRunNumber = ((int) WorkflowRun::query()
             ->where('workflow_instance_id', $failedChildRun->workflow_instance_id)
             ->max('run_number')) + 1;

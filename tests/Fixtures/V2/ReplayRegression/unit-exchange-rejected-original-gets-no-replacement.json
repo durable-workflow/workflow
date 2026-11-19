@@ -1,0 +1,49 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "unit-exchange-rejected-original-gets-no-replacement",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestUnitExchangeReplayWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-18T12:00:00+00:00"
+    },
+    {
+      "sequence": 2,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "example.provider.exchange.boundary.v1",
+        "result": "wwHioz3/VYAiNw4YDGFjdGlvbgoMc2V0dGxlCHVuaXQEBBpyZWNlaXZlZFVuaXRzDAIEBAAaYWNjZXB0ZWRVbml0cwwAGnNhbGVhYmxlVW5pdHMMACBkaXNjcmVwYW5jeVVuaXRzDAIEBAAScmVjZWlwdElkCmZzaGlwbWVudC5mdWxsLnJldHVybi11bml0cy5leGNoYW5nZS5zd2FwLTEucmVjZWl2ZWQYaW5zcGVjdGlvbklkCmhzaGlwbWVudC5mdWxsLnJldHVybi11bml0cy5leGNoYW5nZS5zd2FwLTEuaW5zcGVjdGVkDnJlc3RvY2sADnJlc2VydmUACGJvb2sADHJlZnVuZAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-18T12:00:00+00:00"
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "replacement": false,
+      "discrepancy": [
+        2
+      ]
+    },
+    "commands": [
+      {
+        "type": "complete_workflow",
+        "result": "wwHioz3/VYAiNw4EFnJlcGxhY2VtZW50AgAWZGlzY3JlcGFuY3kMAgQEAAA=",
+        "payload_codec": "avro"
+      }
+    ]
+  }
+}

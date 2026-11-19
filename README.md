@@ -20,8 +20,8 @@ This package also provides the orchestration engine hosted by
 [Durable Workflow Cloud](https://cloud.durable-workflow.com/) when workers need
 to run outside the Laravel application or across PHP, Python, and Rust.
 
-Workflow 2.21 requires **PHP 8.2 or newer** and **Laravel 12.69.0 or newer
-on the 12.x line, or Laravel 13.30.0 or newer on the 13.x line**. Laravel 13
+Current Workflow requires **PHP 8.2 or newer** and **Laravel 12.72.0 or newer
+on the 12.x line, or Laravel 13.41.0 or newer on the 13.x line**. Laravel 13
 requires PHP 8.3. The [dependency security policy](resources/laravel-dependency-security-policy.json)
 records the supported framework floors. Keep Composer audits and application
 security updates enabled.

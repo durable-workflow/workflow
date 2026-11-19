@@ -1,4 +1,6 @@
 FROM php:8.3.35-cli-bookworm
+# CVE-2026-109518 (durable-workflow/.github#295): no APT download retries.
+RUN echo 'Acquire::Retries "0";' > /etc/apt/apt.conf.d/99-no-retries
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git libonig-dev libxml2-dev unzip \
     && docker-php-ext-install pdo_mysql mbstring dom pcntl \

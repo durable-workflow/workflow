@@ -69,10 +69,8 @@ final class ScopedCancellationContextTest extends TestCase
         $this->assertSame('api', $child->rootContext->source);
         $copy = $child->toArray();
         $copy['lineage'][1]['scope_id'] = 'changed';
-        $child->deadline()
-            ->addHour();
-        $child->rootDeadline()
-            ->addHour();
+        $this->assertSame('2026-10-03T01:00:20.000001Z', $child->deadline()->addHour()->toISOString());
+        $this->assertSame('2026-10-03T01:00:30.123456Z', $child->rootDeadline()->addHour()->toISOString());
         $this->assertSame('scope-a', $child->lineage[1]['scope_id']);
         $this->assertSame('2026-10-03T00:00:20.000001Z', $child->deadline()->toISOString());
         $this->expectException(InvalidArgumentException::class);

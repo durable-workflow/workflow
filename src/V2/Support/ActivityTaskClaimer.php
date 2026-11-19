@@ -101,6 +101,26 @@ final class ActivityTaskClaimer
                 return self::claimFailure('workflow_run_missing');
             }
 
+            $abandonedAtClose = ClosingRunOpenWork::abandonedAtClose($run, $execution);
+            if ($run->status->isTerminal() && ! $abandonedAtClose
+                && ! ActivityAbandonment::allows($run, $execution)) {
+                // The run closed without this activity (#1117): no attempt
+                // starts and nothing is appended after the terminal event.
+                $task->forceFill([
+                    'status' => TaskStatus::Cancelled,
+                    'lease_expires_at' => null,
+                ])->save();
+
+                if (in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)) {
+                    $execution->forceFill([
+                        'status' => ActivityStatus::Cancelled,
+                        'closed_at' => $execution->closed_at ?? now(),
+                    ])->save();
+                }
+
+                return self::claimFailure('run_closed');
+            }
+
             TaskCompatibility::sync($task, $run);
 
             $backendError = TaskBackendCapabilities::recordClaimFailureIfUnsupported($task);
@@ -182,7 +202,13 @@ final class ActivityTaskClaimer
                 'lease_expires_at' => $task->lease_expires_at,
             ]);
 
-            self::historyProjectionRole()->recordActivityStarted($run, $execution, $attempt, $task);
+            if ($abandonedAtClose) {
+                // Kept running past its run's close: the attempt runs, but its
+                // start is not appended to the closed run's history.
+                self::historyProjectionRole()->projectRun(self::projectionRun($run));
+            } else {
+                self::historyProjectionRole()->recordActivityStarted($run, $execution, $attempt, $task);
+            }
 
             return self::claimSuccess(new ActivityTaskClaim($task, $run, $execution, $attempt));
         });

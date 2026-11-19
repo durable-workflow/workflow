@@ -8,17 +8,34 @@ use InvalidArgumentException;
 
 final readonly class TransitionDefinition
 {
+    public string $key;
+
+    public string $event;
+
+    /**
+     * @var non-empty-list<string>
+     */
+    public array $from;
+
+    public string $to;
+
+    public string $handler;
+
+    public string $handlerVersion;
+
+    public bool $hasWork;
+
     /**
      * @param non-empty-list<string> $from
      */
     public function __construct(
-        public string $key,
-        public string $event,
-        public array $from,
-        public string $to,
-        public string $handler,
-        public string $handlerVersion,
-        public bool $hasWork = true,
+        string $key,
+        string $event,
+        array $from,
+        string $to,
+        string $handler,
+        string $handlerVersion,
+        bool $hasWork = true,
     ) {
         foreach ([$key, $event, $to, $handler, $handlerVersion] as $value) {
             if (trim($value) === '') {
@@ -36,6 +53,13 @@ final readonly class TransitionDefinition
         if (count(array_unique($from)) !== count($from)) {
             throw new InvalidArgumentException('Source states must be unique.');
         }
+        $this->key = $key;
+        $this->event = $event;
+        $this->from = array_map(static fn (string $state): string => $state, $from);
+        $this->to = $to;
+        $this->handler = $handler;
+        $this->handlerVersion = $handlerVersion;
+        $this->hasWork = $hasWork;
     }
 
     public function handlerKey(): string

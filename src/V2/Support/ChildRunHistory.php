@@ -161,9 +161,15 @@ final class ChildRunHistory
             ], $policies, $parallelMetadata), static fn (mixed $value): bool => $value !== null));
         }
 
+        // A retry remains on its admitted definition. Looking up current code
+        // here would turn registration drift or legacy absence into new authority.
+        $fingerprint = WorkflowDefinitionFingerprint::recordedForRun($failedChildRun);
         WorkflowHistoryEvent::record($retryRun, HistoryEventType::WorkflowStarted, array_merge([
             'workflow_class' => $retryRun->workflow_class,
             'workflow_type' => $retryRun->workflow_type,
+            ...($fingerprint === null ? [] : [
+                'workflow_definition_fingerprint' => $fingerprint,
+            ]),
             'workflow_instance_id' => $retryRun->workflow_instance_id,
             'workflow_run_id' => $retryRun->id,
             'parent_workflow_instance_id' => $parentRun->workflow_instance_id,

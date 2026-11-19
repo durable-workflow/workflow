@@ -237,6 +237,7 @@ final class MessageStream
             $expiresAt,
         );
         if ($identity !== null) {
+            $this->replayLedger?->rememberSend($identity, $message);
             $this->replayLedger?->advanceSend($identity);
         }
 
@@ -314,53 +315,66 @@ final class MessageStream
         ?string $correlationId,
         ?string $idempotencyKey,
     ): ?WorkflowMessage {
-        $query = WorkflowMessage::query()
-            ->where('workflow_instance_id', $this->run->workflow_instance_id)
-            ->whereIn('source_workflow_run_id', $this->runIds())
-            ->where('direction', MessageDirection::Outbound->value)
-            ->where('channel', $channel)
-            ->where('stream_key', $this->streamKey)
-            ->where('target_workflow_instance_id', $targetInstanceId);
+        $load = function () use (
+            $channel,
+            $targetInstanceId,
+            $payloadReference,
+            $correlationId,
+            $idempotencyKey,
+        ): array {
+            $query = WorkflowMessage::query()
+                ->where('workflow_instance_id', $this->run->workflow_instance_id)
+                ->whereIn('source_workflow_run_id', $this->runIds())
+                ->where('direction', MessageDirection::Outbound->value)
+                ->where('channel', $channel)
+                ->where('stream_key', $this->streamKey)
+                ->where('target_workflow_instance_id', $targetInstanceId);
 
-        foreach ([
-            'payload_reference' => $payloadReference,
-            'correlation_id' => $correlationId,
-            'idempotency_key' => $idempotencyKey,
-        ] as $column => $value) {
-            $value === null ? $query->whereNull($column) : $query->where($column, $value);
-        }
+            foreach ([
+                'payload_reference' => $payloadReference,
+                'correlation_id' => $correlationId,
+                'idempotency_key' => $idempotencyKey,
+            ] as $column => $value) {
+                $value === null ? $query->whereNull($column) : $query->where($column, $value);
+            }
 
-        // The query only narrows the candidates: a case- or accent-insensitive
-        // collation (MySQL's default) treats different text as equal, so the
-        // match itself compares each field exactly.
-        $exact = [
-            'channel' => $channel,
-            'stream_key' => $this->streamKey,
-            'target_workflow_instance_id' => $targetInstanceId,
-            'payload_reference' => $payloadReference,
-            'correlation_id' => $correlationId,
-            'idempotency_key' => $idempotencyKey,
-        ];
-        $matches = $query->orderBy('sequence')
-            ->orderBy('id')
-            ->get()
-            ->filter(static function (WorkflowMessage $message) use ($exact): bool {
-                foreach ($exact as $column => $value) {
-                    $stored = $message->getRawOriginal($column);
+            // The query only narrows the candidates: a case- or accent-insensitive
+            // collation (MySQL's default) treats different text as equal, so the
+            // match itself compares each field exactly.
+            $exact = [
+                'channel' => $channel,
+                'stream_key' => $this->streamKey,
+                'target_workflow_instance_id' => $targetInstanceId,
+                'payload_reference' => $payloadReference,
+                'correlation_id' => $correlationId,
+                'idempotency_key' => $idempotencyKey,
+            ];
+            return $query->orderBy('sequence')
+                ->orderBy('id')
+                ->get()
+                ->filter(static function (WorkflowMessage $message) use ($exact): bool {
+                    foreach ($exact as $column => $value) {
+                        $stored = $message->getRawOriginal($column);
 
-                    if (($stored === null ? null : (string) $stored) !== $value) {
-                        return false;
+                        if (($stored === null ? null : (string) $stored) !== $value) {
+                            return false;
+                        }
                     }
-                }
 
-                return true;
-            })
-            ->values();
+                    return true;
+                })
+                ->values()
+                ->all();
+        };
 
-        /** @var WorkflowMessage|null $message */
-        $message = $matches->get($this->replayLedger?->sendOffset($identity) ?? 0);
+        // Loaded once per identity for this execution (#1014): a workflow that
+        // repeats one send many times would otherwise list every earlier
+        // match again for each send.
+        $matches = $this->replayLedger instanceof MessageReplayLedger
+            ? $this->replayLedger->sendCandidates($identity, $load)
+            : $load();
 
-        return $message;
+        return $matches[$this->replayLedger?->sendOffset($identity) ?? 0] ?? null;
     }
 
     /**

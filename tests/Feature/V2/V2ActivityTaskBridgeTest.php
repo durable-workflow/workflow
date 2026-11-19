@@ -1404,8 +1404,11 @@ final class V2ActivityTaskBridgeTest extends TestCase
             $result = $this->bridge->complete($claim['activity_attempt_id'], 'late completion');
         });
 
-        $this->assertTrue($result['recorded']);
-        $this->assertNull($result['reason']);
+        // A run its own code closed refuses the late outcome (#1117): the
+        // attempt closes cancelled, nothing is appended, and the projection is
+        // still refreshed through the role binding.
+        $this->assertFalse($result['recorded']);
+        $this->assertSame('run_closed', $result['reason']);
         $this->assertNull($result['next_task_id']);
 
         /** @var ActivityExecution $execution */
@@ -1415,9 +1418,9 @@ final class V2ActivityTaskBridgeTest extends TestCase
         /** @var ActivityAttempt $attempt */
         $attempt = ActivityAttempt::query()->findOrFail($claim['activity_attempt_id']);
 
-        $this->assertSame(ActivityStatus::Completed, $execution->status);
-        $this->assertSame(ActivityAttemptStatus::Completed, $attempt->status);
-        $this->assertSame(TaskStatus::Completed, $task->status);
+        $this->assertSame(ActivityStatus::Cancelled, $execution->status);
+        $this->assertSame(ActivityAttemptStatus::Cancelled, $attempt->status);
+        $this->assertSame(TaskStatus::Cancelled, $task->status);
         $this->assertContains(['projectRun', $run->id], $calls);
     }
 

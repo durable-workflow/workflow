@@ -394,7 +394,10 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
             backoffSeconds: 0,
         );
 
-        $this->assertTrue($outcome['recorded']);
+        // A run its own code closed refuses the late outcome (#1117) and
+        // still refreshes the projection through the role binding.
+        $this->assertFalse($outcome['recorded']);
+        $this->assertSame('run_closed', $outcome['reason']);
         $this->assertNull($outcome['next_task']);
         $this->assertSame([['projectRun', $run->id]], $customRole->calls);
     }
@@ -429,7 +432,10 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
             backoffSeconds: 0,
         );
 
-        $this->assertTrue($outcome['recorded']);
+        // A run its own code closed refuses the late outcome (#1117) and
+        // still refreshes the projection through the role binding.
+        $this->assertFalse($outcome['recorded']);
+        $this->assertSame('run_closed', $outcome['reason']);
         $this->assertNull($outcome['next_task']);
         $this->assertSame([['projectRun', $run->id]], $customRole->calls);
     }
@@ -471,7 +477,10 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
             backoffSeconds: 0,
         );
 
-        $this->assertTrue($outcome['recorded']);
+        // A run its own code closed refuses the late outcome (#1117) and
+        // still refreshes the projection through the role binding.
+        $this->assertFalse($outcome['recorded']);
+        $this->assertSame('run_closed', $outcome['reason']);
         $this->assertNull($outcome['next_task']);
         $this->assertSame([['projectRun', $run->id]], $customRole->calls);
     }
@@ -799,7 +808,10 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
             throwable: null,
         );
 
-        $this->assertTrue($outcome['recorded']);
+        // A run its own code closed refuses the late outcome (#1117) and
+        // still refreshes the projection through the role binding.
+        $this->assertFalse($outcome['recorded']);
+        $this->assertSame('run_closed', $outcome['reason']);
         $this->assertNull($outcome['next_task']);
         $this->assertSame([['projectRun', $run->id]], $customRole->calls);
     }
@@ -838,7 +850,10 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
             throwable: new RuntimeException('wrapper late failure boom', 29),
         );
 
-        $this->assertTrue($outcome['recorded']);
+        // A run its own code closed refuses the late outcome (#1117) and
+        // still refreshes the projection through the role binding.
+        $this->assertFalse($outcome['recorded']);
+        $this->assertSame('run_closed', $outcome['reason']);
         $this->assertNull($outcome['next_task']);
         $this->assertSame([['projectRun', $run->id]], $customRole->calls);
     }

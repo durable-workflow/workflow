@@ -2,6 +2,270 @@
 
 ## Unreleased
 
+- A refused schema rollback no longer leaves part of its batch rolled back
+  (#1063). Before the migrator runs any `down()`, the package now checks every
+  guarded migration in the rollback or reset: the compensation ledger, the
+  child and root reservation fences, and the schedule occurrence receipts.
+  Previously, newer migrations in the same batch, such as the reservation
+  columns, were already dropped when the guard refused.
+- The Order/Shipment compensation example covers a compensation worker killed
+  after its SQL void commits, and a dispatched delivery whose compensation
+  fails after native retries. The operator sees the failure through
+  `cancellationOutcome()` and resolves it with `resubmitCancellation()`. Three
+  replay fixtures recorded from these runs pin the recovery histories.
+
+- A single worker crash during compensation now settles without operator
+  action (#1205):
+  - **Automatic recovery after closure.** When an origin closes with an
+    accepted but unverified compensation request, the task watchdog routes
+    that request to canonical recovery. It re-authorizes the original
+    principal and starts one recovery run per request, including under
+    concurrent passes or a racing manual request. A refused re-authorization
+    starts nothing and records `recovery_authorization_failed`.
+    `ScopeRecovery::describe()` reports it, and a fresh authorized request
+    still works.
+  - **Longer retries in recovery runs.** New recovery runs compensate with
+    six attempts. They wait 1, 2, 5 and 10 seconds, then one activity lease
+    plus one task-repair pass, so a crashed child attempt is reclaimed first.
+    The schedule is gated by `patched()` and recorded with `sideEffect()`.
+    Recovery runs recorded earlier replay with three attempts. In-origin
+    compensation keeps three attempts.
+  - **Prompt retries.** A waiting retry runs immediately when a child scope
+    verifies or an authorized request arrives. It keeps its attempt number
+    and recorded maximum.
+  - **Unchanged.** A persistent failure still fails the recovery run
+    explicitly.
+  - **Example finalizer.** The business `cancelled` commit stays the
+    application's `CancellationStore::finish()`. The provider state-machine
+    example adds `CancellationFinalizer` as the recommended pattern: it calls
+    `finish()` when the Order's recovery verifies.
+
+## 2.30.0 - 2026-11-18
+
+- **Security fix:** webhook `token` authentication with no token configured
+  accepted requests that omitted the token header. It now refuses every
+  request with `503` and logs a warning naming the missing setting. `signature`
+  authentication with no secret configured, which failed with a type error, now
+  refuses the same way. Use the `none` method for webhooks without
+  authentication. Deployments using `none`, a custom authenticator, or a
+  configured token or secret are unaffected.
+- Workflow code can read the schedule fire that started its run with
+  `$this->scheduleOrigin()` (durable-workflow/.github#243). It returns a
+  `Workflow\V2\Support\ScheduleOrigin` with `scheduleId`, `occurrenceTime`
+  and `triggerNumber`, or `null` for a run no schedule started.
+  `occurrenceTime` is the time the scheduler evaluated: the jittered fire
+  time for a tick, the enumerated time for a backfill. It is `null` for a
+  manual trigger. The value comes from the run's `ScheduleTriggered` history
+  event, which is committed with the run's start. So it is available on the
+  first workflow task and identical on replay.
+- A scheduled run's continue-as-new successor now records its predecessor's
+  `ScheduleTriggered` event right after its start, as native Server does
+  (server#1143). The successor keeps the same schedule origin. Runs not
+  started by a schedule record nothing new, and existing histories replay
+  unchanged.
+- Rolling back the compensation-scope migration now refuses while the ledger
+  holds any scope (#1063). In 2.29.0 and 2.29.1, `migrate:rollback` dropped
+  those tables, discarding unresolved obligations and the released tombstones
+  that keep old generations and request keys from being accepted again. Empty
+  ledgers still roll back. To downgrade with retained scopes, restore a
+  database backup taken before the upgrade. Two new replay fixtures pin the
+  2.29 histories of a completed parent with a child participant and of
+  in-origin Saga cleanup after a lost forward result.
+
+- CI now installs published 2.28.1 into a new Laravel application, upgrades
+  it and checks retained compensation scopes (#1063). The job covers recovery
+  after the origin run closes and schema rollback with an empty and a
+  populated ledger. It also checks a package downgrade that keeps the ledger,
+  followed by an upgrade that recovers it. It runs on pull requests that
+  change migrations or compensation code, and on stable release tags against
+  the published package. `docs/compensation-scopes.md` describes the rollback
+  and downgrade behavior it checks.
+- Query-state replay (queries and `WorkflowReplayer`) now delivers a recorded
+  cooperative cancellation to an activity, timer, signal or condition call that
+  never opened, at the same position the executor used (#1069). Previously a
+  cancellation that arrived before such a wait opened made query-state replay
+  report a history shape mismatch, though the run itself replayed and completed
+  correctly. A new replay fixture pins the signal-wait history.
+- The experimental provider state-machine example's common payment-first
+  checkout can opt into one partial-stock policy (`fulfill-partial`,
+  `wait-complete` or `cancel-all`) through trusted bootstrap (#1069). The
+  policy is part of the business grant; workflow arguments and signals cannot
+  change it. The example's unit refund no longer records a confirmed refund as
+  unknown because of an over-long evidence reference. See
+  `examples/provider-state-machines/README.md`.
+
+## 2.29.1 - 2026-11-18
+
+- A condition wait with a timeout now returns `true` when an update accepted
+  before its timeout fired makes the predicate true, even if the workflow task
+  runs after the deadline. Updates accepted after the timeout fired cannot
+  satisfy it. Standalone waits and conditions inside `select()` or `all()`
+  now follow the history-order rule named signal waits already use. When
+  several updates are pending, the first one that makes the predicate true
+  satisfies the wait and later updates do not reverse it. Runs whose
+  history already records the wait as satisfied or timed out replay that outcome
+  unchanged. Replaying a `select()` whose condition member resolved after
+  its timeout fired no longer blocks with a history-shape mismatch.
+
+## 2.29.0 - 2026-11-17
+
+**Run migrations.** Seven migrations add the compensation scope/obligation
+and schedule occurrence tables, nullable `workflow_runs.timeout_cleanup_work_deadline_at`,
+nullable `workflow_instances.native_child_reservation` and
+`native_root_reservation`, and two MariaDB-only timestamp corrections. All are
+additive and do not rewrite retained rows. The experimental APIs below (compensation
+scopes, deadline-triggered cleanup, child-start receipts, entity references and
+the `Workflow\V2\StateMachine` transition protocol) carry no backward-compatibility
+promise yet; see `docs/api-stability.md`.
+
+- Experimental `Workflow\V2\StateMachine` additions (#1069): shared machine
+  definitions, policy profiles, recorded rule assessments, execution references
+  and budgets, run through native activities, children and retained
+  compensation. Provider integration and published-package recovery
+  qualification remain unfinished; there is no in-flight profile migration API.
+  See `docs/business-state-machines.md`.
+
+- Replaying a resolved selection restores its recorded winner without advancing
+  older losing signal waits. New signals remain bound to their current wait
+  occurrence, including after an earlier selection member was cancelled.
+
+- Cancellation during embedded workflow replay preserves a signal wait that
+  already timed out. Cleanup starts at the original unresolved boundary instead
+  of replacing earlier completed work, including when only timer history remains.
+
+- Embedded schedule audits default to 1,000 snapshots, preserving the first and
+  newest events. Compact firing receipts keep occurrence deduplication intact;
+  a namespace-scoped prune command removes rows after physical schedule purge.
+  Run the occurrence migration and stop old schedule readers before enabling
+  compaction. Explicitly disable compaction during a rolling upgrade as described
+  in `docs/schedule-audit-retention.md`.
+
+- Add a namespace-scoped open-run version-usage query with legacy/current/unknown
+  counts and byte-exact keyset pages. Missing markers and unavailable history
+  remain unknown when assessing legacy branch retirement.
+
+- Experimental embedded compensation scopes (#1063): retained versioned
+  obligations, native Saga recovery, sequential child participation and explicit
+  release. Each scope keeps its originating run; continue-as-new, origin redrive
+  and child retry do not transfer forward ownership. Recovery activities require
+  the exact paired native admission receipt and retained scope/original-owner
+  binding before host authorization and again under native activity locks.
+
+- **Run migrations on MariaDB.** Timer status and service-dispatch metadata
+  updates preserve their scheduled timestamps on older MariaDB schemas. The
+  forward migrations remove implicit timestamp updates without rewriting
+  retained rows. Condition occurrence
+  reopens use the original scheduled history deadline, including when an older
+  cancelled timer row has already drifted (#1139).
+
+- Concurrent child completion keeps parent-history row locks on the existing
+  per-run index on MySQL and MariaDB, avoiding an unrelated sibling history
+  row in the parent barrier lock cycle. No new index or retry is introduced.
+
+- Experimental embedded child-start milestone: `Workflow::startChild()` returns
+  a versioned `StartedChildWorkflow` receipt after native child admission, and
+  `$child->await()` observes that same child later. Cold replay reuses the
+  original admission; a queued request alone cannot supply a receipt. The
+  existing `child()` still waits for completion. This adds a
+  `ChildWorkflowAwaited` history event and an optional
+  `child_completion_mode` on `ChildWorkflowScheduled`, with no database
+  migration. Worker-protocol execution refuses the new calls. State-bound
+  business bindings and retained compensation remain separate #1069 work.
+
+- Failed-run redrive preserves fractional seconds in replay clocks for the
+  original run start and reused steps. Repeated redrive keeps previously
+  recorded clock strings unchanged.
+
+- Experimental domain entity references for top-level arguments of embedded
+  queued and local activities (#996). Register an entity class, deterministic
+  adapter and authorized resolver. History records a portable reference and
+  argument positions. Each real attempt resolves current state outside the
+  engine transaction; replay never calls the resolver. Local lookup retains
+  the original hosting claim and history budget, and the callback keeps its
+  existing transaction. Ordinary maps and
+  unregistered objects retain their existing serialization behavior. See
+  [the registration and retry contract](docs/entity-references.md).
+
+- Failed-run redrive accepts a verified linear activity retry chain. A retried
+  completed prefix is reused and only the failed boundary step runs again.
+  Substituted attempt/task identities refuse with
+  `invalid_activity_retry_history`; existing service-worker definition checks
+  still apply. An exactly bound accepted start/adopt receipt is harmless, while
+  rejected or mismatched starts remain unsupported. This core correction is
+  separate from the experimental Saga compensation scope foundation (#1063).
+
+- **Run migrations.** Opt-in deadline-triggered cleanup (#863, experimental,
+  embedded). A start can reserve the last part of its hard execution or run
+  timeout for cleanup with `StartOptions::withTimeoutCleanup($seconds)` (or
+  `timeoutCleanupSeconds:`). When the work deadline passes (the hard deadline
+  minus the allowance), the run enters timeout cleanup once: workflow code
+  receives `WorkflowTimeoutCleanupRequested`, a cooperative cancellation
+  request whose context has `cause: timeout`, so existing compensation
+  handlers run. An idle run is woken at that time. The run always ends with
+  `WorkflowTimedOut`, which now carries a `timeout_cleanup` outcome:
+  `completed`, `failed` (the cleanup failure is linked), `expired` (still
+  running at the hard deadline) or `preempted` (terminated or hard-cancelled
+  first). The hard deadline never moves, and nothing changes without the
+  option. Continue-as-new and redrive carry the allowance like the hard
+  deadlines. New history event `WorkflowTimeoutCleanupStarted`; the cancellation
+  context gains the optional top-level `cause`. The migration adds the nullable
+  `workflow_runs.timeout_cleanup_work_deadline_at` with no backfill and builds
+  its index without blocking writes. Poll-mode and service starts refuse this
+  option until their capability admission is implemented (server#1201). Bridge
+  workers cannot claim an opted-in embedded run. Service mode follows separately.
+
+## 2.28.1 - 2026-11-13
+
+- Require patched Laravel 12.72 or 13.41 minimums for the current Composer
+  security advisories. Keep existing application audits enabled and update
+  application lockfiles before upgrading Workflow (#1133).
+
+## 2.28.0 - 2026-11-13
+
+**Behavior change:** an un-awaited `select()` loser is cancelled when the run
+closes. To keep a service-mode activity running, schedule it with
+`cancellation_policy: abandon`; its outcome is then never recorded. See the
+first entry below. No migration.
+
+- A run no longer leaves work running after its own code closes it (#1117).
+  Before, an activity or timer the workflow never awaited, such as a
+  `select()` loser, stayed open when the run completed, failed or continued as
+  new. The activity still executed, and its `ActivityStarted` and outcome were
+  appended to the closed run's history after the terminal event. Now the close
+  records `ActivityCancelled` for each open activity and `TimerCancelled` for
+  each pending timer in the same transaction, before `WorkflowCompleted`,
+  `WorkflowFailed` or `WorkflowContinuedAsNew`, and cancels their tasks. Such a
+  cancellation carries `cancellation_reason: run_closed`, and replay ignores
+  it, because the workflow never observed it: it never changes a selection
+  winner or a parallel group's failure. A
+  late claim, heartbeat or outcome for such an activity is refused with
+  `run_closed`, including one left behind by a run closed before upgrading.
+  Nothing is appended to the closed run. Exception: a service-mode activity
+  scheduled with `cancellation_policy: abandon` keeps running. The terminal
+  event lists it under the new `abandoned_activities` payload key, and its
+  heartbeats and outcome are accepted but not appended. Cancel, terminate,
+  timeout and cooperative cancellation already settled open work this way.
+  Children keep their parent-close policy and continue-as-new hand-over.
+  Behavior change: if a workflow needs a loser's effect, await the loser
+  before returning.
+
+- Replaying a workflow that repeats the same message-stream send no longer
+  lists every earlier matching row again for each send (#1014). The exactly
+  matched candidates for a send identity are now loaded once per execution
+  and extended with the rows that execution writes, so N identical sends in
+  one replay cost one candidate query instead of N, and O(N) rows instead of
+  O(N²). Matching is unchanged: exact field comparison, send order and the
+  redrive chain.
+
+- An expired open activity row of a closed run is now closed instead of being
+  selected and skipped on every timeout sweep (#1117 follow-up). An activity
+  that its run's close left running under the abandon policy is marked failed
+  when its own `schedule_to_close` deadline passes without an outcome. Any
+  other open row of a closed run, such as one left by a close before
+  upgrading, is cancelled. Its task is cancelled and nothing is appended to
+  the closed run's history. Before, such rows stayed open and could fill the
+  sweep's batch limit.
+
 ## 2.27.0 - 2026-11-13
 
 - Closing a child no longer reads every sibling's history under the parent

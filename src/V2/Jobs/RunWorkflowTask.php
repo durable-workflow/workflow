@@ -16,7 +16,10 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\DeferredEntityReferenceResolution;
+use Workflow\V2\Support\EmbeddedLocalActivityScope;
 use Workflow\V2\Support\ExecutionTracing;
+use Workflow\V2\Support\LocalActivityExecutor;
 use Workflow\V2\Support\NamespaceScope;
 use Workflow\V2\Support\ServiceCallWorkflowDelivery;
 use Workflow\V2\Support\SqliteTransaction;
@@ -108,14 +111,31 @@ final class RunWorkflowTask implements ShouldQueue
 
     private function executeClaim(WorkflowExecutor $executor, int $claimedAttempt): void
     {
+        EmbeddedLocalActivityScope::forClaim($this->taskId, $claimedAttempt, function () use (
+            $executor,
+            $claimedAttempt
+        ): void {
+            do {
+                $deferred = $this->executeClaimPhase($executor, $claimedAttempt);
+            } while ($deferred instanceof DeferredEntityReferenceResolution
+                && app(LocalActivityExecutor::class)->resolveDeferredEntityReferences($deferred));
+        });
+    }
+
+    private function executeClaimPhase(
+        WorkflowExecutor $executor,
+        int $claimedAttempt
+    ): ?DeferredEntityReferenceResolution {
         $nextTask = null;
+        $deferred = null;
         $continuation = config('workflows.v2.live_execution.workflows', []) === []
             ? null : app(WorkflowContinuationCache::class)->session($this->job, $claimedAttempt);
 
         try {
             $nextTask = SqliteTransaction::forTask($this->taskId, function () use (
                 $executor,
-                $continuation
+                $continuation,
+                &$deferred,
             ): ?WorkflowTask {
                 /** @var WorkflowTask $task */
                 $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
@@ -138,10 +158,20 @@ final class RunWorkflowTask implements ShouldQueue
                     return null;
                 }
 
-                $nextTask = WorkflowSignalReadScope::forLockedRun(
-                    $run,
-                    static fn (): ?WorkflowTask => $executor->run($run, $task, $continuation),
-                );
+                if (EmbeddedLocalActivityScope::contains($task->id) && ! EmbeddedLocalActivityScope::owns($task)) {
+                    return null;
+                }
+
+                try {
+                    $nextTask = WorkflowSignalReadScope::forLockedRun(
+                        $run,
+                        static fn (): ?WorkflowTask => $executor->run($run, $task, $continuation),
+                    );
+                } catch (DeferredEntityReferenceResolution $resolution) {
+                    $continuation?->disable('entity_reference_resolution');
+                    $deferred = $resolution;
+                    return null;
+                }
                 $continuation?->offer($task);
 
                 return $nextTask;
@@ -177,6 +207,7 @@ final class RunWorkflowTask implements ShouldQueue
         if ($nextTask instanceof WorkflowTask) {
             TaskDispatcher::dispatch($nextTask);
         }
+        return $deferred;
     }
 
     private function settleTerminalTask(WorkflowTask $task, WorkflowRun $run): void

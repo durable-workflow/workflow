@@ -17,6 +17,7 @@ use Throwable;
 use Workflow\Serializers\AvroValueJsonProjection;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Compensation\Recovery\RecoveryRunAdmission;
 use Workflow\V2\Contracts\BufferedSignalProjectionRole;
 use Workflow\V2\Contracts\HistoryExportRedactor;
 use Workflow\V2\Contracts\HistoryProjectionRole;
@@ -60,6 +61,7 @@ use Workflow\V2\Support\ChildSupervision;
 use Workflow\V2\Support\CommandIntent;
 use Workflow\V2\Support\CommandRequestIdentity;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\CooperativeCancellationDelivery;
 use Workflow\V2\Support\CurrentRunResolver;
 use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\ExternalPayloads;
@@ -87,6 +89,7 @@ use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
 use Workflow\V2\Support\TaskSchedulingFields;
 use Workflow\V2\Support\TerminalCancellationHistory;
+use Workflow\V2\Support\TimeoutCleanup;
 use Workflow\V2\Support\TimerCancellation;
 use Workflow\V2\Support\TraceCarrier;
 use Workflow\V2\Support\TypeRegistry;
@@ -986,9 +989,35 @@ final class WorkflowStub
         return $result;
     }
 
+    /**
+     * @internal Host-authorized original-root admission, outside workflow replay.
+     */
+    public static function startReservedRoot(
+        \Workflow\V2\Compensation\Admission\RootReservationStore $store,
+        \Workflow\V2\Compensation\Admission\RootReservation $reservation,
+        string $principal,
+        array $arguments,
+    ): \Workflow\V2\Compensation\Admission\RootBinding|\Workflow\V2\Compensation\Admission\NeverAdmittedRoot {
+        $store->authorizeStart($reservation, $principal, $arguments);
+        $profile = $reservation->identity->profile;
+        TimeoutCleanup::assertEmbeddedAdmission($profile->options->timeoutCleanupSeconds);
+        $stub = self::load($reservation->identity->instanceId(), $reservation->identity->scope->namespace);
+        $metadata = new WorkflowMetadata($arguments, new \Workflow\WorkflowOptions(
+            connection: $profile->connection,
+            queue: $profile->queue,
+        ));
+        $result = $stub->admitStart($metadata, $profile->options, null, rootReservation: $reservation);
+        if (! $result instanceof \Workflow\V2\Compensation\Admission\RootBinding
+            && ! $result instanceof \Workflow\V2\Compensation\Admission\NeverAdmittedRoot) {
+            throw new LogicException('Root admission did not retain its original binding.');
+        }
+        return $result;
+    }
+
     public function attemptStart(...$arguments): StartResult
     {
         [$arguments, $startOptions] = $this->extractStartArguments($arguments);
+        TimeoutCleanup::assertEmbeddedAdmission($startOptions->timeoutCleanupSeconds);
         $metadata = WorkflowMetadata::fromStartArguments($arguments);
         // Capture outside the storage transaction and preserve it across its retries.
         $observabilityContext = null;
@@ -998,14 +1027,35 @@ final class WorkflowStub
             $observabilityContext = TraceCarrier::admissionParent($diagnostic);
         }
         if (! $tracing) {
-            return $this->admitStart($metadata, $startOptions, $observabilityContext);
+            return $this->admitOrdinaryStart($metadata, $startOptions, $observabilityContext);
         }
 
         return ExecutionTracing::admission(
             $this->instance,
-            fn () => $this->admitStart($metadata, $startOptions, $observabilityContext),
+            fn () => $this->admitOrdinaryStart($metadata, $startOptions, $observabilityContext),
             enabled: true,
             diagnostic: $diagnostic
+        );
+    }
+
+    /**
+     * The scope service must authorize and retain the request's first predecessor
+     * before calling this data-only native boundary. Ordinary start is unchanged.
+     *
+     * @internal Experimental compensation recovery admission.
+     */
+    public function attemptRecoveryStart(RecoveryRunAdmission $admission): StartResult
+    {
+        if ($this->runTargeted) {
+            throw new LogicException('Recovery admission requires a canonical instance-targeted stub.');
+        }
+        TimeoutCleanup::assertEmbeddedAdmission($admission->profile->timeoutCleanupSeconds);
+
+        return $this->admitOrdinaryStart(
+            WorkflowMetadata::fromStartArguments([$admission->scope->toArray()]),
+            $admission->profile,
+            null,
+            $admission,
         );
     }
 
@@ -1055,6 +1105,7 @@ final class WorkflowStub
             $startArguments,
             DuplicateStartPolicy::ReturnExistingActive,
         );
+        TimeoutCleanup::assertEmbeddedAdmission($startOptions->timeoutCleanupSeconds);
 
         if ($startOptions->duplicateStartPolicy !== DuplicateStartPolicy::ReturnExistingActive) {
             throw new LogicException(
@@ -1721,53 +1772,142 @@ final class WorkflowStub
         return new CommandResult($command);
     }
 
+    private function admitOrdinaryStart(
+        WorkflowMetadata $metadata,
+        StartOptions $options,
+        ?array $context,
+        ?RecoveryRunAdmission $recovery = null,
+    ): StartResult {
+        $result = $this->admitStart($metadata, $options, $context, $recovery);
+        if (! $result instanceof StartResult) {
+            throw new LogicException('Ordinary admission returned a reserved root result.');
+        }
+        return $result;
+    }
+
     private function admitStart(
         WorkflowMetadata $metadata,
         StartOptions $startOptions,
         ?array $observabilityContext,
-    ): StartResult {
+        ?RecoveryRunAdmission $recoveryAdmission = null,
+        ?\Workflow\V2\Compensation\Admission\RootReservation $rootReservation = null,
+    ): StartResult|\Workflow\V2\Compensation\Admission\RootBinding|\Workflow\V2\Compensation\Admission\NeverAdmittedRoot {
         /** @var WorkflowCommand|null $command */
         $command = null;
         $task = null;
         $startedRun = null;
+        $rootOutcome = null;
 
         SqliteTransaction::run(function () use (
             $metadata,
             $startOptions,
             $observabilityContext,
+            $recoveryAdmission,
+            $rootReservation,
             &$task,
             &$command,
             &$startedRun,
+            &$rootOutcome,
         ): void {
             $task = null;
             $command = null;
             $startedRun = null;
+            $rootOutcome = null;
 
             /** @var WorkflowInstance $instance */
             $instance = self::instanceQuery()
                 ->lockForUpdate()
                 ->findOrFail($this->instance->id);
 
-            $run = $this->currentRunForInstance($instance, true);
+            $recoveryIntent = null;
+            if ($rootReservation === null) {
+                \Workflow\V2\StateMachine\Binding\ChildReservationStore::assertOrdinaryStartAllowed($instance);
+            } else {
+                if ($recoveryAdmission !== null || $instance->getRawOriginal('native_child_reservation') !== null) {
+                    throw new LogicException('Root admission cannot reuse a child or recovery admission.');
+                }
+                $rootOutcome = \Workflow\V2\Compensation\Admission\RootReservationStore::prepareAdmission(
+                    $instance,
+                    $rootReservation,
+                );
+                if ($rootOutcome !== null) {
+                    return;
+                }
+            }
+            if ($recoveryAdmission !== null) {
+                $workflowClass = TypeRegistry::resolveWorkflowClass(
+                    $instance->workflow_class,
+                    $instance->workflow_type
+                );
+                $recoveryIntent = $recoveryAdmission->intent(
+                    $instance,
+                    $workflowClass,
+                    RoutingResolver::workflowConnection($workflowClass, $metadata),
+                    RoutingResolver::workflowQueue($workflowClass, $metadata),
+                );
+                $command = $recoveryAdmission->retained($instance, $recoveryIntent);
+                if ($command !== null) {
+                    return;
+                }
+            }
 
-            if ($run instanceof WorkflowRun) {
+            // Refused recovery requests must not repair pointers or append to a
+            // stopped predecessor. The instance writer still serializes admission.
+            $run = $recoveryAdmission === null
+                ? $this->currentRunForInstance($instance, true)
+                : CurrentRunResolver::forInstance($instance, lockForUpdate: true);
+            $predecessor = null;
+            if ($recoveryAdmission !== null && $recoveryIntent !== null) {
+                $creationReceipt = $recoveryAdmission->predecessor($instance, $run, $recoveryIntent);
+                if ($run !== null && ! $run->status->isTerminal()) {
+                    $command = $this->recordExistingStart(
+                        $instance,
+                        $run,
+                        $metadata,
+                        StartOptions::returnExistingActive(),
+                        $recoveryAdmission->context(
+                            CommandContext::system('compensation_recovery'),
+                            $recoveryIntent,
+                            $run,
+                            $creationReceipt,
+                        ),
+                    );
+                    $recoveryAdmission->bind($command, $run);
+                    return;
+                }
+                $predecessor = $run;
+            }
+
+            if ($recoveryAdmission === null && $run instanceof WorkflowRun) {
                 $command = $this->recordExistingStart($instance, $run, $metadata, $startOptions);
 
                 return;
             }
 
             $workflowClass = TypeRegistry::resolveWorkflowClass($instance->workflow_class, $instance->workflow_type);
+            if ($rootReservation !== null && $workflowClass !== $rootReservation->identity->workflowClass) {
+                throw new LogicException('A root reservation cannot be retargeted through a deployed type alias.');
+            }
             $commandContract = RunCommandContract::snapshot($workflowClass);
             [$businessKey, $visibilityLabels, $memo, $searchAttributes] = $this->initialVisibilityMetadata(
                 $instance,
                 $startOptions,
             );
+            if ($recoveryAdmission !== null) {
+                $businessKey = $startOptions->businessKey;
+                $visibilityLabels = $startOptions->labels ?: null;
+                $memo = $startOptions->memo ?: null;
+                $searchAttributes = $startOptions->searchAttributes ?: null;
+            }
             $executionTimeoutSeconds = $startOptions->executionTimeoutSeconds;
             $runTimeoutSeconds = $startOptions->runTimeoutSeconds;
             $connection = RoutingResolver::workflowConnection($workflowClass, $metadata);
             $queue = RoutingResolver::workflowQueue($workflowClass, $metadata);
             $command = $this->rejectIncompatibleStart($instance, $metadata->arguments, $connection, $queue);
             if ($command instanceof WorkflowCommand) {
+                if ($rootReservation !== null) {
+                    throw new LogicException('The reserved root is incompatible with the available worker fleet.');
+                }
                 return;
             }
 
@@ -1786,6 +1926,10 @@ final class WorkflowStub
                 ? $startedAt->copy()
                     ->addSeconds($runTimeoutSeconds)
                 : null;
+            if ($predecessor !== null) {
+                $executionDeadlineAt = $predecessor->execution_deadline_at;
+                $runDeadlineAt = $predecessor->run_deadline_at;
+            }
             $payloadCodec = CodecRegistry::defaultCodec();
             $serializedArguments = ExternalPayloads::externalizeForNamespace(
                 Serializer::serializeWithCodec($payloadCodec, $metadata->arguments),
@@ -1795,6 +1939,9 @@ final class WorkflowStub
 
             /** @var WorkflowRun $run */
             $run = self::runQuery()->create([
+                ...($rootReservation === null ? [] : [
+                    'id' => $rootReservation->originalRunId,
+                ]),
                 'workflow_instance_id' => $instance->id,
                 'run_number' => $instance->run_count + 1,
                 'observability_context' => $observabilityContext,
@@ -1806,6 +1953,15 @@ final class WorkflowStub
                 'run_timeout_seconds' => $runTimeoutSeconds,
                 'execution_deadline_at' => $executionDeadlineAt,
                 'run_deadline_at' => $runDeadlineAt,
+                // Only an opted-in run writes the column, so custom run tables without
+                // it keep working until they migrate (#863).
+                ...(($timeoutCleanupWorkDeadline = TimeoutCleanup::workDeadline(
+                    $startOptions->timeoutCleanupSeconds,
+                    $executionDeadlineAt,
+                    $runDeadlineAt,
+                )) === null ? [] : [
+                    'timeout_cleanup_work_deadline_at' => $timeoutCleanupWorkDeadline,
+                ]),
                 'status' => RunStatus::Pending->value,
                 'compatibility' => WorkerCompatibility::current(),
                 'payload_codec' => $payloadCodec,
@@ -1824,7 +1980,35 @@ final class WorkflowStub
 
             $this->seedTypedVisibilityMetadata($run, $memo, $searchAttributes);
 
-            $command = $this->recordNewStartCommand($instance, $run, $payloadCodec, $serializedArguments);
+            $startContext = null;
+            if ($recoveryAdmission !== null && $recoveryIntent !== null) {
+                $startContext = $recoveryAdmission->context(
+                    CommandContext::system('compensation_recovery'),
+                    $recoveryIntent,
+                    $run,
+                );
+            } elseif ($rootReservation !== null) {
+                $startContext = CommandContext::system('root_scope_admission')->with([
+                    'root_scope_admission' => [
+                        'version' => 1,
+                        'reservationFingerprint' => $rootReservation->fingerprint(),
+                        'originalRunId' => $rootReservation->originalRunId,
+                        'scope' => $rootReservation->identity->scope->toArray(),
+                    ],
+                ]);
+            }
+            $command = $this->recordNewStartCommand(
+                $instance,
+                $run,
+                $payloadCodec,
+                $serializedArguments,
+                $startContext,
+            );
+            $recoveryAdmission?->bind($command, $run);
+            $recoveryLink = null;
+            if ($recoveryAdmission !== null && $predecessor !== null) {
+                $recoveryLink = $recoveryAdmission->link($predecessor, $run);
+            }
 
             $instance->forceFill([
                 'current_run_id' => $run->id,
@@ -1832,7 +2016,7 @@ final class WorkflowStub
                 'visibility_labels' => $visibilityLabels,
                 'memo' => $memo,
                 'execution_timeout_seconds' => $executionTimeoutSeconds,
-                'started_at' => $startedAt,
+                'started_at' => $predecessor === null ? $startedAt : $instance->started_at,
                 'run_count' => $run->run_number,
             ])->save();
 
@@ -1847,8 +2031,32 @@ final class WorkflowStub
                 'run_timeout_seconds' => $runTimeoutSeconds,
                 'execution_deadline_at' => $executionDeadlineAt,
                 'run_deadline_at' => $runDeadlineAt,
+                ...($recoveryAdmission === null ? [] : [
+                    'compensation_recovery' => $command->context['compensation_recovery'],
+                ]),
+                ...($recoveryLink === null ? [] : [
+                    'continued_from_run_id' => $predecessor->id,
+                    'workflow_link_id' => $recoveryLink->id,
+                    'recovery_kind' => 'compensation_recovery_restart',
+                ]),
+                ...($rootReservation === null ? [] : [
+                    'root_scope_admission' => $command->context['root_scope_admission'],
+                ]),
+                TimeoutCleanup::STARTED_KEY => TimeoutCleanup::startedPayload(
+                    $startOptions->timeoutCleanupSeconds,
+                    $executionDeadlineAt,
+                    $runDeadlineAt,
+                ),
             ]);
 
+            if ($rootReservation !== null) {
+                $rootOutcome = \Workflow\V2\Compensation\Admission\RootReservationStore::recordAdmission(
+                    $instance,
+                    $rootReservation,
+                    $run,
+                    $command,
+                );
+            }
             $task = $this->createInitialWorkflowTask($run);
 
             self::projectRun($run, ['instance', 'tasks', 'activityExecutions', 'failures', 'historyEvents']);
@@ -1868,6 +2076,9 @@ final class WorkflowStub
             TaskDispatcher::dispatch($task);
         }
 
+        if ($rootReservation !== null && $rootOutcome !== null) {
+            return $rootOutcome;
+        }
         if (! $command instanceof WorkflowCommand) {
             throw new LogicException(sprintf(
                 'Workflow instance [%s] failed to record a start command.',
@@ -1883,37 +2094,41 @@ final class WorkflowStub
         WorkflowRun $run,
         WorkflowMetadata $metadata,
         StartOptions $startOptions,
+        ?CommandContext $commandContext = null,
     ): WorkflowCommand {
         $canReturnExisting = $startOptions->duplicateStartPolicy === DuplicateStartPolicy::ReturnExistingActive
             && in_array($run->status, [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting], true);
 
-        $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
-            'command_type' => CommandType::Start->value,
-            'target_scope' => 'instance',
-            'status' => $canReturnExisting
-                ? CommandStatus::Accepted->value
-                : CommandStatus::Rejected->value,
-            'outcome' => $canReturnExisting
-                ? CommandOutcome::ReturnedExistingActive->value
-                : CommandOutcome::RejectedDuplicate->value,
-            'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
-            'payload' => Serializer::serializeWithCodec(
-                $run->payload_codec ?? CodecRegistry::defaultCodec(),
-                $metadata->arguments
-            ),
-            'rejection_reason' => $canReturnExisting
-                ? null
-                : 'instance_already_started',
-            'accepted_at' => $canReturnExisting
-                ? now()
-                : null,
-            'applied_at' => $canReturnExisting
-                ? now()
-                : null,
-            'rejected_at' => $canReturnExisting
-                ? null
-                : now(),
-        ]));
+        $command = WorkflowCommand::record($instance, $run, $this->commandAttributesForContext(
+            $commandContext ?? $this->resolvedCommandContext(),
+            [
+                'command_type' => CommandType::Start->value,
+                'target_scope' => 'instance',
+                'status' => $canReturnExisting
+                    ? CommandStatus::Accepted->value
+                    : CommandStatus::Rejected->value,
+                'outcome' => $canReturnExisting
+                    ? CommandOutcome::ReturnedExistingActive->value
+                    : CommandOutcome::RejectedDuplicate->value,
+                'payload_codec' => $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                'payload' => Serializer::serializeWithCodec(
+                    $run->payload_codec ?? CodecRegistry::defaultCodec(),
+                    $metadata->arguments
+                ),
+                'rejection_reason' => $canReturnExisting
+                    ? null
+                    : 'instance_already_started',
+                'accepted_at' => $canReturnExisting
+                    ? now()
+                    : null,
+                'applied_at' => $canReturnExisting
+                    ? now()
+                    : null,
+                'rejected_at' => $canReturnExisting
+                    ? null
+                    : now(),
+            ]
+        ));
 
         WorkflowHistoryEvent::record($run, $canReturnExisting
             ? HistoryEventType::StartAccepted
@@ -2083,6 +2298,20 @@ final class WorkflowStub
             'run_timeout_seconds' => $startMetadata['run_timeout_seconds'],
             'execution_deadline_at' => $startMetadata['execution_deadline_at']?->toIso8601String(),
             'run_deadline_at' => $startMetadata['run_deadline_at']?->toIso8601String(),
+            ...(isset($startMetadata['compensation_recovery']) ? [
+                'compensation_recovery' => $startMetadata['compensation_recovery'],
+            ] : []),
+            ...(isset($startMetadata['root_scope_admission']) ? [
+                'root_scope_admission' => $startMetadata['root_scope_admission'],
+            ] : []),
+            ...(isset($startMetadata['continued_from_run_id']) ? [
+                'continued_from_run_id' => $startMetadata['continued_from_run_id'],
+                'workflow_link_id' => $startMetadata['workflow_link_id'],
+                'recovery_kind' => $startMetadata['recovery_kind'],
+            ] : []),
+            ...(isset($startMetadata[TimeoutCleanup::STARTED_KEY]) ? [
+                TimeoutCleanup::STARTED_KEY => $startMetadata[TimeoutCleanup::STARTED_KEY],
+            ] : []),
             'workflow_definition_fingerprint' => WorkflowDefinition::fingerprint($workflowClass),
             'declared_queries' => $commandContract['queries'],
             'declared_query_contracts' => $commandContract['query_contracts'],
@@ -2280,6 +2509,28 @@ final class WorkflowStub
             if (is_string($run->cancellation_request_command_id)) {
                 $existing = WorkflowCommand::query()->findOrFail($run->cancellation_request_command_id);
                 $existingContext = (new CommandResult($existing))->cancellationContext();
+                if ($existingContext?->isTimeout() === true && $parentContext === null && $this->runIsActive($run)) {
+                    // Audit the user's request without replacing the engine's
+                    // timeout interruption or renewing its admitted budget.
+                    $codec = $run->payload_codec ?? CodecRegistry::defaultCodec();
+                    $command = WorkflowCommand::record($instance, $run, $this->commandAttributes([
+                        'command_type' => CommandType::RequestCancellation->value,
+                        'target_scope' => $this->commandTargetScope(),
+                        'status' => CommandStatus::Accepted->value,
+                        'outcome' => CommandOutcome::CancellationRequested->value,
+                        'payload_codec' => $codec,
+                        'payload' => Serializer::serializeWithCodec($codec, [
+                            'reason' => $reason,
+                            'existing_request_id' => $existing->id,
+                            'cleanup_deadline_at' => $run->cancellation_deadline_at?->toISOString(),
+                            'cancellation' => $existingContext->toArray(),
+                        ]),
+                        'accepted_at' => now(),
+                        'applied_at' => now(),
+                    ]));
+
+                    return;
+                }
                 if ($parentContext !== null && $existingContext?->rootRequestId !== $parentContext->rootRequestId) {
                     $codec = $run->payload_codec ?? CodecRegistry::defaultCodec();
                     $command = $this->rejectCommand(
@@ -2366,6 +2617,12 @@ final class WorkflowStub
             $requestedAt = now();
             $deadline = $scopeDeadline ?? $scopeOrigin?->deadline() ?? $parentContext?->deadline() ?? $requestedAt->copy()
                 ->addSeconds($cleanupTimeoutSeconds);
+            if ($run->timeout_cleanup_work_deadline_at !== null) {
+                [, $hardDeadline] = TimeoutCleanup::earliestHardDeadline($run);
+                if ($hardDeadline !== null && $hardDeadline->lt($deadline)) {
+                    $deadline = $hardDeadline;
+                }
+            }
             $reason = $parentContext?->reason ?? $reason;
             $requestId = (string) Str::ulid();
             $caller = $this->resolvedCommandContext()
@@ -3464,6 +3721,7 @@ final class WorkflowStub
                 ->findOrFail($this->instance->id);
 
             $commandContext = $this->signalWithStartCommandContext($intakeGroupId);
+            \Workflow\V2\StateMachine\Binding\ChildReservationStore::assertOrdinaryStartAllowed($instance);
             // A keyed retry returns the original intake instead of recording a
             // second start/signal pair under a new intake group.
             $retainedReceipt = $this->retainedCommandForRequest(
@@ -3636,6 +3894,15 @@ final class WorkflowStub
             'run_timeout_seconds' => $runTimeoutSeconds,
             'execution_deadline_at' => $executionDeadlineAt,
             'run_deadline_at' => $runDeadlineAt,
+            // Only an opted-in run writes the column, so custom run tables without
+            // it keep working until they migrate (#863).
+            ...(($timeoutCleanupWorkDeadline = TimeoutCleanup::workDeadline(
+                $startOptions->timeoutCleanupSeconds,
+                $executionDeadlineAt,
+                $runDeadlineAt,
+            )) === null ? [] : [
+                'timeout_cleanup_work_deadline_at' => $timeoutCleanupWorkDeadline,
+            ]),
             'status' => RunStatus::Pending->value,
             'compatibility' => WorkerCompatibility::current(),
             'payload_codec' => $payloadCodec,
@@ -3683,6 +3950,11 @@ final class WorkflowStub
             'run_timeout_seconds' => $runTimeoutSeconds,
             'execution_deadline_at' => $executionDeadlineAt,
             'run_deadline_at' => $runDeadlineAt,
+            TimeoutCleanup::STARTED_KEY => TimeoutCleanup::startedPayload(
+                $startOptions->timeoutCleanupSeconds,
+                $executionDeadlineAt,
+                $runDeadlineAt,
+            ),
         ]);
 
         $task = $this->createInitialWorkflowTask($run);
@@ -4184,6 +4456,12 @@ final class WorkflowStub
 
             if ($reason !== null && $reason !== '') {
                 $terminalHistoryPayload['reason'] = $reason;
+            }
+
+            // A hard cancel or terminate ends deadline-triggered cleanup early (#863).
+            if (is_string($run->cancellation_request_command_id)
+                && CooperativeCancellationDelivery::context($run)?->isTimeout() === true) {
+                $terminalHistoryPayload[TimeoutCleanup::STARTED_KEY] = TimeoutCleanup::outcome($run, 'preempted');
             }
 
             WorkflowHistoryEvent::record($run, $terminalEventType, $terminalHistoryPayload, null, $command);
@@ -5920,6 +6198,8 @@ final class WorkflowStub
 
         /** @var WorkflowInstance $instance */
         $instance = $instanceQuery->findOrFail($instanceId);
+
+        \Workflow\V2\StateMachine\Binding\ChildReservationStore::assertOrdinaryStartAllowed($instance);
 
         if ($instance->workflow_type !== $workflowType) {
             throw new LogicException(sprintf(

@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Schema;
 use Throwable;
 use Workflow\Queue\DatabaseTaskDelivery;
 use Workflow\Support\CacheThrottle;
+use Workflow\V2\Compensation\Recovery\CompensationAutoRecovery;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\WorkflowTaskRepairProjectionRole;
 use Workflow\V2\Enums\RunStatus;
@@ -39,6 +40,7 @@ use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskRepair;
 use Workflow\V2\Support\TaskRepairCandidates;
 use Workflow\V2\Support\TaskRepairPolicy;
+use Workflow\V2\Support\TimeoutCleanup;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Support\WorkflowExecutor;
 
@@ -99,7 +101,11 @@ final class TaskWatchdog
      *     service_call_dispatch_failures: list<array{call_id: string, message: string}>,
      *     service_call_linked_candidates: int,
      *     service_call_links_reconciled: int,
-     *     service_call_linked_failures: list<array{call_id: string, message: string}>
+     *     service_call_linked_failures: list<array{call_id: string, message: string}>,
+     *     compensation_recovery_candidates: int,
+     *     compensation_recoveries_started: int,
+     *     compensation_recovery_refusals: int,
+     *     compensation_recovery_failures: list<array{scope_id: string, message: string}>
      * }
      */
     public static function runPass(
@@ -318,6 +324,13 @@ final class TaskWatchdog
             }
             SqliteMaintenanceYield::pause((new ActivityExecution())->getConnection());
         }
+
+        // A closed origin with an accepted, unverified compensation request routes to recovery (#1205).
+        $compensation = CompensationAutoRecovery::pass(TaskRepairPolicy::scanLimit(), $runIds, $namespaces);
+        $report['compensation_recovery_candidates'] = $compensation['candidates'];
+        $report['compensation_recoveries_started'] = $compensation['started'];
+        $report['compensation_recovery_refusals'] = $compensation['refused'];
+        $report['compensation_recovery_failures'] = $compensation['failures'];
 
         return $report;
     }
@@ -574,6 +587,10 @@ final class TaskWatchdog
             'service_call_linked_candidates' => 0,
             'service_call_links_reconciled' => 0,
             'service_call_linked_failures' => [],
+            'compensation_recovery_candidates' => 0,
+            'compensation_recoveries_started' => 0,
+            'compensation_recovery_refusals' => 0,
+            'compensation_recovery_failures' => [],
         ];
     }
 
@@ -664,6 +681,11 @@ final class TaskWatchdog
                     $cancellation->whereNotNull('cancellation_request_command_id')
                         ->whereNotNull('cancellation_deadline_at')
                         ->where('cancellation_deadline_at', '<=', $now);
+                })->orWhere(static function ($cleanup) use ($now): void {
+                    // An opted-in run reaches its work deadline (#863).
+                    $cleanup->whereNull('cancellation_request_command_id')
+                        ->whereNotNull('timeout_cleanup_work_deadline_at')
+                        ->where('timeout_cleanup_work_deadline_at', '<=', $now);
                 });
             })
             ->where(static function ($available) use ($now): void {
@@ -674,6 +696,10 @@ final class TaskWatchdog
                     $cancellation->whereNotNull('cancellation_request_command_id')
                         ->whereNotNull('cancellation_deadline_at')
                         ->where('cancellation_deadline_at', '<=', $now);
+                })->orWhere(static function ($cleanup) use ($now): void {
+                    $cleanup->whereNull('cancellation_request_command_id')
+                        ->whereNotNull('timeout_cleanup_work_deadline_at')
+                        ->where('timeout_cleanup_work_deadline_at', '<=', $now);
                 });
             });
 
@@ -756,15 +782,26 @@ final class TaskWatchdog
                         is_string($run->cancellation_request_command_id)
                         && $run->cancellation_deadline_at !== null
                         && $now->gte($run->cancellation_deadline_at)
+                    )
+                    || (
+                        ! is_string($run->cancellation_request_command_id)
+                        && $run->timeout_cleanup_work_deadline_at !== null
+                        && $now->gte($run->timeout_cleanup_work_deadline_at)
                     );
 
                 if (! $deadlineExpired) {
                     return null;
                 }
 
-                if (is_string($run->cancellation_request_command_id)
+                // Enter under the run lock even when no queue worker is
+                // available, so hard-deadline enforcement needs no callback.
+                $enteredCleanup = TimeoutCleanup::enter($run, $now);
+                [, $hardDeadline] = TimeoutCleanup::earliestHardDeadline($run);
+                $timeoutCleanupExpired = $run->timeout_cleanup_work_deadline_at !== null
+                    && $hardDeadline !== null && $now->gte($hardDeadline);
+                if ($timeoutCleanupExpired || (is_string($run->cancellation_request_command_id)
                     && $run->cancellation_deadline_at !== null
-                    && $now->gte($run->cancellation_deadline_at)) {
+                    && $now->gte($run->cancellation_deadline_at))) {
                     // Expiry is runtime authority. A foreign workflow definition
                     // or an absent SDK worker must not keep the run open.
                     $controlTask = $existingWorkflowTask ?? WorkflowTask::query()->create([
@@ -781,13 +818,22 @@ final class TaskWatchdog
                         'compatibility' => $run->compatibility,
                         'repair_count' => 1,
                     ]);
-                    $cancellationEnforced = app(WorkflowExecutor::class)
-                        ->cancelIfCleanupDeadlineExpired($run, $controlTask);
+                    $executor = app(WorkflowExecutor::class);
+                    $cancellationEnforced = $timeoutCleanupExpired
+                        ? $executor->timeoutIfDeadlineExpired($run, $controlTask)
+                        : $executor->cancelIfCleanupDeadlineExpired($run, $controlTask);
 
                     return null;
                 }
 
                 if ($existingWorkflowTask !== null) {
+                    if ($enteredCleanup) {
+                        self::historyProjectionRole()->projectRun(
+                            $run->fresh(
+                                ['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']
+                            )
+                        );
+                    }
                     return null;
                 }
 

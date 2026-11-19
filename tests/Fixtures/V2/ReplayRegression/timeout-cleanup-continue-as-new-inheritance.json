@@ -1,0 +1,50 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "timeout-cleanup-continue-as-new-inheritance",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestTimeoutCleanupWorkflow",
+    "arguments": [
+      "continue"
+    ],
+    "payload_codec": "avro"
+  },
+  "timeout_cleanup_inheritance": {
+    "issue": "durable-workflow/workflow#863",
+    "path": "continue_as_new",
+    "note": "A continued run keeps the execution work deadline and records the same allowance in its WorkflowStarted."
+  },
+  "history": [
+    {
+      "id": "01m7er6efbwx1241tprg0q382g",
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {
+        "timeout_cleanup": {
+          "allowance_seconds": 10,
+          "work_deadlines": {
+            "execution": "2026-11-13T06:01:00+00:00"
+          }
+        }
+      },
+      "recorded_at": "2026-11-13T06:00:01.000000Z"
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "start_timer",
+        "delay_seconds": 3600
+      }
+    ]
+  }
+}

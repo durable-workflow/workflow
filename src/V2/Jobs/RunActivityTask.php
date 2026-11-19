@@ -18,6 +18,7 @@ use Workflow\V2\Support\ActivityRetryPolicy;
 use Workflow\V2\Support\ActivityTaskClaim;
 use Workflow\V2\Support\ActivityTaskClaimer;
 use Workflow\V2\Support\EmbeddedActivityLease;
+use Workflow\V2\Support\EntityReferenceArguments;
 use Workflow\V2\Support\EntryMethod;
 use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\NamespaceScope;
@@ -135,6 +136,7 @@ final class RunActivityTask implements ShouldQueue
         $result = null;
         $throwable = null;
         try {
+            $activityArguments = EntityReferenceArguments::resolve($activity, $activityArguments, $entryMethod);
             $arguments = ActivityEntryArguments::resolve($activity, $activityArguments, $entryMethod);
         } catch (Throwable $error) {
             $arguments = [];

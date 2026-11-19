@@ -31,6 +31,11 @@ final class WorkflowParallelDispatch
 
     public ?CarbonInterface $successTime = null;
 
+    /**
+     * Durable input order for the group's unresolved condition members.
+     */
+    public ?ConditionWaitInputOrder $conditionInputOrder = null;
+
     public function __construct(
         public readonly int $baseSequence
     ) {

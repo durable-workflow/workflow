@@ -12,6 +12,16 @@ use Workflow\V2\Models\WorkflowRun;
 
 final class RedriveReplayClock
 {
+    public static function formatRecordedAt(?CarbonInterface $time): ?string
+    {
+        if ($time === null) {
+            return null;
+        }
+        return $time->format('u') === '000000'
+            ? $time->toIso8601String()
+            : $time->format('Y-m-d\TH:i:s.uP');
+    }
+
     public static function startedAt(WorkflowRun $run): ?CarbonInterface
     {
         if ($run->run_number <= 1) {

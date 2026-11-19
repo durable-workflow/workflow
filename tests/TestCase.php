@@ -11,6 +11,7 @@ use Illuminate\Database\Schema\Builder as SchemaBuilder;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Foundation\Testing\DatabaseTruncation;
 use Illuminate\Foundation\Testing\RefreshDatabaseState;
+use Illuminate\Queue\RedisQueue;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Queue;
@@ -165,18 +166,34 @@ abstract class TestCase extends BaseTestCase
             Cache::put(TaskWatchdog::LOOP_THROTTLE_KEY, true, self::WATCHDOG_THROTTLE_TTL_SECONDS);
             Cache::put(self::V1_WATCHDOG_LOOP_THROTTLE_KEY, true, self::WATCHDOG_THROTTLE_TTL_SECONDS);
             self::primeWatchdogThrottle();
-            self::startWorkers();
+            if ($this->startQueueWorkersAutomatically()) {
+                self::startWorkers();
+            }
         }
     }
 
     protected function tearDown(): void
     {
+        $database = $this->app !== null && $this->app->bound('db') ? $this->app->make('db') : null;
         try {
             self::stopWorkers();
             self::flushRedis();
         } finally {
-            parent::tearDown();
+            try {
+                parent::tearDown();
+            } finally {
+                // Test owners can retain Connection objects after Testbench destroys their application.
+                // Close their sessions after all application-destroyed callbacks have used the database.
+                foreach ($database?->getConnections() ?? [] as $connection) {
+                    $connection->disconnect();
+                }
+            }
         }
+    }
+
+    protected function startQueueWorkersAutomatically(): bool
+    {
+        return true;
     }
 
     protected function assertHostingShortenedWithoutClaimReplacement(array $before, V2WorkflowTask $task): void
@@ -585,7 +602,9 @@ abstract class TestCase extends BaseTestCase
                         ? ($queuedJobs > 0 ? 'queued' : 'no queued job')
                         : 'unavailable',
                     'queued_jobs' => $queuedJobs,
+                    'queue_state' => $this->queuePollingState($connection, $queue),
                 ],
+                'overlap' => $this->legacyOverlapState((string) $activeWorkflow->getKey()),
                 'history' => [
                     'logs' => $activeWorkflow->logs()
                         ->count(),
@@ -606,6 +625,47 @@ abstract class TestCase extends BaseTestCase
                 'diagnostic_error' => $exception->getMessage(),
             ];
         }
+    }
+
+    private function queuePollingState(string $connection, string $queue): array
+    {
+        try {
+            $driver = Queue::connection($connection);
+            if (! $driver instanceof RedisQueue) {
+                return [];
+            }
+            $redis = $driver->getConnection();
+            $key = $driver->getQueue($queue);
+            return [
+                'ready' => $redis->llen($key),
+                'delayed' => $redis->zcard($key . ':delayed'),
+                'reserved' => $redis->zcard($key . ':reserved'),
+            ];
+        } catch (Throwable $error) {
+            return [
+                'error_class' => $error::class,
+            ];
+        }
+    }
+
+    private function legacyOverlapState(string $workflowId): array
+    {
+        $key = 'laravel-workflow-overlap:' . $workflowId;
+        $activities = Cache::get($key . ':activity', []);
+        if (! is_array($activities)) {
+            return [
+                'available' => false,
+            ];
+        }
+        return [
+            'workflow' => (int) Cache::get($key . ':workflow', 0),
+            'activity_entries' => count($activities),
+            'active_activities' => count(array_filter(
+                array_slice($activities, 0, 128),
+                static fn (mixed $activity): bool => is_string($activity) && Cache::has($activity)
+            )),
+            'truncated' => count($activities) > 128,
+        ];
     }
 
     /**

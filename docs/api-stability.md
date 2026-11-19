@@ -3,6 +3,13 @@
 This document describes the v2 public API stability contract of the
 `durable-workflow/workflow` package.
 
+The [domain entity reference API](entity-references.md) is experimental. Its
+adapter/resolver registrations apply only to top-level arguments of in-process
+queued PHP activities. The optional `entity_reference_positions` in
+an activity snapshot identifies arguments adapted to portable `{type,id,version}`
+maps; absence preserves ordinary argument behavior. History recovery and export
+retain this discriminator. It does not advertise a service-mode capability.
+
 ## Relationship to the platform compatibility authority
 
 This document is the per-package stability contract for the PHP workflow
@@ -114,7 +121,26 @@ The workflow package is consumed by three distinct audiences:
    into the workflow package as a library but do not author workflows.
 
 The semver guarantee below covers all three surfaces. Breaking changes to
-anything marked `@api` require a major version bump.
+anything marked `@api` require a major version bump, except surfaces explicitly
+marked `@experimental` as described below.
+
+## Experimental compensation scopes
+
+The `Workflow\V2\Compensation` authoring helpers and host handler/authorization
+contracts are experimental. Their API and persisted storage contract may change
+in a minor release while the first increment is evaluated. The scope, obligation,
+forward-result and resolution envelopes carry an explicit format version; unknown
+versions refuse interpretation. Activity types and activity-sequence markers are
+recorded identities and must be changed through explicit deterministic versioning.
+`@internal` activities, format utilities and engine classes remain implementation
+details rather than supported host entry points.
+
+This increment supports embedded Laravel, sequential compensation, one nesting
+level and explicit release. It does not transfer forward scope ownership across
+continue-as-new, originating-run redrive or child retry. Use a distinct generation
+for each originating run. Retained obligations stay attached to that run and remain
+recoverable through `ScopeRecovery`. See [durable compensation scopes](compensation-scopes.md).
+Existing run-local Saga and its stability contract remain unchanged.
 
 ## What is covered
 
@@ -486,7 +512,7 @@ for v2 workflows. Its definition boundary is specified by
 It exposes two surfaces, both covered by the semver guarantee:
 
 - **Instance members** applications rely on inside a `handle()` method:
-  `workflowId()`, `runId()`, `lastChild()`,
+  `workflowId()`, `runId()`, `scheduleOrigin()`, `lastChild()`,
   `children()`, `historyLength()`, `historySize()`,
   `historyFanOut()`, `shouldContinueAsNew()`, `historyBudgetPressure()`,
   `messages()`, `inbox()`, `outbox()`,
@@ -765,9 +791,10 @@ class, source file path, or stack trace to replay or handle a failure.
 | --- | --- | --- |
 | `StartAccepted` | `workflow_command_id`, `workflow_instance_id`, `workflow_run_id`, `workflow_class`, `workflow_type`, `business_key`, `visibility_labels`, `memo`, `search_attributes`, `outcome`, `rejection_reason` | `HistoryTimeline`, `HistoryExport`, `RunCommandContract`, operator command projections |
 | `StartRejected` | `workflow_command_id`, `workflow_instance_id`, `workflow_run_id`, `workflow_class`, `workflow_type`, `business_key`, `visibility_labels`, `memo`, `search_attributes`, `outcome`, `rejection_reason` | `HistoryTimeline`, `HistoryExport`, `RunCommandContract`, operator command projections |
-| `WorkflowStarted` | `workflow_class`, `workflow_type`, `workflow_instance_id`, `workflow_run_id`, `workflow_command_id`, `business_key`, `visibility_labels`, `memo`, `search_attributes`, `execution_timeout_seconds`, `run_timeout_seconds`, `execution_deadline_at`, `run_deadline_at`, `workflow_definition_fingerprint`, `definition_changed_from`, `declared_queries`, `declared_query_contracts`, `declared_signals`, `declared_signal_contracts`, `declared_updates`, `declared_update_contracts`, `declared_entry_method`, `declared_entry_mode`, `declared_entry_declaring_class`, `parent_workflow_instance_id`, `parent_workflow_run_id`, `parent_sequence`, `workflow_link_id`, `child_call_id`, `retry_policy`, `timeout_policy`, `continued_from_run_id`, `retry_attempt`, `retry_of_child_workflow_run_id` | `WorkflowDefinitionFingerprint`, `RunLineageView`, worker history payload consumers |
-| `WorkflowContinuedAsNew` | `sequence`, `continued_to_run_id`, `continued_to_run_number`, `workflow_link_id`, `closed_reason` | `WorkflowStepHistory`, `RunLineageView`, `HistoryTimeline`, operator detail projections |
+| `WorkflowStarted` | `workflow_class`, `workflow_type`, `workflow_instance_id`, `workflow_run_id`, `workflow_command_id`, `business_key`, `visibility_labels`, `memo`, `search_attributes`, `execution_timeout_seconds`, `run_timeout_seconds`, `execution_deadline_at`, `run_deadline_at`, `workflow_definition_fingerprint`, `definition_changed_from`, `declared_queries`, `declared_query_contracts`, `declared_signals`, `declared_signal_contracts`, `declared_updates`, `declared_update_contracts`, `declared_entry_method`, `declared_entry_mode`, `declared_entry_declaring_class`, `parent_workflow_instance_id`, `parent_workflow_run_id`, `parent_sequence`, `workflow_link_id`, `child_call_id`, `retry_policy`, `timeout_policy`, `continued_from_run_id`, `retry_attempt`, `retry_of_child_workflow_run_id`, `timeout_cleanup` (experimental: `allowance_seconds` and the derived `work_deadlines` per timeout kind) | `WorkflowDefinitionFingerprint`, `RunLineageView`, worker history payload consumers |
+| `WorkflowContinuedAsNew` | `sequence`, `continued_to_run_id`, `continued_to_run_number`, `workflow_link_id`, `closed_reason`, `abandoned_activities` | `WorkflowStepHistory`, `RunLineageView`, `HistoryTimeline`, operator detail projections |
 | `CooperativeCancellationRequested` | `workflow_command_id`, `workflow_instance_id`, `workflow_run_id`, `command_type`, `reason`, `cleanup_deadline_at` | workflow cancellation delivery, cleanup deadline enforcement, history export |
+| `WorkflowTimeoutCleanupStarted` | `workflow_command_id`, `timeout_kind` (`execution` or `run`), `work_deadline_at`, `cleanup_deadline_at`, `hard_deadline_at`, `detected_at` | `HistoryTimeline`, timeout cleanup outcome (experimental) |
 | `CooperativeCancellationDelivered` | `workflow_command_id`, `workflow_run_id`, `sequence`, `call_kind`, `sequence_span`, `operation_sequence`, `operation_sequence_span` | `WorkflowFiberRunner`, `WorkflowStepHistory`, cooperative task bridges, history export |
 | `ActivityScheduled` | `activity_execution_id`, `activity_class`, `activity_type`, `sequence`, `execution_mode`, `local_activity`, `workflow_task_id`, `activity`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `WorkflowStepHistory`, `WorkflowExecutor`, `QueryStateReplayer`, `ActivityRecovery`, `ParallelChildGroup` |
 | `ActivityStarted` | `activity_execution_id`, `activity_attempt_id`, `activity_class`, `activity_type`, `sequence`, `attempt_number`, `execution_mode`, `local_activity`, `workflow_task_id`, `lease_expires_at`, `activity`, `activity_attempt`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `ActivitySnapshot`, `ActivityAttemptSnapshots`, `HistoryTimeline`, `RunActivityView`, `ParallelChildGroup` |
@@ -775,7 +802,7 @@ class, source file path, or stack trace to replay or handle a failure.
 | `ActivityRetryScheduled` | `activity_execution_id`, `activity_attempt_id`, `activity_class`, `activity_type`, `sequence`, `retry_task_id`, `retry_of_task_id`, `retry_available_at`, `retry_backoff_seconds`, `retry_after_attempt_id`, `retry_after_attempt`, `retry_reason`, `max_attempts`, `retry_policy`, `timeout_kind`, `failure_reason`, `lease_expires_at`, `lease_revoked_at`, `lease_owner`, `execution_mode`, `local_activity`, `workflow_task_id`, `exception_type`, `exception_class`, `message`, `code`, `exception`, `activity`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `ActivitySnapshot`, `ActivityAttemptSnapshots`, `HistoryTimeline`, `RunTaskView`, `ParallelChildGroup` |
 | `ActivityCompleted` | `activity_execution_id`, `activity_attempt_id`, `activity_class`, `activity_type`, `sequence`, `attempt_number`, `result`, `payload_codec`, `execution_mode`, `local_activity`, `workflow_task_id`, `activity`, `activity_attempt`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `WorkflowExecutor`, `QueryStateReplayer`, `ParallelChildGroup`, `ActivityRecovery` |
 | `ActivityFailed` | `activity_execution_id`, `activity_attempt_id`, `activity_class`, `activity_type`, `sequence`, `attempt_number`, `failure_id`, `failure_category`, `non_retryable`, `exception_type`, `exception_class`, `message`, `code`, `exception`, `failure_reason`, `lease_expires_at`, `lease_revoked_at`, `lease_owner`, `execution_mode`, `local_activity`, `workflow_task_id`, `activity`, `activity_attempt`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path`, `structural_limit_kind`, `structural_limit_value`, `structural_limit_configured` | `ActivitySnapshot`, `FailureSnapshots`, `HistoryTimeline`, `ParallelFailureSelector`, `ParallelChildGroup` |
-| `ActivityCancelled` | `workflow_command_id`, `activity_execution_id`, `activity_attempt_id`, `worker_attempt_id`, `activity_class`, `activity_type`, `sequence`, `attempt_number`, `cancelled_at`, `execution_mode`, `local_activity`, `workflow_task_id`, `activity`, `activity_attempt`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `ActivitySnapshot`, `ActivityAttemptSnapshots`, `HistoryTimeline`, cancellation repair projections |
+| `ActivityCancelled` | `workflow_command_id`, `activity_execution_id`, `activity_attempt_id`, `worker_attempt_id`, `activity_class`, `activity_type`, `sequence`, `attempt_number`, `cancelled_at`, `execution_mode`, `local_activity`, `workflow_task_id`, `activity`, `activity_attempt`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path`, `cancellation_reason` (`run_closed` when the run's own close cancelled it) | `ActivitySnapshot`, `ActivityAttemptSnapshots`, `HistoryTimeline`, cancellation repair projections |
 | `ActivityTimedOut` | `activity_execution_id`, `activity_attempt_id`, `activity_class`, `activity_type`, `sequence`, `attempt_number`, `failure_id`, `failure_category`, `timeout_kind`, `message`, `exception_class`, `schedule_deadline_at`, `close_deadline_at`, `schedule_to_close_deadline_at`, `heartbeat_deadline_at`, `execution_mode`, `local_activity`, `workflow_task_id`, `activity`, `activity_attempt`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path` | `ActivitySnapshot`, `FailureSnapshots`, `HistoryTimeline`, `ParallelChildGroup`, timeout repair projections |
 | `TimerScheduled` | `timer_id`, `sequence`, `delay_seconds`, `fire_at`, `timer_kind`, `condition_wait_id`, `condition_key`, `condition_definition_fingerprint`, `signal_wait_id`, `signal_name` | `WorkflowStepHistory`, `QueryStateReplayer`, `RunTimerView`, `ConditionWaits`, `SignalWaits` |
 | `TimerFired` | `timer_id`, `sequence`, `delay_seconds`, `fire_at`, `fired_at`, `timer_kind`, `condition_wait_id`, `condition_key`, `condition_definition_fingerprint`, `signal_wait_id`, `signal_name`, `cancellation_scope_id` (candidate 1.20), `reused_from_run_id`, `reused_recorded_at` | `WorkflowStepHistory`, `QueryStateReplayer`, `WorkflowFiberRunner`, `RunTimerView`, `ConditionWaits`, `SignalWaits`, `RedriveReplayClock` |
@@ -809,14 +836,14 @@ class, source file path, or stack trace to replay or handle a failure.
 | `MemoUpserted` | `sequence`, `entries`, `merged`, `reused_from_run_id`, `reused_recorded_at` | `WorkflowStepHistory`, `WorkflowExecutor`, `QueryStateReplayer`, `WorkflowFiberRunner`, `HistoryTimeline`, run detail projections, history export, `RedriveReplayClock` |
 | `RepairRequested` | `workflow_command_id`, `workflow_instance_id`, `workflow_run_id`, `command_type`, `outcome`, `liveness_state`, `wait_kind`, `task_id`, `task_type` | `HistoryTimeline`, `RunCommandContract`, repair diagnostics, operator detail projections |
 | `CancelRequested` | `workflow_command_id`, `workflow_instance_id`, `workflow_run_id`, `command_type`, `reason` | `HistoryTimeline`, `RunCommandContract`, cancellation projections |
-| `WorkflowCancelled` | `workflow_command_id`, `workflow_instance_id`, `workflow_run_id`, `failure_id`, `failure_category`, `closed_reason`, `exception_class`, `message`, `reason`, `cancellation_cleanup` | `HistoryTimeline`, `FailureSnapshots`, `ChildRunHistory`, cancellation projections |
+| `WorkflowCancelled` | `workflow_command_id`, `workflow_instance_id`, `workflow_run_id`, `failure_id`, `failure_category`, `closed_reason`, `exception_class`, `message`, `reason`, `cancellation_cleanup`, `timeout_cleanup` (experimental; the deadline-triggered cleanup outcome) | `HistoryTimeline`, `FailureSnapshots`, `ChildRunHistory`, cancellation projections |
 | `TerminateRequested` | `workflow_command_id`, `workflow_instance_id`, `workflow_run_id`, `command_type`, `reason` | `HistoryTimeline`, `RunCommandContract`, termination projections |
-| `WorkflowTerminated` | `workflow_command_id`, `workflow_instance_id`, `workflow_run_id`, `failure_id`, `failure_category`, `closed_reason`, `exception_class`, `message`, `reason` | `HistoryTimeline`, `FailureSnapshots`, `ChildRunHistory`, termination projections |
+| `WorkflowTerminated` | `workflow_command_id`, `workflow_instance_id`, `workflow_run_id`, `failure_id`, `failure_category`, `closed_reason`, `exception_class`, `message`, `reason`, `timeout_cleanup` (experimental; the deadline-triggered cleanup outcome) | `HistoryTimeline`, `FailureSnapshots`, `ChildRunHistory`, termination projections |
 | `ArchiveRequested` | `workflow_command_id`, `workflow_instance_id`, `workflow_run_id`, `command_type`, `outcome`, `reason` | `HistoryTimeline`, `RunCommandContract`, archive/export projections |
 | `WorkflowArchived` | `workflow_command_id`, `workflow_instance_id`, `workflow_run_id`, `archive_command_id`, `reason` | `HistoryTimeline`, archive/export projections, operator detail projections |
-| `WorkflowTimedOut` | `failure_id`, `timeout_kind`, `failure_category`, `message`, `exception_class`, `execution_deadline_at`, `run_deadline_at` | `FailureSnapshots`, `HistoryTimeline`, `ChildRunHistory`, timeout repair projections |
-| `WorkflowCompleted` | `output`, `payload_codec` | `ChildRunHistory`, `HistoryTimeline`, history export, parent resume projections |
-| `WorkflowFailed` | `failure_id`, `source_kind`, `source_id`, `failure_category`, `non_retryable`, `exception_type`, `exception_class`, `message`, `exception`, `structural_limit_kind`, `structural_limit_value`, `structural_limit_configured`, `structural_limit_name`, `failed_step_sequence`, `failed_step_kind` (`activity`, `workflow_code` or `structural_limit`) | `FailureSnapshots`, `HistoryTimeline`, `ChildRunHistory`, failure repair projections, `FailedRunRedrivePlan` |
+| `WorkflowTimedOut` | `failure_id`, `timeout_kind`, `failure_category`, `message`, `exception_class`, `execution_deadline_at`, `run_deadline_at`, `timeout_cleanup` (experimental; the deadline-triggered cleanup outcome), `abandoned_activities`, `cancellation_cleanup` (preempted by the hard timeout) | `FailureSnapshots`, `HistoryTimeline`, `ChildRunHistory`, timeout repair projections |
+| `WorkflowCompleted` | `output`, `payload_codec`, `abandoned_activities` | `ChildRunHistory`, `HistoryTimeline`, history export, parent resume projections |
+| `WorkflowFailed` | `failure_id`, `source_kind`, `source_id`, `failure_category`, `non_retryable`, `exception_type`, `exception_class`, `message`, `exception`, `structural_limit_kind`, `structural_limit_value`, `structural_limit_configured`, `structural_limit_name`, `failed_step_sequence`, `failed_step_kind` (`activity`, `workflow_code` or `structural_limit`), `abandoned_activities` | `FailureSnapshots`, `HistoryTimeline`, `ChildRunHistory`, failure repair projections, `FailedRunRedrivePlan` |
 | `FailureHandled` | `failure_id`, `sequence`, `failure_category`, `source_kind`, `source_id`, `propagation_kind`, `exception_class`, `exception_type`, `message`, `handled` | `FailureSnapshots`, `HistoryTimeline`, `QueryStateReplayer`, operator detail projections |
 | `ParentClosePolicyApplied` | `child_instance_id`, `child_run_id`, `policy`, `reason` | `HistoryTimeline`, parent-close diagnostics, history export |
 | `ParentClosePolicyFailed` | `child_instance_id`, `child_run_id`, `policy`, `reason`, `error` | `HistoryTimeline`, parent-close diagnostics, history export |

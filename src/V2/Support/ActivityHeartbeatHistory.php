@@ -123,6 +123,12 @@ final class ActivityHeartbeatHistory
         mixed $heartbeatAt,
         mixed $leaseExpiresAt,
     ): void {
+        if (ClosingRunOpenWork::abandonedAtClose($run, $execution)) {
+            // Its run closed and left it running; nothing is appended after
+            // the run's terminal event (#1117).
+            return;
+        }
+
         $payload = [
             'activity_execution_id' => $execution->id,
             'activity_attempt_id' => $attempt->id,

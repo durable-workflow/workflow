@@ -31,6 +31,26 @@ final class CommandContext
         ]);
     }
 
+    /**
+     * A command the engine issues itself, such as entering timeout cleanup at
+     * a run's work deadline (#863).
+     *
+     * @internal Engine attribution, not an application command context.
+     */
+    public static function system(string $id): self
+    {
+        return new self('system', [
+            'caller' => [
+                'type' => 'system',
+                'label' => $id,
+            ],
+            'auth' => [
+                'status' => 'not_applicable',
+                'method' => 'none',
+            ],
+        ]);
+    }
+
     public static function controlPlane(): self
     {
         return new self('control_plane', [

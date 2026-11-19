@@ -4,9 +4,12 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Carbon\CarbonInterface;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Component\Process\Process;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestParentFailingChildWorkflow;
@@ -17,6 +20,7 @@ use Tests\Fixtures\V2\TestRedriveFixedWorkflow;
 use Tests\Fixtures\V2\TestRedriveIncompatibleWorkflow;
 use Tests\Fixtures\V2\TestRedriveMarkersWorkflow;
 use Tests\Fixtures\V2\TestRedrivePatchedWorkflow;
+use Tests\Fixtures\V2\TestRedriveRetryProbeWorkflow;
 use Tests\Fixtures\V2\TestRedriveSignalWorkflow;
 use Tests\Fixtures\V2\TestRedriveTimerWorkflow;
 use Tests\Fixtures\V2\TestRedriveTwoSignalsWorkflow;
@@ -33,7 +37,9 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
+use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
@@ -185,6 +191,66 @@ final class V2FailedRunRedriveTest extends TestCase
         );
     }
 
+    /**
+     * @return array<string, array{int}>
+     */
+    public static function retriedActivityCases(): array
+    {
+        return [
+            'retried failed boundary' => [0],
+            'retried completed prefix and failed boundary' => [1],
+        ];
+    }
+
+    #[DataProvider('retriedActivityCases')]
+    public function testOrdinaryRetriedActivitiesRedriveWithoutRepeatingTheCompletedPrefix(int $firstFailures): void
+    {
+        config()
+            ->set('queue.default', 'redis');
+        Queue::fake();
+        config([
+            'workflows.v2.testing.redrive_retry_failures' => [
+                'first' => $firstFailures,
+                'second' => 2,
+            ],
+        ]);
+        $counter = 'test:redrive:retry-probe:' . $firstFailures;
+        Cache::forget($counter . ':first');
+        Cache::forget($counter . ':second');
+        $workflow = WorkflowStub::make(TestRedriveRetryProbeWorkflow::class, 'redrive-retry-probe-' . $firstFailures);
+        $workflow->start($counter, new StartOptions(executionTimeoutSeconds: 600));
+        $source = $this->drainRetryProbe($workflow->runId());
+        $this->assertSame(RunStatus::Failed, $source->status);
+        $this->assertSame(1 + $firstFailures, (int) Cache::get($counter . ':first'));
+        $this->assertSame(2, (int) Cache::get($counter . ':second'));
+        $history = $source->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->toArray();
+
+        $control = app(WorkflowControlPlane::class);
+        $redrive = $control->redrive($source->workflow_instance_id, $source->id, [
+            'request_id' => 'retry-probe',
+        ]);
+        $this->assertTrue($redrive['accepted'], (string) $redrive['reason']);
+        $this->assertSame(2, $redrive['resume_step_sequence']);
+        $successor = $this->drainRetryProbe($redrive['workflow_run_id']);
+        $this->assertSame(RunStatus::Completed, $successor->status);
+        $this->assertSame('value:first:second', $successor->workflowOutput());
+        $this->assertSame(1 + $firstFailures, (int) Cache::get($counter . ':first'));
+        $this->assertSame(3, (int) Cache::get($counter . ':second'));
+        $this->assertSame(
+            $source->execution_deadline_at->toISOString(),
+            $successor->execution_deadline_at->toISOString()
+        );
+        $this->assertSame($history, $source->historyEvents()->orderBy('sequence')->get()->toArray());
+        $repeated = $control->redrive($source->workflow_instance_id, $source->id, [
+            'request_id' => 'retry-probe',
+        ]);
+        $this->assertSame($successor->id, $repeated['workflow_run_id']);
+        $this->assertSame(3, (int) Cache::get($counter . ':second'));
+    }
+
     public function testRedriveCarriesStartMemoAndSearchAttributesToTheSuccessor(): void
     {
         WorkflowStub::fake();
@@ -263,7 +329,19 @@ final class V2FailedRunRedriveTest extends TestCase
         $this->assertSame(1, WorkflowRun::query()->where('workflow_instance_id', 'redrive-completed-1')->count());
     }
 
-    public function testServiceRunRequiresMatchingRecordedWorkerDefinitionFingerprint(): void
+    /**
+     * @return array<string, array{bool}>
+     */
+    public static function serviceRetryHistories(): array
+    {
+        return [
+            'ordinary prefix' => [false],
+            'retried completed prefix' => [true],
+        ];
+    }
+
+    #[DataProvider('serviceRetryHistories')]
+    public function testServiceRunRequiresMatchingRecordedWorkerDefinitionFingerprint(bool $retriedPrefix): void
     {
         Queue::fake();
 
@@ -292,12 +370,45 @@ final class V2FailedRunRedriveTest extends TestCase
             'activity_type' => 'remote.first',
             'sequence' => 1,
         ]);
+        if ($retriedPrefix) {
+            WorkflowHistoryEvent::record($source, HistoryEventType::ActivityStarted, [
+                'activity_execution_id' => 'service-activity-1',
+                'activity_type' => 'remote.first',
+                'activity_attempt_id' => 'service-attempt-1',
+                'workflow_task_id' => 'service-activity-task-1',
+                'attempt_number' => 1,
+                'sequence' => 1,
+            ]);
+            WorkflowHistoryEvent::record($source, HistoryEventType::ActivityRetryScheduled, [
+                'activity_execution_id' => 'service-activity-1',
+                'activity_type' => 'remote.first',
+                'activity_attempt_id' => 'service-attempt-1',
+                'retry_after_attempt_id' => 'service-attempt-1',
+                'retry_after_attempt' => 1,
+                'retry_of_task_id' => 'service-activity-task-1',
+                'retry_task_id' => 'service-activity-task-2',
+                'max_attempts' => 2,
+                'sequence' => 1,
+            ]);
+            WorkflowHistoryEvent::record($source, HistoryEventType::ActivityStarted, [
+                'activity_execution_id' => 'service-activity-1',
+                'activity_type' => 'remote.first',
+                'activity_attempt_id' => 'service-attempt-2',
+                'workflow_task_id' => 'service-activity-task-2',
+                'attempt_number' => 2,
+                'sequence' => 1,
+            ]);
+        }
         WorkflowHistoryEvent::record($source, HistoryEventType::ActivityCompleted, [
             'activity_execution_id' => 'service-activity-1',
             'activity_type' => 'remote.first',
             'sequence' => 1,
             'result' => Serializer::serializeWithCodec('avro', 'first-result'),
             'payload_codec' => 'avro',
+            ...($retriedPrefix ? [
+                'activity_attempt_id' => 'service-attempt-2',
+                'attempt_number' => 2,
+            ] : []),
         ]);
         WorkflowHistoryEvent::record($source, HistoryEventType::ActivityScheduled, [
             'activity_execution_id' => 'service-activity-2',
@@ -444,10 +555,7 @@ final class V2FailedRunRedriveTest extends TestCase
         $this->assertSame($sourceMarker->payload['version'], $reusedMarker->payload['version']);
         foreach ([[$sourceSideEffect, $reusedSideEffect], [$sourceMarker, $reusedMarker]] as [$original, $reused]) {
             $this->assertSame($sourceRunId, $reused->payload['reused_from_run_id'] ?? null);
-            $this->assertSame(
-                $original->recorded_at?->toIso8601String(),
-                $reused->payload['reused_recorded_at'] ?? null,
-            );
+            $this->assertReplayClock($original->recorded_at, $reused->payload['reused_recorded_at'] ?? null);
         }
 
         $expectedTimes = [
@@ -566,7 +674,7 @@ final class V2FailedRunRedriveTest extends TestCase
                 ->sole();
             $payload = $reused->payload;
             $this->assertSame($sourceRunId, $payload['reused_from_run_id'] ?? null);
-            $this->assertSame($original->recorded_at?->toIso8601String(), $payload['reused_recorded_at'] ?? null);
+            $this->assertReplayClock($original->recorded_at, $payload['reused_recorded_at'] ?? null);
             unset($payload['reused_from_run_id'], $payload['reused_recorded_at']);
             // The source's task and command are its recording context, not the step.
             $expected = $original->payload;
@@ -613,7 +721,7 @@ final class V2FailedRunRedriveTest extends TestCase
             ->where('workflow_run_id', $firstRunId)
             ->where('event_type', HistoryEventType::MemoUpserted)
             ->sole()
-            ->recorded_at?->toIso8601String();
+            ->recorded_at;
 
         $second = app(WorkflowControlPlane::class)->redrive('redrive-upserts-chain', $firstRunId);
         $this->assertTrue($second['accepted'], (string) $second['reason']);
@@ -639,8 +747,8 @@ final class V2FailedRunRedriveTest extends TestCase
             ->sole();
         // A step reused twice keeps the run it came from and its first time.
         $this->assertSame($secondRun->id, $reusedMemo->payload['reused_from_run_id']);
-        $this->assertSame($memoRecordedAt, $reusedMemo->payload['reused_recorded_at']);
-        $this->assertSame($memoRecordedAt, $thirdRun->workflowOutput()['time_after_memo']);
+        $this->assertReplayClock($memoRecordedAt, $reusedMemo->payload['reused_recorded_at']);
+        $this->assertSame($memoRecordedAt?->toIso8601String(), $thirdRun->workflowOutput()['time_after_memo']);
     }
 
     public function testRedriveReusesAnAppliedSignalWaitAtItsRecordedTime(): void
@@ -691,10 +799,7 @@ final class V2FailedRunRedriveTest extends TestCase
         foreach ($reused as $event) {
             $original = $sourceEvents->firstWhere('event_type', $event->event_type);
             $this->assertSame($sourceRunId, $event->payload['reused_from_run_id'] ?? null);
-            $this->assertSame(
-                $original->recorded_at?->toIso8601String(),
-                $event->payload['reused_recorded_at'] ?? null,
-            );
+            $this->assertReplayClock($original->recorded_at, $event->payload['reused_recorded_at'] ?? null);
         }
         $this->assertSame(0, WorkflowSignal::query()->where('workflow_run_id', $successor->id)->count());
         // The consumed message stays consumed for the successor.
@@ -1219,10 +1324,7 @@ final class V2FailedRunRedriveTest extends TestCase
             $original = $this->sourceEvent($source, $type);
             $reused = $this->sourceEvent($successor, $type);
             $this->assertSame($source->id, $reused->payload['reused_from_run_id'] ?? null);
-            $this->assertSame(
-                $original->recorded_at?->toIso8601String(),
-                $reused->payload['reused_recorded_at'] ?? null
-            );
+            $this->assertReplayClock($original->recorded_at, $reused->payload['reused_recorded_at'] ?? null);
         }
     }
 
@@ -1269,8 +1371,8 @@ final class V2FailedRunRedriveTest extends TestCase
             // The immediate source, the original run and its first time.
             $this->assertSame($secondRun->id, $events[0]->payload['reused_from_run_id'], $type->value);
             $this->assertSame($first->id, $events[0]->payload['workflow_run_id'] ?? $first->id, $type->value);
-            $this->assertSame(
-                $original->recorded_at?->toIso8601String(),
+            $this->assertReplayClock(
+                $original->recorded_at,
                 $events[0]->payload['reused_recorded_at'],
                 $type->value,
             );
@@ -1901,10 +2003,7 @@ final class V2FailedRunRedriveTest extends TestCase
         $this->assertSame($reusedScheduled->payload['timer_id'], $reusedFired->payload['timer_id']);
         $this->assertNotSame($sourceFired->payload['timer_id'], $reusedFired->payload['timer_id']);
         $this->assertSame($sourceRunId, $reusedFired->payload['reused_from_run_id'] ?? null);
-        $this->assertSame(
-            $sourceFired->recorded_at?->toIso8601String(),
-            $reusedFired->payload['reused_recorded_at'] ?? null,
-        );
+        $this->assertReplayClock($sourceFired->recorded_at, $reusedFired->payload['reused_recorded_at'] ?? null);
 
         $expectedTime = $sourceFired->recorded_at?->toIso8601String();
         $output = $successor->workflowOutput();
@@ -2015,10 +2114,7 @@ final class V2FailedRunRedriveTest extends TestCase
             foreach ($reused as $index => $event) {
                 $original = $sourceChildEvents[$index];
                 $this->assertSame($immediateSource, $event->payload['reused_from_run_id'] ?? null);
-                $this->assertSame(
-                    $original->recorded_at?->toIso8601String(),
-                    $event->payload['reused_recorded_at'] ?? null,
-                );
+                $this->assertReplayClock($original->recorded_at, $event->payload['reused_recorded_at'] ?? null);
                 $this->assertSame($childRunId, $event->payload['child_workflow_run_id']);
                 $this->assertSame($original->payload['workflow_link_id'], $event->payload['workflow_link_id']);
                 $this->assertArrayNotHasKey('task', $event->payload);
@@ -2407,6 +2503,12 @@ final class V2FailedRunRedriveTest extends TestCase
         ], json_decode($coldReplay->getOutput(), true, flags: JSON_THROW_ON_ERROR));
     }
 
+    // Redrive runs synchronously; the two queue-backed controls use Queue::fake().
+    protected function startQueueWorkersAutomatically(): bool
+    {
+        return false;
+    }
+
     /**
      * Both views show the one existing link row as a diagnostic fallback, and
      * no typed redrive edge.
@@ -2443,6 +2545,25 @@ final class V2FailedRunRedriveTest extends TestCase
         $this->assertTrue($workflow->refresh()->failed());
 
         return WorkflowRun::query()->findOrFail($workflow->runId());
+    }
+
+    private function drainRetryProbe(string $runId): WorkflowRun
+    {
+        for ($turn = 0; $turn < 20; ++$turn) {
+            $run = WorkflowRun::query()->findOrFail($runId);
+            if ($run->status->isTerminal()) {
+                return $run;
+            }
+            $task = WorkflowTask::query()->where('workflow_run_id', $runId)
+                ->where('status', TaskStatus::Ready)->orderBy('available_at')->firstOrFail();
+            if ($task->available_at->isFuture()) {
+                $this->travelTo($task->available_at);
+            }
+            $job = $task->task_type === TaskType::Activity
+                ? new RunActivityTask($task->id) : new RunWorkflowTask($task->id);
+            $this->app->call([$job, 'handle']);
+        }
+        $this->fail('The ordinary retry fixture did not converge within twenty task deliveries.');
     }
 
     /**
@@ -2550,5 +2671,12 @@ final class V2FailedRunRedriveTest extends TestCase
         $this->assertSame($allowed, $describe['actions']['can_redrive'] ?? null, "describe can_redrive for {$runId}");
         $this->assertArrayHasKey('redrive_blocked_reason', $describe['actions']);
         $this->assertSame($reason, $describe['actions']['redrive_blocked_reason'], "describe reason for {$runId}");
+    }
+
+    private function assertReplayClock(?CarbonInterface $expected, mixed $actual, string $message = ''): void
+    {
+        $this->assertNotNull($expected, $message);
+        $this->assertIsString($actual, $message);
+        $this->assertSame($expected->format('U.u'), Carbon::parse($actual)->format('U.u'), $message);
     }
 }

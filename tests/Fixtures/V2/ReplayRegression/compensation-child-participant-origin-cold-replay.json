@@ -1,0 +1,325 @@
+{
+    "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+    "fixture_schema": "durable-workflow.replay-regression/v1",
+    "id": "compensation-child-participant-origin-cold-replay",
+    "protocol_version": "1.20",
+    "bindings": [
+        "php"
+    ],
+    "workflow": {
+        "type": "Tests\\Fixtures\\V2\\TestRetainedScopeWorkflow",
+        "arguments": [
+            {
+                "version": 1,
+                "application": "shop",
+                "namespace": "client-a",
+                "key": "corpus-order",
+                "generation": "1"
+            },
+            "with-child",
+            {
+                "version": 1,
+                "application": "shop",
+                "namespace": "client-a",
+                "key": "corpus-shipment",
+                "generation": "1"
+            }
+        ],
+        "payload_codec": "avro"
+    },
+    "history": [
+        {
+            "sequence": 1,
+            "event_type": "WorkflowStarted",
+            "payload": {
+                "workflow_type": "Tests\\Fixtures\\V2\\TestRetainedScopeWorkflow"
+            },
+            "recorded_at": "2026-11-18T00:00:00+00:00"
+        },
+        {
+            "sequence": 2,
+            "event_type": "VersionMarkerRecorded",
+            "payload": {
+                "sequence": 1,
+                "change_id": "dw.compensation.scope-activities",
+                "version": 1,
+                "min_supported": 1,
+                "max_supported": 1
+            },
+            "recorded_at": "2026-11-18T00:00:01+00:00"
+        },
+        {
+            "sequence": 3,
+            "event_type": "ActivityScheduled",
+            "payload": {
+                "sequence": 2,
+                "activity_type": "dw.compensation.register-obligation.v1",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\RegisterObligationActivity",
+                "activity_execution_id": "corpus-execution-2",
+                "activity": {
+                    "id": "corpus-execution-2",
+                    "idempotency_key": "corpus-execution-2",
+                    "sequence": 2,
+                    "type": "dw.compensation.register-obligation.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\RegisterObligationActivity",
+                    "local_activity": false,
+                    "status": "pending",
+                    "payload_codec": "avro",
+                    "attempt_count": 0,
+                    "arguments": "wwHioz3/VYAiNwwGDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCghzaG9wEm5hbWVzcGFjZQoQY2xpZW50LWEGa2V5Chhjb3JwdXMtb3JkZXIUZ2VuZXJhdGlvbgoCMQAOCg52ZXJzaW9uBAIGa2V5CgpmaXJzdBZoYW5kbGVyVHlwZQocdGVzdC5vcGVyYXRpb24caGFuZGxlclZlcnNpb24KAjEKaW5wdXQOAghtb2RlChR3aXRoLWNoaWxkAAAKFG9wZXJhdG9yLWEA"
+                }
+            },
+            "recorded_at": "2026-11-18T00:00:02+00:00"
+        },
+        {
+            "sequence": 4,
+            "event_type": "ActivityStarted",
+            "payload": {
+                "sequence": 2,
+                "activity_type": "dw.compensation.register-obligation.v1",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\RegisterObligationActivity",
+                "activity_execution_id": "corpus-execution-2",
+                "activity_attempt_id": "corpus-attempt-2",
+                "attempt_number": 1,
+                "workflow_task_id": "corpus-task-2"
+            },
+            "recorded_at": "2026-11-18T00:00:03+00:00"
+        },
+        {
+            "sequence": 5,
+            "event_type": "ActivityCompleted",
+            "payload": {
+                "sequence": 2,
+                "activity_type": "dw.compensation.register-obligation.v1",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\RegisterObligationActivity",
+                "activity_execution_id": "corpus-execution-2",
+                "activity_attempt_id": "corpus-attempt-2",
+                "attempt_number": 1,
+                "result": "wwHioz3/VYAiNwqAAWQxZTc1YjdiNzJkZDVlMjYxMDQwMzZhZmExNDc3NmE2NmUwNjJkYTExMzVjZThkMTU5Nzk4ZTcyYjgxYjhkZGE=",
+                "payload_codec": "avro"
+            },
+            "recorded_at": "2026-11-18T00:00:04+00:00"
+        },
+        {
+            "sequence": 6,
+            "event_type": "ActivityScheduled",
+            "payload": {
+                "sequence": 3,
+                "activity_type": "dw.compensation.forward-operation.v1",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\ForwardOperationActivity",
+                "activity_execution_id": "corpus-execution-3",
+                "activity": {
+                    "id": "corpus-execution-3",
+                    "idempotency_key": "corpus-execution-3",
+                    "sequence": 3,
+                    "type": "dw.compensation.forward-operation.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\ForwardOperationActivity",
+                    "local_activity": false,
+                    "status": "pending",
+                    "payload_codec": "avro",
+                    "attempt_count": 0,
+                    "arguments": "wwHioz3/VYAiNwwGDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCghzaG9wEm5hbWVzcGFjZQoQY2xpZW50LWEGa2V5Chhjb3JwdXMtb3JkZXIUZ2VuZXJhdGlvbgoCMQAKgAFkMWU3NWI3YjcyZGQ1ZTI2MTA0MDM2YWZhMTQ3NzZhNjZlMDYyZGExMTM1Y2U4ZDE1OTc5OGU3MmI4MWI4ZGRhChRvcGVyYXRvci1hAA=="
+                }
+            },
+            "recorded_at": "2026-11-18T00:00:05+00:00"
+        },
+        {
+            "sequence": 7,
+            "event_type": "ActivityStarted",
+            "payload": {
+                "sequence": 3,
+                "activity_type": "dw.compensation.forward-operation.v1",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\ForwardOperationActivity",
+                "activity_execution_id": "corpus-execution-3",
+                "activity_attempt_id": "corpus-attempt-3",
+                "attempt_number": 1,
+                "workflow_task_id": "corpus-task-3"
+            },
+            "recorded_at": "2026-11-18T00:00:06+00:00"
+        },
+        {
+            "sequence": 8,
+            "event_type": "ActivityCompleted",
+            "payload": {
+                "sequence": 3,
+                "activity_type": "dw.compensation.forward-operation.v1",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\ForwardOperationActivity",
+                "activity_execution_id": "corpus-execution-3",
+                "activity_attempt_id": "corpus-attempt-3",
+                "attempt_number": 1,
+                "result": "wwHioz3/VYAiNw4CEnJlZmVyZW5jZQqAAWQxZTc1YjdiNzJkZDVlMjYxMDQwMzZhZmExNDc3NmE2NmUwNjJkYTExMzVjZThkMTU5Nzk4ZTcyYjgxYjhkZGEA",
+                "payload_codec": "avro"
+            },
+            "recorded_at": "2026-11-18T00:00:07+00:00"
+        },
+        {
+            "sequence": 9,
+            "event_type": "ActivityScheduled",
+            "payload": {
+                "sequence": 4,
+                "activity_type": "dw.compensation.register-child-scope.v1",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\RegisterChildScopeActivity",
+                "activity_execution_id": "corpus-execution-4",
+                "activity": {
+                    "id": "corpus-execution-4",
+                    "idempotency_key": "corpus-execution-4",
+                    "sequence": 4,
+                    "type": "dw.compensation.register-child-scope.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\RegisterChildScopeActivity",
+                    "local_activity": false,
+                    "status": "pending",
+                    "payload_codec": "avro",
+                    "attempt_count": 0,
+                    "arguments": "wwHioz3/VYAiNwwIDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCghzaG9wEm5hbWVzcGFjZQoQY2xpZW50LWEGa2V5Chhjb3JwdXMtb3JkZXIUZ2VuZXJhdGlvbgoCMQAKEGRlbGl2ZXJ5DgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCghzaG9wEm5hbWVzcGFjZQoQY2xpZW50LWEGa2V5Ch5jb3JwdXMtc2hpcG1lbnQUZ2VuZXJhdGlvbgoCMQAKFG9wZXJhdG9yLWEA"
+                }
+            },
+            "recorded_at": "2026-11-18T00:00:08+00:00"
+        },
+        {
+            "sequence": 10,
+            "event_type": "ActivityStarted",
+            "payload": {
+                "sequence": 4,
+                "activity_type": "dw.compensation.register-child-scope.v1",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\RegisterChildScopeActivity",
+                "activity_execution_id": "corpus-execution-4",
+                "activity_attempt_id": "corpus-attempt-4",
+                "attempt_number": 1,
+                "workflow_task_id": "corpus-task-4"
+            },
+            "recorded_at": "2026-11-18T00:00:09+00:00"
+        },
+        {
+            "sequence": 11,
+            "event_type": "ActivityCompleted",
+            "payload": {
+                "sequence": 4,
+                "activity_type": "dw.compensation.register-child-scope.v1",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\RegisterChildScopeActivity",
+                "activity_execution_id": "corpus-execution-4",
+                "activity_attempt_id": "corpus-attempt-4",
+                "attempt_number": 1,
+                "result": "wwHioz3/VYAiNwqAATVhYjNkODc0MjBmOWQyOTlmMWU4YjQ5MjUyOGVlZGZjNWE5NjkwMzY5OTkwNzM0NmJkYTNmOGJiZDdjNGViOGM=",
+                "payload_codec": "avro"
+            },
+            "recorded_at": "2026-11-18T00:00:10+00:00"
+        },
+        {
+            "sequence": 12,
+            "event_type": "ActivityScheduled",
+            "payload": {
+                "sequence": 5,
+                "activity_type": "dw.compensation.register-obligation.v1",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\RegisterObligationActivity",
+                "activity_execution_id": "corpus-execution-5",
+                "activity": {
+                    "id": "corpus-execution-5",
+                    "idempotency_key": "corpus-execution-5",
+                    "sequence": 5,
+                    "type": "dw.compensation.register-obligation.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\RegisterObligationActivity",
+                    "local_activity": false,
+                    "status": "pending",
+                    "payload_codec": "avro",
+                    "attempt_count": 0,
+                    "arguments": "wwHioz3/VYAiNwwGDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCghzaG9wEm5hbWVzcGFjZQoQY2xpZW50LWEGa2V5Chhjb3JwdXMtb3JkZXIUZ2VuZXJhdGlvbgoCMQAOCg52ZXJzaW9uBAIGa2V5CgxzZWNvbmQWaGFuZGxlclR5cGUKHHRlc3Qub3BlcmF0aW9uHGhhbmRsZXJWZXJzaW9uCgIxCmlucHV0DAAAChRvcGVyYXRvci1hAA=="
+                }
+            },
+            "recorded_at": "2026-11-18T00:00:11+00:00"
+        },
+        {
+            "sequence": 13,
+            "event_type": "ActivityStarted",
+            "payload": {
+                "sequence": 5,
+                "activity_type": "dw.compensation.register-obligation.v1",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\RegisterObligationActivity",
+                "activity_execution_id": "corpus-execution-5",
+                "activity_attempt_id": "corpus-attempt-5",
+                "attempt_number": 1,
+                "workflow_task_id": "corpus-task-5"
+            },
+            "recorded_at": "2026-11-18T00:00:12+00:00"
+        },
+        {
+            "sequence": 14,
+            "event_type": "ActivityCompleted",
+            "payload": {
+                "sequence": 5,
+                "activity_type": "dw.compensation.register-obligation.v1",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\RegisterObligationActivity",
+                "activity_execution_id": "corpus-execution-5",
+                "activity_attempt_id": "corpus-attempt-5",
+                "attempt_number": 1,
+                "result": "wwHioz3/VYAiNwqAAWRhOTRiNWNkMDc2MGU0NDdlYWExYWE5NDhiNjIxZmU3MzI4MTczMWQ2MTcwN2RjM2ZkYTY1YTViMzY1MzllZTE=",
+                "payload_codec": "avro"
+            },
+            "recorded_at": "2026-11-18T00:00:13+00:00"
+        },
+        {
+            "sequence": 15,
+            "event_type": "ActivityScheduled",
+            "payload": {
+                "sequence": 6,
+                "activity_type": "dw.compensation.forward-operation.v1",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\ForwardOperationActivity",
+                "activity_execution_id": "corpus-execution-6",
+                "activity": {
+                    "id": "corpus-execution-6",
+                    "idempotency_key": "corpus-execution-6",
+                    "sequence": 6,
+                    "type": "dw.compensation.forward-operation.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\ForwardOperationActivity",
+                    "local_activity": false,
+                    "status": "pending",
+                    "payload_codec": "avro",
+                    "attempt_count": 0,
+                    "arguments": "wwHioz3/VYAiNwwGDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCghzaG9wEm5hbWVzcGFjZQoQY2xpZW50LWEGa2V5Chhjb3JwdXMtb3JkZXIUZ2VuZXJhdGlvbgoCMQAKgAFkYTk0YjVjZDA3NjBlNDQ3ZWFhMWFhOTQ4YjYyMWZlNzMyODE3MzFkNjE3MDdkYzNmZGE2NWE1YjM2NTM5ZWUxChRvcGVyYXRvci1hAA=="
+                }
+            },
+            "recorded_at": "2026-11-18T00:00:14+00:00"
+        },
+        {
+            "sequence": 16,
+            "event_type": "ActivityStarted",
+            "payload": {
+                "sequence": 6,
+                "activity_type": "dw.compensation.forward-operation.v1",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\ForwardOperationActivity",
+                "activity_execution_id": "corpus-execution-6",
+                "activity_attempt_id": "corpus-attempt-6",
+                "attempt_number": 1,
+                "workflow_task_id": "corpus-task-6"
+            },
+            "recorded_at": "2026-11-18T00:00:15+00:00"
+        },
+        {
+            "sequence": 17,
+            "event_type": "ActivityCompleted",
+            "payload": {
+                "sequence": 6,
+                "activity_type": "dw.compensation.forward-operation.v1",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\ForwardOperationActivity",
+                "activity_execution_id": "corpus-execution-6",
+                "activity_attempt_id": "corpus-attempt-6",
+                "attempt_number": 1,
+                "result": "wwHioz3/VYAiNw4CEnJlZmVyZW5jZQqAAWRhOTRiNWNkMDc2MGU0NDdlYWExYWE5NDhiNjIxZmU3MzI4MTczMWQ2MTcwN2RjM2ZkYTY1YTViMzY1MzllZTEA",
+                "payload_codec": "avro"
+            },
+            "recorded_at": "2026-11-18T00:00:16+00:00"
+        }
+    ],
+    "expected": {
+        "completed": true,
+        "result": {
+            "status": "done"
+        },
+        "commands": [
+            {
+                "type": "complete_workflow",
+                "result": "wwHioz3/VYAiNw4CDHN0YXR1cwoIZG9uZQA=",
+                "payload_codec": "avro"
+            }
+        ]
+    }
+}

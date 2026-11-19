@@ -1,0 +1,46 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "child-start-cannot-become-result-wait",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner",
+    "query-state-replayer",
+    "workflow-executor"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestParentChildWorkflow",
+    "arguments": [
+      "Taylor"
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-13T12:00:00Z"
+    },
+    {
+      "sequence": 2,
+      "event_type": "ChildWorkflowScheduled",
+      "payload": {
+        "sequence": 1,
+        "child_workflow_type": "Tests\\Fixtures\\V2\\TestChildGreetingWorkflow",
+        "child_workflow_run_id": "01j00000000000000000000061",
+        "child_workflow_instance_id": "corpus-admitted-child",
+        "child_call_id": "01j00000000000000000000062",
+        "child_completion_mode": "started"
+      },
+      "recorded_at": "2026-11-13T12:00:01Z"
+    }
+  ],
+  "expected_failure": {
+    "type": "workflow_history_shape_mismatch",
+    "exception": "Workflow\\V2\\Exceptions\\HistoryEventShapeMismatchException"
+  }
+}

@@ -1,0 +1,235 @@
+<?php
+
+declare(strict_types=1);
+
+namespace DurableWorkflow\Examples\ProviderStateMachines;
+
+use LogicException;
+use Workflow\V2\StateMachine\Definition\ChildSlot;
+use Workflow\V2\StateMachine\Definition\ConditionDefinition;
+use Workflow\V2\StateMachine\Definition\MachineDefinition;
+use Workflow\V2\StateMachine\Definition\MachineState;
+use Workflow\V2\StateMachine\Definition\PolicyProfile;
+use Workflow\V2\StateMachine\Definition\RuleReference;
+use Workflow\V2\StateMachine\Definition\TransitionDefinition;
+
+/** Common new-generation routes. Readiness, payer collection and merchant receipt are different facts. */
+final class FundingCatalogue
+{
+    public const IMMEDIATE = 'funding-immediate';
+
+    public const AFTER_STOCK = 'funding-authorization-stock';
+
+    public const AFTER_DELIVERY = 'funding-authorization-delivery';
+
+    public const BANK = 'funding-bank-prepayment';
+
+    /**
+     * @return non-empty-list<string>
+     */
+    public static function recipes(): array
+    {
+        return [...self::baseRecipes(), ...CodFundingPolicy::recipes(), ...AdvanceBalancePolicy::recipes()];
+    }
+
+    /**
+     * @return non-empty-list<string>
+     */
+    public static function baseRecipes(): array
+    {
+        return [self::IMMEDIATE, self::AFTER_STOCK, self::AFTER_DELIVERY, self::BANK];
+    }
+
+    public static function selected(string $recipe): bool
+    {
+        return in_array($recipe, self::recipes(), true);
+    }
+
+    public static function assertRecipe(string $recipe): void
+    {
+        if (! self::selected($recipe)) {
+            throw new LogicException('The original funding policy is unavailable.');
+        }
+    }
+
+    public static function requiresAuthorization(string $recipe): bool
+    {
+        self::assertRecipe($recipe);
+        return in_array($recipe, [self::AFTER_STOCK, self::AFTER_DELIVERY], true);
+    }
+
+    public static function deadline(OrderTerms $terms): int
+    {
+        return $terms->advanceBalance?->balance->collectionDeadline ?? $terms->authorization?->expiresAt ?? $terms->incomingPayment?->deadline ?? $terms->codPayment?->collectionDeadline
+            ?? $terms->fulfillmentDeadline ?? throw new LogicException('The original funding deadline is unavailable.');
+    }
+
+    /**
+     * @param array<string, ConditionDefinition> $paymentConditions
+     */
+    public static function carrierProfile(string $role, string $recipe, array $paymentConditions): PolicyProfile
+    {
+        if (! CodFundingPolicy::selected($recipe) && ! AdvanceBalancePolicy::selected($recipe)) {
+            throw new LogicException('The original carrier funding policy is unavailable.');
+        }
+        $base = self::profile($role, self::IMMEDIATE);
+        $transitions = [];
+        foreach ($base->transitions as $edge) {
+            $handler = $edge->handler;
+            if ($role === 'payment') {
+                $handler = 'funding-' . $edge->key . '.' . $recipe;
+            } elseif ($role === 'order' && in_array($edge->key, ['prepare', 'fulfill'], true)) {
+                $handler = 'funding-order-' . $edge->key . '.' . $recipe;
+            }
+            $transitions[] = new TransitionDefinition(
+                $edge->key,
+                $edge->event,
+                $edge->from,
+                $edge->to,
+                $handler,
+                $edge->handlerVersion,
+                $edge->hasWork
+            );
+        }
+        return PolicyProfile::forDefinition(
+            $base->definition ?? throw new LogicException('The common funding definition is unavailable.'),
+            $recipe,
+            '1',
+            $transitions,
+            $role === 'payment' ? $paymentConditions : $base->conditions
+        );
+    }
+
+    public static function profile(string $role, string $recipe): PolicyProfile
+    {
+        if (AdvanceBalancePolicy::selected($recipe)) {
+            return AdvanceBalancePolicy::profile($role, $recipe);
+        }
+        if (CodFundingPolicy::selected($recipe)) {
+            return CodFundingPolicy::profile($role, $recipe);
+        }
+        return match ($role) {
+            'order' => self::order($recipe), 'payment' => self::payment($recipe), 'shipment' => self::shipment($recipe),
+            default => throw new LogicException('The selected funding machine role is unavailable.'),
+        };
+    }
+
+    public static function payment(string $recipe): PolicyProfile
+    {
+        if (AdvanceBalancePolicy::selected($recipe)) {
+            return AdvanceBalancePolicy::profile('payment', $recipe);
+        }
+        if (CodFundingPolicy::selected($recipe)) {
+            return CodFundingPolicy::profile('payment', $recipe);
+        }
+        self::assertRecipe($recipe);
+        $definition = new MachineDefinition('provider.payment', '3', [
+            new MachineState('received', 'Original payment obligation received'),
+            new MachineState('ready', 'The selected policy financial prerequisite for fulfillment was confirmed'),
+            new MachineState('collected', 'The payer collection required by the original obligation was confirmed'),
+            new MachineState(
+                'paid',
+                'The original required merchant receipt was confirmed; later refunds remain separate'
+            ),
+        ], ['prepare', 'collect', 'confirm-receipt'], self::all(['model_consistent']));
+        $collected = $recipe === self::BANK ? 'incoming_full_amount_confirmed' : 'capture_confirmed';
+        $ready = self::requiresAuthorization($recipe) ? 'authorization_active' : $collected;
+        $permission = match ($recipe) {
+            self::AFTER_STOCK => ['authorization_active', 'original_stock_reserved'],
+            self::AFTER_DELIVERY => ['authorization_active', 'original_recipient_delivered'],
+            default => [$collected],
+        };
+        return PolicyProfile::forDefinition($definition, $recipe, '1', [
+            new TransitionDefinition('prepare', 'prepare', ['received'], 'ready', 'funding-prepare.' . $recipe, '1'),
+            new TransitionDefinition('collect', 'collect', ['ready'], 'collected', 'funding-collect.' . $recipe, '1'),
+            new TransitionDefinition('confirm-receipt', 'confirm-receipt', [
+                'collected',
+            ], 'paid', 'funding-receipt.' . $recipe, '1'),
+        ], [
+            'prepare.target' => self::all(['forward_open', $ready]),
+            'prepare.permission' => self::all(self::requiresAuthorization($recipe)
+                ? ['forward_open', 'authorization_admissible'] : ['forward_open']),
+            'collect.target' => self::all(['forward_open', $collected]),
+            'collect.permission' => self::all(['forward_open', ...$permission]),
+            'confirm-receipt.target' => self::all(['forward_open', 'merchant_receipt_confirmed']),
+            'confirm-receipt.permission' => self::all(['forward_open']),
+        ]);
+    }
+
+    public static function order(string $recipe): PolicyProfile
+    {
+        if (AdvanceBalancePolicy::selected($recipe)) {
+            return AdvanceBalancePolicy::profile('order', $recipe);
+        }
+        if (CodFundingPolicy::selected($recipe)) {
+            return CodFundingPolicy::profile('order', $recipe);
+        }
+        self::assertRecipe($recipe);
+        $definition = new MachineDefinition('provider.order', '4', [
+            new MachineState('received', 'Original purchase received; preparation remains outstanding'),
+            new MachineState('ready', 'Original stock and the selected financial prerequisite permit fulfillment'),
+            new MachineState(
+                'fulfilled',
+                'Selected physical fulfillment and required original merchant receipt confirmed'
+            ),
+            new MachineState('cancelled', 'Original retained obligations verified and business cancellation committed'),
+        ], ['prepare', 'fulfill', 'cancel'], self::all(['model_consistent']), [
+            new ChildSlot('payment', ['received', 'ready', 'fulfilled'], 'provider.payment', '3', 'paid'),
+            new ChildSlot('shipment', ['ready', 'fulfilled'], 'provider.shipment', '2', 'delivered'),
+        ]);
+        return PolicyProfile::forDefinition($definition, $recipe, '1', [
+            new TransitionDefinition('prepare', 'prepare', [
+                'received',
+            ], 'ready', 'funding-order-prepare.' . $recipe, '1'),
+            new TransitionDefinition('fulfill', 'fulfill', [
+                'ready',
+            ], 'fulfilled', 'funding-order-fulfill.' . $recipe, '1'),
+            new TransitionDefinition('cancel', 'cancel', [
+                'received',
+                'ready',
+                'fulfilled',
+            ], 'cancelled', 'cancel', '1', false),
+        ], [
+            'prepare.target' => self::all(['forward_open', 'prepare_confirmed']),
+            'prepare.permission' => self::all(['forward_open']),
+            'fulfill.target' => self::all(['forward_open', 'fulfillment_confirmed']),
+            'fulfill.permission' => self::all(['forward_open', 'fulfillment_permitted']),
+            'cancel.target' => self::all(['cancellation_requested', 'cancel_confirmed']),
+            'cancel.permission' => self::all(['cancellation_requested']),
+        ]);
+    }
+
+    public static function shipment(string $recipe): PolicyProfile
+    {
+        if (AdvanceBalancePolicy::selected($recipe)) {
+            return AdvanceBalancePolicy::profile('shipment', $recipe);
+        }
+        if (CodFundingPolicy::selected($recipe)) {
+            return CodFundingPolicy::profile('shipment', $recipe);
+        }
+        self::assertRecipe($recipe);
+        $physical = PhysicalCatalogue::profile(FinancialCatalogue::AFTER_STOCK);
+        $definition = $physical->definition ?? throw new LogicException(
+            'The common physical definition is unavailable.'
+        );
+        return PolicyProfile::forDefinition(
+            $definition,
+            $recipe,
+            '1',
+            $physical->transitions,
+            $physical->conditions
+        );
+    }
+
+    /**
+     * @param non-empty-list<string> $facts
+     */
+    private static function all(array $facts): ConditionDefinition
+    {
+        return ConditionDefinition::all(array_map(static fn (string $fact): ConditionDefinition =>
+            ConditionDefinition::rule(new RuleReference('example.boolean', '1', [
+                'fact' => $fact,
+                'expected' => true,
+            ])), $facts));
+    }
+}

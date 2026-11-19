@@ -125,6 +125,42 @@ final class ActivityOutcomeRecorder
                 ->findOrFail($lockedExecution->workflow_run_id);
 
             $abandoned = ActivityAbandonment::allows($run, $lockedExecution);
+            if (in_array($run->status, [RunStatus::Completed, RunStatus::Failed], true) && ! $abandoned) {
+                // The run's own code closed it without this activity (#1117).
+                // Nothing is appended after its terminal event: an activity
+                // left running under the abandon policy closes with its own
+                // outcome, any other is cancelled, and the worker is told
+                // run_closed.
+                $keptRunning = ClosingRunOpenWork::abandonedAtClose($run, $lockedExecution);
+                $closedStatus = ! $keptRunning
+                    ? ActivityStatus::Cancelled
+                    : ($throwable === null ? ActivityStatus::Completed : ActivityStatus::Failed);
+
+                if (in_array($lockedExecution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)) {
+                    $lockedExecution->forceFill([
+                        'status' => $closedStatus,
+                        'closed_at' => $lockedExecution->closed_at ?? now(),
+                    ])->save();
+                }
+
+                self::closeAttempt($attemptId, match ($closedStatus) {
+                    ActivityStatus::Completed => ActivityAttemptStatus::Completed,
+                    ActivityStatus::Failed => ActivityAttemptStatus::Failed,
+                    default => ActivityAttemptStatus::Cancelled,
+                });
+
+                if (in_array($task->status, [TaskStatus::Ready, TaskStatus::Leased], true)) {
+                    $task->forceFill([
+                        'status' => $keptRunning ? TaskStatus::Completed : TaskStatus::Cancelled,
+                        'lease_expires_at' => null,
+                    ])->save();
+                }
+
+                self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+
+                return self::ignored('run_closed');
+            }
+
             if (in_array($run->status, [RunStatus::Cancelled, RunStatus::Terminated], true) && ! $abandoned) {
                 $reason = $run->status === RunStatus::Terminated
                     ? 'run_terminated'

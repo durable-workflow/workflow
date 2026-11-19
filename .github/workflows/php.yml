@@ -68,6 +68,9 @@ jobs:
     - name: Verify build and feature selection contracts
       run: python scripts/ci/test-build-routing.py
 
+    - name: Require APT retries off before networked APT (CVE-2026-109518)
+      run: python -I scripts/ci/test-apt-no-retries.py
+
     - name: Verify complete feature inventories
       run: php scripts/ci/verify-feature-shards.php
 
@@ -86,6 +89,7 @@ jobs:
       run: |
         bash -n \
           scripts/ci/laravel-embedded-upgrade-smoke.sh \
+          scripts/ci/compensation-scope-upgrade-smoke.sh \
           scripts/ci/check-packagist-release.sh \
           scripts/ci/check-platform-conformance-mirror.sh \
           scripts/ci/test-platform-conformance-resolver-audit.sh
@@ -171,7 +175,9 @@ jobs:
   regression-corpus:
     needs: preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    # Each new fixture adds two full consumer runs after the baseline.
+    # Four fixtures already exceed six minutes on the hosted runner.
+    timeout-minutes: 12
     env:
       # The runner's system PHP loads Xdebug. Each official consumer run takes
       # several times longer with it, and the validator runs the consumer
@@ -315,6 +321,8 @@ jobs:
       with:
         persist-credentials: false
 
+    - name: Disable APT download retries (CVE-2026-109518)
+      run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
     - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
       with:
         php-version: ${{ matrix.php }}
@@ -349,6 +357,8 @@ jobs:
       with:
         persist-credentials: false
 
+    - name: Disable APT download retries (CVE-2026-109518)
+      run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
     - name: Set up the optional application instrumentation
       uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
       with:
@@ -945,12 +955,12 @@ jobs:
     needs: preflight
     if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 21
+    timeout-minutes: 26
 
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
 
     services:
       mysql:
@@ -975,6 +985,8 @@ jobs:
           fetch-depth: 10
           persist-credentials: false
 
+    - name: Disable APT download retries (CVE-2026-109518)
+      run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
     - name: Set up PHP coverage driver
       uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
       with:
@@ -1044,24 +1056,28 @@ jobs:
 
     - name: Run feature test suite (MySQL shard ${{ matrix.shard }})
       id: mysql_suite
-      timeout-minutes: 15
+      timeout-minutes: 22
       run: |
         mkdir -p build/test-results
         php scripts/ci/split-feature-tests.php \
           --dir=tests/Feature \
           --shard=${{ matrix.shard }} \
-          --shards=6 \
+          --shards=16 \
           --weights=.github/feature-test-timings.json \
           --weight-profile=mysql \
           --summary="build/test-results/mysql-shard-${{ matrix.shard }}-summary.txt" \
           > /tmp/mysql-shard-files
         cat /tmp/mysql-shard-files
         cp /tmp/mysql-shard-files "build/test-results/mysql-shard-${{ matrix.shard }}-files.txt"
+        # Unit coverage includes every source file. Shards contribute collected
+        # PCOV data only: static maps for unloaded files can disagree with PCOV.
         started_at=$(date +%s)
         set +e
-        timeout --foreground 15m xargs -a /tmp/mysql-shard-files \
-          vendor/bin/phpunit --testdox --testsuite feature \
+        timeout --foreground --kill-after=10s 20m xargs -a /tmp/mysql-shard-files \
+          vendor/bin/phpunit --configuration phpunit.feature-coverage.xml --testdox --testsuite feature \
           --coverage-clover "build/test-results/mysql-shard-${{ matrix.shard }}-coverage.xml" \
+          --log-events-text "build/test-results/mysql-shard-${{ matrix.shard }}-events.log" \
+          --with-telemetry \
           --log-junit "build/test-results/mysql-shard-${{ matrix.shard }}.xml"
         status=$?
         elapsed=$(( $(date +%s) - started_at ))
@@ -1120,12 +1136,12 @@ jobs:
   feature-postgresql:
     needs: preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 26
 
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 
     services:
       postgres:
@@ -1207,13 +1223,13 @@ jobs:
 
     - name: Run feature test suite (PostgreSQL shard ${{ matrix.shard }})
       id: pgsql_suite
-      timeout-minutes: 17
+      timeout-minutes: 22
       run: |
         mkdir -p build/test-results
         php scripts/ci/split-feature-tests.php \
           --dir=tests/Feature \
           --shard=${{ matrix.shard }} \
-          --shards=6 \
+          --shards=10 \
           --weights=.github/feature-test-timings.json \
           --weight-profile=postgresql \
           --summary="build/test-results/pgsql-shard-${{ matrix.shard }}-summary.txt" \
@@ -1222,7 +1238,7 @@ jobs:
         cp /tmp/pgsql-shard-files "build/test-results/pgsql-shard-${{ matrix.shard }}-files.txt"
         started_at=$(date +%s)
         set +e
-        timeout --foreground 15m xargs -a /tmp/pgsql-shard-files \
+        timeout --foreground --kill-after=10s 20m xargs -a /tmp/pgsql-shard-files \
           vendor/bin/phpunit --testdox --testsuite feature \
           --log-junit "build/test-results/pgsql-shard-${{ matrix.shard }}.xml"
         status=$?
@@ -1425,6 +1441,8 @@ jobs:
           persist-credentials: false
           ref: ${{ env.COVERAGE_COMMIT }}
 
+    - name: Disable APT download retries (CVE-2026-109518)
+      run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
     - name: Set up PHP coverage driver
       uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
       with:
@@ -1496,6 +1514,12 @@ jobs:
         QUEUE_CONNECTION: sync
         XDEBUG_MODE: off
 
+    - name: Require the complete unit source inventory
+      run: >-
+        php scripts/ci/check-v2-coverage.php
+        --contract=resources/v2-unit-coverage-contract.json
+        --output=build/coverage/unit-coverage-summary.json
+
     - name: Retain unit coverage for the combined gate
       id: unit_coverage
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -1538,6 +1562,8 @@ jobs:
         persist-credentials: false
         ref: ${{ env.COVERAGE_COMMIT }}
 
+    - name: Disable APT download retries (CVE-2026-109518)
+      run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
     - name: Set up PHP for coverage aggregation
       uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
       with:
@@ -1567,6 +1593,16 @@ jobs:
         --clover=build/feature-coverage/mysql-shard-3-coverage.xml
         --clover=build/feature-coverage/mysql-shard-4-coverage.xml
         --clover=build/feature-coverage/mysql-shard-5-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-6-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-7-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-8-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-9-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-10-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-11-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-12-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-13-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-14-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-15-coverage.xml
 
     - name: Send Clover reports to the isolated Sonar job
       id: sonar_coverage
@@ -1581,6 +1617,16 @@ jobs:
           build/feature-coverage/mysql-shard-3-coverage.xml
           build/feature-coverage/mysql-shard-4-coverage.xml
           build/feature-coverage/mysql-shard-5-coverage.xml
+          build/feature-coverage/mysql-shard-6-coverage.xml
+          build/feature-coverage/mysql-shard-7-coverage.xml
+          build/feature-coverage/mysql-shard-8-coverage.xml
+          build/feature-coverage/mysql-shard-9-coverage.xml
+          build/feature-coverage/mysql-shard-10-coverage.xml
+          build/feature-coverage/mysql-shard-11-coverage.xml
+          build/feature-coverage/mysql-shard-12-coverage.xml
+          build/feature-coverage/mysql-shard-13-coverage.xml
+          build/feature-coverage/mysql-shard-14-coverage.xml
+          build/feature-coverage/mysql-shard-15-coverage.xml
         if-no-files-found: error
         retention-days: 1
 
@@ -1610,7 +1656,7 @@ jobs:
       with:
         binary: ${{ runner.temp }}/codecovcli
         flags: v2
-        files: ./coverage.xml,./build/feature-coverage/mysql-shard-0-coverage.xml,./build/feature-coverage/mysql-shard-1-coverage.xml,./build/feature-coverage/mysql-shard-2-coverage.xml,./build/feature-coverage/mysql-shard-3-coverage.xml,./build/feature-coverage/mysql-shard-4-coverage.xml,./build/feature-coverage/mysql-shard-5-coverage.xml
+        files: ./coverage.xml,./build/feature-coverage/mysql-shard-0-coverage.xml,./build/feature-coverage/mysql-shard-1-coverage.xml,./build/feature-coverage/mysql-shard-2-coverage.xml,./build/feature-coverage/mysql-shard-3-coverage.xml,./build/feature-coverage/mysql-shard-4-coverage.xml,./build/feature-coverage/mysql-shard-5-coverage.xml,./build/feature-coverage/mysql-shard-6-coverage.xml,./build/feature-coverage/mysql-shard-7-coverage.xml,./build/feature-coverage/mysql-shard-8-coverage.xml,./build/feature-coverage/mysql-shard-9-coverage.xml,./build/feature-coverage/mysql-shard-10-coverage.xml,./build/feature-coverage/mysql-shard-11-coverage.xml,./build/feature-coverage/mysql-shard-12-coverage.xml,./build/feature-coverage/mysql-shard-13-coverage.xml,./build/feature-coverage/mysql-shard-14-coverage.xml,./build/feature-coverage/mysql-shard-15-coverage.xml
         fail_ci_if_error: true
         name: v2
         override_branch: ${{ env.COVERAGE_BRANCH }}

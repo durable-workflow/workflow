@@ -29,6 +29,9 @@ final class ContinuedRunMessageHandoff
         CarbonInterface $closedAt,
     ): void {
         self::transferInstanceScoped($closingRun, $continuedRun);
+        // Activities and timers the closing run never awaited are settled
+        // here; children were handed to the continued run (#868, #1117).
+        $abandonedActivities = ClosingRunOpenWork::settle($closingRun, $task);
         $closingRun->forceFill([
             'status' => RunStatus::Completed,
             'closed_reason' => 'continued',
@@ -41,6 +44,9 @@ final class ContinuedRunMessageHandoff
             'continued_to_run_number' => $continuedRun->run_number,
             'workflow_link_id' => $linkId,
             'closed_reason' => 'continued',
+            ...($abandonedActivities === [] ? [] : [
+                ClosingRunOpenWork::ABANDONED_ACTIVITIES => $abandonedActivities,
+            ]),
         ], $task);
         PendingUpdateCloser::closeForTerminalRun($closingRun, $task);
     }

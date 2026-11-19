@@ -294,6 +294,9 @@ final class RunActivityView
             'status' => $status,
             'attempt_count' => $attemptCount,
             'retry_policy' => $state['retry_policy'] ?? ($execution?->retry_policy ?? null),
+            ...(isset($state[EntityReferenceArguments::POSITIONS]) ? [
+                EntityReferenceArguments::POSITIONS => $state[EntityReferenceArguments::POSITIONS],
+            ] : []),
             'connection' => $state['connection'] ?? null,
             'queue' => $state['queue'] ?? null,
             'last_heartbeat_at' => $state['last_heartbeat_at'] ?? ($latestAttempt['last_heartbeat_at'] ?? null),

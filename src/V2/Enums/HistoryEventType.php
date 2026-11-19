@@ -11,6 +11,7 @@ enum HistoryEventType: string
     case WorkflowStarted = 'WorkflowStarted';
     case WorkflowContinuedAsNew = 'WorkflowContinuedAsNew';
     case ChildWorkflowScheduled = 'ChildWorkflowScheduled';
+    case ChildWorkflowAwaited = 'ChildWorkflowAwaited';
     case ChildCancellationRequested = 'ChildCancellationRequested';
     case ChildCancellationResolved = 'ChildCancellationResolved';
     case ChildRunStarted = 'ChildRunStarted';
@@ -71,6 +72,8 @@ enum HistoryEventType: string
     case SearchAttributesUpserted = 'SearchAttributesUpserted';
     case MemoUpserted = 'MemoUpserted';
     case WorkflowTimedOut = 'WorkflowTimedOut';
+
+    case WorkflowTimeoutCleanupStarted = 'WorkflowTimeoutCleanupStarted';
     case WorkflowCompleted = 'WorkflowCompleted';
     case WorkflowFailed = 'WorkflowFailed';
     case ParentClosePolicyApplied = 'ParentClosePolicyApplied';

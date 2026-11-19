@@ -46,6 +46,8 @@ final class ChildClosureSiblingHistoryCostTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        // Periodic heartbeat/pruning writes are independent of sibling count.
+        $this->travelTo(now()->startOfSecond());
         Queue::fake();
         config()
             ->set('queue.default', 'redis');

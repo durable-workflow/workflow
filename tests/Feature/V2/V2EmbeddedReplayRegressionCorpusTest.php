@@ -23,6 +23,7 @@ use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestLocalActivityWorkflow;
 use Tests\Fixtures\V2\TestParallelGreetingChildrenWorkflow;
 use Tests\Fixtures\V2\TestQueryReplayGuardActivity;
+use Tests\Fixtures\V2\TestRedriveFractionalClockWorkflow;
 use Tests\Fixtures\V2\TestRepeatedPatchClockWorkflow;
 use Tests\Fixtures\V2\TestSinglePatchReplayWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
@@ -101,8 +102,10 @@ use Workflow\V2\Support\RunTimelineProjector;
 use Workflow\V2\Support\ScheduleManager;
 use Workflow\V2\Support\ServiceCallPrincipal;
 use Workflow\V2\Support\ServiceCallScheduler;
+use Workflow\V2\Support\VersionUsageQuery;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowDefinition;
+use Workflow\V2\Support\WorkflowDefinitionFingerprint;
 use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\Support\WorkflowRunRetentionCleanup;
@@ -120,6 +123,66 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     private const FIXTURE_DIR = __DIR__ . '/../../Fixtures/V2/ReplayRegression';
 
     private int $workflowNumber = 0;
+
+    public function testVersionUsageCorpusAlsoExecutesDeclaredReplayConsumers(): void
+    {
+        $path = self::FIXTURE_DIR . '/version-usage-retained-reused-decision.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The retained version-usage evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        self::stopWorkers();
+        Queue::fake();
+        config([
+            'queue.default' => 'database',
+            'app.key' => 'version-usage-corpus-signing-key',
+        ]);
+        $this->assertVersionUsageRetainedDecision($fixture);
+    }
+
+    public function testEntityReferenceAttemptCorpusLoadsCurrentStateAndNeverLoadsOnReplay(): void
+    {
+        $path = self::FIXTURE_DIR . '/entity-reference-attempt-current-state.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The entity reference attempt evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['entity_reference_attempt'];
+        self::stopWorkers();
+        Queue::fake();
+        config([
+            'queue.default' => 'database',
+            'workflows.v2.entity_references' => [
+                $scenario['logical_type'] => [
+                    'entity_class' => \Tests\Fixtures\V2\EntityReferences\Order::class,
+                    'adapter' => \Tests\Fixtures\V2\EntityReferences\OrderReferenceAdapter::class,
+                    'resolver' => \Tests\Fixtures\V2\EntityReferences\OrderReferenceResolver::class,
+                ],
+            ],
+        ]);
+        \Tests\Fixtures\V2\EntityReferences\OrderRepository::reset();
+        $stub = WorkflowStub::make($fixture['workflow']['type'], 'regression-entity-reference');
+        $stub->start(...$fixture['workflow']['arguments']);
+        $runId = $stub->runId();
+        $this->runReadyTaskOfType($runId, TaskType::Workflow);
+        $execution = ActivityExecution::query()->where('workflow_run_id', $runId)->sole();
+        $this->assertSame($scenario['recorded_positions'], $execution->activity_options['entity_reference_positions']);
+        $this->assertSame([
+            'type' => $scenario['logical_type'],
+            'id' => $scenario['entity_id'],
+            'version' => 1,
+        ], $execution->activityArguments()[0]);
+        \Tests\Fixtures\V2\EntityReferences\OrderRepository::save(new \Tests\Fixtures\V2\EntityReferences\Order(
+            $scenario['entity_id'],
+            $scenario['state_at_attempt'],
+        ));
+        $this->runReadyTaskOfType($runId, TaskType::Activity);
+        $this->runReadyTaskOfType($runId, TaskType::Workflow);
+        $this->assertSame($scenario['expected_result'], $stub->refresh()->output());
+        (new WorkflowReplayer())->replay(WorkflowRun::query()->findOrFail($runId));
+        $this->assertSame($scenario['loads_after_replay'], \Tests\Fixtures\V2\EntityReferences\OrderRepository::$loads);
+        $this->assertSame([0], \Tests\Fixtures\V2\EntityReferences\OrderRepository::$transactionLevels);
+    }
 
     public function testImportedChildLineageCorpusDoesNotAttachAnUnrelatedLaterRun(): void
     {
@@ -261,6 +324,172 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         );
     }
 
+    public function testTimeoutCleanupOutcomeCorpusEndsTimedOutWithEachOutcome(): void
+    {
+        $path = self::FIXTURE_DIR . '/timeout-cleanup-outcome-recorded.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The timeout cleanup outcome evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['timeout_cleanup_outcome'];
+        config([
+            'queue.default' => 'database',
+        ]);
+        Queue::fake();
+
+        foreach ($scenario['outcomes'] as $mode => $outcome) {
+            $this->travelTo(now()->startOfSecond());
+            $stub = WorkflowStub::make($fixture['workflow']['type'], 'regression-corpus-timeout-cleanup-' . $mode);
+            $stub->start($mode, new StartOptions(
+                executionTimeoutSeconds: $scenario['execution_timeout_seconds'],
+                timeoutCleanupSeconds: $scenario['timeout_cleanup_seconds'],
+            ));
+            $runId = $stub->runId();
+            $this->runReadyTaskOfType($runId, TaskType::Workflow);
+            $workSeconds = $scenario['execution_timeout_seconds'] - $scenario['timeout_cleanup_seconds'];
+            $this->travel($workSeconds + 1)
+                ->seconds();
+            \Workflow\V2\TaskWatchdog::runPass(runIds: [$runId]);
+            $this->runReadyTaskOfType($runId, TaskType::Workflow);
+            if ($outcome === 'expired') {
+                $this->travel($scenario['timeout_cleanup_seconds'])->seconds();
+                \Workflow\V2\TaskWatchdog::runPass(runIds: [$runId]);
+            }
+
+            $terminal = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->orderByDesc(
+                'sequence'
+            )->firstOrFail();
+            $this->assertSame(HistoryEventType::WorkflowTimedOut, $terminal->event_type, $mode);
+            $this->assertSame($outcome, $terminal->payload['timeout_cleanup']['outcome'] ?? null, $mode);
+            $this->assertTrue(WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::WorkflowTimeoutCleanupStarted->value)
+                ->exists(), $mode);
+        }
+    }
+
+    public function testTimeoutCleanupTaskExpiryCorpusKeepsTheOutcome(): void
+    {
+        $path = self::FIXTURE_DIR . '/timeout-cleanup-task-expiry.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The timeout cleanup task expiry evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['timeout_cleanup_task_expiry'];
+        config()
+            ->set('queue.default', 'database');
+        Queue::fake();
+        $this->travelTo(now()->startOfSecond());
+        $stub = WorkflowStub::make($fixture['workflow']['type'], 'regression-timeout-cleanup-task-expiry');
+        $stub->start($fixture['workflow']['arguments'][0], new StartOptions(
+            executionTimeoutSeconds: $scenario['execution_timeout_seconds'],
+            timeoutCleanupSeconds: $scenario['timeout_cleanup_seconds'],
+        ));
+        $runId = $stub->runId();
+        $this->runReadyTaskOfType($runId, TaskType::Workflow);
+        $this->travel($scenario['detect_after_seconds'])->seconds();
+        \Workflow\V2\TaskWatchdog::runPass(runIds: [$runId]);
+        $this->runReadyTaskOfType($runId, TaskType::Workflow);
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $task = WorkflowTask::query()->create([
+            'workflow_run_id' => $runId,
+            'namespace' => $run->namespace,
+            'task_type' => TaskType::Workflow,
+            'status' => TaskStatus::Ready,
+            'available_at' => now(),
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'compatibility' => $run->compatibility,
+            'payload' => [
+                'reason' => 'cleanup_resume',
+            ],
+        ]);
+        $this->travel($scenario['execution_timeout_seconds'] - $scenario['detect_after_seconds'])->seconds();
+        // The embedded task boundary must agree with watchdog expiry.
+        $this->app->call([new RunWorkflowTask($task->id), 'handle']);
+        $terminal = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->orderByDesc(
+            'sequence'
+        )->firstOrFail();
+        $this->assertSame(HistoryEventType::WorkflowTimedOut, $terminal->event_type);
+        $this->assertSame($scenario['outcome'], $terminal->payload['timeout_cleanup']['outcome'] ?? null);
+        $this->assertSame(
+            $run->execution_deadline_at->toIso8601String(),
+            $terminal->payload['timeout_cleanup']['cleanup_deadline_at'] ?? null
+        );
+    }
+
+    public function testTimeoutCleanupContinueAsNewCorpusKeepsTheWorkDeadline(): void
+    {
+        $path = self::FIXTURE_DIR . '/timeout-cleanup-continue-as-new-inheritance.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The timeout cleanup continue-as-new evidence is absent.');
+        }
+        config([
+            'queue.default' => 'database',
+        ]);
+        Queue::fake();
+        $this->travelTo(now()->startOfSecond());
+
+        $stub = WorkflowStub::make(
+            \Tests\Fixtures\V2\TestContinueAsNewLargePayloadWorkflow::class,
+            'regression-corpus-timeout-cleanup-continue',
+        );
+        $stub->start('x', 0, new StartOptions(executionTimeoutSeconds: 70, timeoutCleanupSeconds: 10));
+        $first = WorkflowRun::query()->findOrFail($stub->runId());
+        $this->runReadyTaskOfType($first->id, TaskType::Workflow);
+        $second = WorkflowRun::query()
+            ->where('workflow_instance_id', $first->workflow_instance_id)
+            ->where('run_number', 2)
+            ->sole();
+
+        $this->assertNotNull($first->timeout_cleanup_work_deadline_at);
+        $this->assertTrue($second->timeout_cleanup_work_deadline_at->equalTo($first->timeout_cleanup_work_deadline_at));
+        $this->assertSame(10, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $second->id)
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->sole()
+            ->payload['timeout_cleanup']['allowance_seconds'] ?? null);
+    }
+
+    public function testTimeoutCleanupRedriveCorpusKeepsTheWorkDeadline(): void
+    {
+        $path = self::FIXTURE_DIR . '/timeout-cleanup-redrive-inheritance.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The timeout cleanup redrive evidence is absent.');
+        }
+        self::stopWorkers();
+        config([
+            'queue.default' => 'sync',
+            'queue.connections.sync.driver' => 'sync',
+        ]);
+        Cache::forget('test:redrive:first-calls');
+        Cache::forget('test:redrive:second-calls');
+        $this->clearWorkflowState();
+        WorkflowStub::fake();
+
+        $stub = WorkflowStub::make(
+            \Tests\Fixtures\V2\TestRedriveWorkflow::class,
+            'regression-corpus-timeout-cleanup-redrive'
+        );
+        $stub->start('Taylor', new StartOptions(executionTimeoutSeconds: 3600, timeoutCleanupSeconds: 60));
+        $this->assertTrue($stub->refresh()->failed());
+        $source = WorkflowRun::query()->findOrFail($stub->runId());
+
+        $result = app(WorkflowControlPlane::class)->redrive($source->workflow_instance_id, $source->id);
+
+        $this->assertTrue($result['accepted'], (string) $result['reason']);
+        $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+        $this->assertNotNull($source->timeout_cleanup_work_deadline_at);
+        $this->assertTrue(
+            $successor->timeout_cleanup_work_deadline_at->equalTo($source->timeout_cleanup_work_deadline_at)
+        );
+        $this->assertSame(60, WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $successor->id)
+            ->where('event_type', HistoryEventType::WorkflowStarted->value)
+            ->sole()
+            ->payload['timeout_cleanup']['allowance_seconds'] ?? null);
+    }
+
     public function testRedriveServiceFenceCorpusRefusesUnqualifiedReuse(): void
     {
         $path = self::FIXTURE_DIR . '/redrive-service-unqualified-history.json';
@@ -385,7 +614,10 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 ->firstOrFail();
             $this->assertSame($step['sequence'], $reused->payload['sequence']);
             $this->assertSame($sourceRunId, $reused->payload['reused_from_run_id'] ?? null);
-            $this->assertSame($sourceTimes[$step['sequence']], $reused->payload['reused_recorded_at'] ?? null);
+            $this->assertSame(
+                $sourceTimes[$step['sequence']],
+                Carbon::parse($reused->payload['reused_recorded_at'])->toIso8601String(),
+            );
         }
         $output = $successor->workflowOutput();
         $this->assertSame($scenario['version'], $output['version']);
@@ -446,7 +678,10 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 ->sole();
             $this->assertSame($step['sequence'], $reused->payload['sequence']);
             $this->assertSame($sourceRunId, $reused->payload['reused_from_run_id'] ?? null);
-            $this->assertSame($sourceTimes[$step['sequence']], $reused->payload['reused_recorded_at'] ?? null);
+            $this->assertSame(
+                $sourceTimes[$step['sequence']],
+                Carbon::parse($reused->payload['reused_recorded_at'])->toIso8601String(),
+            );
         }
         $this->assertEquals($scenario['memo'], $successor->typedMemos());
         $this->assertEquals($scenario['search_attributes'], $successor->typedSearchAttributes());
@@ -514,7 +749,10 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         );
         foreach ($reused as $event) {
             $this->assertSame($sourceRunId, $event->payload['reused_from_run_id'] ?? null);
-            $this->assertSame($sourceTimes[$event->event_type->value], $event->payload['reused_recorded_at'] ?? null);
+            $this->assertSame(
+                $sourceTimes[$event->event_type->value],
+                Carbon::parse($event->payload['reused_recorded_at'])->toIso8601String(),
+            );
         }
         $output = $successor->workflowOutput();
         $this->assertSame($scenario['signal_value'], $output['approved_by']);
@@ -679,6 +917,48 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             );
         }
 
+        $this->assertTrue($stub->refresh()->completed());
+        $this->assertSame($scenario['output'], $stub->output());
+    }
+
+    public function testMessageStreamIdenticalSendsCorpusLoadsCandidatesOncePerReplay(): void
+    {
+        $path = self::FIXTURE_DIR . '/message-stream-identical-sends-load-once.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The message stream identical-sends evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['message_stream_identical_sends'];
+        self::stopWorkers();
+        config([
+            'queue.default' => 'sync',
+            'queue.connections.sync.driver' => 'sync',
+        ]);
+        $this->clearWorkflowState();
+        WorkflowStub::fake();
+
+        $instanceId = 'regression-corpus-message-identical-sends';
+        $stub = WorkflowStub::make($fixture['workflow']['type'], $instanceId);
+        $stub->start(...$fixture['workflow']['arguments']);
+        $stub->signal($scenario['signal'], $scenario['argument']);
+        $this->assertSame($scenario['copies'], \Workflow\V2\Models\WorkflowMessage::query()
+            ->where('workflow_instance_id', $instanceId)
+            ->where('stream_key', $scenario['stream'])
+            ->where('direction', 'outbound')
+            ->count());
+
+        $loads = 0;
+        DB::listen(static function ($query) use (&$loads): void {
+            if (str_contains($query->sql, 'workflow_messages') && str_contains($query->sql, 'source_workflow_run_id')) {
+                ++$loads;
+            }
+        });
+        $this->assertSame(1, $stub->refresh()->query($scenario['query']));
+        $this->assertSame(
+            $scenario['candidate_loads_per_replay'],
+            $loads,
+            'Replaying identical sends reloaded their candidates for each send.',
+        );
         $this->assertTrue($stub->refresh()->completed());
         $this->assertSame($scenario['output'], $stub->output());
     }
@@ -1408,6 +1688,110 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         }
     }
 
+    public function testFractionalRedriveClocksSurviveRepeatedNativeAdmissionAndColdReplay(): void
+    {
+        $path = self::FIXTURE_DIR . '/redrive-reused-fractional-clock.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The fractional redrive clock evidence is absent.');
+        }
+        $fixture = json_decode(file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['redrive_fractional_clock'];
+        self::stopWorkers();
+        config([
+            'queue.default' => 'sync',
+            'queue.connections.sync.driver' => 'sync',
+            'workflows.v2.testing.redrive_failures_before_success' => $scenario['redrives'],
+        ]);
+        Cache::forget('test:redrive:first-calls');
+        Cache::forget('test:redrive:second-calls');
+        $this->clearWorkflowState();
+        WorkflowStub::fake();
+        try {
+            Carbon::setTestNow(Carbon::parse($scenario['source_times']['started_at']));
+            $stub = WorkflowStub::make($fixture['workflow']['type'], 'regression-corpus-fractional-clock');
+            $stub->start(...$fixture['workflow']['arguments']);
+            Carbon::setTestNow(Carbon::parse($scenario['source_times']['timer_fired_at']));
+            $timer = WorkflowTask::query()
+                ->where('workflow_run_id', $stub->runId())
+                ->where('task_type', TaskType::Timer->value)
+                ->sole();
+            $this->app->call([new RunTimerTask($timer->id), 'handle']);
+            $source = WorkflowRun::query()->findOrFail($stub->runId());
+            $this->assertSame(RunStatus::Failed, $source->status);
+            // Give the consumed activity a distinct persisted instant. The real
+            // admission, timer and failure lifecycle ran before this clock mutation.
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $source->id)
+                ->where('event_type', HistoryEventType::ActivityCompleted)
+                ->sole()
+                ->forceFill([
+                    'recorded_at' => Carbon::parse($scenario['source_times']['activity_completed_at']),
+                ])->save();
+            $originalHistory = $source->historyEvents()
+                ->get()
+                ->toArray();
+            $predecessor = $source;
+            $firstSerializedClocks = null;
+            for ($attempt = 1; $attempt <= $scenario['redrives']; ++$attempt) {
+                Carbon::setTestNow(now()->addMinutes($scenario['redrive_after_minutes']));
+                $result = app(WorkflowControlPlane::class)->redrive($source->workflow_instance_id, $predecessor->id);
+                $this->assertTrue($result['accepted'], (string) $result['reason']);
+                $successor = WorkflowRun::query()->findOrFail($result['workflow_run_id']);
+                $this->assertSame(
+                    $attempt === $scenario['redrives'] ? RunStatus::Completed : RunStatus::Failed,
+                    $successor->status,
+                );
+                if ($successor->status === RunStatus::Completed) {
+                    $this->assertSame(
+                        $scenario['expected_times'],
+                        (new QueryStateReplayer())->query($successor->fresh(), 'recordedTimes', []),
+                    );
+                    $replayed = (new WorkflowReplayer())->replay($successor->fresh())
+->workflow;
+                    $this->assertInstanceOf(TestRedriveFractionalClockWorkflow::class, $replayed);
+                    $this->assertSame($scenario['expected_times'], $replayed->recordedTimes());
+                }
+                $started = $successor->historyEvents()
+                    ->where('event_type', HistoryEventType::WorkflowStarted)
+                    ->sole();
+                $activity = $successor->historyEvents()
+                    ->where('event_type', HistoryEventType::ActivityCompleted)
+                    ->orderBy('sequence')
+                    ->firstOrFail();
+                $fired = $successor->historyEvents()
+                    ->where('event_type', HistoryEventType::TimerFired)
+                    ->sole();
+                $serializedClocks = [
+                    $started->payload['replayed_started_at'],
+                    $activity->payload['reused_recorded_at'],
+                    $fired->payload['reused_recorded_at'],
+                ];
+                $this->assertSame(array_values($scenario['expected_times']), array_map(
+                    static fn (string $clock): string => Carbon::parse($clock)->format('U.u'),
+                    $serializedClocks,
+                ));
+                if ($firstSerializedClocks !== null) {
+                    $this->assertSame($firstSerializedClocks, $serializedClocks);
+                }
+                $firstSerializedClocks ??= $serializedClocks;
+                $this->assertSame(0, WorkflowTimer::query() ->where('workflow_run_id', $successor->id) ->count());
+                $this->assertSame(0, WorkflowTask::query()
+                    ->where('workflow_run_id', $successor->id)
+                    ->where('task_type', TaskType::Timer->value)
+                    ->count());
+                $this->assertSame($originalHistory, $source->historyEvents()->get()->toArray());
+                $predecessor = $successor;
+            }
+            $output = $predecessor->workflowOutput();
+            unset($output['result']);
+            $this->assertSame($scenario['expected_times'], $output);
+            $this->assertSame(1, (int) Cache::get('test:redrive:first-calls'));
+            $this->assertSame(3, (int) Cache::get('test:redrive:second-calls'));
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
     public function testRedriveReusedTimerCorpusDoesNotWaitAgain(): void
     {
         $path = self::FIXTURE_DIR . '/redrive-reused-timer-clock.json';
@@ -2105,6 +2489,21 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         foreach ($this->fixtures() as $fixture) {
             $this->executeColdReplayFixture($fixture);
 
+            if ($fixture['id'] === 'signal-timeout-before-later-cancellation') {
+                $this->assertSignalTimeoutSurvivesLaterCancellation($fixture);
+                continue;
+            }
+            if ($fixture['id'] === 'selection-cancelled-signal-occurrence') {
+                $this->assertLaterSignalBelongsToItsCurrentSelection($fixture);
+                continue;
+            }
+
+            if ($fixture['id'] === 'version-usage-retained-reused-decision') {
+                config()->set('app.key', 'version-usage-corpus-signing-key');
+                $this->assertVersionUsageRetainedDecision($fixture);
+                continue;
+            }
+
             if ($fixture['id'] === 'cooperative-cleanup-terminal-notification') {
                 // Its live cleanup, commit and notification proof runs in the dedicated corpus test.
                 continue;
@@ -2350,8 +2749,46 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 continue;
             }
 
+            if ($fixture['id'] === 'child-retry-definition-recorded-cold-replay') {
+                $this->assertNativeChildProducersRetainDefinition($fixture);
+                $run = $this->createRunFromFixture($fixture);
+                $before = $run->historyEvents()
+                    ->orderBy('sequence')
+                    ->get()
+                    ->toArray();
+                $state = (new QueryStateReplayer())->replayState($run->fresh(['historyEvents']));
+                $this->assertSame(2, $state->sequence);
+                $this->assertNull($state->current);
+                $this->assertSame($before, $run->historyEvents()->orderBy('sequence')->get()->toArray());
+                $this->runReadyWorkflowTask($run);
+                $this->assertSame(RunStatus::Completed, $run->fresh()->status);
+                $this->assertSame($fixture['expected']['result'], WorkflowStub::loadRun($run->id)->output());
+                $this->assertSame(1, $run->historyEvents()
+                    ->where('event_type', HistoryEventType::VersionMarkerRecorded)->count());
+
+                // Legacy absence is a compatibility control, not new regression
+                // evidence: neither query nor execution may acquire a current
+                // definition when the historical start recorded none.
+                $fixture['id'] .= '-legacy-absence-control';
+                $fixture['history'] = [$fixture['history'][0]];
+                unset(
+                    $fixture['history'][0]['payload']['workflow_definition_fingerprint'],
+                    $fixture['history'][0]['payload']['workflow_definition_fingerprint_source'],
+                    $fixture['expected'],
+                );
+                $fixture['expected_failure'] = [
+                    'exception' => VersionRangeMismatchException::class,
+                ];
+            }
+
             if ($fixture['id'] === 'child-closure-sibling-history-bound') {
                 $this->assertChildClosureReadsNoSiblingHistory($fixture);
+
+                continue;
+            }
+
+            if ($fixture['id'] === 'retained-child-reservation-cold-replay') {
+                $this->assertRetainedChildReservationReplaysWithoutNewOwnership($fixture);
 
                 continue;
             }
@@ -2359,6 +2796,15 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             if ($fixture['id'] === 'cooperative-delivery-before-wait-sequence') {
                 $run = $this->createRunFromFixture($fixture);
                 $this->assertSame(2, WorkflowStepHistory::nextDurableCommandSequence($run->fresh()));
+            }
+
+            if ($fixture['id'] === 'cooperative-delivery-before-signal-wait') {
+                // Query-state replay must deliver the recorded cancellation where the executor did.
+                $run = $this->createRunFromFixture($fixture);
+                $state = (new QueryStateReplayer())->replayState($run->fresh(['historyEvents']));
+                $this->assertSame(2, $state->sequence, "{$fixture['id']} query-state replay position");
+                $this->assertInstanceOf(\Workflow\V2\Support\ActivityCall::class, $state->current);
+                $this->assertSame(\Tests\Fixtures\V2\TestRetryActivity::class, $state->current->activity);
             }
 
             $consumers = $fixture['consumers'] ?? ['workflow-fiber-runner'];
@@ -2459,6 +2905,9 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
         /** @var array<string, mixed> $fixture */
         $fixture = json_decode((string) file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
+        config([
+            'queue.default' => 'database',
+        ]);
         Queue::fake();
 
         $workflow = WorkflowStub::make(TestParallelGreetingChildrenWorkflow::class, 'child-closure-run-rows');
@@ -2552,6 +3001,112 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertDurableOnlyTimelineProjection($fixture);
     }
 
+    public function testSelectionLoserCorpusIsSettledWhenTheRunCloses(): void
+    {
+        $fixturePath = self::FIXTURE_DIR . '/selection-loser-settled-at-close.json';
+
+        if (! is_file($fixturePath)) {
+            $this->markTestSkipped('Selection loser close fixture is not present in the base corpus.');
+        }
+
+        /** @var array<string, mixed> $fixture */
+        $fixture = json_decode((string) file_get_contents($fixturePath), true, flags: JSON_THROW_ON_ERROR);
+        config([
+            'queue.default' => 'database',
+        ]);
+        Queue::fake();
+
+        foreach ($fixture['selection_loser_settled_at_close']['closes'] as $close) {
+            $mode = match ($close) {
+                'continue_as_new' => 'continue',
+                'cancel' => 'timer-loser',
+                default => $close,
+            };
+            $workflow = WorkflowStub::make($fixture['workflow']['type'], 'selection-loser-close-' . $close);
+            $workflow->start($mode);
+            $runId = $workflow->runId();
+            $this->runReadyTaskOfType($runId, TaskType::Workflow);
+
+            if ($close === 'cancel') {
+                $this->assertTrue($workflow->refresh()->attemptCancel('operator')->accepted());
+            }
+
+            $run = WorkflowRun::query()->findOrFail($runId);
+            $this->assertTrue($run->status->isTerminal(), $close);
+            $events = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->orderBy('sequence')
+                ->get();
+            $terminal = $events->last();
+            $this->assertSame(match ($close) {
+                'complete' => HistoryEventType::WorkflowCompleted,
+                'fail' => HistoryEventType::WorkflowFailed,
+                'continue_as_new' => HistoryEventType::WorkflowContinuedAsNew,
+                'cancel' => HistoryEventType::WorkflowCancelled,
+            }, $terminal->event_type, $close);
+            $cancelled = $events->firstWhere('event_type', HistoryEventType::ActivityCancelled);
+            $this->assertInstanceOf(
+                WorkflowHistoryEvent::class,
+                $cancelled,
+                "{$close} left the select() loser without a recorded outcome.",
+            );
+            $this->assertLessThan($terminal->sequence, $cancelled->sequence, $close);
+            $this->assertSame(0, WorkflowTask::query()
+                ->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Activity->value)
+                ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+                ->count(), $close);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function assertVersionUsageRetainedDecision(array $fixture): void
+    {
+        $this->assertTrue(
+            class_exists(VersionUsageQuery::class),
+            'The retained version-usage reader capability is unavailable.'
+        );
+        $this->clearWorkflowState();
+        $run = $this->createRunFromFixture($fixture);
+        $history = $run->historyEvents()
+            ->get()
+            ->toArray();
+        $attempts = ActivityAttempt::query()->count();
+        $query = new VersionUsageQuery();
+        foreach ([[1, 'current'], [2, 'legacy']] as [$minimum, $state]) {
+            $page = $query->page($run->namespace, $run->workflow_type, 'same', $minimum);
+            $this->assertSame(1, $page['counts']['total']);
+            $this->assertSame(1, $page['counts'][$state]);
+            $this->assertSame($state, $page['runs'][0]['state']);
+            $this->assertSame(1, $page['runs'][0]['recorded_version']);
+        }
+        $missing = $query->page($run->namespace, $run->workflow_type, 'unreached-change', 1);
+        $this->assertSame(1, $missing['counts']['unknown']);
+        $this->assertSame('marker_absent', $missing['runs'][0]['unknown_reason']);
+        $this->assertSame($attempts, ActivityAttempt::query()->count());
+        $this->assertSame($history, $run->historyEvents()->get()->toArray());
+
+        $state = (new QueryStateReplayer())->replayState($run->fresh());
+        $this->assertInstanceOf(TestSinglePatchReplayWorkflow::class, $state->workflow);
+        $this->assertSame([true, null], $state->workflow->currentState());
+        $this->assertSame(2, $state->sequence);
+        $this->assertNotNull($state->current);
+        $this->assertSame($history, $run->historyEvents()->get()->toArray());
+        TestQueryReplayGuardActivity::$executions = 0;
+        $this->runReadyWorkflowTask($run);
+        $this->assertSame(RunStatus::Waiting, $run->fresh()->status);
+        $this->assertSame(0, TestQueryReplayGuardActivity::$executions);
+        $this->assertSame(
+            1,
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::VersionMarkerRecorded)->count()
+        );
+        $this->assertSame(1, $run->historyEvents()->where('event_type', HistoryEventType::ActivityScheduled)->count());
+        $this->assertSame($history, array_slice($run->historyEvents()->get()->toArray(), 0, count($history)));
+    }
+
     private function runReadyTaskOfType(string $runId, TaskType $taskType): void
     {
         $task = WorkflowTask::query()
@@ -2629,6 +3184,45 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             config()
                 ->set('workflows.v2', $previous);
         }
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function assertNativeChildProducersRetainDefinition(array $fixture): void
+    {
+        $parent = WorkflowStub::make(TestGreetingWorkflow::class);
+        $parent->start('definition-parent');
+        $bridge = app(DefaultWorkflowTaskBridge::class);
+        $parentTask = WorkflowTask::query()->where('workflow_run_id', $parent->runId())->sole();
+        $this->assertTrue($bridge->claimStatus($parentTask->id, 'definition-parent-worker')['claimed']);
+        $admitted = $bridge->complete($parentTask->id, [[
+            'type' => 'start_child_workflow',
+            'workflow_type' => $fixture['workflow']['type'],
+            'arguments' => Serializer::serializeWithCodec('avro', $fixture['workflow']['arguments']),
+            'payload_codec' => 'avro',
+            'retry_policy' => [
+                'max_attempts' => 2,
+                'backoff_seconds' => [0],
+            ],
+        ]]);
+        $this->assertTrue($admitted['completed'], json_encode($admitted, JSON_THROW_ON_ERROR));
+        $link = WorkflowLink::query()->where('parent_workflow_run_id', $parent->runId())->sole();
+        $child = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+        $expected = $fixture['history'][0]['payload']['workflow_definition_fingerprint'];
+        $this->assertSame($expected, WorkflowDefinitionFingerprint::recordedForRun($child));
+
+        $childTask = WorkflowTask::query()->where('workflow_run_id', $child->id)->sole();
+        $this->assertTrue($bridge->claimStatus($childTask->id, 'definition-child-worker')['claimed']);
+        $failed = $bridge->complete($childTask->id, [[
+            'type' => 'fail_workflow',
+            'message' => 'retry the recorded child definition',
+        ]]);
+        $this->assertTrue($failed['completed'], json_encode($failed, JSON_THROW_ON_ERROR));
+        $retry = WorkflowRun::query()->where('workflow_instance_id', $child->workflow_instance_id)
+            ->where('run_number', 2)
+            ->sole();
+        $this->assertSame($expected, WorkflowDefinitionFingerprint::recordedForRun($retry));
     }
 
     private function assertHandedOverChildFailureStartsTheRecordedRetry(array $fixture): void
@@ -4796,6 +5390,46 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     /**
      * @param array<string, mixed> $fixture
      */
+    private function assertRetainedChildReservationReplaysWithoutNewOwnership(array $fixture): void
+    {
+        $run = $this->createRunFromFixture($fixture);
+        $history = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->toArray();
+        $ownership = [
+            DB::table('workflow_compensation_scopes')->count(),
+            DB::table('workflow_compensation_obligations')->count(),
+            DB::table('workflow_compensation_children')->count(),
+            WorkflowInstance::query()->count(),
+            ActivityExecution::query()->count(),
+            ActivityAttempt::query()->count(),
+        ];
+        $workflow = (new QueryStateReplayer())->replay($run->fresh(['historyEvents']));
+        $this->assertInstanceOf(\Tests\Fixtures\V2\TestReservedScopeReplayWorkflow::class, $workflow);
+        $this->assertSame($fixture['expected']['result'], $workflow->reservation);
+        $this->assertSame($history, $run->historyEvents()->orderBy('sequence')->get()->toArray());
+        $this->runReadyWorkflowTask($run);
+        $this->assertSame(RunStatus::Completed, $run->fresh()->status);
+        $this->assertSame($fixture['expected']['result'], WorkflowStub::loadRun($run->id)->output());
+        $this->assertSame(
+            $history,
+            $run->historyEvents()
+                ->orderBy('sequence')
+                ->limit(count($history))
+                ->get()
+                ->toArray()
+        );
+        $this->assertSame($ownership, [
+            DB::table('workflow_compensation_scopes')->count(),
+            DB::table('workflow_compensation_obligations')->count(),
+            DB::table('workflow_compensation_children')->count(),
+            WorkflowInstance::query()->count(),
+            ActivityExecution::query()->count(),
+            ActivityAttempt::query()->count(),
+        ]);
+    }
+
     private function executeColdReplayFixture(array $fixture): void
     {
         $workflow = $fixture['workflow'];
@@ -5013,6 +5647,90 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     /**
      * @param array<string, mixed> $fixture
      */
+    private function assertLaterSignalBelongsToItsCurrentSelection(array $fixture): void
+    {
+        $scenario = $fixture['signal_occurrences'];
+        $stub = WorkflowStub::make($fixture['workflow']['type']);
+        $stub->start(...$fixture['workflow']['arguments']);
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $this->runReadyWorkflowTask($run);
+        $stub->withRequestId('first-selection')
+            ->signal($scenario['first']);
+        $this->runReadyWorkflowTask($run);
+        $prefix = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get();
+        $wait = $prefix->filter(static fn (WorkflowHistoryEvent $event): bool =>
+            $event->event_type === HistoryEventType::SignalWaitOpened && $event->payload['signal_name'] === $scenario['second'])->last();
+        $this->assertInstanceOf(WorkflowHistoryEvent::class, $wait);
+        $original = $prefix->map(static fn (WorkflowHistoryEvent $event): array => $event->getRawOriginal())
+            ->all();
+        $stub->withRequestId('second-selection')
+            ->signal($scenario['second']);
+        $this->runReadyWorkflowTask($run);
+        $this->assertSame(
+            RunStatus::Completed,
+            $run->fresh()
+->status,
+            'A cancelled selection must not consume a later signal.'
+        );
+        $this->assertSame([$scenario['first'], $scenario['second']], $stub->refresh()->output());
+        $applied = $run->historyEvents()
+            ->where('event_type', HistoryEventType::SignalApplied)->reorder('sequence', 'desc')->firstOrFail();
+        $this->assertSame($wait->payload['sequence'], $applied->payload['sequence']);
+        $this->assertSame($wait->payload['signal_wait_id'], $applied->payload['signal_wait_id']);
+        $this->assertSame(
+            $original,
+            $run->historyEvents()
+                ->where('sequence', '<=', count($original))
+                ->orderBy('sequence')
+                ->get()
+                ->map(static fn (WorkflowHistoryEvent $event): array => $event->getRawOriginal())
+                ->all()
+        );
+        $this->assertSame(0, $run->tasks()->where('status', TaskStatus::Failed)->count());
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function assertSignalTimeoutSurvivesLaterCancellation(array $fixture): void
+    {
+        $run = $this->createRunFromFixture($fixture);
+        $prefix = $run->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->map(static fn (WorkflowHistoryEvent $event): array => $event->getRawOriginal())
+            ->all();
+        $request = WorkflowStub::loadRun($run->id)->requestCancellation('after retained signal timeout', 30);
+        $this->runReadyWorkflowTask($run);
+        $delivery = $run->historyEvents()
+            ->where('event_type', HistoryEventType::CooperativeCancellationDelivered)->sole();
+        $this->assertSame($fixture['later_cancellation']['delivery_sequence'], $delivery->payload['sequence']);
+        $this->assertSame($request->commandId(), $delivery->workflow_command_id);
+        $task = $run->tasks()
+            ->where('task_type', TaskType::Activity)->where('status', TaskStatus::Ready)->sole();
+        $this->app->call([new RunActivityTask($task->id), 'handle']);
+        $this->runReadyWorkflowTask($run);
+        $this->assertSame(RunStatus::Cancelled, $run->fresh()->status);
+        $cleanup = ActivityExecution::query()->where('workflow_run_id', $run->id)->sole();
+        $this->assertSame($fixture['later_cancellation']['cleanup_sequence'], $cleanup->sequence);
+        $this->assertSame($fixture['later_cancellation']['cleanup_result'], $cleanup->activityResult());
+        $this->assertSame(
+            $prefix,
+            $run->historyEvents()
+                ->where('sequence', '<=', count($prefix))
+                ->orderBy('sequence')
+                ->get()
+                ->map(static fn (WorkflowHistoryEvent $event): array => $event->getRawOriginal())
+                ->all()
+        );
+        $this->assertSame(0, $run->tasks()->where('status', TaskStatus::Failed)->count());
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
     private function createRunFromFixture(array $fixture): WorkflowRun
     {
         $workflow = $fixture['workflow'];
@@ -5028,6 +5746,21 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         foreach ($fixture['history'] as $event) {
             $eventType = HistoryEventType::from($event['event_type']);
             if ($eventType === HistoryEventType::WorkflowStarted) {
+                $started = $run->historyEvents()
+                    ->where('event_type', HistoryEventType::WorkflowStarted)->sole();
+                $payload = $started->payload;
+                // Keep the new run's routing/command IDs, but import definition
+                // authority exactly. A synthetic current fingerprint must not
+                // turn legacy absence into a fresh version decision.
+                foreach (['workflow_definition_fingerprint', 'workflow_definition_fingerprint_source'] as $key) {
+                    unset($payload[$key]);
+                    if (array_key_exists($key, $event['payload'])) {
+                        $payload[$key] = $event['payload'][$key];
+                    }
+                }
+                $started->forceFill([
+                    'payload' => $payload,
+                ])->save();
                 continue;
             }
 

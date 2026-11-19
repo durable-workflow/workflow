@@ -123,10 +123,13 @@ final class HistoryEventPayloadContract
             'continued_from_run_id',
             'resume_step_sequence',
             'recovery_kind',
+            'compensation_recovery',
+            'root_scope_admission',
             'definition_changed_from',
             'replayed_started_at',
             'retry_attempt',
             'retry_of_child_workflow_run_id',
+            'timeout_cleanup',
         ],
         'WorkflowContinuedAsNew' => [
             'sequence',
@@ -134,6 +137,7 @@ final class HistoryEventPayloadContract
             'continued_to_run_number',
             'workflow_link_id',
             'closed_reason',
+            'abandoned_activities',
         ],
         'ActivityScheduled' => [
             'activity_execution_id',
@@ -325,6 +329,7 @@ final class HistoryEventPayloadContract
             'parallel_group_size',
             'parallel_group_index',
             'parallel_group_path',
+            'cancellation_reason',
         ],
         'ActivityCancellationAcknowledged' => [
             'sequence',
@@ -638,6 +643,8 @@ final class HistoryEventPayloadContract
         ],
         'ChildWorkflowScheduled' => [
             'sequence',
+            'child_completion_mode',
+            'child_reservation',
             'workflow_link_id',
             'child_call_id',
             'child_workflow_instance_id',
@@ -659,8 +666,11 @@ final class HistoryEventPayloadContract
             'reused_from_run_id',
             'reused_recorded_at',
         ],
+        'ChildWorkflowAwaited' => ['sequence', 'receipt', 'child_workflow_instance_id',
+            'child_workflow_run_id', 'child_call_id', 'child_workflow_type'],
         'ChildRunStarted' => [
             'sequence',
+            'child_reservation',
             'workflow_link_id',
             'child_call_id',
             'child_workflow_instance_id',
@@ -988,6 +998,7 @@ final class HistoryEventPayloadContract
             'message',
             'reason',
             'cancellation_cleanup',
+            'timeout_cleanup',
         ],
         'TerminateRequested' => [
             'workflow_command_id',
@@ -1006,6 +1017,7 @@ final class HistoryEventPayloadContract
             'exception_class',
             'message',
             'reason',
+            'timeout_cleanup',
         ],
         'ArchiveRequested' => [
             'workflow_command_id',
@@ -1030,8 +1042,19 @@ final class HistoryEventPayloadContract
             'exception_class',
             'execution_deadline_at',
             'run_deadline_at',
+            'timeout_cleanup',
+            'abandoned_activities',
+            'cancellation_cleanup',
         ],
-        'WorkflowCompleted' => ['output', 'payload_codec'],
+        'WorkflowTimeoutCleanupStarted' => [
+            'workflow_command_id',
+            'timeout_kind',
+            'work_deadline_at',
+            'cleanup_deadline_at',
+            'hard_deadline_at',
+            'detected_at',
+        ],
+        'WorkflowCompleted' => ['output', 'payload_codec', 'abandoned_activities'],
         'WorkflowFailed' => [
             'failure_id',
             'failed_step_sequence',
@@ -1048,6 +1071,7 @@ final class HistoryEventPayloadContract
             'structural_limit_value',
             'structural_limit_configured',
             'structural_limit_name',
+            'abandoned_activities',
         ],
         'FailureHandled' => [
             'failure_id',
@@ -1152,6 +1176,18 @@ final class HistoryEventPayloadContract
                 $eventType->value,
                 implode(', ', $unknown),
             ));
+        }
+
+        if (array_key_exists('child_reservation', $payload)) {
+            if (! is_array($payload['child_reservation'])) {
+                throw new InvalidArgumentException('A native child reservation must be its versioned descriptor.');
+            }
+            $reservation = \Workflow\V2\StateMachine\Binding\ChildReservation::fromArray($payload['child_reservation']);
+            if (($payload['child_workflow_instance_id'] ?? null) !== $reservation->childInstanceId()
+                || ($payload['child_workflow_type'] ?? null) !== $reservation->identity->childWorkflowType
+                || ($payload['child_workflow_class'] ?? null) !== $reservation->workflowClass) {
+                throw new InvalidArgumentException('Native child history does not match its reserved definition.');
+            }
         }
     }
 }

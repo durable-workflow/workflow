@@ -23,10 +23,8 @@ final class CancellationContextTest extends TestCase
         $snapshot['reason'] = 'changed';
         $snapshot['requester']['id'] = 'changed';
         $snapshot['lineage'][0]['request_id'] = 'changed';
-        $context->deadline()
-            ->addHour();
-        $context->requestedAt()
-            ->addDay();
+        $this->assertSame('2026-10-01T01:00:30.000000Z', $context->deadline()->addHour()->toISOString());
+        $this->assertSame('2026-10-02T00:00:00.000000Z', $context->requestedAt()->addDay()->toISOString());
 
         $this->assertSame('maintenance', $context->reason);
         $this->assertSame('operator-1', $context->requester['id']);

@@ -294,6 +294,16 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 return self::claimRejected($taskId, 'run_closed', "The workflow run is {$run->status->value}.");
             }
 
+            // This increment admits timeout cleanup only for embedded queue
+            // workers. A bridge worker must not silently run ordinary work.
+            if ($run->timeout_cleanup_work_deadline_at !== null) {
+                return self::claimRejected(
+                    $taskId,
+                    'timeout_cleanup_not_supported',
+                    'Timeout cleanup requires embedded queue workers.'
+                );
+            }
+
             TaskCompatibility::sync($task, $run);
 
             if (TaskBackendCapabilities::recordClaimFailureIfUnsupported($task) !== null) {
@@ -2005,6 +2015,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             : ($run->payload_codec ?? CodecRegistry::defaultCodec());
         $result = self::storedWorkerPayload($command['result'] ?? null, $outputCodec, $run);
         $resultCodec = $result === null ? null : $outputCodec;
+        $abandonedActivities = ClosingRunOpenWork::settle($run, $task);
 
         $run->forceFill([
             'status' => RunStatus::Completed,
@@ -2024,6 +2035,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                     is_string($run->namespace) ? $run->namespace : null,
                 ),
             'payload_codec' => $resultCodec,
+            ClosingRunOpenWork::ABANDONED_ACTIVITIES => $abandonedActivities === [] ? null : $abandonedActivities,
         ], static fn (mixed $value): bool => $value !== null), $task);
 
         PendingUpdateCloser::closeForTerminalRun($run, $task);
@@ -2112,6 +2124,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'trace_preview' => '',
         ]);
 
+        $abandonedActivities = ClosingRunOpenWork::settle($run, $task);
+
         $run->forceFill([
             'status' => RunStatus::Failed,
             'closed_reason' => 'failed',
@@ -2142,6 +2156,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         if ($failedActivityBoundary) {
             $failurePayload['failed_step_sequence'] = $claimedSequence;
             $failurePayload['failed_step_kind'] = 'activity';
+        }
+        if ($abandonedActivities !== []) {
+            $failurePayload[ClosingRunOpenWork::ABANDONED_ACTIVITIES] = $abandonedActivities;
         }
         WorkflowHistoryEvent::record($run, HistoryEventType::WorkflowFailed, $failurePayload, $task);
 
@@ -4686,6 +4703,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         WorkflowHistoryEvent::record($childRun, HistoryEventType::WorkflowStarted, [
             'workflow_class' => $workflowType,
             'workflow_type' => $workflowType,
+            ...self::embeddedChildDefinition($workflowType),
             'workflow_instance_id' => $childRun->workflow_instance_id,
             'workflow_run_id' => $childRun->id,
             'parent_workflow_instance_id' => $run->workflow_instance_id,
@@ -4719,6 +4737,22 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         self::projectRunBestEffort($childRun, self::PROJECTION_RUN_RELATIONS_WITH_HISTORY, 'child_workflow_start');
 
         return $sequence + 1;
+    }
+
+    /**
+     * @return array{workflow_definition_fingerprint?: string}
+     */
+    private static function embeddedChildDefinition(string $workflowType): array
+    {
+        try {
+            $class = TypeRegistry::resolveWorkflowClass($workflowType, $workflowType);
+        } catch (LogicException) {
+            return [];
+        }
+        $fingerprint = WorkflowDefinition::fingerprint($class);
+        return $fingerprint === null ? [] : [
+            'workflow_definition_fingerprint' => $fingerprint,
+        ];
     }
 
     /**
@@ -5327,6 +5361,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             ->findOrFail($run->workflow_instance_id);
 
         /** @var WorkflowRun $continuedRun */
+        \Workflow\V2\StateMachine\Binding\ChildReservationStore::assertOrdinaryStartAllowed($instance);
         $continuedRun = WorkflowRun::query()->create([
             'workflow_instance_id' => $run->workflow_instance_id,
             'run_number' => $run->run_number + 1,
@@ -5342,6 +5377,15 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'run_timeout_seconds' => $runTimeoutSeconds,
             'execution_deadline_at' => $executionDeadlineAt,
             'run_deadline_at' => $runDeadlineAt,
+            // Only an opted-in run writes the column, so custom run tables without
+            // it keep working until they migrate (#863).
+            ...(($timeoutCleanupWorkDeadline = TimeoutCleanup::workDeadline(
+                $timeoutCleanupAllowance = TimeoutCleanup::allowanceForRun($run),
+                $executionDeadlineAt,
+                $runDeadlineAt,
+            )) === null ? [] : [
+                'timeout_cleanup_work_deadline_at' => $timeoutCleanupWorkDeadline,
+            ]),
             'connection' => $run->connection,
             'queue' => $queue,
             ...TaskSchedulingFields::nonDefault(TaskSchedulingFields::forRun($run)),
@@ -5484,6 +5528,13 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'workflow_type' => $workflowType,
             'workflow_instance_id' => $continuedRun->workflow_instance_id,
             'workflow_run_id' => $continuedRun->id,
+            ...(($timeoutCleanup = TimeoutCleanup::startedPayload(
+                $timeoutCleanupAllowance,
+                $executionDeadlineAt,
+                $runDeadlineAt,
+            )) === null ? [] : [
+                TimeoutCleanup::STARTED_KEY => $timeoutCleanup,
+            ]),
             'continued_from_run_id' => $run->id,
             'workflow_link_id' => $link->id,
             'child_call_id' => $childCallId,

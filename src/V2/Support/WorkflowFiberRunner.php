@@ -312,6 +312,12 @@ final class WorkflowFiberRunner
 
             $current = $this->execution->current();
 
+            if ($current instanceof StartChildWorkflowCall || $current instanceof AwaitStartedChildWorkflowCall) {
+                throw new UnsupportedWorkflowYieldException(
+                    'Confirmed child admission currently requires embedded native execution.'
+                );
+            }
+
             if (! $current instanceof YieldedCommand) {
                 throw new UnsupportedWorkflowYieldException(sprintf(
                     'Worker protocol runner received an unsupported workflow suspension of type %s.',
@@ -351,7 +357,7 @@ final class WorkflowFiberRunner
 
                 $this->sequence += $current instanceof AllCall ? $current->leafCount() : 1;
                 $this->throwIntoWorkflow(
-                    new WorkflowCancellationRequestedException(cancellation: $cancellation['context']),
+                    WorkflowCancellationRequestedException::forContext($cancellation['context']),
                     $cancellation['recorded_at'],
                 );
 
@@ -807,6 +813,17 @@ final class WorkflowFiberRunner
 
             if ($current instanceof ChildWorkflowCall) {
                 $historySequence = $this->historySequenceForCurrentPosition();
+                if ($historySequence !== null) {
+                    WorkflowStepHistory::assertCompatible(
+                        $this->workflow->run,
+                        $historySequence,
+                        WorkflowStepHistory::CHILD_WORKFLOW,
+                        [
+                            'child_workflow_type' => $current->workflow,
+                            'child_completion_mode' => 'result',
+                        ]
+                    );
+                }
                 $recorded = $historySequence === null
                     ? null
                     : ($this->recordedChildOutcomes[$historySequence] ?? null);
@@ -1669,6 +1686,12 @@ final class WorkflowFiberRunner
                 continue;
             }
 
+            // The run's own close recorded this; the workflow never saw it (#1117).
+            if ($type === 'ActivityCancelled'
+                && ($payload['cancellation_reason'] ?? null) === ClosingRunOpenWork::CANCELLATION_REASON) {
+                continue;
+            }
+
             $recordedAt = $type === 'ActivityCompleted'
                 ? (self::eventTime($payload['reused_recorded_at'] ?? null)
                     ?? self::eventRecordedAt($event, $payload))
@@ -1918,7 +1941,7 @@ final class WorkflowFiberRunner
     private static function indexRecordedConditionOutcomes(array $historyEvents): array
     {
         $outcomes = [];
-        $resolvedSequences = [];
+        $timerFiredSequences = [];
 
         foreach ($historyEvents as $event) {
             $type = self::eventType($event);
@@ -1938,15 +1961,24 @@ final class WorkflowFiberRunner
                 continue;
             }
 
-            if (isset($resolvedSequences[$sequence])) {
-                continue;
+            // A recorded ConditionWaitSatisfied is the wait's outcome even when
+            // its condition-timeout TimerFired precedes it: input ordered before
+            // the timer can satisfy the wait (#230). Every other first record
+            // keeps resolving the wait as it always has.
+            if (isset($outcomes[$sequence])) {
+                if ($type !== 'ConditionWaitSatisfied' || ! isset($timerFiredSequences[$sequence])) {
+                    continue;
+                }
+
+                unset($timerFiredSequences[$sequence]);
+            } elseif ($type === 'TimerFired') {
+                $timerFiredSequences[$sequence] = true;
             }
 
             $outcomes[$sequence] = [
                 'result' => $type === 'ConditionWaitSatisfied',
                 'recorded_at' => self::eventRecordedAt($event, $payload, ['fired_at']),
             ];
-            $resolvedSequences[$sequence] = true;
         }
 
         return $outcomes;

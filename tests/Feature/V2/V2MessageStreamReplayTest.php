@@ -123,6 +123,38 @@ final class V2MessageStreamReplayTest extends TestCase
             ->output());
     }
 
+    public function testReplayingIdenticalSendsLoadsTheirCandidatesOncePerExecution(): void
+    {
+        $outboundReads = function (int $copies): int {
+            $instance = 'message-stream-send-cache-' . $copies;
+            $workflow = WorkflowStub::make(TestMessageStreamTurnsWorkflow::class, $instance);
+            $workflow->start(1, $copies);
+            $this->drainReadyTasks();
+            $workflow->signal('message', 'one');
+            $this->drainReadyTasks();
+            $this->assertSame([$copies, $copies], $this->replyRows($instance));
+
+            $reads = 0;
+            \Illuminate\Support\Facades\DB::listen(static function ($query) use (&$reads): void {
+                if (str_contains($query->sql, 'workflow_messages')
+                    && str_contains($query->sql, 'source_workflow_run_id')) {
+                    ++$reads;
+                }
+            });
+            $this->assertSame(1, $workflow->refresh()->query('status'));
+            $this->assertSame([$copies, $copies], $this->replyRows($instance));
+
+            return $reads;
+        };
+
+        // One candidate load per send identity per execution (#1014), however
+        // many times workflow code repeats that send.
+        $few = $outboundReads(2);
+        $many = $outboundReads(8);
+        $this->assertSame(1, $few);
+        $this->assertSame($few, $many);
+    }
+
     /**
      * Releases through 2.20.0 wrote a duplicate on every replay. A run that
      * already has such rows matches its sends to them and writes only new

@@ -8,11 +8,13 @@ use Carbon\CarbonInterval;
 use Illuminate\Container\Container;
 use Throwable;
 use Workflow\Traits\ResolvesMethodDependencies;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\ChildWorkflowHandles;
 use Workflow\V2\Support\HistoryBudget;
 use Workflow\V2\Support\MessageReplayLedger;
 use Workflow\V2\Support\MessageService;
+use Workflow\V2\Support\ScheduleOrigin;
 use Workflow\V2\Support\ServiceOperationOptions;
 use Workflow\V2\Support\UpdateMessageReceives;
 use Workflow\V2\Support\WorkerSession;
@@ -67,6 +69,10 @@ abstract class Workflow
 
     private bool $runningLiveUpdate = false;
 
+    private ?ScheduleOrigin $scheduleOrigin = null;
+
+    private bool $scheduleOriginRead = false;
+
     private ?UpdateMessageReceives $updateMessageReceives = null;
 
     /**
@@ -118,6 +124,38 @@ abstract class Workflow
     public function runId(): string
     {
         return $this->run->id;
+    }
+
+    /**
+     * The schedule fire that started this run, or null if no schedule did.
+     *
+     * It comes from the run's recorded ScheduleTriggered history event, which
+     * is committed with the run's start, so it is available on the first
+     * workflow task and identical on replay. A continue-as-new successor keeps
+     * its predecessor's origin.
+     *
+     * @api Stable v2 workflow authoring API.
+     */
+    public function scheduleOrigin(): ?ScheduleOrigin
+    {
+        if ($this->scheduleOriginRead) {
+            return $this->scheduleOrigin;
+        }
+
+        $event = $this->run->relationLoaded('historyEvents')
+            ? $this->run->historyEvents
+                ->filter(static fn ($event): bool => $event->event_type === HistoryEventType::ScheduleTriggered)
+                ->sortBy('sequence')
+                ->first()
+            : $this->run->historyEvents()
+                ->where('event_type', HistoryEventType::ScheduleTriggered->value)
+                ->orderBy('sequence')
+                ->first();
+
+        $this->scheduleOrigin = $event === null ? null : ScheduleOrigin::fromPayload($event->payload);
+        $this->scheduleOriginRead = true;
+
+        return $this->scheduleOrigin;
     }
 
     /**
@@ -292,7 +330,9 @@ abstract class Workflow
     public function compensate(): void
     {
         if (WorkflowFiberContext::active()) {
-            WorkflowFiberContext::cancellationShield(fn () => $this->runCompensations());
+            WorkflowFiberContext::cancellationShield(fn () => WorkflowFiberContext::withoutForwardBudgets(
+                fn () => $this->runCompensations()
+            ));
 
             return;
         }
@@ -472,6 +512,17 @@ abstract class Workflow
     public static function executeChildWorkflow(string $workflow, mixed ...$arguments): mixed
     {
         return child($workflow, ...$arguments);
+    }
+
+    /**
+     * Confirm native child admission, then await its result separately if needed.
+     *
+     * This milestone is available in embedded execution. A queued request is
+     * insufficient: the returned receipt identifies the durable child run.
+     */
+    public static function startChild(string $workflow, mixed ...$arguments): StartedChildWorkflow
+    {
+        return startChild($workflow, ...$arguments);
     }
 
     /**

@@ -4,7 +4,7 @@
     "require": {
         "php": "^8.3.6",
         "durable-workflow/workflow": "2.5.32",
-        "laravel/framework": "13.37.0",
+        "laravel/framework": "13.41.0",
         "orchestra/testbench": "11.3.0",
         "phpunit/phpunit": "12.5.40"
     },

@@ -429,6 +429,7 @@ final class HistoryTimeline
             HistoryEventType::UpdateApplied,
             HistoryEventType::UpdateCompleted => 'update',
             HistoryEventType::ChildWorkflowScheduled,
+            HistoryEventType::ChildWorkflowAwaited,
             HistoryEventType::ChildRunStarted,
             HistoryEventType::ChildRunCompleted,
             HistoryEventType::ChildRunFailed,
@@ -530,6 +531,7 @@ final class HistoryTimeline
                     ?? (string) (self::intValue($payload['member_index'] ?? null) ?? 0),
             ),
             HistoryEventType::ChildWorkflowScheduled => sprintf('Scheduled child workflow %s.', $childLabel),
+            HistoryEventType::ChildWorkflowAwaited => sprintf('Awaited admitted child workflow %s.', $childLabel),
             HistoryEventType::ChildRunStarted => sprintf('Child workflow %s started.', $childLabel),
             HistoryEventType::ChildRunCompleted => sprintf('Child workflow %s completed.', $childLabel),
             HistoryEventType::ChildRunFailed => $message === null
@@ -618,6 +620,10 @@ final class HistoryTimeline
             },
             HistoryEventType::CancelRequested => 'Cancel requested.',
             HistoryEventType::CooperativeCancellationRequested => 'Cooperative cancellation requested.',
+            HistoryEventType::WorkflowTimeoutCleanupStarted => sprintf(
+                'Work deadline passed; timeout cleanup runs until %s.',
+                self::stringValue($payload['cleanup_deadline_at'] ?? null) ?? 'the hard deadline',
+            ),
             HistoryEventType::CooperativeCancellationDelivered => 'Cancellation delivered to workflow code.',
             HistoryEventType::WorkflowCancelled => match ($payload['cancellation_cleanup']['outcome'] ?? null) {
                 'completed' => 'Workflow cancelled after cleanup completed.',
@@ -729,13 +735,13 @@ final class HistoryTimeline
                 self::intValue($payload['new_position'] ?? null) ?? 0,
             ),
             HistoryEventType::WorkflowCompleted => 'Workflow completed.',
-            HistoryEventType::WorkflowTimedOut => match ($payload['timeout_kind'] ?? null) {
+            HistoryEventType::WorkflowTimedOut => trim(match ($payload['timeout_kind'] ?? null) {
                 'execution_timeout' => 'Workflow execution deadline expired.',
                 'run_timeout' => 'Workflow run deadline expired.',
                 default => $message === null
                     ? 'Workflow timed out.'
                     : sprintf('Workflow timed out: %s.', $message),
-            },
+            } . ' ' . (TimeoutCleanup::summary($payload[TimeoutCleanup::STARTED_KEY] ?? null) ?? '')),
             HistoryEventType::WorkflowFailed => $message === null
                 ? 'Workflow failed.'
                 : sprintf('Workflow failed: %s.', $message),
@@ -1282,6 +1288,7 @@ final class HistoryTimeline
             HistoryEventType::SignalWaitOpened,
             HistoryEventType::SignalApplied => 'signal_wait',
             HistoryEventType::ChildWorkflowScheduled,
+            HistoryEventType::ChildWorkflowAwaited,
             HistoryEventType::ChildRunStarted,
             HistoryEventType::ChildRunCompleted,
             HistoryEventType::ChildRunFailed,
@@ -1396,6 +1403,7 @@ final class HistoryTimeline
                 : 'update_completed',
             HistoryEventType::CancelRequested => 'cancelled',
             HistoryEventType::CooperativeCancellationRequested => 'cancellation_requested',
+            HistoryEventType::WorkflowTimeoutCleanupStarted => 'cancellation_requested',
             HistoryEventType::TerminateRequested => 'terminated',
             HistoryEventType::ArchiveRequested => 'archived',
             default => $command?->outcome?->value,

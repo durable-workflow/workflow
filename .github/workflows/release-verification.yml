@@ -109,7 +109,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
         with:
           repository: durable-workflow/.github
-          ref: 411a14ac07d32073eed6ab4977f2825eba4739a7
+          ref: 5c1ddbff59bcfad8a686a72a9b09804b359c382a
           path: .qualification-control
           persist-credentials: false
       - name: Select the trusted system Python
@@ -156,7 +156,7 @@ jobs:
           clients: pip,python,composer,curl,git
       - name: Set up the exact accepted initial PHP profile
         id: php_setup
-        uses: durable-workflow/.github/.github/actions/setup-php-linux@411a14ac07d32073eed6ab4977f2825eba4739a7  # bound-linux-php
+        uses: durable-workflow/.github/.github/actions/setup-php-linux@5c1ddbff59bcfad8a686a72a9b09804b359c382a  # bound-linux-php
         with:
           php-version: '8.3'
           ini-file: production
@@ -202,7 +202,7 @@ jobs:
           composer_root=pathlib.Path(composer_text) if composer_text else None
           composer_identity=os.environ.get('COMPOSER_DIRECTORY_IDENTITY','')
           try:
-              control_source='411a14ac07d32073eed6ab4977f2825eba4739a7'
+              control_source='5c1ddbff59bcfad8a686a72a9b09804b359c382a'
               control_directory=pathlib.Path.cwd()/'.qualification-control'
               def control_git(*arguments):
                   return subprocess.check_output(['/usr/bin/git','-C',str(control_directory),*arguments],text=True).strip()
@@ -269,6 +269,8 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Disable APT download retries (CVE-2026-109518)
+        run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
       - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
         with:
           php-version: ${{ matrix.php }}
@@ -291,3 +293,39 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+
+  compensation-upgrade:
+    name: Laravel ${{ matrix.laravel }} / PHP ${{ matrix.php }} published compensation scope upgrade
+    needs: published-package
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.published-package.outputs.laravel_published_matrix) }}
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+
+      - name: Disable APT download retries (CVE-2026-109518)
+        run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+        with:
+          php-version: ${{ matrix.php }}
+          tools: composer
+
+      - name: Run the published 2.28.1 to release compensation journey
+        env:
+          LARAVEL_VERSION: ${{ matrix.laravel }}
+          RELEASE_TAG: ${{ needs.published-package.outputs.release_tag }}
+        run: |
+          # 2.29.x drops the ledger on rollback, and 2.30.0 refuses only after newer
+          # migrations in the batch rolled back (#1063). The journey asserts that a refused
+          # rollback leaves the schema intact, so it qualifies releases after 2.30.0.
+          if php -r 'exit(version_compare(getenv("RELEASE_TAG"), "2.30.1", "<") ? 0 : 1);'; then
+            echo "Release ${RELEASE_TAG} predates the whole-rollback preflight; nothing to qualify."
+            exit 0
+          fi
+          WORKFLOW_CANDIDATE_VERSION="$RELEASE_TAG" scripts/ci/compensation-scope-upgrade-smoke.sh

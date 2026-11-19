@@ -26,6 +26,7 @@ use Workflow\V2\Support\ServiceOperationCall;
 use Workflow\V2\Support\ServiceOperationOptions;
 use Workflow\V2\Support\SideEffectCall;
 use Workflow\V2\Support\SignalCall;
+use Workflow\V2\Support\StartChildWorkflowCall;
 use Workflow\V2\Support\TimerCall;
 use Workflow\V2\Support\UpsertMemoCall;
 use Workflow\V2\Support\UpsertSearchAttributesCall;
@@ -114,6 +115,20 @@ if (! function_exists(__NAMESPACE__ . '\\child')) {
         }
 
         return WorkflowFiberContext::suspend(new ChildWorkflowCall($workflow, $arguments, $options));
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\startChild')) {
+    /** Confirm an embedded native child admission without waiting for completion. */
+    function startChild(string $workflow, mixed ...$arguments): StartedChildWorkflow
+    {
+        $options = null;
+        if (($arguments[0] ?? null) instanceof ChildWorkflowOptions) {
+            $options = array_shift($arguments);
+        }
+        return WorkflowFiberContext::suspend(new StartChildWorkflowCall(
+            new ChildWorkflowCall($workflow, $arguments, $options)
+        ));
     }
 }
 

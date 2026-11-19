@@ -7,6 +7,9 @@ namespace Workflow\V2\Support;
 use Illuminate\Support\Str;
 use Throwable;
 use Workflow\Serializers\Serializer;
+use Workflow\V2\Enums\CommandOutcome;
+use Workflow\V2\Enums\CommandStatus;
+use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -86,7 +89,7 @@ final class FailedRunRedrivePlan
             }
 
             if ($event->event_type === HistoryEventType::StartAccepted) {
-                if ($started !== null) {
+                if ($started !== null && ! self::isActiveStartAdoption($run, $event)) {
                     return self::reject('unexpected_start');
                 }
 
@@ -199,6 +202,7 @@ final class FailedRunRedrivePlan
             if (! in_array($event->event_type, [
                 HistoryEventType::ActivityScheduled,
                 HistoryEventType::ActivityStarted,
+                HistoryEventType::ActivityRetryScheduled,
                 HistoryEventType::ActivityHeartbeatRecorded,
                 HistoryEventType::ActivityCompleted,
                 HistoryEventType::ActivityFailed,
@@ -339,7 +343,7 @@ final class FailedRunRedrivePlan
                 $reusedSteps[] = [
                     'event_type' => $marker->event_type,
                     'payload' => $markerPayload,
-                    'recorded_at' => $marker->recorded_at?->toIso8601String(),
+                    'recorded_at' => RedriveReplayClock::formatRecordedAt($marker->recorded_at),
                 ];
 
                 continue;
@@ -379,6 +383,10 @@ final class FailedRunRedrivePlan
 
             if (! is_array($stepEvents)) {
                 return self::reject('activity_sequence_gap');
+            }
+
+            if (! ActivityRetryHistory::valid($stepEvents)) {
+                return self::reject('invalid_activity_retry_history');
             }
 
             $activityType = null;
@@ -454,7 +462,7 @@ final class FailedRunRedrivePlan
             $reusedSteps[] = [
                 'event_type' => HistoryEventType::ActivityCompleted,
                 'payload' => $payload,
-                'recorded_at' => $completion->recorded_at?->toIso8601String(),
+                'recorded_at' => RedriveReplayClock::formatRecordedAt($completion->recorded_at),
             ];
         }
 
@@ -610,6 +618,38 @@ final class FailedRunRedrivePlan
         $emitUpdatesThrough(null);
 
         return $events;
+    }
+
+    /**
+     * Native start/adopt records a command receipt, not another workflow start or reusable step.
+     * Only accepted adoption proves the same resolved run and command identity.
+     * A rejected start is not adoption evidence and retains its existing refusal.
+     */
+    private static function isActiveStartAdoption(WorkflowRun $run, WorkflowHistoryEvent $event): bool
+    {
+        $payload = $event->payload;
+        $command = $payload['command'] ?? null;
+        if (! is_array($command) || ($payload['outcome'] ?? null) !== CommandOutcome::ReturnedExistingActive->value
+            || ($payload['rejection_reason'] ?? null) !== null
+            || $event->workflow_run_id !== $run->id) {
+            return false;
+        }
+        foreach (['workflow_instance_id', 'workflow_run_id', 'workflow_class', 'workflow_type'] as $key) {
+            $expected = $key === 'workflow_run_id' ? $run->id : $run->getAttribute($key);
+            if (! is_string($expected) || $expected === '' || ($payload[$key] ?? null) !== $expected) {
+                return false;
+            }
+        }
+        $commandId = $payload['workflow_command_id'] ?? null;
+        return is_string($commandId) && $commandId !== ''
+            && $event->workflow_command_id === $commandId
+            && ($command['id'] ?? null) === $commandId
+            && ($command['type'] ?? null) === CommandType::Start->value
+            && ($command['target_scope'] ?? null) === 'instance'
+            && ($command['resolved_run_id'] ?? null) === $run->id
+            && ($command['status'] ?? null) === CommandStatus::Accepted->value
+            && ($command['outcome'] ?? null) === CommandOutcome::ReturnedExistingActive->value
+            && ($command['rejection_reason'] ?? null) === null;
     }
 
     /**
@@ -874,7 +914,7 @@ final class FailedRunRedrivePlan
                 $bundleEvents[] = [
                     'event_type' => $event->event_type,
                     'payload' => $eventPayload,
-                    'recorded_at' => $event->recorded_at?->toIso8601String(),
+                    'recorded_at' => RedriveReplayClock::formatRecordedAt($event->recorded_at),
                 ];
             }
 
@@ -991,7 +1031,7 @@ final class FailedRunRedrivePlan
         return [
             'event_type' => HistoryEventType::TimerFired,
             'payload' => $firedPayload,
-            'recorded_at' => $fired->recorded_at?->toIso8601String(),
+            'recorded_at' => RedriveReplayClock::formatRecordedAt($fired->recorded_at),
             'scheduled_payload' => $scheduledPayload,
         ];
     }
@@ -1142,7 +1182,7 @@ final class FailedRunRedrivePlan
                 $signalEvents[] = [
                     'event_type' => $event->event_type,
                     'payload' => $eventPayload,
-                    'recorded_at' => $event->recorded_at?->toIso8601String(),
+                    'recorded_at' => RedriveReplayClock::formatRecordedAt($event->recorded_at),
                 ];
             }
 
@@ -1285,7 +1325,7 @@ final class FailedRunRedrivePlan
             $childEvents[] = [
                 'event_type' => $event->event_type,
                 'payload' => $eventPayload,
-                'recorded_at' => $event->recorded_at?->toIso8601String(),
+                'recorded_at' => RedriveReplayClock::formatRecordedAt($event->recorded_at),
             ];
         }
 
