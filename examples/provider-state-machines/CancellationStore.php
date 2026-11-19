@@ -39,7 +39,7 @@ final readonly class CancellationStore
         $this->assertOriginalRoot($key, $rootRun, $assignment);
         $id = hash('sha256', PortableDescriptor::encode([$key, $rootRun, $requestKey]));
         $hash = hash('sha256', PortableDescriptor::encode([$key, $rootRun, $requestKey, $this->authority->principal]));
-        $this->authority->db->transaction(function () use ($key, $rootRun, $root, $id, $hash): void {
+        $this->authority->db->transaction(function () use ($key, $rootRun, $root, $id, $hash, $requestKey): void {
             $current = $this->authority->db->table('example_machine_subjects')
                 ->where('id', $root->id)
                 ->lockForUpdate()
@@ -64,6 +64,8 @@ final readonly class CancellationStore
                         'root_key' => $key,
                         'root_run' => $rootRun,
                         'request_sha256' => $hash,
+                        'request_key' => $requestKey,
+                        'requested_at' => now(),
                     ]);
             }
             // Child initialization locks the root first. Existing child commits and this fence serialize on

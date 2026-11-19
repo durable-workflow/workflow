@@ -178,7 +178,11 @@ class V2RepairPassCommand extends Command
      *     service_call_timeout_failures?: list<array{call_id: string, message: string}>,
      *     service_call_dispatch_candidates?: int,
      *     service_call_dispatches_enqueued?: int,
-     *     service_call_dispatch_failures?: list<array{call_id: string, message: string}>
+     *     service_call_dispatch_failures?: list<array{call_id: string, message: string}>,
+     *     compensation_recovery_candidates?: int,
+     *     compensation_recoveries_started?: int,
+     *     compensation_recovery_refusals?: int,
+     *     compensation_recovery_failures?: list<array{scope_id: string, message: string}>
      * } $report
      */
     private function renderHumanReport(array $report): void
@@ -259,6 +263,19 @@ class V2RepairPassCommand extends Command
             $this->error(sprintf(
                 'Service call [%s] failed dispatch repair: %s',
                 $failure['call_id'],
+                $failure['message'],
+            ));
+        }
+        $this->line(sprintf(
+            'Compensation recovery after origin closure: %d started and %d refused from %d candidates.',
+            $report['compensation_recoveries_started'] ?? 0,
+            $report['compensation_recovery_refusals'] ?? 0,
+            $report['compensation_recovery_candidates'] ?? 0,
+        ));
+        foreach (($report['compensation_recovery_failures'] ?? []) as $failure) {
+            $this->error(sprintf(
+                'Compensation scope [%s] failed automatic recovery: %s',
+                $failure['scope_id'],
                 $failure['message'],
             ));
         }

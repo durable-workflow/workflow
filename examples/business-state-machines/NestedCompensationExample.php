@@ -290,37 +290,32 @@ final readonly class NestedCompensationExample
     }
 
     /**
-     * Operator view of a cancellation. Repeating the original request key never starts new work.
+     * Operator view of a cancellation. It only reads: automatic recovery after
+     * the Order closes, any recorded authorization refusal, and every unresolved
+     * Shipment and Order obligation with its reason.
      */
-    public function cancellationOutcome(string $subject, string $parentRun, string $requestId): array
+    public function cancellationOutcome(string $subject, string $parentRun): array
     {
-        $receipt = app(ScopeRecovery::class)->request(
-            ExampleOwnershipPolicy::scope($subject, $parentRun, 'parent'),
-            $requestId,
-            self::PRINCIPAL,
-            'business_cancellation',
-        );
+        $recovery = app(ScopeRecovery::class);
+        $parent = $recovery->describe(ExampleOwnershipPolicy::scope($subject, $parentRun, 'parent'), self::PRINCIPAL);
+        $child = $recovery->describe(ExampleOwnershipPolicy::scope($subject, $parentRun, 'child'), self::PRINCIPAL);
         $unresolved = [];
-        foreach (['child', 'parent'] as $role) {
-            $ledger = (new ScopeRepository())->inspect(ExampleOwnershipPolicy::scope($subject, $parentRun, $role));
-            foreach ($ledger['obligations'] as $obligation) {
-                if ($obligation['compensation_status'] === 'verified') {
-                    continue;
-                }
-                $evidence = $obligation['evidence'] === null ? null
-                    : json_decode($obligation['evidence'], true, flags: JSON_THROW_ON_ERROR);
+        foreach ([
+            'child' => $child,
+            'parent' => $parent,
+        ] as $role => $view) {
+            foreach ($view['unresolved'] as $obligation) {
                 $unresolved[] = [
                     'role' => $role,
-                    'key' => $obligation['descriptor']['key'],
-                    'status' => $obligation['compensation_status'],
-                    'reason' => $evidence['reason'] ?? null,
+                    ...$obligation,
                 ];
             }
         }
         return [
-            'recoveryStatus' => $receipt['recoveryStatus'] ?? null,
-            'scopeStatus' => $receipt['scopeStatus'] ?? null,
-            'nextAction' => $receipt['nextAction'] ?? null,
+            'recoveryStatus' => $parent['recoveryStatus'],
+            'scopeStatus' => $parent['scopeStatus'],
+            'automaticRecovery' => $parent['automaticRecovery'],
+            'nextAction' => $parent['nextAction'],
             'unresolved' => $unresolved,
         ];
     }
