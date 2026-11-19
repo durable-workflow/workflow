@@ -50,7 +50,9 @@ final readonly class UnitReturnOperation implements ScopedOperation
     {
         $request = $this->request($context->obligation->input);
         ($this->authorize)($context, 'forward');
-        $observed = $context->uncertainForward ? $this->provider->lookup($request) : $this->provider->attempt($request);
+        $observed = $context->reconcileBeforeForward ? $this->provider->lookup($request) : $this->provider->attempt(
+            $request
+        );
         if ($observed->status === Status::Unknown || (($observed->status === Status::Confirmed)
             !== ($observed->effectId !== null))) {
             return ForwardResult::unknown('unit-return-forward-unknown');
@@ -70,12 +72,12 @@ final readonly class UnitReturnOperation implements ScopedOperation
         $observed = $this->provider->closeAdmission($request);
         if ($observed->admissionClosed && $observed->effectId === null
             && in_array($observed->status, [Status::NotExecuted, Status::Refused], true)) {
-            return Resolution::verified(['provider-fenced:' . $request->identity->key()], true);
+            return Resolution::verified(['provider-fenced:' . $request->identity->key()]);
         }
         if ($observed->status !== Status::Confirmed || $observed->effectId === null) {
             return Resolution::unknown('unit-return-' . $observed->status->value);
         }
-        return Resolution::verified([$observed->effectId], true);
+        return Resolution::verified([$observed->effectId]);
     }
 
     private function request(array $input): Request

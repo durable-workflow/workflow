@@ -32,6 +32,7 @@ final readonly class RegisteredObligation
         private ScopeIdentity $identity,
         private string $id,
         private string $principal,
+        private bool $valueLimits = false,
     ) {
         if (! WorkflowFiberContext::active() || preg_match('/\A[0-9a-f]{64}\z/D', $id) !== 1) {
             throw new LogicException('A registered obligation requires its recorded native workflow context.');
@@ -49,6 +50,8 @@ final readonly class RegisteredObligation
             $this->identity->toArray(),
             $this->id,
             $this->principal,
+            // Recorded only under the registration-checks patch, so earlier histories replay unchanged.
+            ...($this->valueLimits ? [true] : []),
         );
     }
 

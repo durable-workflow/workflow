@@ -110,28 +110,36 @@ final readonly class Ownership implements ChildScopeBindingAuthorization
 
             public function assertAllowed(ScopeIdentity $scope, string $principal, string $operation): string
             {
-                $subject = explode('.', $scope->key)[0];
-                $this->ownership->authorize($subject, $principal);
-                if ($scope->application !== Ownership::APPLICATION || $scope->namespace !== Ownership::NAMESPACE
-                    || ! in_array(
-                        $operation,
-                        ['register', 'forward', 'compensate', 'participate', 'inspect', 'request'],
-                        true
-                    )) {
-                    throw new LogicException('The scope lies outside this worker authority.');
-                }
-                $root = Ownership::scope($subject, $scope->generation);
-                if ($scope->toArray() === $root->toArray()) {
+                try {
+                    $subject = explode('.', $scope->key)[0];
+                    $this->ownership->authorize($subject, $principal);
+                    if ($scope->application !== Ownership::APPLICATION || $scope->namespace !== Ownership::NAMESPACE
+                        || ! in_array(
+                            $operation,
+                            ['register', 'forward', 'compensate', 'participate', 'inspect', 'request'],
+                            true
+                        )) {
+                        throw new LogicException('The scope lies outside this worker authority.');
+                    }
+                    $root = Ownership::scope($subject, $scope->generation);
+                    if ($scope->toArray() === $root->toArray()) {
+                        ($this->scopeOwner)($scope, $principal, $operation);
+                        return Ownership::VERSION;
+                    }
+                    $parts = explode('.', $scope->generation);
+                    if (count($parts) !== 3 || $parts[1] !== 'begin' || ! ctype_digit($parts[2])
+                        || $scope->key !== $subject . '.shipment.' . $parts[2]) {
+                        throw new LogicException('The child scope has a different state-entry owner.');
+                    }
                     ($this->scopeOwner)($scope, $principal, $operation);
                     return Ownership::VERSION;
+                } catch (\LogicException $refused) {
+                    // Policy refusals are permanent; other failures stay retryable.
+                    throw new \Workflow\V2\Compensation\Security\ScopeAuthorizationRefused(
+                        $refused->getMessage(),
+                        $refused
+                    );
                 }
-                $parts = explode('.', $scope->generation);
-                if (count($parts) !== 3 || $parts[1] !== 'begin' || ! ctype_digit($parts[2])
-                    || $scope->key !== $subject . '.shipment.' . $parts[2]) {
-                    throw new LogicException('The child scope has a different state-entry owner.');
-                }
-                ($this->scopeOwner)($scope, $principal, $operation);
-                return Ownership::VERSION;
             }
         };
     }

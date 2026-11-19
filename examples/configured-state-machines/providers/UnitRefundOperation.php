@@ -33,7 +33,9 @@ final readonly class UnitRefundOperation implements ScopedOperation
     {
         $command = UnitRefundCommand::fromObligation($context->obligation->input);
         ($this->authorize)($context, 'forward');
-        $result = $context->uncertainForward ? $this->refunds->lookup($command) : $this->refunds->attempt($command);
+        $result = $context->reconcileBeforeForward ? $this->refunds->lookup($command) : $this->refunds->attempt(
+            $command
+        );
         if ($result['status'] === Status::Unknown->value && $result['confirmedUnits'] !== $command->units) {
             return ForwardResult::unknown('original-unit-refund-unknown');
         }
@@ -51,11 +53,11 @@ final readonly class UnitRefundOperation implements ScopedOperation
         $result = $this->refunds->closeAdmission($command);
         if ($result['admissionClosed'] && $result['ownPayoutId'] === null
             && in_array($result['status'], [Status::NotExecuted->value, Status::Refused->value], true)) {
-            return Resolution::verified(['original-unit-refund-fenced:' . $command->id()], true);
+            return Resolution::verified(['original-unit-refund-fenced:' . $command->id()]);
         }
         if ($result['confirmedUnits'] !== $command->units) {
             return Resolution::unknown('original-unit-refund-' . $result['status']);
         }
-        return Resolution::verified(['original-unit-refund-receipts:' . $result['receiptsSha256']], true);
+        return Resolution::verified(['original-unit-refund-receipts:' . $result['receiptsSha256']]);
     }
 }

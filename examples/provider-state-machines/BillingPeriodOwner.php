@@ -41,7 +41,7 @@ final readonly class BillingPeriodOwner implements ScopedOperation
         $this->assertInput($context->obligation->input);
         [, $subject] = $this->store->authorizeEffect($context, 'compensate', true);
         return (bool) $subject->cancellation_requested
-            ? Resolution::verified(['billing-owner-fenced:' . $context->operationId], true)
+            ? Resolution::verified(['billing-owner-fenced:' . $context->operationId])
             : Resolution::unknown('original-period-cancellation-required');
     }
 }

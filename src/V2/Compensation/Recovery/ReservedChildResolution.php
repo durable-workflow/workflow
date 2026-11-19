@@ -12,11 +12,15 @@ use Workflow\V2\Compensation\Execution\Resolution;
 use Workflow\V2\Compensation\Persistence\ChildScopes;
 use Workflow\V2\Compensation\Persistence\ScopeRepository;
 use Workflow\V2\Compensation\Security\ScopeAuthorization;
+use Workflow\V2\Compensation\Security\ScopeAuthorizationRefused;
 use Workflow\V2\StateMachine\Binding\ChildReservation;
 use Workflow\V2\StateMachine\Binding\ChildReservationStore;
 use Workflow\V2\StateMachine\Binding\NeverAdmittedChild;
 
-/** @internal Resolves only an authoritative native closure or the exact admitted child's verified ledger. */
+/**
+ * @internal Resolves only an authoritative native closure or the exact admitted child's verified ledger.
+ * A permanent authorization refusal propagates as ScopeAuthorizationRefused.
+ */
 final readonly class ReservedChildResolution
 {
     public function __construct(
@@ -49,7 +53,7 @@ final readonly class ReservedChildResolution
             $principal = $this->repository->primaryRequest($parent)['principal'];
             $outcome = $this->reservations->close($reservation, $principal);
             if ($outcome instanceof NeverAdmittedChild) {
-                return Resolution::verified(['native-child-never-admitted:' . $outcome->closureId], true);
+                return Resolution::verified(['native-child-never-admitted:' . $outcome->closureId]);
             }
             PortableDescriptor::identifier(
                 $this->authorization->assertAllowed($participation->child, $principal, 'compensate'),
@@ -69,8 +73,10 @@ final readonly class ReservedChildResolution
                 $snapshot = $this->repository->inspect($participation->child);
             }
             return $snapshot['original_run_id'] === $outcome->admission->childRunId && $snapshot['status'] === 'verified'
-                ? Resolution::verified(['scope-verified:' . $participation->child->id()], true)
+                ? Resolution::verified(['scope-verified:' . $participation->child->id()])
                 : Resolution::unknown('reserved-child-unresolved');
+        } catch (ScopeAuthorizationRefused $refusal) {
+            throw $refusal;
         } catch (Throwable) {
             return Resolution::unknown('reserved-child-unresolved');
         }

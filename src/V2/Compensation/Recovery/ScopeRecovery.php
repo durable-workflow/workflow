@@ -28,6 +28,9 @@ use Workflow\V2\WorkflowStub;
  */
 final readonly class ScopeRecovery
 {
+    /**
+     * @internal Resolve this service from the container, for example `app(ScopeRecovery::class)`.
+     */
     public function __construct(
         private ScopeRepository $repository,
         private ScopeAuthorization $authorization,
@@ -35,6 +38,22 @@ final readonly class ScopeRecovery
     ) {
     }
 
+    /**
+     * Accept an authorized compensation request and route it.
+     *
+     * Every result has exactly these keys:
+     * - route: a RecoveryRoute value (`origin`, `recovery` or `verified`);
+     * - runId: the origin or recovery run ID, or null for `verified`;
+     * - commandId: the accepted cancellation or start command ID, or null;
+     * - recoveryStatus: the recovery run's status (`pending`, `running`, `waiting`, `completed`, `failed`,
+     *   `cancelled` or `terminated`), or null unless route is `recovery`;
+     * - scopeStatus: a ScopeStatus value;
+     * - nextAction: a NextAction value.
+     *
+     * Repeating a request key returns its original route and never starts another run.
+     *
+     * @return array{route: string, runId: ?string, commandId: ?string, recoveryStatus: ?string, scopeStatus: string, nextAction: string}
+     */
     public function request(
         ScopeIdentity $scope,
         string $requestKey,
@@ -43,7 +62,7 @@ final readonly class ScopeRecovery
         ?StartOptions $profile = null,
     ): array {
         $result = $this->route($scope, $requestKey, $principal, $reason, $profile);
-        if ($result['route'] !== 'verified') {
+        if ($result['route'] !== RecoveryRoute::Verified->value) {
             // An authorized request is a reason to retry now rather than after the long wait.
             CompensationWake::scope($scope);
         }
@@ -51,8 +70,21 @@ final readonly class ScopeRecovery
     }
 
     /**
-     * Read-only operator view of a scope's compensation, including automatic
-     * recovery after its origin closed and any recorded authorization refusal.
+     * Read-only operator view of a scope. Requires `inspect` authorization.
+     *
+     * Every result has exactly these keys:
+     * - scopeStatus: a ScopeStatus value;
+     * - originStatus and recoveryStatus: native run statuses (`pending`, `running`, `waiting`, `completed`,
+     *   `failed`, `cancelled`, `terminated`), or null when that run does not exist;
+     * - recoveryRunId: the current canonical recovery run ID, or null;
+     * - automaticRecovery: an AutomaticRecovery value;
+     * - refusal: null, or `['code' => 'recovery_authorization_failed', 'message' => ?string]`. The code is
+     *   stable; the message is the host's diagnostic text and is not machine-stable;
+     * - nextAction: a NextAction value;
+     * - unresolved: a list of `['key' => string, 'status' => ObligationStatus value, 'reason' => ?string]`
+     *   in registration order. The reason is the handler's outcome reason.
+     *
+     * @return array{scopeStatus: string, originStatus: ?string, recoveryRunId: ?string, recoveryStatus: ?string, automaticRecovery: string, refusal: ?array{code: string, message: ?string}, nextAction: string, unresolved: list<array{key: string, status: string, reason: ?string}>}
      */
     public function describe(ScopeIdentity $scope, string $principal): array
     {
@@ -60,6 +92,7 @@ final readonly class ScopeRecovery
         $policyVersion = $this->authorization->assertAllowed($scope, $principal, 'inspect');
         PortableDescriptor::identifier($policyVersion, 'authorization policy version');
         $ledger = $this->repository->inspect($scope);
+        $scopeStatus = self::scopeStatus($ledger['status']);
         $origin = ConfiguredV2Models::query('run_model', WorkflowRun::class)
             ->where('namespace', $scope->namespace)
             ->find($ledger['original_run_id']);
@@ -75,52 +108,81 @@ final readonly class ScopeRecovery
         $refusal = null;
         foreach ($this->repository->journal($scope) as $entry) {
             if ($entry['kind'] === CompensationAutoRecovery::REFUSED) {
-                $refusal = json_decode($entry['data'], true, flags: JSON_THROW_ON_ERROR);
+                $data = json_decode($entry['data'], true, flags: JSON_THROW_ON_ERROR);
+                $message = $data['message'] ?? $data['reason'] ?? null;
+                $refusal = [
+                    'code' => AutomaticRecovery::RecoveryAuthorizationFailed->value,
+                    'message' => is_string($message) ? $message : null,
+                ];
             }
         }
+        $settled = in_array($scopeStatus, [ScopeStatus::Verified, ScopeStatus::Released], true);
         $originClosed = $origin instanceof WorkflowRun && $origin->status->isTerminal();
         $automatic = match (true) {
-            in_array($ledger['status'], ['verified', 'released'], true) && ! $routed => 'not_needed',
-            $routed => 'routed',
-            $refusal !== null => CompensationAutoRecovery::REFUSED,
-            $ledger['status'] !== 'requested' => 'not_needed',
-            $originClosed => 'pending',
-            default => 'not_needed',
+            $routed => AutomaticRecovery::Routed,
+            $settled => AutomaticRecovery::NotNeeded,
+            $refusal !== null => AutomaticRecovery::RecoveryAuthorizationFailed,
+            $scopeStatus === ScopeStatus::Requested && $originClosed => AutomaticRecovery::Pending,
+            default => AutomaticRecovery::NotNeeded,
         };
         $nextAction = match (true) {
-            in_array($ledger['status'], ['verified', 'released'], true) => 'none',
-            $recovery instanceof WorkflowRun && ! $recovery->status->isTerminal() => 'observe_recovery',
+            $settled => NextAction::None,
+            $recovery instanceof WorkflowRun && ! $recovery->status->isTerminal() => NextAction::ObserveRecovery,
             $recovery instanceof WorkflowRun && $recovery->status === RunStatus::Completed
-                => 'inspect_unresolved_obligations',
-            $recovery instanceof WorkflowRun => 'submit_fresh_authorized_request',
-            $automatic === CompensationAutoRecovery::REFUSED => 'submit_fresh_authorized_request',
-            $automatic === 'pending' => 'await_automatic_recovery',
-            $ledger['status'] === 'requested' => 'observe_origin',
-            default => 'none',
+                => NextAction::InspectUnresolvedObligations,
+            $recovery instanceof WorkflowRun => NextAction::SubmitFreshAuthorizedRequest,
+            $automatic === AutomaticRecovery::RecoveryAuthorizationFailed => NextAction::SubmitFreshAuthorizedRequest,
+            $automatic === AutomaticRecovery::Pending => NextAction::AwaitAutomaticRecovery,
+            $scopeStatus === ScopeStatus::Requested => NextAction::ObserveOrigin,
+            default => NextAction::None,
         };
         $unresolved = [];
         foreach ($ledger['obligations'] as $obligation) {
-            if ($obligation['compensation_status'] === 'verified') {
+            $status = self::obligationStatus($obligation['compensation_status']);
+            if ($status === ObligationStatus::Verified) {
                 continue;
             }
             $evidence = $obligation['evidence'] === null ? null
                 : json_decode($obligation['evidence'], true, flags: JSON_THROW_ON_ERROR);
+            $reason = $evidence['reason'] ?? null;
             $unresolved[] = [
                 'key' => $obligation['descriptor']['key'],
-                'status' => $obligation['compensation_status'],
-                'reason' => $evidence['reason'] ?? null,
+                'status' => $status->value,
+                'reason' => is_string($reason) ? $reason : null,
             ];
         }
         return [
-            'scopeStatus' => $ledger['status'],
+            'scopeStatus' => $scopeStatus->value,
             'originStatus' => $origin instanceof WorkflowRun ? $origin->status->value : null,
             'recoveryRunId' => $recovery?->id,
             'recoveryStatus' => $recovery?->status->value,
-            'automaticRecovery' => $automatic,
+            'automaticRecovery' => $automatic->value,
             'refusal' => $refusal,
-            'nextAction' => $nextAction,
+            'nextAction' => $nextAction->value,
             'unresolved' => $unresolved,
         ];
+    }
+
+    /**
+     * Maps a retained scope status to its public value; reserved roots are not opened scopes.
+     */
+    private static function scopeStatus(string $stored): ScopeStatus
+    {
+        return ScopeStatus::tryFrom($stored)
+            ?? throw new LogicException('The compensation scope has not been opened.');
+    }
+
+    /**
+     * Maps a retained compensation status to its public value.
+     */
+    private static function obligationStatus(string $stored): ObligationStatus
+    {
+        return match ($stored) {
+            'verified' => ObligationStatus::Verified,
+            'failed' => ObligationStatus::Failed,
+            'unknown' => ObligationStatus::Unresolved,
+            default => ObligationStatus::Pending,
+        };
     }
 
     private function route(
@@ -148,17 +210,24 @@ final readonly class ScopeRecovery
         $boundRoute = $this->repository->recoveryRoute($scope, $requestKey, $profileFingerprint);
         if ($boundRoute === null && $snapshot['status'] === 'verified') {
             return [
-                'route' => 'verified',
+                'route' => RecoveryRoute::Verified->value,
                 'runId' => null,
+                'commandId' => null,
+                'recoveryStatus' => null,
+                'scopeStatus' => ScopeStatus::Verified->value,
+                'nextAction' => NextAction::None->value,
             ];
         }
         if ($boundRoute === null && ! $origin->status->isTerminal()) {
             $command = WorkflowStub::loadRun($origin->id)->attemptRequestCancellation($reason);
             if ($command->accepted()) {
                 return [
-                    'route' => 'origin',
+                    'route' => RecoveryRoute::Origin->value,
                     'runId' => $origin->id,
                     'commandId' => $command->commandId(),
+                    'recoveryStatus' => null,
+                    'scopeStatus' => self::scopeStatus($this->repository->metadata($scope)['status'])->value,
+                    'nextAction' => NextAction::ObserveOrigin->value,
                 ];
             }
             // Closure can win after the gate transaction. Route that same retained request below.
@@ -234,21 +303,19 @@ final readonly class ScopeRecovery
                 !== PortableDescriptor::encode($scope->toArray())) {
             throw new LogicException('Native recovery result does not match the retained predecessor and owner.');
         }
-        $scopeStatus = $snapshot['status'];
-        $nextAction = $scopeStatus === 'verified' ? 'none' : match ($run->status) {
-            RunStatus::Failed, RunStatus::Cancelled, RunStatus::Terminated => 'submit_fresh_authorized_request',
-            RunStatus::Completed => 'inspect_unresolved_obligations',
-            default => 'observe_recovery',
+        $scopeStatus = self::scopeStatus($snapshot['status']);
+        $nextAction = $scopeStatus === ScopeStatus::Verified ? NextAction::None : match ($run->status) {
+            RunStatus::Failed, RunStatus::Cancelled, RunStatus::Terminated => NextAction::SubmitFreshAuthorizedRequest,
+            RunStatus::Completed => NextAction::InspectUnresolvedObligations,
+            default => NextAction::ObserveRecovery,
         };
         return [
-            'route' => 'recovery',
+            'route' => RecoveryRoute::Recovery->value,
             'runId' => $runId,
-            ...($commandId === null ? [] : [
-                'commandId' => $commandId,
-            ]),
+            'commandId' => $commandId,
             'recoveryStatus' => $run->status->value,
-            'scopeStatus' => $scopeStatus,
-            'nextAction' => $nextAction,
+            'scopeStatus' => $scopeStatus->value,
+            'nextAction' => $nextAction->value,
         ];
     }
 

@@ -22,6 +22,9 @@ use Workflow\V2\Support\WorkflowFiberContext;
  */
 final readonly class ScopeRetention
 {
+    /**
+     * @internal Resolve this service from the container, for example `app(ScopeRetention::class)`.
+     */
     public function __construct(
         private ScopeRepository $repository,
         private ScopeAuthorization $authorization

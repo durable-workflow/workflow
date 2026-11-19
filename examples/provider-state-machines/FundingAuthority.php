@@ -172,7 +172,7 @@ final readonly class FundingAuthority
             $this->assertForward($key, $role);
             [, $terms] = $this->authority->assignment($key);
             if ($role === 'order' && FundingCatalogue::requiresAuthorization($this->authority->recipe($key))
-                && ! $context->uncertainForward && ! $terms->authorization->canAdmitCaptureAt(
+                && ! $context->reconcileBeforeForward && ! $terms->authorization->canAdmitCaptureAt(
                     Carbon::now()->getTimestamp()
                 )) {
                 throw new LogicException('The original authorization expired before stock admission.');

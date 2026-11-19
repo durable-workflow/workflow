@@ -38,7 +38,9 @@ final readonly class FinancialOperation implements ScopedOperation
         $requests = $this->requests($context->obligation->input);
         ($this->authorize)($context, 'forward');
         $forward = $requests[$this->stage];
-        $observed = $context->uncertainForward ? $this->provider->lookup($forward) : $this->provider->attempt($forward);
+        $observed = $context->reconcileBeforeForward ? $this->provider->lookup($forward) : $this->provider->attempt(
+            $forward
+        );
         if ($observed->status === Status::Unknown || (($observed->status === Status::Confirmed)
             !== ($observed->effectId !== null))) {
             return ForwardResult::unknown('financial-forward-unknown');
@@ -67,7 +69,7 @@ final readonly class FinancialOperation implements ScopedOperation
             && $authorization->status === Status::Confirmed && $authorization->effectId !== null) {
             // Full capture consumed this permission. The distinct capture obligation still owns its refund.
             return Resolution::verified([$authorization->effectId, $capture->effectId,
-                'authorization-consumed:' . $requests['authorize']->identity->key()], true);
+                'authorization-consumed:' . $requests['authorize']->identity->key()]);
         }
         if (! $this->absent($capture)) {
             return Resolution::unknown('financial-capture-' . $capture->status->value);
@@ -81,7 +83,7 @@ final readonly class FinancialOperation implements ScopedOperation
             return Resolution::verified([
                 'provider-fenced:' . $requests['authorize']->identity->key(),
                 'provider-fenced:' . $requests['capture']->identity->key(),
-            ], true);
+            ]);
         }
         if ($authorization->status !== Status::Confirmed || $authorization->effectId === null) {
             return Resolution::unknown('financial-authorization-' . $authorization->status->value);
@@ -94,7 +96,7 @@ final readonly class FinancialOperation implements ScopedOperation
     {
         $capture = $this->provider->closeAdmission($requests['capture']);
         if ($this->absent($capture)) {
-            return Resolution::verified(['provider-fenced:' . $requests['capture']->identity->key()], true);
+            return Resolution::verified(['provider-fenced:' . $requests['capture']->identity->key()]);
         }
         if ($capture->status !== Status::Confirmed || $capture->effectId === null) {
             return Resolution::unknown('financial-capture-' . $capture->status->value);
@@ -109,7 +111,7 @@ final readonly class FinancialOperation implements ScopedOperation
         if ($observed->status !== Status::Confirmed || $observed->effectId === null) {
             return Resolution::unknown('financial-compensation-' . $observed->status->value);
         }
-        return Resolution::verified([...$originalEvidence, $observed->effectId], true);
+        return Resolution::verified([...$originalEvidence, $observed->effectId]);
     }
 
     private function absent(Observation $observed): bool
