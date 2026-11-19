@@ -73,6 +73,11 @@ final readonly class SqlEffectOperation implements ScopedOperation
                 return Resolution::unknown('business_cancellation_required');
             }
             $receipt = $this->receipt($context);
+            if ($receipt?->status === 'dispatched') {
+                // The carrier holds the parcel. Voiding it now cannot be verified, so native
+                // retries run and the obligation stays unresolved until the parcel returns.
+                return Resolution::unknown('effect_dispatched');
+            }
             if ($receipt === null) {
                 // This is committed non-admission, not a transient lookup-absence inference.
                 $status = 'absent';
@@ -163,7 +168,7 @@ final readonly class SqlEffectOperation implements ScopedOperation
                 $this->execution($context->obligation->input['execution'])
             )
             || $row->action !== $this->action
-            || ! in_array($row->status, ['active', 'voided', 'absent'], true))) {
+            || ! in_array($row->status, ['active', 'voided', 'absent', 'dispatched'], true))) {
             throw new LogicException('The original SQL effect owner or status was substituted.');
         }
         return $row;

@@ -57,5 +57,10 @@ return static function (Builder $schema): void {
         $table->string('root_key', 64);
         $table->string('root_run');
         $table->string('request_sha256', 64);
+        // The automatic finalizer names the original request when it calls finish().
+        $table->string('request_key')
+            ->nullable();
+        $table->timestamp('requested_at', 6)
+            ->nullable();
     });
 };

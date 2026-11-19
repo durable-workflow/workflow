@@ -56,8 +56,8 @@ final class V2CheckoutProcessLossTest extends TestCase
             'cancellation races a lost capture' => ['provider.unit-payment', 'forward', true, false],
             'cancellation races a lost booking' => ['provider.effect', 'forward', true, false],
             // Closed child scopes compensate in a native recovery run, which retries after the watchdog repairs
-            // the lost lease. The parent's finite compensation attempts expire first: the Order closes unsettled
-            // and a fresh authorized recovery request plus the proof-only finalizer settle it.
+            // the lost lease. The Order's in-origin attempts expire first and the Order closes unsettled; the
+            // watchdog routes its accepted request to recovery, and the worker's finalizer commits cancellation.
             'booking cancellation committed' => ['provider.effect', 'compensate', false, true],
             'remaining repayment committed' => ['provider.unit-payment', 'compensate', false, true],
             'reservation release committed' => ['provider.stock', 'compensate', false, false],
@@ -69,7 +69,7 @@ final class V2CheckoutProcessLossTest extends TestCase
         string $handler,
         string $mode,
         bool $cancelWhileLost,
-        bool $freshRecovery
+        bool $originClosesUnsettled
     ): void {
         $this->requireWorkerLossSupport();
         $stub = $this->begin();
@@ -113,29 +113,17 @@ final class V2CheckoutProcessLossTest extends TestCase
                 ];
             },
         );
-        $this->assertSame($freshRecovery, $resumed['idle']);
+        $this->assertFalse($resumed['idle'], $this->progress());
+        $this->assertSame($until, $resumed['state']);
         \Illuminate\Support\Carbon::setTestNow($resumed['clock']);
-        if ($freshRecovery) {
-            // No false business cancellation: the Order stays booked and its root scope unsettled.
-            $this->assertSame('booked', $resumed['state']);
+        if ($originClosesUnsettled) {
+            // The Order's in-origin compensation failed fast and the Order closed unsettled. The fresh
+            // worker's watchdog routed its accepted request to recovery, which outlasted the child's lease
+            // repair (#1205). The worker application's finalizer then committed the business cancellation.
+            $this->assertSame('failed', WorkflowRun::query()->findOrFail($stub->runId())->status->value);
             $root = $this->authority->plan($key)
                 ->rootScope();
-            $this->assertSame('requested', (new ScopeRepository())->metadata($root)['status'], $this->progress());
-            $this->assertSame('failed', WorkflowRun::query()->findOrFail($stub->runId())->status->value);
-            // Settled child work happened exactly once; the root release still waits behind its refund.
-            $this->assertSame(['capture', 'reserve', 'book', 'cancel-booking'], $this->effects());
-            $this->assertSame($handler === 'provider.unit-payment' ? [499, 1000] : [499], $this->payouts());
-            $this->assertSame(0, $this->warehouse->inventory('shop-a', 'sku-1')['available']);
-            $cancellation->request($key, $stub->runId(), 'cancel-before-worker-loss', 'recover-after-worker-loss');
-            $this->drainLikeAWorker();
-            $this->assertSame(
-                'started',
-                $cancellation->finish($key, $stub->runId(), 'cancel-before-worker-loss')['status'],
-                $this->progress()
-            );
-            $this->drainLikeAWorker();
-        } else {
-            $this->assertSame($until, $resumed['state']);
+            $this->assertSame('verified', (new ScopeRepository())->metadata($root)['status'], $this->progress());
         }
         if ($until === 'booked') {
             $cancellation->request($key, $stub->runId(), 'cancel-after-worker-recovery');
@@ -159,12 +147,12 @@ final class V2CheckoutProcessLossTest extends TestCase
         $this->assertGreaterThanOrEqual(count($this->effects()), $this->providerRequests());
         $requests = $this->providerRequests();
         // Replay reproduces the original root outcome without provider I/O. A root that closed unsettled
-        // before the fresh recovery replays its same recorded compensation failure.
+        // before automatic recovery replays its same recorded compensation failure.
         try {
             app(WorkflowReplayer::class)->replay(WorkflowRun::query()->findOrFail($stub->runId()));
-            $this->assertFalse($freshRecovery, 'The unsettled original root must replay its recorded failure.');
+            $this->assertFalse($originClosesUnsettled, 'The unsettled original root must replay its recorded failure.');
         } catch (\RuntimeException $error) {
-            $this->assertTrue($freshRecovery, $error->getMessage());
+            $this->assertTrue($originClosesUnsettled, $error->getMessage());
             $this->assertSame('scope_compensation_unknown', $error->getMessage());
         }
         $this->assertSame($requests, $this->providerRequests());
