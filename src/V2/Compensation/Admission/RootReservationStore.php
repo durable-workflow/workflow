@@ -228,7 +228,7 @@ final readonly class RootReservationStore
     {
         if (! is_a($identity->workflowClass, \Workflow\V2\Workflow::class, true)
             || TypeRegistry::for($identity->workflowClass) !== $identity->workflowType
-            || WorkflowDefinition::fingerprint($identity->workflowClass) !== $identity->definitionFingerprint) {
+            || ! WorkflowDefinition::matchesFingerprint($identity->workflowClass, $identity->definitionFingerprint)) {
             throw new LogicException('The root definition differs from its original immutable descriptor.');
         }
     }

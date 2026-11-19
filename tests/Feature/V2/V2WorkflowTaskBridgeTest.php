@@ -8789,6 +8789,38 @@ final class V2WorkflowTaskBridgeTest extends TestCase
         $this->assertSame(1, $run->timers()->count());
     }
 
+    public function testOccurrenceChainsCompareConditionFingerprintsWithinOneVersion(): void
+    {
+        $v1 = 'sha256:' . str_repeat('a', 64);
+        $v2 = 'sha256-tokens:' . str_repeat('b', 64);
+        foreach ([
+            'same version 1' => [$v1, $v1, true],
+            'same version 2' => [$v2, $v2, true],
+            'changed version 2 definition' => [$v2, 'sha256-tokens:' . str_repeat('c', 64), false],
+            // Different algorithms cannot be compared without the predicate.
+            'version 1 chain reopened with version 2' => [$v1, $v2, false],
+            'version 2 chain reopened with version 1' => [$v2, $v1, false],
+        ] as $case => [$first, $reopen, $accepted]) {
+            $run = $this->createWaitingRun();
+            $task = $this->createLeasedTask($run);
+            $command = [
+                ...self::occurrenceDeadlineCommand(),
+                'condition_definition_fingerprint' => $first,
+            ];
+
+            $result = $this->bridge->complete($task->id, [$command, [
+                ...$command,
+                'condition_definition_fingerprint' => $reopen,
+            ]]);
+
+            $this->assertSame($accepted, $result['completed'], $case);
+            if (! $accepted) {
+                $this->assertSame('condition_wait_occurrence_mismatch', $result['reason'], $case);
+                $this->assertSame(0, $run->timers()->count(), $case);
+            }
+        }
+    }
+
     public function testOccurrenceDeadlineCannotDowngradeAfterSignalResolution(): void
     {
         $run = $this->createWaitingRun();

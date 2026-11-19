@@ -74,6 +74,34 @@ final class WorkflowServiceProviderTest extends TestCase
         (new WorkflowServiceProvider($this->app))->boot();
     }
 
+    public function testProviderBootRefusesAnUnsupportedDefinitionFingerprintVersion(): void
+    {
+        config()
+            ->set('workflows.definition_fingerprint_version', 'V2.0');
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('workflows.definition_fingerprint_version');
+        $this->expectExceptionMessage('DW_DEFINITION_FINGERPRINT_VERSION');
+        $this->expectExceptionMessage("'V2.0'");
+
+        (new WorkflowServiceProvider($this->app))->boot();
+    }
+
+    public function testProviderBootAcceptsEachDefinitionFingerprintVersion(): void
+    {
+        foreach ([null, 'v1', 'v2', ' V2 '] as $version) {
+            config()
+                ->set('workflows.definition_fingerprint_version', $version);
+
+            (new WorkflowServiceProvider($this->app))->boot();
+        }
+
+        $this->assertSame(
+            \Workflow\V2\Support\SourceFingerprint::V2,
+            \Workflow\V2\Support\SourceFingerprint::recordingVersion()
+        );
+    }
+
     public function testProviderBootAllowsConfiguredInstanceModelWithExplicitRelationOverrides(): void
     {
         config()->set('workflows.v2.instance_model', ValidatedProviderWorkflowInstance::class);

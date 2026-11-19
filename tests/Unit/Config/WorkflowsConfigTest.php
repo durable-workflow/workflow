@@ -26,6 +26,7 @@ final class WorkflowsConfigTest extends NonDatabaseTestCase
         'DW_V2_COMPATIBILITY_NAMESPACE', 'WORKFLOW_V2_COMPATIBILITY_NAMESPACE',
         'DW_V2_COMPATIBILITY_HEARTBEAT_TTL', 'WORKFLOW_V2_COMPATIBILITY_HEARTBEAT_TTL',
         'DW_V2_PIN_TO_RECORDED_FINGERPRINT', 'WORKFLOW_V2_PIN_TO_RECORDED_FINGERPRINT',
+        'DW_DEFINITION_FINGERPRINT_VERSION',
         'DW_V2_CONTINUE_AS_NEW_EVENT_THRESHOLD', 'WORKFLOW_V2_CONTINUE_AS_NEW_EVENT_THRESHOLD',
         'DW_V2_CONTINUE_AS_NEW_SIZE_BYTES_THRESHOLD', 'WORKFLOW_V2_CONTINUE_AS_NEW_SIZE_BYTES_THRESHOLD',
         'DW_V2_HISTORY_EXPORT_SIGNING_KEY', 'WORKFLOW_V2_HISTORY_EXPORT_SIGNING_KEY',
@@ -261,6 +262,27 @@ final class WorkflowsConfigTest extends NonDatabaseTestCase
             // refused instead of being cast to some other pass size.
             $config = require dirname(__DIR__, 3) . '/src/config/workflows.php';
             $this->assertSame('500', $config['v2']['schedules']['tick_limit']);
+        } finally {
+            $this->restoreEnv($previous);
+        }
+    }
+
+    public function testDefinitionFingerprintVersionDefaultsToV1AndReadsTheDwName(): void
+    {
+        $keys = ['DW_DEFINITION_FINGERPRINT_VERSION'];
+        $previous = $this->snapshotEnv($keys);
+        $this->clearEnv($keys);
+
+        try {
+            $config = require dirname(__DIR__, 3) . '/src/config/workflows.php';
+            $this->assertSame('v1', $config['definition_fingerprint_version']);
+
+            putenv('DW_DEFINITION_FINGERPRINT_VERSION=v2');
+            $_ENV['DW_DEFINITION_FINGERPRINT_VERSION'] = 'v2';
+            $_SERVER['DW_DEFINITION_FINGERPRINT_VERSION'] = 'v2';
+
+            $config = require dirname(__DIR__, 3) . '/src/config/workflows.php';
+            $this->assertSame('v2', $config['definition_fingerprint_version']);
         } finally {
             $this->restoreEnv($previous);
         }

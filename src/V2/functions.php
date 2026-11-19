@@ -236,20 +236,25 @@ if (! function_exists(__NAMESPACE__ . '\\await')) {
         }
 
         $condition = \Closure::fromCallable($condition);
+        // A run keeps the fingerprint algorithm it started with.
+        $definitionFingerprint = Support\ConditionWaitDefinition::fingerprint(
+            $condition,
+            Support\WorkflowFiberContext::definitionFingerprintVersion(),
+        );
 
         if ($timeoutSeconds !== null) {
             return WorkflowFiberContext::suspend(new AwaitWithTimeoutCall(
                 $timeoutSeconds,
                 $condition,
                 Support\ConditionWaitKey::normalize($conditionKey),
-                Support\ConditionWaitDefinition::fingerprint($condition),
+                $definitionFingerprint,
             ));
         }
 
         return WorkflowFiberContext::suspend(new AwaitCall(
             $condition,
             Support\ConditionWaitKey::normalize($conditionKey),
-            Support\ConditionWaitDefinition::fingerprint($condition),
+            $definitionFingerprint,
         ));
     }
 }

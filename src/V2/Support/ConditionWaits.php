@@ -299,17 +299,23 @@ final class ConditionWaits
             );
         }
 
+        // Compare by the algorithm the recorded fingerprint names, so a wait
+        // recorded with version 1 keeps its exact version 1 comparison.
         if (
             $definition['condition_definition_fingerprint'] !== null
             && $call->conditionDefinitionFingerprint !== null
-            && $definition['condition_definition_fingerprint'] !== $call->conditionDefinitionFingerprint
+            && ! ConditionWaitDefinition::matches(
+                $call->condition,
+                $definition['condition_definition_fingerprint'],
+                $call->conditionDefinitionFingerprint,
+            )
         ) {
             throw new ConditionWaitDefinitionMismatchException(
                 $sequence,
                 $definition['condition_key'],
                 $call->conditionKey,
                 $definition['condition_definition_fingerprint'],
-                $call->conditionDefinitionFingerprint,
+                self::comparableFingerprint($definition['condition_definition_fingerprint'], $call),
             );
         }
     }
@@ -317,6 +323,22 @@ final class ConditionWaits
     public static function conditionKeyForSequence(WorkflowRun $run, int $sequence): ?string
     {
         return self::conditionDefinitionForSequence($run, $sequence)['condition_key'];
+    }
+
+    /**
+     * The call's fingerprint as the recorded one's algorithm computes it, so a
+     * mismatch reports two comparable values.
+     */
+    private static function comparableFingerprint(string $recorded, AwaitCall|AwaitWithTimeoutCall $call): ?string
+    {
+        $version = SourceFingerprint::versionOf($recorded);
+
+        if (SourceFingerprint::versionOf($call->conditionDefinitionFingerprint) === $version) {
+            return $call->conditionDefinitionFingerprint;
+        }
+
+        return ConditionWaitDefinition::fingerprint($call->condition, $version)
+            ?? $call->conditionDefinitionFingerprint;
     }
 
     /**
