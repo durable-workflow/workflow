@@ -11,7 +11,8 @@ use Workflow\V2\Support\ConditionWaitDefinition;
 /**
  * Pins what the condition-wait fingerprint reads. The regression-corpus comment-only exemption
  * (scripts/ci/classify-comment-only-change.php) relies on it hashing only the raw text of the lines a
- * closure spans: comments and blank lines outside those lines must not change it.
+ * callable spans: comments and blank lines outside those lines must not change it. await() turns any
+ * callable into a closure, so method callables and invokables are fingerprinted by their method's lines.
  */
 final class ConditionWaitDefinitionFingerprintTest extends TestCase
 {
@@ -26,6 +27,18 @@ final class ConditionWaitDefinitionFingerprintTest extends TestCase
         return static function (): bool {
             return self::$ready === true;
         };
+    }
+
+    #[ConditionFixtureMarker]
+    public
+        static function ready(): bool
+    {
+        return self::$ready === true;
+    }
+
+    public function __invoke(): bool
+    {
+        return self::$ready === true;
     }
 PHP;
 
@@ -51,15 +64,19 @@ PHP;
             "/**\n * A docblock above the class.\n */\n\n\n",
             "    // A line comment above the methods.\n\n",
             str_replace(
-                '    public static function block',
-                "    /**\n     * A docblock above the closure's method.\n     */\n\n    public static function block",
+                ['    public static function block', '    #[ConditionFixtureMarker]', '    public function __invoke'],
+                [
+                    "    /**\n     * A docblock above the closure's method.\n     */\n\n    public static function block",
+                    "    /**\n     * A docblock above an attributed method.\n     */\n    #[ConditionFixtureMarker]",
+                    "    // Above the invokable.\n    public function __invoke",
+                ],
                 self::CLOSURES
             ),
         );
 
-        foreach (['arrow', 'block'] as $method) {
-            $before = [$plain, $method]();
-            $after = [$commented, $method]();
+        foreach (array_keys(self::callables($plain)) as $method) {
+            $before = self::callables($plain)[$method];
+            $after = self::callables($commented)[$method];
             // The closures moved down the file, so their position differs ...
             $this->assertGreaterThan(
                 (new ReflectionFunction($before))->getStartLine(),
@@ -84,24 +101,31 @@ PHP;
             '',
             '',
             str_replace(
-                '            return self::$ready',
-                "            // inside\n            return self::\$ready",
-                self::CLOSURES
+                ['            return self::$ready', "    {\n        return self::\$ready"],
+                [
+                    "            // inside\n            return self::\$ready",
+                    "    {\n        // inside\n        return self::\$ready",
+                ],
+                self::CLOSURES,
             ),
         );
 
-        foreach (['arrow', 'block'] as $method) {
+        foreach (array_keys(self::callables($plain)) as $method) {
             $this->assertNotSame(
-                ConditionWaitDefinition::fingerprint([$plain, $method]()),
-                ConditionWaitDefinition::fingerprint([$changed, $method]()),
+                ConditionWaitDefinition::fingerprint(self::callables($plain)[$method]),
+                ConditionWaitDefinition::fingerprint(self::callables($changed)[$method]),
                 $method,
             );
         }
-        // A comment inside the closure's lines is part of the fingerprint, so the exemption refuses it.
-        $this->assertNotSame(
-            ConditionWaitDefinition::fingerprint([$plain, 'block']()),
-            ConditionWaitDefinition::fingerprint([$commentedInside, 'block']()),
-        );
+        // A comment inside a callable's lines is part of the fingerprint, so the exemption refuses it. This
+        // includes the body of a method passed to await() as a callable or an invokable object.
+        foreach (['block', 'ready', 'invokable'] as $method) {
+            $this->assertNotSame(
+                ConditionWaitDefinition::fingerprint(self::callables($plain)[$method]),
+                ConditionWaitDefinition::fingerprint(self::callables($commentedInside)[$method]),
+                $method,
+            );
+        }
     }
 
     public function testTheCorpusExemptionSpansCoverEveryLineTheFingerprintReads(): void
@@ -154,16 +178,39 @@ PHP;
     {
         return $closure;
     }
+
+    #[ConditionFixtureMarker]
+    public
+        static function ready(): bool
+    {
+        return self::$ready === true;
+    }
+
+    public function __invoke(): bool
+    {
+        return self::$ready === true;
+    }
 PHP;
         $class = $this->fixture('Spans', '', '', $closures);
         $file = (string) (new \ReflectionClass($class))->getFileName();
+        $method = static fn (string $name): \ReflectionMethod => new \ReflectionMethod($class, $name);
+        // Every function in token order: each method, then the closure it returns.
         $reflected = [
+            $method('arrow'),
             new ReflectionFunction([$class, 'arrow']()),
+            $method('block'),
             new ReflectionFunction([$class, 'block']()),
+            $method('byReference'),
             new ReflectionFunction([$class, 'byReference']()),
+            $method('attributed'),
             new ReflectionFunction([$class, 'attributed']()),
+            $method('argument'),
             null,
+            $method('inArgument'),
             new ReflectionFunction([$class, 'inArgument']()),
+            $method('wrap'),
+            $method('ready'),
+            $method('__invoke'),
         ];
         $spans = $this->closureSpans((string) file_get_contents($file));
         $this->assertCount(count($reflected), $spans);
@@ -175,10 +222,30 @@ PHP;
             $this->assertLessThanOrEqual(
                 $reflection->getStartLine(),
                 $start,
-                "closure {$index} starts inside its span"
+                "function {$index} starts inside its span"
             );
-            $this->assertGreaterThanOrEqual($reflection->getEndLine(), $end, "closure {$index} ends inside its span");
+            $this->assertGreaterThanOrEqual($reflection->getEndLine(), $end, "function {$index} ends inside its span");
         }
+        // A method's span starts at its first modifier or attribute, so a docblock above it stays outside.
+        $lines = file($file, FILE_IGNORE_NEW_LINES);
+        $this->assertStringContainsString('#[ConditionFixtureMarker]', $lines[$spans[13][0] - 1]);
+    }
+
+    /**
+     * The closures await() would fingerprint for each fixture callable.
+     *
+     * @param class-string $class
+     *
+     * @return array<string, \Closure>
+     */
+    private static function callables(string $class): array
+    {
+        return [
+            'arrow' => [$class, 'arrow'](),
+            'block' => [$class, 'block'](),
+            'ready' => \Closure::fromCallable([$class, 'ready']),
+            'invokable' => \Closure::fromCallable(new $class()),
+        ];
     }
 
     /**

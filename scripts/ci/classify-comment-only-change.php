@@ -14,11 +14,13 @@ declare(strict_types=1);
  *  1. Its token stream, without T_COMMENT, T_DOC_COMMENT and T_WHITESPACE, is identical at base and head.
  *     Attributes, strings, heredocs and declare statements are ordinary tokens and still count.
  *  2. It declares no trait. Workflow definition fingerprints include the source of traits a workflow uses.
- *  3. It contains no anonymous class, and every closure and arrow function spans byte-identical raw
- *     source lines at base and head, paired in token order. ConditionWaitDefinition::fingerprint()
- *     hashes exactly the raw text of the whole lines a closure spans (no line numbers, offsets or
- *     path), so comments outside those lines cannot change it, and any edit on them can. Each span is
- *     widened to the neighbouring code tokens, so it always covers the lines the fingerprint reads.
+ *  3. It contains no carriage return, no anonymous class, and every function, method, closure and
+ *     arrow function spans byte-identical raw source lines at base and head, paired in token order.
+ *     ConditionWaitDefinition::fingerprint() hashes exactly the raw text of the whole lines a callable
+ *     spans (no line numbers, offsets or path), and await() turns any callable into a closure, so a
+ *     method or __invoke can be fingerprinted too. Comments outside those lines, such as docblocks
+ *     above methods, cannot change it; any edit on them can. A lone carriage return moves PHP's line
+ *     numbers without moving file()'s, so any source containing one is refused.
  *  4. It declares at least one class, interface or enum; each one loads from this exact file through
  *     the repository autoloader; and no declared class is a Workflow\V2\Workflow or Workflow\Workflow
  *     subclass. Workflow definition fingerprints hash the raw source of workflow classes, comments
@@ -154,6 +156,18 @@ function fingerprintedConstructAt(array $tokens, int $index): ?string
 /**
  * @param list<array|string> $tokens
  */
+function isFunctionAt(array $tokens, int $index): bool
+{
+    if (isToken($tokens[$index], T_FN)) {
+        return true;
+    }
+    // `use function Foo\bar;` imports a function; it declares nothing.
+    return isToken($tokens[$index], T_FUNCTION) && ! isToken(previousSignificant($tokens, $index), T_USE);
+}
+
+/**
+ * @param list<array|string> $tokens
+ */
 function isClosureAt(array $tokens, int $index): bool
 {
     if (isToken($tokens[$index], T_FN)) {
@@ -267,7 +281,7 @@ function arrowExpressionEnd(array $tokens, int $arrow): ?int
 }
 
 /**
- * Index of the last token of the closure or arrow function at $index, or null when unknown.
+ * Index of the last token of the function, method, closure or arrow function at $index, or null.
  *
  * @param list<array|string> $tokens
  */
@@ -279,9 +293,14 @@ function closureEnd(array $tokens, int $index): ?int
         return null;
     }
     if (isToken($tokens[$index], T_FUNCTION)) {
-        // Neither parameter defaults, `use` lists nor return types contain `{`: the first one opens the body.
-        $body = firstIndexAfter($tokens, $parameters, static fn (array|string $token): bool => $token === '{');
-        return $body === null ? null : groupEnd($tokens, $body);
+        // Neither parameter defaults, `use` lists nor return types contain `{` or `;`: the first one opens
+        // the body, or ends a declaration without one.
+        $body = firstIndexAfter(
+            $tokens,
+            $parameters,
+            static fn (array|string $token): bool => $token === '{' || $token === ';',
+        );
+        return $body === null || $tokens[$body] === ';' ? $body : groupEnd($tokens, $body);
     }
     $arrow = firstIndexAfter(
         $tokens,
@@ -315,9 +334,34 @@ function closureStart(array $tokens, int $index): int
 }
 
 /**
- * Line spans covering every closure and arrow function, in token order, or null when a bound is unknown.
- * Each span runs from the code token before the closure to the code token after it, so it covers every
- * line ReflectionFunction reports for the closure.
+ * Index of the first token of the named function or method declared at $index: its modifiers and
+ * attribute groups, never the docblock above them.
+ *
+ * @param list<array|string> $tokens
+ */
+function declarationStart(array $tokens, int $index): int
+{
+    $modifiers = [T_PUBLIC, T_PROTECTED, T_PRIVATE, T_STATIC, T_ABSTRACT, T_FINAL];
+    $first = $index;
+    while (($previous = previousSignificantIndex($tokens, $first)) !== null) {
+        $token = $tokens[$previous];
+        $group = $token === ']' ? groupStart($tokens, $previous) : null;
+        if (is_array($token) && in_array($token[0], $modifiers, true)) {
+            $first = $previous;
+        } elseif ($group !== null && isToken($tokens[$group], T_ATTRIBUTE)) {
+            $first = $group;
+        } else {
+            break;
+        }
+    }
+    return $first;
+}
+
+/**
+ * Line spans covering every function, method, closure and arrow function, in token order, or null when a
+ * bound is unknown. A closure's span runs from the code token before it to the code token after it; a
+ * named function's from its first modifier or attribute to the end of its body. Either way it covers
+ * every line ReflectionFunction or ReflectionMethod reports for it.
  *
  * @param list<array|string> $tokens
  *
@@ -328,14 +372,16 @@ function closureSpans(array $tokens): ?array
     $lines = tokenLines($tokens);
     $spans = [];
     foreach (array_keys($tokens) as $index) {
-        if (! isClosureAt($tokens, $index)) {
+        if (! isFunctionAt($tokens, $index)) {
             continue;
         }
         $end = closureEnd($tokens, $index);
         if ($end === null) {
             return null;
         }
-        $spans[] = [$lines[closureStart($tokens, $index)], $lines[nextSignificantIndex($tokens, $end) ?? $end]];
+        $spans[] = isClosureAt($tokens, $index)
+            ? [$lines[closureStart($tokens, $index)], $lines[nextSignificantIndex($tokens, $end) ?? $end]]
+            : [$lines[declarationStart($tokens, $index)], $lines[$end]];
     }
     return $spans;
 }
@@ -348,10 +394,10 @@ function closureProblem(string $base, array $baseTokens, string $current, array 
     $baseSpans = closureSpans($baseTokens);
     $currentSpans = closureSpans($currentTokens);
     if ($baseSpans === null || $currentSpans === null) {
-        return "a closure's bounds could not be determined";
+        return "a function or closure's bounds could not be determined";
     }
     if (count($baseSpans) !== count($currentSpans)) {
-        return 'the closures could not be paired';
+        return 'the functions and closures could not be paired';
     }
     $baseLines = explode("\n", $base);
     $currentLines = explode("\n", $current);
@@ -359,7 +405,7 @@ function closureProblem(string $base, array $baseTokens, string $current, array 
         [$currentStart, $currentEnd] = $currentSpans[$pair];
         if (array_slice($baseLines, $baseStart - 1, $baseEnd - $baseStart + 1)
             !== array_slice($currentLines, $currentStart - 1, $currentEnd - $currentStart + 1)) {
-            return "a closure's source lines changed";
+            return "a function or closure's source lines changed";
         }
     }
     return null;
@@ -478,6 +524,9 @@ if ($baseTokens === null || $currentTokens === null) {
 if (significant($baseTokens) !== significant($currentTokens)) {
     result(false, 'code tokens changed');
 }
+if (str_contains($input['base'], "\r") || str_contains($input['current'], "\r")) {
+    result(false, 'comment-only change, but the source contains a carriage return');
+}
 
 ['declared' => $declared, 'problem' => $problem] = declarations($currentTokens);
 $problem ??= closureProblem($input['base'], $baseTokens, $input['current'], $currentTokens);
@@ -494,5 +543,5 @@ if ($problem !== null) {
 }
 
 result(true, 'comment-only change in ' . implode(', ', $declared)
-    . ': no trait or workflow class, and every closure\'s source lines are unchanged, so no workflow or'
-    . ' condition fingerprint changes');
+    . ': no trait or workflow class, and every function and closure\'s source lines are unchanged, so no'
+    . ' workflow or condition fingerprint changes');

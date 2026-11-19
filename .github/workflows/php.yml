@@ -135,6 +135,7 @@ jobs:
         fi
         python scripts/ci/validate-regression-corpus.py \
           --skip-counterfactual \
+          --annotate \
           "${arguments[@]}"
         python scripts/ci/test-regression-corpus-policy.py
 
@@ -255,7 +256,7 @@ jobs:
         if [[ "$CORPUS_BASE_REF" =~ ^[0-9a-f]{40}$ ]] && [[ ! "$CORPUS_BASE_REF" =~ ^0+$ ]]; then
           arguments+=(--base-ref "$CORPUS_BASE_REF")
         fi
-        python scripts/ci/validate-regression-corpus.py "${arguments[@]}"
+        python scripts/ci/validate-regression-corpus.py --annotate "${arguments[@]}"
 
     - name: Remove regression-corpus database
       if: ${{ always() }}

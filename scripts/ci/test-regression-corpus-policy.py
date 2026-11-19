@@ -2431,9 +2431,119 @@ final class WithClosures
                 result = self.validate()
                 self.assert_requires_replay_growth(result)
                 self.assertIn(
-                    f"regression corpus: {path} is not exempt: comment-only change, but a closure's source lines changed",
+                    f"regression corpus: {path} is not exempt: comment-only change, but a function or closure's "
+                    "source lines changed",
                     result.stderr,
                 )
+
+    INVOKABLE = """<?php
+
+namespace Workflow\\V2\\Compensation\\Definition;
+
+/** Gate. */
+final class Gate
+{
+    public bool $open = true;
+
+    /** Ready. */
+    #[Marker]
+    public function ready(): bool
+    {
+        return $this->open;
+    }
+
+    /** Invoke. */
+    public function __invoke(): bool
+    {
+        return $this->open;
+    }
+}
+"""
+
+    def test_carriage_return_in_a_comment_is_not_exempt(self) -> None:
+        # A lone CR moves the closure's reported line without moving file()'s lines, which changes the
+        # condition-wait fingerprint even though the closure's own text is unchanged.
+        path = "src/V2/Compensation/Definition/WithClosures.php"
+        self.install_comment_only_fixtures({path: self.CLOSURES})
+        source = self.root / path
+        source.write_bytes(self.CLOSURES.replace("/** Closures. */", "/** Closures.\r */").encode("utf-8"))
+        result = self.validate()
+        self.assert_requires_replay_growth(result)
+        self.assertIn(
+            f"regression corpus: {path} is not exempt: comment-only change, but the source contains a carriage return",
+            result.stderr,
+        )
+
+        crlf = self.CLOSURES.replace("/** Closures. */", "/** Closures. */\r")
+        self.install_comment_only_fixtures({path: crlf})
+        source.write_bytes(crlf.replace("/** Block closure. */", "/** A block closure. */").encode("utf-8"))
+        result = self.validate()
+        self.assert_requires_replay_growth(result)
+        self.assertIn("the source contains a carriage return", result.stderr)
+
+    def test_comment_inside_a_method_body_is_not_exempt(self) -> None:
+        # await() turns $gate->ready(...), [$gate, 'ready'] and invokable objects into closures, and the
+        # condition-wait fingerprint then hashes the method's own lines.
+        path = "src/V2/Compensation/Definition/Gate.php"
+        self.install_comment_only_fixtures({path: self.INVOKABLE})
+        source = self.root / path
+        for changed in (
+            self.INVOKABLE.replace("    {\n        return $this->open;\n    }\n\n    /** Invoke. */",
+                                   "    {\n        // ready\n        return $this->open;\n    }\n\n    /** Invoke. */"),
+            self.INVOKABLE.replace("return $this->open;\n    }\n}", "return $this->open; // invoke\n    }\n}"),
+            self.INVOKABLE.replace("    public function ready(): bool\n", "    public function ready(): bool // signature\n"),
+            self.INVOKABLE.replace("    #[Marker]\n", "    #[Marker] // attribute\n"),
+        ):
+            with self.subTest(changed=changed):
+                source.write_text(changed, encoding="utf-8")
+                result = self.validate()
+                self.assert_requires_replay_growth(result)
+                self.assertIn(
+                    f"regression corpus: {path} is not exempt: comment-only change, but a function or closure's "
+                    "source lines changed",
+                    result.stderr,
+                )
+        for changed in (
+            self.INVOKABLE.replace("    /** Ready. */", "    /**\n     * Ready.\n     */"),
+            self.INVOKABLE.replace("    /** Invoke. */", "\n    // Invoke.\n"),
+            self.INVOKABLE.replace("    public bool $open = true;", "    /** Whether the gate is open. */\n    public bool $open = true;"),
+        ):
+            with self.subTest(changed=changed):
+                source.write_text(changed, encoding="utf-8")
+                result = self.validate()
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertIn(f"regression corpus: {path} is exempt", result.stderr)
+
+    def test_exemptions_are_published_as_notices_and_in_the_step_summary(self) -> None:
+        path = "src/V2/Compensation/Definition/PlainValue.php"
+        self.install_comment_only_fixtures({path: self.PLAIN_VALUE})
+        (self.root / path).write_text(
+            self.PLAIN_VALUE.replace("/** A plain value. */", "/** An annotated value. */"),
+            encoding="utf-8",
+        )
+        summary = self.root / "step-summary.md"
+        result = run(
+            sys.executable,
+            str(VALIDATOR),
+            "--root",
+            str(self.root),
+            "--base-ref",
+            self.base_ref,
+            "--annotate",
+            cwd=self.root,
+            env={**os.environ, "GITHUB_STEP_SUMMARY": str(summary)},
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn(
+            f"::notice file={path},title=Regression corpus comment-only exemption::comment-only change in "
+            "Workflow\\V2\\Compensation\\Definition\\PlainValue",
+            result.stdout,
+        )
+        self.assertIn(f"| `{path}` | comment-only change in", summary.read_text(encoding="utf-8"))
+
+        unannotated = self.validate()
+        self.assertEqual(0, unannotated.returncode, unannotated.stderr)
+        self.assertNotIn("::notice", unannotated.stdout)
 
     def test_comment_only_change_is_not_exempt_without_the_repository_autoloader(self) -> None:
         path = "src/V2/Compensation/Definition/PlainValue.php"
