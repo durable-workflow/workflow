@@ -121,6 +121,55 @@ function isToken(array|string|null $token, int|string $kind): bool
 }
 
 /**
+ * A trait, closure, arrow function or anonymous class at this token, which fingerprints may read.
+ *
+ * @param list<array|string> $tokens
+ */
+function fingerprintedConstructAt(array $tokens, int $index): ?string
+{
+    $token = $tokens[$index];
+    $kind = is_array($token) ? $token[0] : null;
+    if ($kind === T_TRAIT) {
+        return 'it declares a trait';
+    }
+    if ($kind === T_FN) {
+        return 'it contains an arrow function';
+    }
+    if ($kind === T_CLASS && isToken(previousSignificant($tokens, $index), T_NEW)) {
+        return 'it contains an anonymous class';
+    }
+    if ($kind !== T_FUNCTION) {
+        return null;
+    }
+    $next = nextSignificantIndex($tokens, $index);
+    // A by-reference closure is `function &(`; a by-reference method is `function &name(`.
+    if ($next !== null && isAmpersand($tokens[$next])) {
+        $next = nextSignificantIndex($tokens, $next);
+    }
+    return $next !== null && isToken($tokens[$next], '(') ? 'it contains a closure' : null;
+}
+
+/**
+ * The fully qualified name declared by a class, interface or enum keyword at this token: null when the
+ * token declares nothing, false when the declared name cannot be resolved.
+ *
+ * @param list<array|string> $tokens
+ */
+function declaredTypeAt(array $tokens, int $index, string $namespace): string|false|null
+{
+    $token = $tokens[$index];
+    if (! is_array($token) || ! in_array($token[0], [T_CLASS, T_INTERFACE, T_ENUM], true)
+        || isToken(previousSignificant($tokens, $index), T_DOUBLE_COLON)) {
+        return null;
+    }
+    $name = nextSignificant($tokens, $index);
+    if (! is_array($name) || $name[0] !== T_STRING) {
+        return false;
+    }
+    return ($namespace === '' ? '' : $namespace . '\\') . $name[1];
+}
+
+/**
  * @param list<array|string> $tokens
  *
  * @return array{declared: list<string>, problem: ?string}
@@ -129,73 +178,67 @@ function declarations(array $tokens): array
 {
     $namespace = '';
     $declared = [];
-    foreach ($tokens as $index => $token) {
-        if (! is_array($token)) {
-            continue;
-        }
-        if ($token[0] === T_NAMESPACE) {
+    foreach (array_keys($tokens) as $index) {
+        if (isToken($tokens[$index], T_NAMESPACE)) {
             $name = nextSignificant($tokens, $index);
-            if (is_array($name) && in_array($name[0], [T_NAME_QUALIFIED, T_STRING], true)) {
-                $namespace = $name[1];
-            } elseif (isToken($name, '{')) {
-                $namespace = '';
-            } else {
-                // namespace\Foo relative names and other forms are expressions, not declarations.
-                continue;
-            }
+            // `namespace\Foo` relative names are a single token, so T_NAMESPACE starts a declaration.
+            $namespace = is_array($name) && in_array($name[0], [T_NAME_QUALIFIED, T_STRING], true) ? $name[1] : '';
             continue;
         }
-        if ($token[0] === T_TRAIT) {
+        $problem = fingerprintedConstructAt($tokens, $index);
+        $type = $problem === null ? declaredTypeAt($tokens, $index, $namespace) : null;
+        if ($type === false) {
+            $problem = 'a declared type name could not be resolved';
+        }
+        if ($problem !== null) {
             return [
                 'declared' => $declared,
-                'problem' => 'it declares a trait',
+                'problem' => $problem,
             ];
         }
-        if ($token[0] === T_FN) {
-            return [
-                'declared' => $declared,
-                'problem' => 'it contains an arrow function',
-            ];
-        }
-        if ($token[0] === T_FUNCTION) {
-            $next = nextSignificantIndex($tokens, $index);
-            // A by-reference closure is `function &(`; a by-reference method is `function &name(`.
-            if ($next !== null && isAmpersand($tokens[$next])) {
-                $next = nextSignificantIndex($tokens, $next);
-            }
-            if ($next !== null && isToken($tokens[$next], '(')) {
-                return [
-                    'declared' => $declared,
-                    'problem' => 'it contains a closure',
-                ];
-            }
-            continue;
-        }
-        if (in_array($token[0], [T_CLASS, T_INTERFACE, T_ENUM], true)) {
-            $previous = previousSignificant($tokens, $index);
-            if ($token[0] === T_CLASS && isToken($previous, T_DOUBLE_COLON)) {
-                continue;
-            }
-            if ($token[0] === T_CLASS && isToken($previous, T_NEW)) {
-                return [
-                    'declared' => $declared,
-                    'problem' => 'it contains an anonymous class',
-                ];
-            }
-            $name = nextSignificant($tokens, $index);
-            if (! is_array($name) || $name[0] !== T_STRING) {
-                return [
-                    'declared' => $declared,
-                    'problem' => 'a declared type name could not be resolved',
-                ];
-            }
-            $declared[] = ($namespace === '' ? '' : $namespace . '\\') . $name[1];
+        if (is_string($type)) {
+            $declared[] = $type;
         }
     }
     return [
         'declared' => $declared,
         'problem' => null,
     ];
+}
+
+/**
+ * Loads each declared type through the repository autoloader and returns why the file is not exempt,
+ * or null when every type loads from this file and none is a workflow.
+ *
+ * @param list<string> $declared
+ */
+function loadingProblem(array $declared, string $path): ?string
+{
+    $autoload = getcwd() . '/vendor/autoload.php';
+    if (! is_file($autoload)) {
+        return 'the repository autoloader is unavailable';
+    }
+    $expectedFile = realpath(getcwd() . '/' . $path);
+    try {
+        require_once $autoload;
+        foreach ($declared as $type) {
+            if (! class_exists($type) && ! interface_exists($type) && ! enum_exists($type)) {
+                return "{$type} could not be loaded";
+            }
+            $file = (new ReflectionClass($type))->getFileName();
+            if ($expectedFile === false || $file === false || realpath($file) !== $expectedFile) {
+                return "{$type} does not load from this file";
+            }
+            foreach (WORKFLOW_BASE_CLASSES as $workflow) {
+                if (is_subclass_of($type, $workflow)) {
+                    return "{$type} is a {$workflow} subclass";
+                }
+            }
+        }
+    } catch (Throwable $error) {
+        return 'loading its classes failed: ' . $error::class;
+    }
+    return null;
 }
 
 $input = json_decode((string) stream_get_contents(STDIN), true);
@@ -221,30 +264,9 @@ if ($declared === []) {
     result(false, 'comment-only change, but the file declares no class, interface or enum');
 }
 
-$autoload = getcwd() . '/vendor/autoload.php';
-if (! is_file($autoload)) {
-    result(false, 'comment-only change, but the repository autoloader is unavailable');
-}
-$expectedFile = realpath(getcwd() . '/' . $input['path']);
-
-try {
-    require $autoload;
-    foreach ($declared as $type) {
-        if (! class_exists($type) && ! interface_exists($type) && ! enum_exists($type)) {
-            result(false, "comment-only change, but {$type} could not be loaded");
-        }
-        $file = (new ReflectionClass($type))->getFileName();
-        if ($expectedFile === false || $file === false || realpath($file) !== $expectedFile) {
-            result(false, "comment-only change, but {$type} does not load from this file");
-        }
-        foreach (WORKFLOW_BASE_CLASSES as $workflow) {
-            if (is_subclass_of($type, $workflow)) {
-                result(false, "comment-only change, but {$type} is a {$workflow} subclass");
-            }
-        }
-    }
-} catch (Throwable $error) {
-    result(false, 'comment-only change, but loading its classes failed: ' . $error::class);
+$problem = loadingProblem($declared, $input['path']);
+if ($problem !== null) {
+    result(false, 'comment-only change, but ' . $problem);
 }
 
 result(true, 'comment-only change in ' . implode(', ', $declared)
