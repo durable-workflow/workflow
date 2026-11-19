@@ -1,0 +1,54 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "closed-child-before-signal-wait-cold-replay",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestAwaitedChildThenSignalWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {}
+    },
+    {
+      "sequence": 2,
+      "event_type": "ChildWorkflowScheduled",
+      "payload": {
+        "sequence": 1,
+        "child_workflow_type": "test-watchdog-noop-child-workflow"
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "ChildRunCompleted",
+      "payload": {
+        "sequence": 1,
+        "child_workflow_type": "test-watchdog-noop-child-workflow",
+        "child_status": "completed",
+        "output": "wwHioz3/VYAiNwoaY2hpbGQ6YXdhaXRlZA==",
+        "payload_codec": "avro"
+      }
+    },
+    {
+      "sequence": 4,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 2,
+        "signal_name": "proceed",
+        "signal_wait_id": "proceed-wait"
+      }
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": []
+  }
+}

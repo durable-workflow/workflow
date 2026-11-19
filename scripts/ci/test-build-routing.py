@@ -85,7 +85,7 @@ class FeatureShardRoutingTest(unittest.TestCase):
         "tests/Feature/SmokeQueryReplayTest.php",
         "tests/Feature/SmokePersistedPayloadTest.php",
     ]
-    # Enough profiled files for every MySQL feature shard (22) to receive one.
+    # Enough profiled files for every MySQL feature shard (30) to receive one.
     filler_features = [
         "tests/Feature/FillerOneTest.php",
         "tests/Feature/FillerTwoTest.php",
@@ -105,6 +105,14 @@ class FeatureShardRoutingTest(unittest.TestCase):
         "tests/Feature/FillerSixteenTest.php",
         "tests/Feature/FillerSeventeenTest.php",
         "tests/Feature/FillerEighteenTest.php",
+        "tests/Feature/FillerNineteenTest.php",
+        "tests/Feature/FillerTwentyTest.php",
+        "tests/Feature/FillerTwentyOneTest.php",
+        "tests/Feature/FillerTwentyTwoTest.php",
+        "tests/Feature/FillerTwentyThreeTest.php",
+        "tests/Feature/FillerTwentyFourTest.php",
+        "tests/Feature/FillerTwentyFiveTest.php",
+        "tests/Feature/FillerTwentySixTest.php",
     ]
     unseen_feature = "tests/Feature/V2/UnprofiledFeatureTest.php"
 
@@ -156,6 +164,7 @@ class FeatureShardRoutingTest(unittest.TestCase):
             zip(self.known_features, [40.0, 30.0, 20.0, 10.0], strict=True)
         )
         profile.update(dict.fromkeys(self.filler_features, 5.0))
+        profile[self.unseen_feature] = 1.0
         self.write_json(
             ".github/feature-test-timings.json",
             {"mysql": profile, "postgresql": profile},
@@ -213,7 +222,7 @@ class FeatureShardRoutingTest(unittest.TestCase):
     def shard_assignments(self, profile: str) -> list[list[str]]:
         assignments = []
 
-        count = 22 if profile == "mysql" else 14
+        count = 30 if profile == "mysql" else 17
         for shard in range(count):
             result = self.run_php(
                 "scripts/ci/split-feature-tests.php",
@@ -272,8 +281,22 @@ class FeatureShardRoutingTest(unittest.TestCase):
         timing_profile = self.root / ".github/feature-test-timings.json"
         original_profile = timing_profile.read_bytes()
 
-        verification = self.run_php("scripts/ci/verify-feature-shards.php")
-        self.assertIn("represented exactly once", verification.stdout)
+        # A feature file without a measured weight fails verification, so a
+        # new slow suite rebalances the shards in its own pull request.
+        unweighted = json.loads(original_profile)
+        for profile in ("mysql", "postgresql"):
+            del unweighted[profile][self.unseen_feature]
+        self.write_json(".github/feature-test-timings.json", unweighted)
+        refused = self.run_php("scripts/ci/verify-feature-shards.php", check=False)
+        self.assertNotEqual(0, refused.returncode)
+        self.assertIn(
+            f"has no timing weight for: [{self.unseen_feature}]",
+            refused.stderr,
+        )
+
+        # The splitter and the pull-request selection still place an
+        # unweighted file deterministically, without rewriting the profile.
+        unweighted_profile = timing_profile.read_bytes()
 
         for profile in ("mysql", "postgresql"):
             with self.subTest(profile=profile):
@@ -311,7 +334,7 @@ class FeatureShardRoutingTest(unittest.TestCase):
             f"30.000 (conservative-default) {self.unseen_feature}",
             (self.root / "pr-selection/summary.txt").read_text(),
         )
-        self.assertEqual(original_profile, timing_profile.read_bytes())
+        self.assertEqual(unweighted_profile, timing_profile.read_bytes())
 
     def test_profile_entries_must_describe_discovered_tests(self) -> None:
         profile_path = ".github/feature-test-timings.json"
@@ -329,6 +352,22 @@ class FeatureShardRoutingTest(unittest.TestCase):
             "contains tests outside the discovered feature inventory",
             result.stderr,
         )
+
+    def test_shard_budget_warns_over_fifteen_minutes_and_fails_at_the_timeout(self) -> None:
+        profile_path = ".github/feature-test-timings.json"
+        document = json.loads((self.root / profile_path).read_text())
+
+        document["mysql"][self.known_features[0]] = 1000.0
+        self.write_json(profile_path, document)
+        warned = self.run_php("scripts/ci/verify-feature-shards.php")
+        self.assertIn("::warning title=Feature shard budget::Feature shard mysql/", warned.stdout)
+        self.assertIn("predicted at 1000 s", warned.stdout)
+
+        document["mysql"][self.known_features[0]] = 1200.0
+        self.write_json(profile_path, document)
+        refused = self.run_php("scripts/ci/verify-feature-shards.php", check=False)
+        self.assertNotEqual(0, refused.returncode)
+        self.assertIn("at or over the 1200 s shard timeout", refused.stderr)
 
     def test_malformed_profile_fails_validation(self) -> None:
         profile_path = ".github/feature-test-timings.json"
