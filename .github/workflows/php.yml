@@ -960,7 +960,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
 
     services:
       mysql:
@@ -1062,7 +1062,7 @@ jobs:
         php scripts/ci/split-feature-tests.php \
           --dir=tests/Feature \
           --shard=${{ matrix.shard }} \
-          --shards=22 \
+          --shards=30 \
           --weights=.github/feature-test-timings.json \
           --weight-profile=mysql \
           --summary="build/test-results/mysql-shard-${{ matrix.shard }}-summary.txt" \
@@ -1142,7 +1142,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
 
     services:
       postgres:
@@ -1230,7 +1230,7 @@ jobs:
         php scripts/ci/split-feature-tests.php \
           --dir=tests/Feature \
           --shard=${{ matrix.shard }} \
-          --shards=14 \
+          --shards=17 \
           --weights=.github/feature-test-timings.json \
           --weight-profile=postgresql \
           --summary="build/test-results/pgsql-shard-${{ matrix.shard }}-summary.txt" \
@@ -1611,6 +1611,14 @@ jobs:
         --clover=build/feature-coverage/mysql-shard-19-coverage.xml
         --clover=build/feature-coverage/mysql-shard-20-coverage.xml
         --clover=build/feature-coverage/mysql-shard-21-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-22-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-23-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-24-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-25-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-26-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-27-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-28-coverage.xml
+        --clover=build/feature-coverage/mysql-shard-29-coverage.xml
 
     - name: Send Clover reports to the isolated Sonar job
       id: sonar_coverage
@@ -1641,6 +1649,14 @@ jobs:
           build/feature-coverage/mysql-shard-19-coverage.xml
           build/feature-coverage/mysql-shard-20-coverage.xml
           build/feature-coverage/mysql-shard-21-coverage.xml
+          build/feature-coverage/mysql-shard-22-coverage.xml
+          build/feature-coverage/mysql-shard-23-coverage.xml
+          build/feature-coverage/mysql-shard-24-coverage.xml
+          build/feature-coverage/mysql-shard-25-coverage.xml
+          build/feature-coverage/mysql-shard-26-coverage.xml
+          build/feature-coverage/mysql-shard-27-coverage.xml
+          build/feature-coverage/mysql-shard-28-coverage.xml
+          build/feature-coverage/mysql-shard-29-coverage.xml
         if-no-files-found: error
         retention-days: 1
 
@@ -1670,7 +1686,7 @@ jobs:
       with:
         binary: ${{ runner.temp }}/codecovcli
         flags: v2
-        files: ./coverage.xml,./build/feature-coverage/mysql-shard-0-coverage.xml,./build/feature-coverage/mysql-shard-1-coverage.xml,./build/feature-coverage/mysql-shard-2-coverage.xml,./build/feature-coverage/mysql-shard-3-coverage.xml,./build/feature-coverage/mysql-shard-4-coverage.xml,./build/feature-coverage/mysql-shard-5-coverage.xml,./build/feature-coverage/mysql-shard-6-coverage.xml,./build/feature-coverage/mysql-shard-7-coverage.xml,./build/feature-coverage/mysql-shard-8-coverage.xml,./build/feature-coverage/mysql-shard-9-coverage.xml,./build/feature-coverage/mysql-shard-10-coverage.xml,./build/feature-coverage/mysql-shard-11-coverage.xml,./build/feature-coverage/mysql-shard-12-coverage.xml,./build/feature-coverage/mysql-shard-13-coverage.xml,./build/feature-coverage/mysql-shard-14-coverage.xml,./build/feature-coverage/mysql-shard-15-coverage.xml,./build/feature-coverage/mysql-shard-16-coverage.xml,./build/feature-coverage/mysql-shard-17-coverage.xml,./build/feature-coverage/mysql-shard-18-coverage.xml,./build/feature-coverage/mysql-shard-19-coverage.xml,./build/feature-coverage/mysql-shard-20-coverage.xml,./build/feature-coverage/mysql-shard-21-coverage.xml
+        files: ./coverage.xml,./build/feature-coverage/mysql-shard-0-coverage.xml,./build/feature-coverage/mysql-shard-1-coverage.xml,./build/feature-coverage/mysql-shard-2-coverage.xml,./build/feature-coverage/mysql-shard-3-coverage.xml,./build/feature-coverage/mysql-shard-4-coverage.xml,./build/feature-coverage/mysql-shard-5-coverage.xml,./build/feature-coverage/mysql-shard-6-coverage.xml,./build/feature-coverage/mysql-shard-7-coverage.xml,./build/feature-coverage/mysql-shard-8-coverage.xml,./build/feature-coverage/mysql-shard-9-coverage.xml,./build/feature-coverage/mysql-shard-10-coverage.xml,./build/feature-coverage/mysql-shard-11-coverage.xml,./build/feature-coverage/mysql-shard-12-coverage.xml,./build/feature-coverage/mysql-shard-13-coverage.xml,./build/feature-coverage/mysql-shard-14-coverage.xml,./build/feature-coverage/mysql-shard-15-coverage.xml,./build/feature-coverage/mysql-shard-16-coverage.xml,./build/feature-coverage/mysql-shard-17-coverage.xml,./build/feature-coverage/mysql-shard-18-coverage.xml,./build/feature-coverage/mysql-shard-19-coverage.xml,./build/feature-coverage/mysql-shard-20-coverage.xml,./build/feature-coverage/mysql-shard-21-coverage.xml,./build/feature-coverage/mysql-shard-22-coverage.xml,./build/feature-coverage/mysql-shard-23-coverage.xml,./build/feature-coverage/mysql-shard-24-coverage.xml,./build/feature-coverage/mysql-shard-25-coverage.xml,./build/feature-coverage/mysql-shard-26-coverage.xml,./build/feature-coverage/mysql-shard-27-coverage.xml,./build/feature-coverage/mysql-shard-28-coverage.xml,./build/feature-coverage/mysql-shard-29-coverage.xml
         fail_ci_if_error: true
         name: v2
         override_branch: ${{ env.COVERAGE_BRANCH }}
