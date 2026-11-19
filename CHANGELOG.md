@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- A run waiting for a signal is no longer given a no-op workflow task on every
+  watchdog pass after a child it already passed has closed (#1219). This
+  affected a child started with `startChild()` and never awaited, and a child
+  whose result the run had already consumed. Such a run now reads
+  `waiting_for_signal` instead of `repair_needed` or `waiting_for_child`. A
+  child that can still resume the wait, such as a member of the same
+  `select()` or `all()` group, is still repaired when its wake-up task is
+  lost. Existing summaries are corrected the next time the run is projected,
+  which the watchdog does before it would create a task. Recorded history is
+  unchanged.
 - The experimental compensation-scope API was prepared for promotion after an
   independent review (#1063). These are breaking changes to an experimental API:
   - **Outcomes.**
