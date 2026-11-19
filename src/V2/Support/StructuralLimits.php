@@ -386,31 +386,20 @@ final class StructuralLimits
 
     public static function guardPendingTimers(WorkflowRun $run): void
     {
-        if (self::pendingTimerLimit() <= 0) {
+        $limit = self::pendingTimerLimit();
+
+        if ($limit <= 0) {
             return;
         }
 
-        self::guardPendingTimerCount(self::pendingTimerCount($run));
-    }
-
-    /**
-     * Refuses one more timer when $count are already pending.
-     */
-    public static function guardPendingTimerCount(int $count): void
-    {
-        $limit = self::pendingTimerLimit();
-
-        if ($limit > 0 && $count >= $limit) {
-            throw StructuralLimitExceededException::pendingTimerCount($count, $limit);
-        }
-    }
-
-    public static function pendingTimerCount(WorkflowRun $run): int
-    {
-        return WorkflowTimer::query()
+        $count = WorkflowTimer::query()
             ->where('workflow_run_id', $run->id)
             ->where('status', TimerStatus::Pending->value)
             ->count();
+
+        if ($count >= $limit) {
+            throw StructuralLimitExceededException::pendingTimerCount($count, $limit);
+        }
     }
 
     public static function guardPendingSignals(WorkflowRun $run): void

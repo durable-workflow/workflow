@@ -22,18 +22,18 @@ use Workflow\WorkflowMetadata;
  * writes nothing but the run's failure. The per-member guards stay as the
  * backstop.
  *
- * Admission never refuses a group the per-member guards admit: a member whose
- * outcome it cannot predict ends its checks for that kind of count.
+ * Admission covers activities and children. It never refuses a group the
+ * per-member guards admit: it checks only members the dispatch would newly
+ * schedule, and stops at a reserved child, whose own dispatch refuses it.
+ * Timers are not admitted. A pending-timer refusal escapes the workflow task,
+ * whose transaction rolls back every member already written, and leaves the
+ * task failed and recoverable, as a sequential timer's does.
  */
 final class ParallelGroupAdmission
 {
     private ?int $pendingActivities = null;
 
     private ?int $pendingChildren = null;
-
-    private ?int $pendingTimers = null;
-
-    private bool $timerCountKnown = true;
 
     public function __construct(
         private readonly WorkflowRun $run,
@@ -78,31 +78,6 @@ final class ParallelGroupAdmission
 
         [, $serialized] = self::childArguments($this->run, $metadata);
         $this->admitPayload($serialized);
-    }
-
-    /**
-     * The pending-timer check scheduling a timer runs before its first write.
-     */
-    public function admitTimer(): void
-    {
-        $limit = StructuralLimits::pendingTimerLimit();
-        if ($limit <= 0 || ! $this->timerCountKnown) {
-            return;
-        }
-
-        $this->pendingTimers ??= StructuralLimits::pendingTimerCount($this->run);
-        StructuralLimits::guardPendingTimerCount($this->pendingTimers);
-        ++$this->pendingTimers;
-    }
-
-    /**
-     * A member that may or may not open a timeout timer, depending on state
-     * only its dispatch reads. Later timer counts are left to the per-member
-     * guard.
-     */
-    public function timerCountUnknown(): void
-    {
-        $this->timerCountKnown = false;
     }
 
     /**

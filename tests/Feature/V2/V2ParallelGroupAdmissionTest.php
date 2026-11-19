@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Queue;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\V2\TestOversizedFanOutMemberWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Contracts\ExternalPayloadStorageDriver;
@@ -14,6 +15,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowFailure;
@@ -78,15 +80,171 @@ final class V2ParallelGroupAdmissionTest extends TestCase
         $this->assertSame(1, WorkflowInstance::query()->count());
     }
 
-    public function testPendingTimerLimitInsideTheGroupWritesNoMember(): void
+    /**
+     * @return iterable<string, array{0: string}>
+     */
+    public static function timerRefusalGroups(): iterable
     {
+        // The fourth of eight timers; the eighth member of a mixed group,
+        // after an activity, a child, a signal wait and a condition wait.
+        yield 'timers' => ['timer'];
+        yield 'mixed' => ['mixed'];
+    }
+
+    #[DataProvider('timerRefusalGroups')]
+    public function testPendingTimerRefusalInsideTheGroupStillRollsTheTaskBack(string $kind): void
+    {
+        // Timers are not admitted. The pending-timer refusal escapes the
+        // task, as a sequential timer's does, and the task's transaction
+        // rolls back every member written before it; the task is left failed
+        // and recoverable, and the run open.
         config([
-            'workflows.v2.structural_limits.pending_timer_count' => 5,
+            'workflows.v2.structural_limits.pending_timer_count' => $kind === 'timer' ? 3 : 2,
         ]);
 
-        $run = $this->runFirstTask('admission-timer-count', 8, -1, 0, 'timer');
+        $stub = WorkflowStub::make(TestOversizedFanOutMemberWorkflow::class, "admission-timer-count-{$kind}");
+        $stub->start($kind === 'timer' ? 8 : 30, -1, 0, $kind);
+        $task = $this->readyWorkflowTask($stub->runId());
 
-        $this->assertRefusedBeforeFirstWrite($run, 'pending_timer_count');
+        try {
+            $this->app->call([new RunWorkflowTask($task->id), 'handle']);
+            $this->fail('The pending-timer refusal did not escape the workflow task.');
+        } catch (StructuralLimitExceededException $refusal) {
+            $this->assertSame('pending_timer_count', $refusal->limitKind->value);
+        }
+
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $this->assertFalse($run->status->isTerminal());
+        $this->assertSame(TaskStatus::Failed, $task->fresh()->status);
+        $this->assertSame(0, WorkflowFailure::query()->where('workflow_run_id', $run->id)->count());
+        $this->assertSame(
+            [HistoryEventType::StartAccepted->value, HistoryEventType::WorkflowStarted->value],
+            $this->historyTypes($run),
+        );
+        $this->assertSame(0, ActivityExecution::query()->where('workflow_run_id', $run->id)->count());
+        $this->assertSame(0, WorkflowTimer::query()->where('workflow_run_id', $run->id)->count());
+        $this->assertSame(0, WorkflowRun::query()->where('id', '!=', $run->id)->count());
+    }
+
+    public function testLaterOversizedMemberTakesPrecedenceOverAnEarlierTimerRefusal(): void
+    {
+        // The member at index 7 would hit the pending-timer limit, which
+        // admission does not check; the activity at index 27 is over the
+        // payload limit, which it does. The group is refused for the payload.
+        config([
+            'workflows.v2.structural_limits.pending_timer_count' => 2,
+            'workflows.v2.structural_limits.payload_size_bytes' => 4096,
+        ]);
+
+        $run = $this->runFirstTask('admission-precedence', 30, 27, 8192, 'mixed');
+
+        $this->assertRefusedBeforeFirstWrite($run, 'payload_size');
+    }
+
+    public function testNestedGroupAtThePendingActivityLimitIsAdmitted(): void
+    {
+        config([
+            'workflows.v2.structural_limits.pending_activity_count' => 6,
+        ]);
+
+        $run = $this->runFirstTask('admission-nested-at-limit', 6, -1, 0, 'nested');
+
+        $this->assertSame(RunStatus::Waiting, $run->status);
+        $this->assertSame(6, ActivityExecution::query()->where('workflow_run_id', $run->id)->count());
+    }
+
+    public function testNestedGroupOneOverThePendingActivityLimitWritesNoMember(): void
+    {
+        config([
+            'workflows.v2.structural_limits.pending_activity_count' => 5,
+        ]);
+
+        $run = $this->runFirstTask('admission-nested-over-limit', 6, -1, 0, 'nested');
+
+        $failure = $this->assertRefusedBeforeFirstWrite($run, 'pending_activity_count');
+        $this->assertStringContainsString('5 pending activities', (string) $failure->message);
+    }
+
+    public function testNestedGroupWithAnOversizedInnerMemberWritesNoMember(): void
+    {
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 4096,
+        ]);
+
+        $run = $this->runFirstTask('admission-nested-payload', 6, 4, 8192, 'nested');
+
+        $this->assertRefusedBeforeFirstWrite($run, 'payload_size');
+    }
+
+    public function testReplayedGroupIsNotRefusedAfterTheLimitIsLoweredBelowWhatIsPending(): void
+    {
+        $run = $this->runFirstTask('admission-lowered-limit', 6, -1, 0, 'signalled');
+        $this->assertSame(5, ActivityExecution::query()->where('workflow_run_id', $run->id)->count());
+
+        // Five are pending; the limit drops to two before the group replays.
+        config([
+            'workflows.v2.structural_limits.pending_activity_count' => 2,
+        ]);
+        $this->signalAndReplay($run);
+
+        $run->refresh();
+        $this->assertSame(RunStatus::Waiting, $run->status);
+        $this->assertSame(0, WorkflowFailure::query()->where('workflow_run_id', $run->id)->count());
+        $this->assertSame(5, ActivityExecution::query()->where('workflow_run_id', $run->id)->count());
+    }
+
+    public function testPartlyRecordedGroupChecksOnlyItsUnrecordedMembers(): void
+    {
+        // Every member is scheduled while the payload limit is off, then the
+        // last two members' records are removed, so the group is partly
+        // recorded: its oversized member (index 3) is recorded, the members
+        // after it are not.
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 0,
+        ]);
+        $run = $this->runFirstTask('admission-partly-recorded', 7, 3, 8192, 'signalled');
+        $this->assertSame(6, ActivityExecution::query()->where('workflow_run_id', $run->id)->count());
+
+        $removed = ActivityExecution::query()
+            ->where('workflow_run_id', $run->id)
+            ->whereIn('sequence', [6, 7])
+            ->pluck('id')
+            ->all();
+        WorkflowTask::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Activity->value)
+            ->get()
+            ->filter(static fn (WorkflowTask $task): bool => in_array(
+                $task->payload['activity_execution_id'] ?? null,
+                $removed,
+                true,
+            ))
+            ->each(static fn (WorkflowTask $task) => $task->delete());
+        ActivityExecution::query()->whereIn('id', $removed)->delete();
+        WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->get()
+            ->filter(static fn (WorkflowHistoryEvent $event): bool => in_array(
+                $event->payload['sequence'] ?? null,
+                [6, 7],
+                true,
+            ))
+            ->each(static fn (WorkflowHistoryEvent $event) => $event->delete());
+
+        config([
+            'workflows.v2.structural_limits.payload_size_bytes' => 4096,
+        ]);
+        $this->signalAndReplay($run);
+
+        // The recorded oversized member is not checked again; only the two
+        // unrecorded, small members are admitted and scheduled.
+        $run->refresh();
+        $this->assertSame(
+            RunStatus::Waiting,
+            $run->status,
+            (string) WorkflowFailure::query()->where('workflow_run_id', $run->id)->value('message'),
+        );
+        $this->assertSame(6, ActivityExecution::query()->where('workflow_run_id', $run->id)->count());
     }
 
     public function testPendingActivityLimitInsideTheGroupWritesNoMember(): void
@@ -204,6 +362,37 @@ final class V2ParallelGroupAdmissionTest extends TestCase
         $this->app->call([new RunWorkflowTask($task->id), 'handle']);
 
         return WorkflowRun::query()->findOrFail($stub->runId());
+    }
+
+    private function readyWorkflowTask(string $runId): WorkflowTask
+    {
+        return WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+    }
+
+    private function signalAndReplay(WorkflowRun $run): void
+    {
+        WorkflowStub::load($run->workflow_instance_id)->signal('advance');
+
+        $this->app->call([new RunWorkflowTask($this->readyWorkflowTask($run->id)->id), 'handle']);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function historyTypes(WorkflowRun $run): array
+    {
+        return WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $run->id)
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(
+                static fn (HistoryEventType|string $type): string => $type instanceof HistoryEventType ? $type->value : $type
+            )
+            ->all();
     }
 
     private function assertRefusedBeforeFirstWrite(WorkflowRun $run, string $limitKind): WorkflowFailure
