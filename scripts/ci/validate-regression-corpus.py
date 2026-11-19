@@ -2034,6 +2034,77 @@ def _changed_paths(root: Path, base_ref: str) -> tuple[set[str], set[str]]:
     return changed | untracked, added | untracked
 
 
+_COMMENT_ONLY_CLASSIFICATIONS: dict[tuple[str, str, str], tuple[bool, str]] = {}
+_COMMENT_ONLY_EXEMPTIONS: list[tuple[str, str]] = []
+
+
+def _run_comment_only_classifier(root: Path, path: str, base: str, current: str) -> tuple[bool, str]:
+    classifier = Path(__file__).with_name("classify-comment-only-change.php")
+    try:
+        classification = subprocess.run(
+            ["php", str(classifier)],
+            cwd=root,
+            input=json.dumps({"path": path, "base": base, "current": current}),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        verdict = json.loads(classification.stdout) if classification.returncode == 0 else None
+    except (OSError, json.JSONDecodeError):
+        verdict = None
+    if (
+        isinstance(verdict, dict)
+        and isinstance(verdict.get("exempt"), bool)
+        and isinstance(verdict.get("reason"), str)
+    ):
+        return verdict["exempt"], verdict["reason"]
+    return False, "the comment-only classifier failed"
+
+
+def _classify_comment_only(root: Path, base_ref: str, path: str) -> tuple[bool, str]:
+    if not path.endswith(".php"):
+        return False, "not a PHP file"
+    base = subprocess.run(
+        ["git", "show", f"{base_ref}:{path}"],
+        cwd=root,
+        check=False,
+        capture_output=True,
+    )
+    if base.returncode != 0:
+        return False, "the file was added"
+    current_path = root / path
+    if not current_path.is_file():
+        return False, "the file was deleted"
+    try:
+        base_source = base.stdout.decode("utf-8")
+        # Bytes, not text mode: universal newlines would turn a carriage return into a line feed.
+        current_source = current_path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False, "the file is not readable UTF-8"
+    return _run_comment_only_classifier(root, path, base_source, current_source)
+
+
+def _comment_only_exemption(root: Path, base_ref: str, path: str) -> tuple[bool, str]:
+    """Classify a guarded PHP change as a safe comment-only edit, failing closed.
+
+    Workflow definition fingerprints and condition-wait fingerprints hash raw source, comments
+    included, and both affect replay. classify-comment-only-change.php therefore exempts only files
+    whose code tokens are unchanged and that declare no trait, closure, anonymous class or workflow
+    class. The result is cached per file, and every exemption or refused comment-only change is
+    logged once with its reason.
+    """
+    key = (str(root), base_ref, path)
+    if key not in _COMMENT_ONLY_CLASSIFICATIONS:
+        exempt, reason = _classify_comment_only(root, base_ref, path)
+        if exempt or reason.startswith("comment-only change"):
+            outcome = "exempt" if exempt else "not exempt"
+            print(f"regression corpus: {path} is {outcome}: {reason}", file=sys.stderr)
+        if exempt:
+            _COMMENT_ONLY_EXEMPTIONS.append((path, reason))
+        _COMMENT_ONLY_CLASSIFICATIONS[key] = (exempt, reason)
+    return _COMMENT_ONLY_CLASSIFICATIONS[key]
+
+
 def _guard_matches(
     root: Path,
     base_ref: str,
@@ -2041,7 +2112,12 @@ def _guard_matches(
     raw_guard: Any,
 ) -> bool:
     guard = _object(raw_guard, "guard")
-    matching = sorted(path for path in changed if _matches(path, _string(guard["glob"], "guard.glob")))
+    matching = sorted(
+        path
+        for path in changed
+        if _matches(path, _string(guard["glob"], "guard.glob"))
+        and not _comment_only_exemption(root, base_ref, path)[0]
+    )
     if not matching:
         return False
     bridge_path = "src/V2/Support/DefaultWorkflowTaskBridge.php"
@@ -2210,6 +2286,29 @@ def validate(
     }
 
 
+def _annotation_escape(value: str, *, property_value: bool = False) -> str:
+    escaped = value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    return escaped.replace(":", "%3A").replace(",", "%2C") if property_value else escaped
+
+
+def _publish_exemptions() -> None:
+    """Report comment-only exemptions as GitHub notices and in the step summary."""
+    for path, reason in _COMMENT_ONLY_EXEMPTIONS:
+        print(
+            f"::notice file={_annotation_escape(path, property_value=True)},"
+            f"title=Regression corpus comment-only exemption::{_annotation_escape(reason)}"
+        )
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary and _COMMENT_ONLY_EXEMPTIONS:
+        with open(summary, "a", encoding="utf-8") as handle:
+            handle.write("### Regression corpus comment-only exemptions\n\n")
+            handle.write("| Guarded file | Reason |\n| --- | --- |\n")
+            for path, reason in _COMMENT_ONLY_EXEMPTIONS:
+                cell = reason.replace("|", "\\|")
+                handle.write(f"| `{path}` | {cell} |\n")
+            handle.write("\n")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path.cwd())
@@ -2219,6 +2318,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--skip-counterfactual",
         action="store_true",
         help="run structural inventory checks without invoking binding consumers",
+    )
+    parser.add_argument(
+        "--annotate",
+        action="store_true",
+        help="report comment-only exemptions as GitHub notices and in $GITHUB_STEP_SUMMARY",
     )
     args = parser.parse_args(argv)
     try:
@@ -2231,6 +2335,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (CorpusError, OSError) as error:
         print(f"regression corpus validation failed: {error}", file=sys.stderr)
         return 1
+    finally:
+        if args.annotate:
+            _publish_exemptions()
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
