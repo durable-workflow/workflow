@@ -18,8 +18,9 @@ script_root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # shellcheck source=scripts/ci/upgrade-journey-lib.sh
 . "$script_root/upgrade-journey-lib.sh"
-# 2.32.0 is the first release whose experimental compensation API matches the
-# candidate's, so its example sources run unchanged after the upgrade.
+# 2.32.0 is the first release whose compensation API matches the stable one,
+# so its example sources run unchanged after the upgrade. The 2.29.0 to 2.31.0
+# examples read OperationContext::$uncertainForward, which 2.32.0 removed.
 upgrade_journey_init 2.32.0
 
 db_connection="${DB_CONNECTION:-mysql}"

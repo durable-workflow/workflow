@@ -367,9 +367,8 @@ This table reports scope, not completion of the issue's unchecked acceptance cri
 
 `scripts/ci/state-machine-upgrade-smoke.sh` installs published 2.32.0 into a new
 Laravel application with MySQL or PostgreSQL and Redis queue workers. 2.32.0 is the
-first release whose experimental compensation API matches the current one; the
-2.29.0 to 2.31.0 examples use `OperationContext::$uncertainForward`, which 2.32.0
-removed. The package ships `examples/`, so the application copies the provider-backed
+first release whose compensation API matches the current stable one; the 2.29.0 to
+2.31.0 examples use `OperationContext::$uncertainForward`, which 2.32.0 removed. The package ships `examples/`, so the application copies the provider-backed
 and configured examples out of the installed 2.32.0 package. That application code
 stays the same through every package change below. Each example runs with its own
 database and queue, because both bind the engine's handler registry and scope
