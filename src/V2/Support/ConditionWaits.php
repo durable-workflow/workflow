@@ -315,12 +315,25 @@ final class ConditionWaits
                 $definition['condition_key'],
                 $call->conditionKey,
                 $definition['condition_definition_fingerprint'],
-                ConditionWaitDefinition::fingerprint(
-                    $call->condition,
-                    SourceFingerprint::versionOf($definition['condition_definition_fingerprint']),
-                ) ?? $call->conditionDefinitionFingerprint,
+                self::comparableFingerprint($definition['condition_definition_fingerprint'], $call),
             );
         }
+    }
+
+    /**
+     * The call's fingerprint as the recorded one's algorithm computes it, so a
+     * mismatch reports two comparable values.
+     */
+    private static function comparableFingerprint(string $recorded, AwaitCall|AwaitWithTimeoutCall $call): ?string
+    {
+        $version = SourceFingerprint::versionOf($recorded);
+
+        if (SourceFingerprint::versionOf($call->conditionDefinitionFingerprint) === $version) {
+            return $call->conditionDefinitionFingerprint;
+        }
+
+        return ConditionWaitDefinition::fingerprint($call->condition, $version)
+            ?? $call->conditionDefinitionFingerprint;
     }
 
     public static function conditionKeyForSequence(WorkflowRun $run, int $sequence): ?string
