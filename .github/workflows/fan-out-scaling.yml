@@ -32,9 +32,6 @@ jobs:
     name: Literal 1,000-member fan-out (${{ matrix.kind }}, ${{ matrix.database }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # Starting 1,000 children still outlasts the bound on hosted runners
-    # (#1238); report it without failing the build until that lands.
-    continue-on-error: ${{ matrix.kind == 'children' }}
     strategy:
       fail-fast: false
       matrix:
