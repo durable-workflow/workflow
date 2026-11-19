@@ -535,6 +535,9 @@ final readonly class MachineStore
             $handlers[IncidentStore::BOOK_HANDLER] = [
                 '1' => new ShipmentOperation($provider, $incidents->operation(...)),
             ];
+            $handlers[IncidentStore::RELEASE_HANDLER] = [
+                '1' => new UnitReturnOperation($provider, $incidents->operation(...), UnitReturnTerms::RELEASE),
+            ];
             $handlers[IncidentStore::CLAIM_HANDLER] = [
                 '1' => new UnitReturnOperation($provider, $incidents->operation(...), ShipmentLedger::CLAIM),
             ];

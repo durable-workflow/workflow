@@ -22,6 +22,11 @@ final readonly class UnitReturnTerms
      */
     public const RECOVER = 'recover-damaged-units';
 
+    /**
+     * Release of an unused replacement reservation; it targets that original reservation.
+     */
+    public const RELEASE = 'release';
+
     public array $units;
 
     public function __construct(

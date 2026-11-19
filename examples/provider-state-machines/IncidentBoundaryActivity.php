@@ -15,7 +15,7 @@ final class IncidentBoundaryActivity extends Activity
     {
         $expected = match ($operation) {
             'initialize' => ['arguments'],
-            'settle', 'track', 'inspect', 'publish' => [],
+            'settle', 'unresolved', 'track', 'inspect', 'publish' => [],
             default => throw new LogicException('The incident boundary is unavailable.'),
         };
         if (array_keys($input) !== $expected) {
@@ -25,6 +25,7 @@ final class IncidentBoundaryActivity extends Activity
         return match ($operation) {
             'initialize' => $store->initialize($this->run, $input['arguments']),
             'settle' => $store->settle($this->run),
+            'unresolved' => $store->unresolved($this->run),
             'track' => $store->track($this->run),
             'inspect' => $store->inspect($this->run),
             'publish' => $store->publish($this->run),

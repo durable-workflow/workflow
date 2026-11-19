@@ -37,9 +37,7 @@ final class TransitIncident extends Workflow
             // An unknown reservation outcome is reconciled by the same operation; only refusal is unavailability.
             $reserved = $execute($obligations['reserve']);
             if ($reserved['status'] === 'confirmed') {
-                if ($execute($obligations['book'])['status'] === 'confirmed') {
-                    IncidentWait::delivery();
-                }
+                $this->replace($execute, $obligations);
             } elseif ($reserved['status'] === 'refused') {
                 // Selected policy: a definitively unavailable replacement refunds every original unit instead.
                 $execute($obligations['refund']);
@@ -47,7 +45,8 @@ final class TransitIncident extends Workflow
         } else {
             $execute($obligations['refund']);
         }
-        self::activity(IncidentBoundaryActivity::class, 'settle', []);
+        // Every remedy ends explicitly: settled, or owed after a refused refund or an unresolved replacement.
+        IncidentWait::settlement();
         // The carrier claim and damaged-goods recovery follow the customer remedy and never gate it.
         $execute($obligations['claim']);
         if (isset($obligations['recover']) && $execute($obligations['recover'])['status'] === 'confirmed') {
@@ -57,5 +56,29 @@ final class TransitIncident extends Workflow
             }
         }
         return self::activity(IncidentBoundaryActivity::class, 'publish', []);
+    }
+
+    /**
+     * Books the reserved replacement and waits for its carrier outcome. A refused booking releases the unused
+     * reservation, and a carrier-confirmed replacement failure keeps the shipped stock; both refund instead.
+     */
+    private function replace(callable $execute, array $obligations): void
+    {
+        $booked = $execute($obligations['book']);
+        if ($booked['status'] === 'refused') {
+            $execute($obligations['release']);
+            $execute($obligations['refund']);
+            return;
+        }
+        if ($booked['status'] !== 'confirmed') {
+            return;
+        }
+        $delivery = IncidentWait::delivery();
+        if ($delivery['action'] === 'failed') {
+            $execute($obligations['refund']);
+        } elseif ($delivery['action'] === 'unresolved') {
+            // It may still arrive, so nothing is refunded automatically; the customer is explicitly owed.
+            self::activity(IncidentBoundaryActivity::class, 'unresolved', []);
+        }
     }
 }

@@ -6,6 +6,8 @@ namespace Tests\Support;
 
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Status;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\UnitReturnTerms;
+use DurableWorkflow\Examples\ProviderStateMachines\Authority;
+use DurableWorkflow\Examples\ProviderStateMachines\CancellationStore;
 use DurableWorkflow\Examples\ProviderStateMachines\Catalogue;
 use DurableWorkflow\Examples\ProviderStateMachines\IncidentStore;
 use DurableWorkflow\Examples\ProviderStateMachines\TransitPolicy;
@@ -50,13 +52,15 @@ trait TransitIncidentFixture
         string $kind,
         Status $reserve = Status::Confirmed,
         Status $claim = Status::Confirmed,
-        array $saleable = []
+        array $saleable = [],
+        Status $book = Status::Confirmed,
+        Status $refund = Status::Confirmed
     ): array {
         $commands = app(IncidentStore::class)->commands($this->terms->subjectKey(), $kind);
-        $this->unitRefunds->plan($commands['refund'], Status::Confirmed);
+        $this->unitRefunds->plan($commands['refund'], $refund);
         $this->provider->plan($commands['reserve'], $reserve);
         $this->provider->plan($commands['release'], Status::Confirmed);
-        $this->provider->plan($commands['graph']->booking, Status::Confirmed);
+        $this->provider->plan($commands['graph']->booking, $book);
         $this->provider->plan($commands['graph']->cancel, Status::Confirmed);
         $this->provider->plan($commands['claim'], $claim);
         $this->provider->plan($commands['recover'], Status::Confirmed);
@@ -103,6 +107,24 @@ trait TransitIncidentFixture
             'incident-milestone'
         );
         $this->current();
+    }
+
+    /**
+     * A refused business cancellation records no intent, fence or compensation request.
+     */
+    protected function assertCancellationRefused(string $requestKey, string $remedy): void
+    {
+        $origin = DB::table('provider_machine_assignments')->where('id', $this->terms->subjectKey())->sole();
+        $result = app(CancellationStore::class)->request($this->terms->subjectKey(), $origin->root_run, $requestKey);
+        $this->assertSame('refused', $result['status']);
+        $this->assertSame('transit_incident_owns_remedy', $result['reason']);
+        $this->assertSame($remedy, $result['remedy']);
+        $this->assertFalse(DB::table('provider_machine_cancellations')->where('root_key', $this->terms->subjectKey())
+            ->exists());
+        $this->assertFalse((bool) DB::table('example_machine_subjects')->where(
+            'id',
+            Authority::subjectId($this->terms->subjectKey(), 'order')
+        )->value('cancellation_requested'));
     }
 
     protected function replacementCarrier(array $commands, string $kind): void

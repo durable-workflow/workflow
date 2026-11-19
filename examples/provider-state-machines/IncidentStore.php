@@ -9,9 +9,11 @@ use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Request;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\ShipmentDescriptor;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\ShipmentLedger;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\ShipmentTerms;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Status;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\UnitRefundCommand;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\UnitRefundGateway;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\UnitReturnTerms;
+use Illuminate\Database\ConnectionInterface;
 use LogicException;
 use Workflow\V2\Compensation\Definition\Obligation;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
@@ -34,6 +36,8 @@ final readonly class IncidentStore
     public const RESERVE_HANDLER = 'provider.incident.reserve';
 
     public const BOOK_HANDLER = 'provider.incident.book';
+
+    public const RELEASE_HANDLER = 'provider.incident.release';
 
     public const CLAIM_HANDLER = 'provider.incident.claim';
 
@@ -147,17 +151,29 @@ final readonly class IncidentStore
         ];
     }
 
+    /**
+     * Read under the caller's original Order lock. An admitted incident owns the customer remedy, so the
+     * Order's cancellation route is closed: returns the remedy stage (pending, settled or owed), or null.
+     */
+    public static function remedyStage(ConnectionInterface $db, string $key): ?string
+    {
+        $row = $db->table(self::TABLE)
+            ->where('id', $key)
+            ->first();
+        if ($row === null) {
+            return null;
+        }
+        return $row->remedy === null ? 'pending'
+            : PostDeliveryRecords::decode('incident', $row->remedy, $row->remedy_sha256)['settlement'];
+    }
+
     public function initialize(WorkflowRun $actual, array $arguments): array
     {
         if (PortableDescriptor::encode($arguments) !== PortableDescriptor::encode($actual->workflowArguments())) {
             throw new LogicException('The recorded incident arguments differ from original native admission.');
         }
         [$key, , $assignment] = $this->actor($actual);
-        $stages = $assignment['policy'] === TransitPolicy::REFUND ? ['refund'] : ['reserve', 'book', 'refund'];
-        $stages[] = 'claim';
-        if ($assignment['kind'] === 'damaged') {
-            $stages[] = 'recover';
-        }
+        $stages = self::stages($assignment);
         if ($assignment['policy'] === TransitPolicy::REPLACE) {
             // Pin the replacement graph at the provider before any replacement effect.
             $this->provider->shipments()
@@ -181,7 +197,9 @@ final readonly class IncidentStore
     }
 
     /**
-     * Records the settled customer remedy once and wakes the original Order. Claim and recovery never gate it.
+     * Records the customer remedy decision once and wakes the original Order: a settled remedy, or an explicit
+     * owed outcome when the refund was refused. Until either is known the incident keeps waiting. Claim and
+     * recovery never gate it.
      */
     public function settle(WorkflowRun $actual): array
     {
@@ -190,19 +208,35 @@ final readonly class IncidentStore
             $remedy = $this->remedyFacts($assignment, $this->scope($key, $actual->id));
             if ($remedy === null) {
                 return [
-                    'settled' => false,
+                    'action' => 'wait',
                 ];
             }
-            $payload = PortableDescriptor::encode($remedy);
-            PostDeliveryRecords::storeOnce($this->authority->db, self::TABLE, $key, 'remedy', $payload);
-            $row = $this->row($key);
+            return $this->decide($actual, $key, $remedy);
         }
-        $remedy = $this->decode($row->remedy, $row->remedy_sha256);
-        $this->notify($this->authority->plan($key)->rootRun, 'transit-remedy-v1', $actual->id);
-        return [
-            'settled' => true,
-            'resolution' => $remedy['resolution'],
-        ];
+        return $this->decide($actual, $key, $this->decode($row->remedy, $row->remedy_sha256));
+    }
+
+    /**
+     * A booked replacement the carrier neither delivered nor failed within the bounded recorded wait. It may
+     * still arrive, so nothing is refunded automatically: the customer is explicitly owed a remedy decision.
+     */
+    public function unresolved(WorkflowRun $actual): array
+    {
+        [$key, $row, $assignment] = $this->actor($actual);
+        if ($row->remedy === null) {
+            $progress = $this->track($actual);
+            if ($progress['action'] !== 'wait') {
+                throw new LogicException('Only an undecided replacement delivery can remain unresolved.');
+            }
+            $owed = $this->record(
+                $assignment,
+                $this->scope($key, $actual->id),
+                'replacement-unresolved',
+                'undelivered'
+            );
+            return $this->decide($actual, $key, $owed);
+        }
+        return $this->decide($actual, $key, $this->decode($row->remedy, $row->remedy_sha256));
     }
 
     /**
@@ -216,10 +250,7 @@ final readonly class IncidentStore
         if ((PostDeliveryRecords::forward($scope, 'incident.book')['status'] ?? null) !== 'confirmed') {
             throw new LogicException('Replacement tracking requires its confirmed replacement booking.');
         }
-        $events = $this->provider->shipments()
-            ->inspect($this->replacement($assignment)['graph'])
-            ->toArray()['events'];
-        return PostDeliveryRecords::carrierProgress($events);
+        return $this->replacementProgress($assignment);
     }
 
     /**
@@ -267,7 +298,8 @@ final readonly class IncidentStore
     }
 
     /**
-     * The protected incident outcome. Only a settled customer remedy is stored; it never changes afterwards.
+     * The protected incident outcome. Only a decided customer remedy (settled or owed) is stored; it never
+     * changes afterwards.
      */
     public function publish(WorkflowRun $actual): array
     {
@@ -288,16 +320,16 @@ final readonly class IncidentStore
                     $saleable === [] ? null : UnitReturnTerms::restock($this->recovery($assignment), $saleable)
                 );
         }
+        $order = $this->authority->subject($key, 'order');
+        $shipment = $this->authority->subject($key, 'shipment');
         $outcome = [
             'version' => 1,
-            'status' => $remedy === null ? 'unsettled' : 'settled',
+            'status' => $remedy['settlement'] ?? 'unsettled',
             'incident' => $assignment['kind'],
             'policy' => $assignment['policy'],
             'resolution' => $remedy['resolution'] ?? 'remedy-in-progress',
-            'originalOrderState' => $this->authority->subject($key, 'order')
-->state,
-            'originalShipmentState' => $this->authority->subject($key, 'shipment')
-->state,
+            'originalOrderState' => $order->state,
+            'originalShipmentState' => $shipment->state,
             'originalBooking' => $assignment['booking']->identity->key(),
             'carrierEvent' => $assignment['event'],
             ...($remedy ?? []),
@@ -338,13 +370,16 @@ final readonly class IncidentStore
             return [
                 'incident' => false,
                 'settled' => false,
+                'decided' => false,
             ];
         }
         $row = $this->row($actor->root_key);
         $remedy = $row->remedy === null ? null : $this->decode($row->remedy, $row->remedy_sha256);
         return [
             'incident' => true,
-            'settled' => $remedy !== null,
+            'settled' => ($remedy['settlement'] ?? null) === 'settled',
+            // An explicit owed outcome also ends the Order's wait; its remedy transition then stays pending.
+            'decided' => $remedy !== null,
             'remedyId' => $remedy === null ? null : hash('sha256', $row->remedy),
         ];
     }
@@ -378,11 +413,7 @@ final readonly class IncidentStore
         $row = $this->row($key);
         $assignment = $this->assignment($row);
         $plan = $row->plan === null ? null : $this->decode($row->plan, $row->plan_sha256);
-        $stages = $assignment['policy'] === TransitPolicy::REFUND ? ['refund'] : ['reserve', 'book', 'refund'];
-        $stages[] = 'claim';
-        if ($assignment['kind'] === 'damaged') {
-            $stages[] = 'recover';
-        }
+        $stages = self::stages($assignment);
         $stage = substr($context->obligation->key, strlen('incident.'));
         $expected = null;
         if ($stage === 'restock' && ($plan['restock'] ?? null) !== null) {
@@ -399,10 +430,16 @@ final readonly class IncidentStore
             return;
         }
         $reserved = PostDeliveryRecords::forward($context->scope, 'incident.reserve')['status'] ?? null;
+        $booked = PostDeliveryRecords::forward($context->scope, 'incident.book')['status'] ?? null;
+        $released = PostDeliveryRecords::forward($context->scope, 'incident.release')['status'] ?? null;
         $refused = match ($stage) {
-            // Dispatch needs the confirmed replacement reservation; a fallback refund needs its definitive refusal.
+            // Dispatch needs the confirmed replacement reservation; only a refused booking releases it unused.
             'book' => $reserved !== 'confirmed',
-            'refund' => $assignment['policy'] === TransitPolicy::REPLACE && $reserved !== 'refused',
+            'release' => $reserved !== 'confirmed' || $booked !== 'refused',
+            // A replacement-policy refund needs a refused reservation, a released refused booking or a
+            // carrier-confirmed replacement failure.
+            'refund' => $assignment['policy'] === TransitPolicy::REPLACE && ($booked === 'refused'
+                ? $released !== 'confirmed' : $this->fallback($assignment, $context->scope) === null),
             default => false,
         };
         if ($refused) {
@@ -475,51 +512,134 @@ final readonly class IncidentStore
     }
 
     /**
-     * Settled customer remedy, read from this incident's own recorded obligations and provider facts.
+     * Customer remedy decision, read from this incident's own recorded obligations and provider facts. Null
+     * means the remedy is still in progress.
      */
     private function remedyFacts(array $assignment, ScopeIdentity $scope): ?array
     {
-        $units = range(0, count($assignment['original']->amounts) - 1);
-        $refunded = null;
-        $reserved = PostDeliveryRecords::forward($scope, 'incident.reserve')['status'] ?? null;
-        if ($assignment['policy'] === TransitPolicy::REFUND || $reserved === 'refused') {
+        $fallback = $this->fallback($assignment, $scope);
+        if ($assignment['policy'] === TransitPolicy::REFUND || $fallback !== null) {
             $this->registered($scope, $this->obligation($assignment, 'refund'), $scope->generation, observed: true);
             $refunded = $this->refunds->lookup($this->command($assignment));
-            if ($refunded['confirmedUnits'] !== $units) {
-                return null;
+            if ($refunded['confirmedUnits'] === range(0, count($assignment['original']->amounts) - 1)) {
+                $resolution = $fallback['resolution'] ?? 'refunded';
+                return $this->record($assignment, $scope, $resolution, $fallback['failure'] ?? null, $refunded);
             }
-            return [
-                'resolution' => $reserved === 'refused' ? 'refunded-replacement-unavailable' : 'refunded',
-                'refundedUnits' => $refunded['confirmedUnits'],
-                'refundedAmountMinor' => $assignment['original']->amountFor($refunded['confirmedUnits']),
-                'refundPayoutMinor' => $refunded['ownPayoutMinor'],
-                'replacementReservation' => $reserved === null ? null : $this->replacement(
-                    $assignment
-                )['reserve']->identity->key(),
-                'replacementBooking' => null,
-            ];
+            // A definitively refused or never executed refund leaves the customer explicitly owed.
+            $closed = $refunded['confirmedUnits'] === []
+                && in_array($refunded['status'], [Status::Refused->value, Status::NotExecuted->value], true);
+            return $closed ? $this->record($assignment, $scope, 'refund-refused', $fallback['failure'] ?? null) : null;
         }
-        if ($reserved !== 'confirmed' || (PostDeliveryRecords::forward(
+        if ((PostDeliveryRecords::forward($scope, 'incident.book')['status'] ?? null) !== 'confirmed'
+            || ! $this->replacementProgress($assignment)['delivered']) {
+            return null;
+        }
+        return $this->record($assignment, $scope, 'replaced', null);
+    }
+
+    /**
+     * The replacement policy's refund fallback, if its recorded replacement cannot settle the remedy.
+     *
+     * @return array{resolution: string, failure: ?string}|null
+     */
+    private function fallback(array $assignment, ScopeIdentity $scope): ?array
+    {
+        if ($assignment['policy'] !== TransitPolicy::REPLACE) {
+            return null;
+        }
+        $reserved = PostDeliveryRecords::forward($scope, 'incident.reserve')['status'] ?? null;
+        $booked = PostDeliveryRecords::forward($scope, 'incident.book')['status'] ?? null;
+        $failed = $booked === 'confirmed' ? $this->replacementProgress($assignment)['failed'] : [];
+        return match (true) {
+            $reserved === 'refused' => [
+                'resolution' => 'refunded-replacement-unavailable',
+                'failure' => null,
+            ],
+            $reserved === 'confirmed' && $booked === 'refused' => [
+                'resolution' => 'refunded-replacement-failed',
+                'failure' => 'booking-refused',
+            ],
+            $failed !== [] => [
+                'resolution' => 'refunded-replacement-failed',
+                'failure' => implode(',', $failed),
+            ],
+            default => null,
+        };
+    }
+
+    /**
+     * One immutable remedy record. Refund facts are present only for a confirmed repayment of every unit.
+     */
+    private function record(
+        array $assignment,
+        ScopeIdentity $scope,
+        string $resolution,
+        ?string $failure,
+        ?array $refunded = null
+    ): array {
+        $replacement = $assignment['policy'] === TransitPolicy::REPLACE ? $this->replacement($assignment) : null;
+        $recorded = static fn (string $stage): bool => (PostDeliveryRecords::forward(
             $scope,
-            'incident.book'
-        )['status'] ?? null) !== 'confirmed') {
-            return null;
-        }
-        $replacement = $this->replacement($assignment);
-        $events = $this->provider->shipments()
-            ->inspect($replacement['graph'])
-            ->toArray()['events'];
-        if (! isset($events['delivered'])) {
-            return null;
-        }
+            'incident.' . $stage
+        )['status'] ?? null) !== null;
         return [
-            'resolution' => 'replaced',
-            'refundedUnits' => [],
-            'refundedAmountMinor' => 0,
-            'refundPayoutMinor' => 0,
-            'replacementReservation' => $replacement['reserve']->identity->key(),
-            'replacementBooking' => $replacement['graph']->booking->identity->key(),
+            'settlement' => $refunded !== null || $resolution === 'replaced' ? 'settled' : 'owed',
+            'resolution' => $resolution,
+            'replacementFailure' => $failure,
+            'refundedUnits' => $refunded['confirmedUnits'] ?? [],
+            'refundedAmountMinor' => $refunded === null ? 0 : $assignment['original']->amountFor(
+                $refunded['confirmedUnits']
+            ),
+            'refundPayoutMinor' => $refunded['ownPayoutMinor'] ?? 0,
+            'replacementReservation' => $replacement !== null && $recorded('reserve')
+                ? $replacement['reserve']->identity->key() : null,
+            'replacementBooking' => $replacement !== null && $recorded('book')
+                ? $replacement['graph']->booking->identity->key() : null,
         ];
+    }
+
+    private function replacementProgress(array $assignment): array
+    {
+        return PostDeliveryRecords::carrierProgress($this->provider->shipments()
+            ->inspect($this->replacement($assignment)['graph'])
+            ->toArray()['events']);
+    }
+
+    /**
+     * Stores the first decided remedy once, then wakes the original Order for either decision.
+     */
+    private function decide(WorkflowRun $actual, string $key, array $remedy): array
+    {
+        PostDeliveryRecords::storeOnce(
+            $this->authority->db,
+            self::TABLE,
+            $key,
+            'remedy',
+            PortableDescriptor::encode($remedy)
+        );
+        $row = $this->row($key);
+        $stored = $this->decode($row->remedy, $row->remedy_sha256);
+        $this->notify($this->authority->plan($key)->rootRun, 'transit-remedy-v1', $actual->id);
+        return [
+            'action' => $stored['settlement'],
+            'resolution' => $stored['resolution'],
+        ];
+    }
+
+    /**
+     * Every incident obligation stage the selected policy and incident kind can register.
+     */
+    private static function stages(array $assignment): array
+    {
+        $stages = ['refund'];
+        if ($assignment['policy'] === TransitPolicy::REPLACE) {
+            $stages = ['reserve', 'book', 'release', 'refund'];
+        }
+        $stages[] = 'claim';
+        if ($assignment['kind'] === 'damaged') {
+            $stages[] = 'recover';
+        }
+        return $stages;
     }
 
     private function actor(WorkflowRun $actual): array
@@ -611,7 +731,7 @@ final readonly class IncidentStore
 
     private function obligation(array $assignment, string $stage, array $saleable = []): Obligation
     {
-        $replacement = $stage === 'reserve' || $stage === 'book' ? $this->replacement($assignment) : null;
+        $replacement = in_array($stage, ['reserve', 'book', 'release'], true) ? $this->replacement($assignment) : null;
         [$handler, $input] = match ($stage) {
             'refund' => [self::REFUND_HANDLER, [
                 'version' => 1,
@@ -623,6 +743,10 @@ final readonly class IncidentStore
                 'compensation' => $replacement['release']->toArray(),
             ]],
             'book' => [self::BOOK_HANDLER, $replacement['graph']->toArray()],
+            'release' => [self::RELEASE_HANDLER, [
+                'version' => 1,
+                'request' => $replacement['release']->toArray(),
+            ]],
             'claim' => [self::CLAIM_HANDLER, [
                 'version' => 1,
                 'request' => $this->claimRequest($assignment)

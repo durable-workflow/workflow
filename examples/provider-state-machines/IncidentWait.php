@@ -13,9 +13,22 @@ use Workflow\V2\Workflow;
  */
 final class IncidentWait
 {
+    /**
+     * A replacement the carrier neither delivers nor fails within the bounded wait ends as unresolved.
+     */
     public static function delivery(): array
     {
-        return self::until('track', ['delivered', 'failed']);
+        return self::until('track', ['delivered', 'failed'], [
+            'action' => 'unresolved',
+        ]);
+    }
+
+    /**
+     * The incident's own customer remedy decision: settled, or explicitly owed.
+     */
+    public static function settlement(): array
+    {
+        return self::until('settle', ['settled', 'owed']);
     }
 
     public static function inspection(): array
@@ -24,13 +37,13 @@ final class IncidentWait
     }
 
     /**
-     * The original Order's wait for its separate incident's settled customer remedy.
+     * The original Order's wait for its separate incident's decided customer remedy, settled or owed.
      */
     public static function remedy(): array
     {
         for ($wake = 0; $wake < 32; ++$wake) {
             $value = Workflow::activity(ShipmentBoundaryActivity::class, 'remedy');
-            if ($value['settled']) {
+            if ($value['decided'] ?? $value['settled']) {
                 return $value;
             }
             Workflow::await('physical-milestone');
@@ -38,7 +51,7 @@ final class IncidentWait
         throw new LogicException('The bounded original transit remedy wait remains unresolved.');
     }
 
-    private static function until(string $operation, array $done): array
+    private static function until(string $operation, array $done, ?array $exhausted = null): array
     {
         for ($wake = 0; $wake < 32; ++$wake) {
             $plan = Workflow::activity(IncidentBoundaryActivity::class, $operation, []);
@@ -47,6 +60,6 @@ final class IncidentWait
             }
             Workflow::await('incident-milestone');
         }
-        throw new LogicException('The bounded original incident wait remains unresolved.');
+        return $exhausted ?? throw new LogicException('The bounded original incident wait remains unresolved.');
     }
 }

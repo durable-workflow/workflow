@@ -7,7 +7,6 @@ namespace Tests\Feature\V2;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Status;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\UnitRefundCommand;
 use DurableWorkflow\Examples\ProviderStateMachines\Authority;
-use DurableWorkflow\Examples\ProviderStateMachines\CancellationStore;
 use DurableWorkflow\Examples\ProviderStateMachines\Catalogue;
 use DurableWorkflow\Examples\ProviderStateMachines\FinancialCatalogue;
 use DurableWorkflow\Examples\ProviderStateMachines\IncidentStore;
@@ -75,9 +74,9 @@ final class V2TransitIncidentMachineTest extends TestCase
         $this->assertSame([], $outcome['restockedUnits']);
         $this->assertSame($outcome, WorkflowStub::loadRun($this->incidentRun()->id, Catalogue::NAMESPACE)->output());
 
-        // A later business cancellation neither repays nor restocks the lost units again.
+        // A later business cancellation is refused explicitly: it neither repays nor restocks the lost units.
         $history = $this->history($origin->runId());
-        app(CancellationStore::class)->request($this->terms->subjectKey(), $origin->runId(), 'late-cancellation');
+        $this->assertCancellationRefused('late-cancellation', 'settled');
         $this->drain();
         $this->assertSame([1499], $this->payouts());
         $this->assertNotContains('restock', $this->effects());
@@ -285,10 +284,176 @@ final class V2TransitIncidentMachineTest extends TestCase
         $this->assertTrue($this->physicalFacts()['transport_damage_confirmed']);
         $this->assertSame(0, $this->physicalFacts()['restocked_quantity']);
         $this->assertTrue($this->incidentRun()->status->isTerminal());
-        // The full-parcel return cannot restock the recovered units again.
-        app(CancellationStore::class)->request($this->terms->subjectKey(), $origin->runId(), 'late-cancellation');
+        // A later cancellation is refused, so the full-parcel return cannot restock the recovered units again.
+        $this->assertCancellationRefused('late-cancellation', 'settled');
         $this->drain();
         $this->assertSame([...$recovered, 'restock-units'], $this->effects());
         $this->assertSame([1499], $this->payouts());
+    }
+
+    public function testCancellationDuringAPendingReplacementIsRefusedAndTheReplacementStillSettles(): void
+    {
+        [$origin, $shipment] = $this->handedOver();
+        $commands = $this->planIncident('lost');
+        $this->record('lost');
+        $this->hint($shipment, 'original-loss');
+        $this->current();
+        $this->assertSame([...self::DELIVERED, 'reserve', 'ship-book'], $this->effects(), $this->progress());
+        $shipmentHistory = $this->history($shipment->id);
+
+        // The booked replacement is the pending remedy: the Order's cancellation route stays closed.
+        $this->assertCancellationRefused('cancel-pending-replacement', 'pending');
+        $this->drain();
+        $this->assertSame('ready', $this->subjectState('order'), $this->progress());
+        $this->assertFalse(WorkflowRun::query()->findOrFail($origin->runId())->status->isTerminal());
+        $this->replacementCarrier($commands, 'handed-over');
+        $this->replacementCarrier($commands, 'delivered');
+        $this->hintIncident('replacement-delivery');
+
+        $this->assertSame('remedied', $this->subjectState('order'), $this->progress());
+        $this->assertSame(
+            'remedied',
+            WorkflowRun::query()->findOrFail($origin->runId())->workflowOutput()['businessOutcome']
+        );
+        $this->assertSame('replaced', $this->incidentOutcome()['resolution']);
+        $this->assertSame([], $this->payouts(), 'The delivered replacement is the only remedy.');
+        $this->assertSame([...self::DELIVERED, 'reserve', 'ship-book', 'carrier-claim'], $this->effects());
+        $this->assertSame(0, $this->physicalFacts()['restocked_quantity']);
+        $this->assertSame($shipmentHistory, $this->history($shipment->id));
+        $this->assertCancellationRefused('cancel-after-replacement', 'settled');
+        $this->assertReplayQuiet($origin->runId(), $shipment->id);
+    }
+
+    public function testCancellationDuringAProcessingRefundIsRefusedAndTheRefundPaysOnce(): void
+    {
+        [$origin, $shipment] = $this->handedOver();
+        $commands = $this->planIncident('lost', refund: Status::Processing);
+        $this->record('lost');
+        $this->hint($shipment, 'original-loss');
+        $this->current();
+        // The refund is processing: the incident keeps waiting for its outcome and files no claim yet.
+        $this->assertSame(self::DELIVERED, $this->effects(), $this->progress());
+        $this->assertSame([], $this->payouts());
+        $this->assertNull($this->incidentRow()->remedy);
+        $this->assertSame('ready', $this->subjectState('order'));
+        $shipmentHistory = $this->history($shipment->id);
+
+        $this->assertCancellationRefused('cancel-processing-refund', 'pending');
+        $this->drain();
+        $this->assertSame([], $this->payouts());
+        $this->unitRefunds->resolve($commands['refund'], Status::Confirmed);
+        $this->hintIncident('refund-confirmed');
+
+        $this->assertSame('remedied', $this->subjectState('order'), $this->progress());
+        $this->assertSame([1499], $this->payouts());
+        $outcome = $this->incidentOutcome();
+        $this->assertSame('refunded', $outcome['resolution']);
+        $this->assertSame(1499, $outcome['refundPayoutMinor']);
+        $this->assertSame([...self::DELIVERED, 'carrier-claim'], $this->effects());
+        $this->assertSame(0, $this->physicalFacts()['restocked_quantity']);
+        $this->assertSame($shipmentHistory, $this->history($shipment->id));
+        $this->assertCancellationRefused('cancel-after-refund', 'settled');
+        $this->assertSame([1499], $this->payouts());
+        $this->assertReplayQuiet($origin->runId(), $shipment->id);
+    }
+
+    public function testRefusedReplacementBookingReleasesTheReservationAndRefundsInstead(): void
+    {
+        [$origin] = $this->handedOver();
+        $commands = $this->planIncident('lost', book: Status::Refused);
+        $this->record('lost');
+        $this->hint($this->shipment(), 'original-loss');
+        $this->current();
+
+        $this->assertSame('remedied', $this->subjectState('order'), $this->progress());
+        // The unused reservation is released before the refund; no replacement parcel exists.
+        $this->assertSame([...self::DELIVERED, 'reserve', 'release', 'carrier-claim'], $this->effects());
+        $this->assertSame([1499], $this->payouts());
+        $outcome = $this->incidentOutcome();
+        $this->assertSame('settled', $outcome['status']);
+        $this->assertSame('refunded-replacement-failed', $outcome['resolution']);
+        $this->assertSame('booking-refused', $outcome['replacementFailure']);
+        $this->assertSame($commands['reserve']->identity->key(), $outcome['replacementReservation']);
+        $this->assertSame($commands['graph']->booking->identity->key(), $outcome['replacementBooking']);
+        $this->assertSame(
+            'remedied',
+            WorkflowRun::query()->findOrFail($origin->runId())->workflowOutput()['businessOutcome']
+        );
+        $this->assertReplayQuiet($origin->runId(), $this->shipment()->id);
+    }
+
+    public function testFailedReplacementDeliveryRefundsWithoutReleasingTheShippedReplacementStock(): void
+    {
+        [$origin] = $this->handedOver();
+        $commands = $this->planIncident('lost');
+        $this->record('lost');
+        $this->hint($this->shipment(), 'original-loss');
+        $this->current();
+        $this->replacementCarrier($commands, 'handed-over');
+        $this->replacementCarrier($commands, 'lost');
+        $this->hintIncident('replacement-loss');
+
+        $this->assertSame('remedied', $this->subjectState('order'), $this->progress());
+        $this->assertSame([...self::DELIVERED, 'reserve', 'ship-book', 'carrier-claim'], $this->effects());
+        $this->assertSame([1499], $this->payouts());
+        $outcome = $this->incidentOutcome();
+        $this->assertSame('refunded-replacement-failed', $outcome['resolution']);
+        $this->assertSame('lost', $outcome['replacementFailure']);
+        $this->assertReplayQuiet($origin->runId(), $this->shipment()->id);
+    }
+
+    public function testUnresolvedReplacementAndRefusedRefundEndAsExplicitlyOwedWithoutFailingTheOrder(): void
+    {
+        [$origin] = $this->handedOver();
+        $commands = $this->planIncident('lost');
+        $this->record('lost');
+        $this->hint($this->shipment(), 'original-loss');
+        $this->current();
+        $this->replacementCarrier($commands, 'handed-over');
+        // Carrier progress without delivery or a confirmed failure, past the bounded recorded wait.
+        for ($wake = 0; $wake < 32; ++$wake) {
+            $this->hintIncident('replacement-progress-' . $wake);
+        }
+
+        $outcome = $this->incidentOutcome();
+        $this->assertSame('owed', $outcome['status']);
+        $this->assertSame('replacement-unresolved', $outcome['resolution']);
+        $this->assertSame([], $this->payouts(), 'A replacement that may still arrive is not refunded automatically.');
+        $this->assertTrue($this->incidentRun()->status->isTerminal());
+        $this->assertSame([...self::DELIVERED, 'reserve', 'ship-book', 'carrier-claim'], $this->effects());
+        $order = WorkflowRun::query()->findOrFail($origin->runId());
+        $this->assertSame('completed', $order->status->value, $this->progress());
+        $this->assertSame('unsettled', $order->workflowOutput()['businessOutcome']);
+        $this->assertSame('pending', $order->workflowOutput()['transition']['status']);
+        $this->assertSame('ready', $this->subjectState('order'));
+        $this->assertCancellationRefused('cancel-owed-remedy', 'owed');
+        $this->assertReplayQuiet($origin->runId(), $this->shipment()->id);
+    }
+
+    public function testRefusedRefundEndsAsExplicitlyOwed(): void
+    {
+        [$origin] = $this->handedOver();
+        $this->planIncident('lost', refund: Status::Refused);
+        $this->record('lost');
+        $this->hint($this->shipment(), 'original-loss');
+        $this->current();
+
+        $outcome = $this->incidentOutcome();
+        $this->assertSame('owed', $outcome['status']);
+        $this->assertSame('refund-refused', $outcome['resolution']);
+        $this->assertSame([], $this->payouts());
+        $order = WorkflowRun::query()->findOrFail($origin->runId());
+        $this->assertSame('completed', $order->status->value, $this->progress());
+        $this->assertSame('unsettled', $order->workflowOutput()['businessOutcome']);
+        $this->assertSame('ready', $this->subjectState('order'));
+    }
+
+    private function assertReplayQuiet(string ...$runs): void
+    {
+        $requests = $this->requests();
+        foreach ([$this->incidentRun()->id, ...$runs] as $id) {
+            app(WorkflowReplayer::class)->replay(WorkflowRun::query()->findOrFail($id));
+        }
+        $this->assertSame($requests, $this->requests());
     }
 }

@@ -378,15 +378,31 @@ A confirmed incident admits one separate native `TransitIncident` for the Order
 generation and ends the Shipment run with business outcome `lost` or `damaged`.
 The Shipment state stays `in-transit`, and the handover and stock-deduction
 evidence stays historical. The Order leaves its delivery wait and waits,
-without the fulfillment deadline, for the incident's recorded settled remedy.
-Then it commits `remedied`. It is never `delivered` or `cancelled`.
+without the fulfillment deadline, for the incident's recorded remedy decision.
+A settled remedy commits `remedied`. An owed remedy (below) leaves the Order
+`ready`, with business outcome `unsettled` and a pending `remedy` transition,
+instead of failing the run. It is never `delivered` or `cancelled`.
 
 | Policy | Selected remedy |
 | --- | --- |
 | `refund` | `provider.incident.refund` repays every original unit (request key `transit-<incident>`) through the unit gateway. Lost goods are never restocked or awaited. |
 | `replace` | `provider.incident.reserve` reserves the original SKU and quantity (`transit.<incident>.reserve`), `provider.incident.book` books it on its own graph and the remedy settles at the replacement's recipient delivery. A definitively refused reservation refunds instead (`refunded-replacement-unavailable`). An unknown reservation is reconciled, never treated as unavailability. |
 
-After the customer remedy settles, the incident files `provider.incident.claim`:
+Every remedy ends with one explicit, immutable decision (`settlement`), and
+the incident waits for it with recorded observations:
+
+| Situation | Decision |
+| --- | --- |
+| Refund processing | The incident keeps waiting for the gateway outcome. The claim is filed only after the decision. |
+| Refund refused or not executed | `owed`, `refund-refused`. Nothing is paid, and the customer is explicitly owed an operator decision. |
+| Replacement booking refused | `provider.incident.release` releases the unused reservation (`transit.<incident>.release`). Then every original unit is refunded: `settled`, `refunded-replacement-failed`, `replacementFailure` `booking-refused`. |
+| Replacement confirmed lost, damaged or not collected by the carrier | Every original unit is refunded: `settled`, `refunded-replacement-failed`, `replacementFailure` names the carrier event. The reservation is not released, because the stock left with the replacement parcel. |
+| Replacement neither delivered nor failed within the bounded recorded wait (32 carrier-progress wakes) | `owed`, `replacement-unresolved`. Nothing is refunded automatically, because the parcel may still arrive. |
+
+A fallback refund uses the same refund identity. The gateway's repayment
+accounting pays each unit at most once.
+
+After the customer remedy is decided, the incident files `provider.incident.claim`:
 a carrier claim with its own identity (`shipment.full.carrier-claim.<incident>`).
 The provider admits it only for the confirmed incident. The carrier's later
 decision is a separate provider fact (`IncidentStore::claim()`). Neither a
@@ -402,23 +418,48 @@ recovery, received, accepted, saleable and restocked units.
 
 Handlers check the native incident run, its scope, the exact registered
 obligation and the stored assignment before provider I/O. A booking requires
-the recorded confirmed reservation; a replacement-policy refund requires the
-recorded refusal. A later business cancellation of a remedied Order repays
-nothing again: the gateway counts the earlier repayment. A lost parcel cannot
-use the full-parcel return, so the cancellation stays unsettled instead of
-reporting `cancelled`. The incident has no admission deadline, so no deadline
+the recorded confirmed reservation. A release requires that reservation and
+the recorded refused booking. A replacement-policy refund requires a refused
+reservation, a released refused booking, or the carrier's confirmed
+replacement failure. The incident has no admission deadline, so no deadline
 can restart.
 
-`V2TransitIncidentMachineTest` covers both loss policies, unavailable
-replacement, damage with recovery, tracking delay, a refused claim, later
-cancellation, replay and substitution. `V2TransitIncidentProcessLossTest`
-kills real workers after the refund, claim, recovery, restock, replacement
-reservation and replacement booking commit; fresh processes recover each
-effect exactly once. These are synthetic recorded-task fixtures, not
-installed-package, real-carrier or real-warehouse qualification. A refused or
-lost replacement booking, partial loss of some units, claim proceeds
-accounting, customer-facing claim deadlines and replacement stock deduction
-remain open policy.
+**Cancellation after an incident is refused.** Once an incident is admitted,
+`CancellationStore::request()` returns `status` `refused`, reason
+`transit_incident_owns_remedy` and `remedy` `pending`, `settled` or `owed`.
+It records no intent, no fence and no compensation request, so it can neither
+wedge nor fail the Order. Incident admission and the cancellation request
+serialize on the Order lock. A cancellation that commits first keeps its own
+route, and the incident is never admitted. Settling the cancellation after the
+remedy is not offered. The Order's cancellation compensation is defined over
+the original parcel: a full-parcel return and restock, then a refund of the
+captured payment. A lost or damaged parcel cannot be returned that way, and
+the payment refund cannot see a delivered replacement. Accepting the
+cancellation would either leave compensation unknown or pay a second remedy.
+The refusal keeps every payout single. A customer who no longer wants a
+delivered replacement needs a separate return policy.
+
+`V2TransitIncidentMachineTest` covers:
+- both loss policies, unavailable replacement, and damage with recovery;
+- a tracking delay and a refused claim;
+- cancellation refused during a pending replacement, during a processing
+  refund and after settlement;
+- a refused replacement booking and a failed replacement delivery;
+- the unresolved-replacement and refused-refund owed outcomes;
+- replay and substitution.
+
+`V2TransitIncidentProcessLossTest` kills real workers after each of these
+commits: the refund, claim, recovery, restock, replacement reservation and
+replacement booking, and the release and fallback refund after a refused
+booking. A fresh process recovers each effect exactly once.
+
+These are synthetic recorded-task fixtures, not installed-package,
+real-carrier or real-warehouse qualification. Open policy:
+- partial loss of some units;
+- recovery or claim of a failed replacement parcel;
+- claim proceeds accounting and customer-facing claim deadlines;
+- replacement stock deduction;
+- returning a delivered replacement.
 
 ```shell
 vendor/bin/phpunit tests/Feature/V2/V2TransitIncidentMachineTest.php
