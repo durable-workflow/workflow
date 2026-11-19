@@ -194,7 +194,7 @@ final class WorkflowTaskLeaseLoss
      *
      * @return array{reason: string, consecutive: int, threshold: int, workflow_task_id: string, last_lease_lost_at: string|null}|null
      */
-    public static function taskAttention(WorkflowRun $run): ?array
+    public static function taskAttention(WorkflowRun $run, ?WorkflowTask $openWorkflowTask = null): ?array
     {
         if ($run->status->isTerminal()) {
             return null;
@@ -203,7 +203,12 @@ final class WorkflowTaskLeaseLoss
         $threshold = self::attentionThreshold();
         $task = null;
 
-        if ($run->relationLoaded('tasks')) {
+        if ($openWorkflowTask instanceof WorkflowTask
+            && $openWorkflowTask->task_type === TaskType::Workflow
+            && in_array($openWorkflowTask->status, [TaskStatus::Ready, TaskStatus::Leased], true)) {
+            // A bounded projection already holds the run's open workflow task.
+            $task = self::lostLeases($openWorkflowTask) >= $threshold ? $openWorkflowTask : null;
+        } elseif ($run->relationLoaded('tasks')) {
             foreach ($run->tasks as $candidate) {
                 if ($candidate instanceof WorkflowTask
                     && $candidate->task_type === TaskType::Workflow
@@ -254,14 +259,14 @@ final class WorkflowTaskLeaseLoss
      *
      * @return array<string, mixed>
      */
-    public static function summaryAttributes(WorkflowRun $run): array
+    public static function summaryAttributes(WorkflowRun $run, ?WorkflowTask $openWorkflowTask = null): array
     {
         if (! self::summaryTracked()) {
             return [];
         }
 
         return [
-            'task_attention' => self::taskAttention($run),
+            'task_attention' => self::taskAttention($run, $openWorkflowTask),
         ];
     }
 

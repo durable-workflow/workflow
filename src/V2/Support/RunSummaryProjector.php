@@ -705,7 +705,7 @@ final class RunSummaryProjector
             'next_task_lease_expires_at' => $task->lease_expires_at,
             'repair_blocked_reason' => $repairBlockedReason,
             'repair_attention' => RepairBlockedReason::needsAttention($repairBlockedReason),
-            ...WorkflowTaskLeaseLoss::summaryAttributes($run),
+            ...WorkflowTaskLeaseLoss::summaryAttributes($run, $task),
             'task_problem' => $replayBlockedTask instanceof WorkflowTask
                 || $hasPendingChildResolution
                 || self::claimHasWorkflowTaskProblem($run)
@@ -1260,7 +1260,7 @@ final class RunSummaryProjector
                 'next_task_lease_expires_at' => $nextTask->lease_expires_at,
                 'repair_blocked_reason' => $repairBlockedReason,
                 'repair_attention' => RepairBlockedReason::needsAttention($repairBlockedReason),
-                ...WorkflowTaskLeaseLoss::summaryAttributes($run),
+                ...WorkflowTaskLeaseLoss::summaryAttributes($run, $nextTask),
                 'task_problem' => false,
                 'exception_count' => 0,
                 'history_event_count' => $historyEventCount,
