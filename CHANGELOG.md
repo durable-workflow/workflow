@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Compensation scopes are stable `@api` (#1063). Exactly the members listed in
+  `docs/api-stability.md#compensation-scopes` are covered:
+  - authoring: `DurableScope`, `RegisteredObligation`, `Obligation`, `ScopeIdentity`;
+  - handler contract: `ScopedOperation`, `OperationContext`, `ForwardResult`,
+    `Resolution`, `HandlerRegistry`, `HandlerContractViolation`;
+  - host: `ScopeAuthorization`, `ScopeAuthorizationRefused`,
+    `ScopeRecovery::request()` and `describe()`, `ScopeRetention::release()`, and
+    the result enums, which may gain cases in a minor release.
+
+  They now follow the 2.x compatibility policy, as do their recorded replay
+  identities, ledger storage and minimum limits. `DurableScope::reserveChild()` and
+  original root admission remain experimental.
+
 - A run waiting for a signal is no longer given a no-op workflow task on every
   watchdog pass after a child closed that cannot resume it (#1219). This
   affected a child started with `startChild()` and not yet awaited, a child

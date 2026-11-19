@@ -24,7 +24,7 @@ use Workflow\V2\Workflow;
 /**
  * Workflow authoring helper. Every live boundary is a native recorded activity.
  *
- * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
+ * @api Stable compensation-scope API (#1063). See docs/api-stability.md#compensation-scopes.
  */
 final readonly class DurableScope
 {
@@ -103,7 +103,7 @@ final readonly class DurableScope
 
     /**
      * @experimental Reserved child admission depends on the experimental StateMachine binding types (#1069).
-     *     It is not part of the compensation-scope surface planned for promotion.
+     *     It is not covered by the compensation-scope stability guarantee.
      */
     public function reserveChild(string $key, ScopeIdentity $child, BindingIdentity $binding): ChildReservation
     {

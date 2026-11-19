@@ -16,7 +16,7 @@ use InvalidArgumentException;
  * - input: plain arrays and scalars, at most 15,360 bytes as JSON, 500 values and depth 7. These limits
  *   apply to the input itself and are checked when DurableScope registers the obligation.
  *
- * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
+ * @api Stable compensation-scope API (#1063). See docs/api-stability.md#compensation-scopes.
  */
 final readonly class Obligation
 {

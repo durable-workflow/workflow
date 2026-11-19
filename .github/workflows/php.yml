@@ -101,6 +101,7 @@ jobs:
         php -l scripts/ci/check-laravel-dependency-security.php
         php -l scripts/ci/laravel-embedded-upgrade-matrix.php
         php -l scripts/ci/verify-history-export-source-identity.php
+        php -l scripts/ci/classify-comment-only-change.php
         for file in scripts/ci/state-machine-upgrade/*.php; do php -l "$file"; done
         php scripts/ci/check-v2-coverage.php --self-test
         python - <<'PY'
@@ -137,6 +138,7 @@ jobs:
         fi
         python scripts/ci/validate-regression-corpus.py \
           --skip-counterfactual \
+          --annotate \
           "${arguments[@]}"
         python scripts/ci/test-regression-corpus-policy.py
 
@@ -257,7 +259,7 @@ jobs:
         if [[ "$CORPUS_BASE_REF" =~ ^[0-9a-f]{40}$ ]] && [[ ! "$CORPUS_BASE_REF" =~ ^0+$ ]]; then
           arguments+=(--base-ref "$CORPUS_BASE_REF")
         fi
-        python scripts/ci/validate-regression-corpus.py "${arguments[@]}"
+        python scripts/ci/validate-regression-corpus.py --annotate "${arguments[@]}"
 
     - name: Remove regression-corpus database
       if: ${{ always() }}
