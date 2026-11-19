@@ -397,14 +397,28 @@ the incident waits for it with recorded observations:
 
 | Situation | Decision |
 | --- | --- |
-| Refund processing | The incident keeps waiting for the gateway outcome. The claim is filed only after the decision. |
+| Refund processing | The incident keeps waiting for the gateway outcome, within the bounded recorded wait. The claim is filed only after the decision. |
+| Refund still processing when the bounded wait ends | A final check reads the same refund: confirmed by then, `settled`, `refunded`. Otherwise `owed`, `refund-unresolved`, and nothing more is paid automatically. |
 | Refund refused or not executed | `owed`, `refund-refused`. Nothing is paid, and the customer is explicitly owed an operator decision. |
 | Replacement booking refused | `provider.incident.release` releases the unused reservation (`transit.<incident>.release`). Then every original unit is refunded: `settled`, `refunded-replacement-failed`, `replacementFailure` `booking-refused`. |
 | Replacement confirmed lost, damaged or not collected by the carrier | Every original unit is refunded: `settled`, `refunded-replacement-failed`, `replacementFailure` names the carrier event. The reservation is not released, because the stock left with the replacement parcel. |
-| Replacement neither delivered nor failed within the bounded recorded wait (32 carrier-progress wakes) | `owed`, `replacement-unresolved`. Nothing is refunded automatically, because the parcel may still arrive. |
+| Replacement neither delivered nor failed within the bounded recorded wait | `owed`, `replacement-unresolved`. Nothing is refunded automatically, because the parcel may still arrive. |
 
 A fallback refund uses the same refund identity. The gateway's repayment
-accounting pays each unit at most once.
+accounting pays each unit at most once. A provider confirmation that arrives
+after `refund-unresolved` pays that same refund once. `IncidentStore::refund()`
+shows it to an operator: the request key, provider status, confirmed units and
+payout. A retry of the same identity pays nothing more, and the decided
+incident outcome does not change.
+
+The replacement delivery wait and the remedy decision wait are bounded by
+recorded wakes, not by time. Each wake is one `incident-milestone` signal from
+the host, followed by one recorded boundary check. The host signals when
+provider or carrier state changes. `Authority` takes `transitWakes:` (default
+and maximum 32). Each incident records the bound once at initialization, so a
+later configuration change never alters a running incident. Histories recorded
+before the setting keep 32. An exhausted wait never fails the incident or the
+Order; it ends with one of the explicit `owed` decisions above.
 
 After the customer remedy is decided, the incident files `provider.incident.claim`:
 a carrier claim with its own identity (`shipment.full.carrier-claim.<incident>`).
@@ -451,6 +465,9 @@ delivered replacement needs a separate return policy.
   refund and after settlement;
 - a refused replacement booking and a failed replacement delivery;
 - the unresolved-replacement and refused-refund owed outcomes;
+- a refund still processing when the bounded wait ends (`refund-unresolved`),
+  its later provider confirmation paying once, and a confirmation at the bound
+  settling the same refund;
 - replay and substitution.
 
 `V2TransitIncidentProcessLossTest` kills real workers after each of these

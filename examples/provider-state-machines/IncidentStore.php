@@ -190,6 +190,7 @@ final readonly class IncidentStore
             'policy' => $assignment['policy'],
             'nativeRun' => $actual->id,
             'principal' => $this->authority->principal,
+            'wakes' => $this->authority->transit->wakes(),
             'scope' => $this->scope($key, $actual->id)
                 ->toArray(),
             'obligations' => $obligations,
@@ -217,26 +218,35 @@ final readonly class IncidentStore
     }
 
     /**
-     * A booked replacement the carrier neither delivered nor failed within the bounded recorded wait. It may
-     * still arrive, so nothing is refunded automatically: the customer is explicitly owed a remedy decision.
+     * The bounded recorded wait ended without a decision; nothing new is paid automatically. A booked replacement
+     * the carrier neither delivered nor failed may still arrive: the customer is explicitly owed a remedy
+     * decision. A submitted refund the provider is still processing keeps its one refund identity: a
+     * confirmation observed now settles it, and one observed later is the same single payout.
      */
     public function unresolved(WorkflowRun $actual): array
     {
         [$key, $row, $assignment] = $this->actor($actual);
-        if ($row->remedy === null) {
-            $progress = $this->track($actual);
-            if ($progress['action'] !== 'wait') {
-                throw new LogicException('Only an undecided replacement delivery can remain unresolved.');
-            }
-            $owed = $this->record(
-                $assignment,
-                $this->scope($key, $actual->id),
-                'replacement-unresolved',
-                'undelivered'
-            );
-            return $this->decide($actual, $key, $owed);
+        if ($row->remedy !== null) {
+            return $this->decide($actual, $key, $this->decode($row->remedy, $row->remedy_sha256));
         }
-        return $this->decide($actual, $key, $this->decode($row->remedy, $row->remedy_sha256));
+        $scope = $this->scope($key, $actual->id);
+        $fallback = $this->fallback($assignment, $scope);
+        if ($assignment['policy'] === TransitPolicy::REFUND || $fallback !== null) {
+            return $this->decide(
+                $actual,
+                $key,
+                $this->remedyFacts($assignment, $scope)
+                    ?? $this->record($assignment, $scope, 'refund-unresolved', $fallback['failure'] ?? null)
+            );
+        }
+        if ($this->track($actual)['action'] !== 'wait') {
+            throw new LogicException('Only an undecided replacement delivery can remain unresolved.');
+        }
+        return $this->decide(
+            $actual,
+            $key,
+            $this->record($assignment, $scope, 'replacement-unresolved', 'undelivered')
+        );
     }
 
     /**
@@ -397,6 +407,23 @@ final readonly class IncidentStore
                 ->status->value,
             'carrierDecision' => $this->provider->shipments()
                 ->claimOutcome($claim),
+        ];
+    }
+
+    /**
+     * The provider's own outcome of this incident's single refund identity (request key `transit-<incident>`),
+     * observed after an owed `refund-unresolved` decision. The decided customer outcome never changes.
+     */
+    public function refund(string $key): array
+    {
+        $command = $this->command($this->assignment($this->row($key)));
+        $observed = $this->refunds->lookup($command);
+        return [
+            'refund' => $command->requestKey,
+            'commandId' => $observed['commandId'],
+            'status' => $observed['status'],
+            'confirmedUnits' => $observed['confirmedUnits'],
+            'payoutMinor' => $observed['ownPayoutMinor'],
         ];
     }
 
