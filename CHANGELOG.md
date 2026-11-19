@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 2.34.0 - 2026-11-19
+
+2.34.0 adds one migration (#1231): workflow tasks gain `lost_lease_count` and
+`last_lease_lost_at`, and run summaries gain `task_attention`. Every column is
+nullable or has a constant default, so nothing is backfilled; run
+`php artisan migrate` when upgrading. Definition fingerprint version 2, the
+workflow task job timeout and failing a run on repeated lost leases are all
+opt-in. New runs still record fingerprint version 1.
+
 - The business state-machine API is explicitly experimental (#1069). Every
   public class, interface and enum in `Workflow\V2\StateMachine`, native child
   start (`Workflow::startChild()`, `startChild()` and `StartedChildWorkflow`) and
@@ -39,6 +48,24 @@
     instead of retrying.
   - The migration adds the columns outside a transaction under the schema
     lock budget.
+- A wide `all()` no longer makes its workflow tasks grow with the square of the
+  fan-out width (#1231, #1203). A 300-member fan-out of 10 KB activities took
+  134 s to schedule and 58–85 s to finish on 2.32.0, so Laravel's default
+  60-second queue job timeout killed it on every retry. Per-member cost is now
+  roughly constant:
+  - A workflow task publishes the tasks it committed in bounded batches and
+    refreshes each affected run summary once, instead of rebuilding the run's
+    whole summary, in its own transaction, for every member it published.
+  - Replay, child-call, parallel-group, lineage and activity lookups index the
+    loaded history by sequence once, instead of rescanning the whole history
+    for every member. A child closure no longer rescans the parent's history
+    for every sibling.
+  - Activity starts refresh only their own timeline points, like outcomes, and
+    projections skip decoding payloads that cannot name the activity or a
+    failure.
+
+  Recorded history and every projection row are unchanged. Each member's own
+  activity or child task still rebuilds its run summary once.
 - Workflow definition and `await()` condition fingerprints are versioned, and
   a new opt-in version 2 makes comment-only and whitespace-only edits replay-safe
   (#1227). The prefix names the version:
@@ -114,6 +141,17 @@
   - A job that times out, or exhausts its attempts after a worker crash, fails
     without running the activity's catch block, so it writes no mark and the
     redispatch race stays open on those paths, as before.
+- In the carrier-loss example (`examples/provider-state-machines`), a refund
+  still processing after its last bounded wake no longer fails the Order run
+  (#1220). The wait makes one last check of the same refund. If the provider has
+  confirmed, the remedy is `refunded`; otherwise it is `owed` with resolution
+  `refund-unresolved`, and the Order completes `unsettled`. A later provider
+  confirmation pays that same refund exactly once, and
+  `IncidentStore::refund($key)` shows its status. The wake bound is read from
+  the incident's recorded initialization (`Authority(..., transitWakes:)`,
+  default and maximum 32); histories recorded without it replay unchanged. A
+  cancellation while a full-parcel Shipment is in transit is now documented and
+  tested end to end (#1217). Examples only.
 
 ## 2.33.0 - 2026-11-19
 
@@ -211,25 +249,6 @@ in a minor release: `DurableScope::reserveChild()`, original root admission
   could never run: the call returns `verified` or fails its recorded activity.
   The activity calls and their order are unchanged, so recorded commands are the
   same. Examples only.
-
-- A wide `all()` no longer makes its workflow tasks grow with the square of the
-  fan-out width (#1231, #1203). A 300-member fan-out of 10 KB activities took
-  134 s to schedule and 58–85 s to finish on 2.32.0, so Laravel's default
-  60-second queue job timeout killed it on every retry. Per-member cost is now
-  roughly constant:
-  - A workflow task publishes the tasks it committed in bounded batches and
-    refreshes each affected run summary once, instead of rebuilding the run's
-    whole summary, in its own transaction, for every member it published.
-  - Replay, child-call, parallel-group, lineage and activity lookups index the
-    loaded history by sequence once, instead of rescanning the whole history
-    for every member. A child closure no longer rescans the parent's history
-    for every sibling.
-  - Activity starts refresh only their own timeline points, like outcomes, and
-    projections skip decoding payloads that cannot name the activity or a
-    failure.
-
-  Recorded history and every projection row are unchanged. Each member's own
-  activity or child task still rebuilds its run summary once.
 
 ## 2.32.0 - 2026-11-19
 
