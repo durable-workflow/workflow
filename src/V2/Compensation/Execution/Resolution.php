@@ -10,7 +10,7 @@ use Workflow\V2\Compensation\Definition\PortableDescriptor;
 /**
  * Explicit authoritative evidence, not merely a successful callback return.
  *
- * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
+ * @api Stable compensation-scope API from 2.31.0 (#1063). See docs/api-stability.md#compensation-scopes.
  */
 final readonly class Resolution
 {

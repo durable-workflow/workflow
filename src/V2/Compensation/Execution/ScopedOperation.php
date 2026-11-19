@@ -7,7 +7,7 @@ namespace Workflow\V2\Compensation\Execution;
 /**
  * Host-owned provider semantics. Reconcile uncertainForward before any unsafe reissue.
  *
- * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
+ * @api Stable compensation-scope API from 2.31.0 (#1063). See docs/api-stability.md#compensation-scopes.
  */
 interface ScopedOperation
 {

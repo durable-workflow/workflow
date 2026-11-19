@@ -124,23 +124,64 @@ The semver guarantee below covers all three surfaces. Breaking changes to
 anything marked `@api` require a major version bump, except surfaces explicitly
 marked `@experimental` as described below.
 
-## Experimental compensation scopes
+## Compensation scopes
 
-The `Workflow\V2\Compensation` authoring helpers and host handler/authorization
-contracts are experimental. Their API and persisted storage contract may change
-in a minor release while the first increment is evaluated. The scope, obligation,
-forward-result and resolution envelopes carry an explicit format version; unknown
-versions refuse interpretation. Activity types and activity-sequence markers are
-recorded identities and must be changed through explicit deterministic versioning.
-`@internal` activities, format utilities and engine classes remain implementation
-details rather than supported host entry points.
+From 2.31.0 these `Workflow\V2\Compensation` classes are stable `@api` and follow
+the semver guarantee below (#1063):
 
-This increment supports embedded Laravel, sequential compensation, one nesting
-level and explicit release. It does not transfer forward scope ownership across
-continue-as-new, originating-run redrive or child retry. Use a distinct generation
-for each originating run. Retained obligations stay attached to that run and remain
-recoverable through `ScopeRecovery`. See [durable compensation scopes](compensation-scopes.md).
-Existing run-local Saga and its stability contract remain unchanged.
+- Authoring: `DurableScope` (`execute()`, `register()`, `participate()`,
+  `verifyCompensation()`), `RegisteredObligation` (`execute()`, `compensate()`),
+  `Definition\Obligation` and `Definition\ScopeIdentity`.
+- Handler contract: `Execution\ScopedOperation`, `Execution\OperationContext`,
+  `Execution\ForwardResult` (`observed()`, `unknown()`), `Execution\Resolution`
+  (`verified()`, `unknown()`) and `Execution\HandlerRegistry`.
+- Host: `Security\ScopeAuthorization`, which is called with the operations
+  `register`, `forward`, `compensate`, `participate`, `request`, `release` and
+  `inspect`; `Recovery\ScopeRecovery::request()` and `describe()`, including their
+  result keys and `nextAction` values; and `Recovery\ScopeRetention::release()`.
+
+The stable contract also covers:
+
+- **Replay.** The recorded `dw.compensation.*.v1` activity types, the
+  `dw.compensation.scope-activities` and `dw.compensation.recovery-activities`
+  version markers, the `dw.compensation.recovery-lease-repair-retry` patch marker,
+  and the version-1 scope, obligation, forward-result and resolution envelopes
+  replay on every later 2.x release. New behavior arrives only behind a new
+  recorded marker.
+- **Storage.** Ledger migrations only add. A schema rollback refuses while the
+  ledger holds any scope, released tombstones are permanent, and nothing expires
+  automatically.
+- **Behavior.**
+  - Obligations are registered before their effect.
+  - Forward ownership stays with the original run and generation.
+  - Sequential compensation is child-first.
+  - After the origin closes, an accepted unverified request routes to recovery
+    automatically under the re-authorized original principal, or records
+    `recovery_authorization_failed`.
+  - Unresolved, unknown and failed outcomes stay explicit, and a persistent
+    failure fails the recovery run.
+  - Handlers can run more than once per operation and must be idempotent by
+    operation ID. Exactly-once external effects are not promised.
+- **Minimum limits**, which may rise but will not fall: 256 obligations per scope,
+  16 child scopes per parent, one nesting level, 128 requests per scope, 16 KiB
+  and 512 values at depth 8 per descriptor, and 32 evidence references of at most
+  128 bytes per outcome.
+
+Not covered: watchdog timing, exact retry intervals beyond outlasting one activity
+lease plus one repair pass, journal row layout beyond the documented kinds, and
+every class marked `@internal`.
+
+These remain `@experimental` and may change in a minor release:
+
+- `DurableScope::reserveChild()`, which depends on the experimental
+  `StateMachine\Binding` types (#1069);
+- original root admission (`Admission\RootReservationStore` and the `Admission`
+  value types);
+- parallel compensation and nesting deeper than one level, which are not
+  supported.
+
+See [durable compensation scopes](compensation-scopes.md). Existing run-local
+Saga and its stability contract are unchanged.
 
 ## What is covered
 

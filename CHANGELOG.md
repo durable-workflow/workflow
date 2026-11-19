@@ -40,6 +40,15 @@
     example adds `CancellationFinalizer` as the recommended pattern: it calls
     `finish()` when the Order's recovery verifies.
 
+- Compensation scopes are stable `@api` (#1063). This covers `DurableScope`,
+  `RegisteredObligation`, `Obligation`, `ScopeIdentity`, the handler contract
+  (`ScopedOperation`, `OperationContext`, `ForwardResult`, `Resolution`,
+  `HandlerRegistry`), `ScopeAuthorization`, `ScopeRecovery::request()` and
+  `describe()`, and `ScopeRetention::release()`. They now follow the 2.x
+  compatibility policy, as do their recorded replay identities, ledger storage
+  and minimum limits. `DurableScope::reserveChild()` and original root admission
+  remain experimental. See `docs/api-stability.md#compensation-scopes`.
+
 ## 2.30.0 - 2026-11-18
 
 - **Security fix:** webhook `token` authentication with no token configured
