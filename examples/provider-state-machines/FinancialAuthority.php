@@ -41,10 +41,16 @@ final readonly class FinancialAuthority
         }
         $this->authority->authorizeScope($context->scope, $this->authority->principal, $mode);
         $actual = WorkflowRun::query()->findOrFail($context->originalRunId);
+        $unit = $stage === 'capture' && $this->authority->unitMoney->authorized(explode('.', $context->scope->key)[0]);
+        if ($unit !== ($context->obligation->handlerType === 'provider.financial.unit-capture')) {
+            throw new LogicException('The financial handler differs from the original selected money policy.');
+        }
         $rows = $this->originalRows(
             $actual,
             $context->scope,
-            FinancialDescriptor::fromArray($context->obligation->input)
+            FinancialDescriptor::fromArray(
+                $unit ? $context->obligation->input['financial'] : $context->obligation->input
+            )
         );
         $row = $rows['payment.' . $stage];
         if ($context->operationId !== $row['id']
@@ -89,7 +95,9 @@ final readonly class FinancialAuthority
                 'role' => 'payment',
             ]),
             new Obligation('payment.authorize', 'provider.financial.authorize', '1', $expected->toArray()),
-            new Obligation('payment.capture', 'provider.financial.capture', '1', $expected->toArray()),
+            $this->authority->unitMoney->authorized($actor->root_key)
+                ? $this->authority->unitMoney->obligation($actor->root_key)
+                : new Obligation('payment.capture', 'provider.financial.capture', '1', $expected->toArray()),
         ];
         $ledger = (new ScopeRepository())->inspect($scope);
         if ($ledger['original_run_id'] !== $actual->id || count($ledger['obligations']) !== count($obligations)) {

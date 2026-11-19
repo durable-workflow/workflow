@@ -50,8 +50,9 @@ The native source controls include a prior provider repayment of 499 followed
 by the remaining 1000 refund, payment-first and reservation-first common routes,
 unknown-result recovery, callback-free replay and ownership substitution. The
 prior repayment is a provider fixture control; native partial-stock selection is
-described in the next section. Partial customer returns and the full
-fault/installed/publication criteria still need their own integration. The legacy `reserve-first` recipe
+described in the next section. Partial customer returns are described under
+[Partial customer return after delivery](#partial-customer-return-after-delivery).
+The full fault/installed/publication criteria still need their own integration. The legacy `reserve-first` recipe
 and other payment families retain their original contracts; this opt-in does
 not silently reinterpret them.
 
@@ -196,6 +197,81 @@ remain pinned. Provider operation keys do not depend on task/attempt IDs.
 `BindingPlan` binds each state entry, native owner, child policy, input and
 retained scope pair together; a trusted live ownership callback is still
 mandatory before native storage. Portable descriptors alone grant no authority.
+
+## Partial customer return after delivery
+
+The `authorization-after-stock` recipe can opt into the same explicit unit
+money through trusted bootstrap. The full physical route, its Order and its
+FullShipment classes are unchanged; the authorized Payment only registers a
+different handler at the same `payment.capture` position when the opted-in
+initialization names it. Legacy initializations, other authorization recipes
+and `authorization-after-delivery` keep their exact descriptors and commands.
+
+```php
+$authority = new Authority($businessDb, $workerPrincipal, [$terms->subjectKey()], [
+    $terms->subjectKey() => FinancialCatalogue::AFTER_STOCK,
+], unitAmounts: [$terms->subjectKey() => [500, 500, 499]]);
+$refunds = new UnitRefundGateway($independentProviderPdo, $terms->client);
+$refunds->install();
+$store = MachineStore::configure($app, $authority, $provider, unitRefunds: $refunds);
+// Install return-schema.php after schema.php; ReturnStore is bound by configure().
+$store->seed($terms);
+// ... after the Order is fulfilled and the original Shipment delivered:
+app(ReturnStore::class)->request($terms->subjectKey(), 'rma-1', [2]);
+```
+
+The quote is pinned in the independent payment service before the original
+`capture-authorized` admission. A full-amount `refund-authorized` of a quoted
+capture is refused. Cancellation of the captured payment repays only original
+units that no earlier confirmed repayment of the same capture already covered.
+
+`ReturnStore::request()` persists one immutable return assignment for an
+original fulfilled and delivered Order generation: an explicit return key and
+explicit delivered unit ordinals. Repeating the same key and units returns the
+original native run; changed units, an earlier delivery stage, a cancelled
+Order or a unit already in another return are refused before provider access.
+The separate `UnitReturn` workflow owns its own retained scope. Its provider
+identities derive from the original booking owner and the return key, never
+from tasks or attempts:
+
+1. `provider.return.request` requests the return of the named units. The
+   provider admits it only after original delivery. It is not receipt,
+   acceptance or settlement.
+2. A recorded observation waits, with `return-milestone` hints, for warehouse
+   receipt and then inspection of that return. Receipt alone keeps waiting.
+   The first inspection-based plan is stored and never changes.
+3. `provider.return.restock` restocks only accepted saleable units under a
+   separate restock identity, after the original stock deduction.
+4. `provider.return.refund` repays exactly those units' original amounts
+   through the unit gateway, with a return-specific request key.
+5. A recorded, immutable outcome lists the requested, received, accepted,
+   saleable, discrepancy, restocked and refunded units and the refunded amount.
+
+Selected example policy: rejected units and accepted units that are unsuitable
+for sale are neither restocked nor refunded; the outcome records them as
+discrepancies for a separate decision. The return request and restocking are
+monotonic physical facts and the refund is a monotonic customer repayment, so
+compensation of the return scope fences or verifies and never reverses them.
+The Order stays `fulfilled`, the Shipment stays `delivered`, the original
+delivery evidence stays historical and the Order and Shipment histories are
+not rewritten. Every handler checks the native return run, its scope, the
+exact registered obligation and the assignment before provider I/O.
+
+A unit can belong to only one return. Once a unit return exists, a later
+business cancellation of that Order cannot use the full-parcel return: the
+provider refuses the full return, nothing is restocked or refunded again, and
+the cancellation stays unsettled rather than reporting `cancelled`. Settling the
+remaining units of such an Order, return expiry/windows, replacement shipments,
+carrier return labels and a real warehouse remain outside this synthetic source
+example. `V2PartialReturnMachineTest` covers the delivered three-unit return,
+discrepancies, early and substituted requests, later returns and cancellation;
+`V2PartialReturnProcessLossTest` kills a real worker after the return request,
+restock and refund commit. They are synthetic recorded-task fixtures, not
+installed-package or real-provider qualification.
+
+```shell
+vendor/bin/phpunit tests/Feature/V2/V2PartialReturnMachineTest.php
+```
 
 ## Disposable application assembly
 

@@ -13,9 +13,12 @@ use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\IncomingPaymentPr
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Journal;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\RetainedOperation;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\ShipmentOperation;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\UnitCaptureOperation;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\UnitPaymentOperation;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\UnitRefundGateway;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\UnitRefundOperation;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\UnitReturnOperation;
+use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\UnitReturnTerms;
 use Illuminate\Contracts\Container\Container;
 use LogicException;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
@@ -75,6 +78,9 @@ final readonly class MachineStore
         $periods = $authority->periods->grants() === [] ? null : new OrderBillingPeriodStore($authority, $provider);
         $store = new self($authority, $incoming, $cod, $periods, $unitRefunds, $warehouse);
         $app->instance(self::class, $store);
+        if ($unitRefunds !== null) {
+            $app->instance(ReturnStore::class, new ReturnStore($authority, $provider, $unitRefunds));
+        }
         if ($warehouse !== null && $unitRefunds !== null) {
             $app->instance(
                 StockSelectionStore::class,
@@ -471,6 +477,26 @@ final readonly class MachineStore
                 '1' => new UnitPaymentOperation($provider, $this->unitRefunds, $authority->unitMoney->operation(...)),
             ];
         }
+        if ($this->unitRefunds !== null) {
+            $handlers['provider.financial.unit-capture'] = [
+                '1' => new UnitCaptureOperation($provider, $this->unitRefunds, static function (
+                    OperationContext $context,
+                    string $mode
+                ) use ($financial): void {
+                    $financial->operation($context, $mode, 'capture');
+                }),
+            ];
+            $returns = app(ReturnStore::class);
+            $handlers[ReturnStore::REQUEST_HANDLER] = [
+                '1' => new UnitReturnOperation($provider, $returns->operation(...), UnitReturnTerms::REQUEST),
+            ];
+            $handlers[ReturnStore::RESTOCK_HANDLER] = [
+                '1' => new UnitReturnOperation($provider, $returns->operation(...), UnitReturnTerms::RESTOCK),
+            ];
+            $handlers[ReturnStore::REFUND_HANDLER] = [
+                '1' => new UnitRefundOperation($provider, $this->unitRefunds, $returns->operation(...)),
+            ];
+        }
         if ($this->warehouse !== null && $this->unitRefunds !== null) {
             $selection = app(StockSelectionStore::class);
             $handlers[StockPolicy::HANDLER] = [
@@ -509,7 +535,8 @@ final readonly class MachineStore
 
     private function descriptor(OrderTerms $terms, string $role, string $recipe): array
     {
-        if ($role === 'payment' && $this->authority->unitMoney->selected($terms->subjectKey())) {
+        if ($role === 'payment' && $this->authority->unitMoney->selected($terms->subjectKey())
+            && ! FinancialCatalogue::selected($recipe)) {
             return $this->authority->unitMoney->obligation($terms->subjectKey())
 ->input;
         }
@@ -661,7 +688,14 @@ final readonly class MachineStore
 
     private function withRecipe(array $initialization, string $key): array
     {
-        if ($initialization['role'] === 'payment' && $this->authority->unitMoney->selected($key)) {
+        if ($initialization['role'] === 'payment' && $this->authority->unitMoney->authorized($key)) {
+            // Legacy authorization initializations lack this field and register the original capture.
+            $obligation = $this->authority->unitMoney->obligation($key);
+            $initialization['capture'] = [
+                'handler' => $obligation->handlerType,
+                'input' => $obligation->input,
+            ];
+        } elseif ($initialization['role'] === 'payment' && $this->authority->unitMoney->selected($key)) {
             $initialization['effectHandler'] = 'provider.unit-payment';
         }
         if ($initialization['role'] === 'order' && $this->authority->stock->selected($key)) {
