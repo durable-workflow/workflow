@@ -33,8 +33,14 @@ final class FullShipment extends Workflow
             self::activity(ShipmentBoundaryActivity::class, 'register');
             $step = new ShipmentStep($physical);
             foreach (['book', 'handover', 'deliver'] as $stage) {
-                if ($stage !== 'book') {
-                    $this->awaitStage($machine, $stage);
+                $incident = $stage === 'book' ? null : $this->awaitStage($machine, $stage);
+                if ($incident !== null) {
+                    // The separate incident process owns the remedy; handover and deduction stay historical.
+                    return [
+                        'businessOutcome' => $incident['incident'],
+                        'originalRunId' => $this->runId(),
+                        'incidentRun' => $incident['runId'],
+                    ];
                 }
                 $result = $machine->transition($stage, $step);
                 if ($result->status !== TransitionStatus::Committed) {
@@ -59,12 +65,19 @@ final class FullShipment extends Workflow
         }
     }
 
-    private function awaitStage(Machine $machine, string $stage): void
+    private function awaitStage(Machine $machine, string $stage): ?array
     {
         for ($wake = 0; $wake < 32; ++$wake) {
             $snapshot = $machine->observe($stage);
             if ($snapshot->permission->satisfied()) {
-                return;
+                return null;
+            }
+            if ($stage === 'deliver' && isset($machine->initialization['transitPolicy'])) {
+                // Only the carrier's confirmed loss or damage ends this wait; a tracking delay keeps waiting.
+                $incident = self::activity(ShipmentBoundaryActivity::class, 'incident');
+                if ($incident['incident'] !== null) {
+                    return $incident;
+                }
             }
             $remaining = $machine->initialization['fulfillmentDeadline'] - self::now()->getTimestamp();
             if ($remaining <= 0) {

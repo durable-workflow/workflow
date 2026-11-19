@@ -39,7 +39,14 @@ final readonly class CancellationStore
         $this->assertOriginalRoot($key, $rootRun, $assignment);
         $id = hash('sha256', PortableDescriptor::encode([$key, $rootRun, $requestKey]));
         $hash = hash('sha256', PortableDescriptor::encode([$key, $rootRun, $requestKey, $this->authority->principal]));
-        $this->authority->db->transaction(function () use ($key, $rootRun, $root, $id, $hash, $requestKey): void {
+        $refused = $this->authority->db->transaction(function () use (
+            $key,
+            $rootRun,
+            $root,
+            $id,
+            $hash,
+            $requestKey
+        ): ?string {
             $current = $this->authority->db->table('example_machine_subjects')
                 ->where('id', $root->id)
                 ->lockForUpdate()
@@ -50,6 +57,13 @@ final readonly class CancellationStore
                 ->sole();
             if ($assignment->root_run !== null && $assignment->root_run !== $rootRun) {
                 throw new LogicException('The original cancellation owner changed.');
+            }
+            if ($this->authority->transit->selected($key)) {
+                // Serialized with incident admission on the Order lock; the incident owns the customer remedy.
+                $remedy = IncidentStore::remedyStage($this->authority->db, $key);
+                if ($remedy !== null) {
+                    return $remedy;
+                }
             }
             $existing = $this->authority->db->table('provider_machine_cancellations')
                 ->where('id', $id)
@@ -85,7 +99,17 @@ final readonly class CancellationStore
                 ->update([
                     'cancellation_requested' => true,
                 ]);
+            return null;
         });
+        if ($refused !== null) {
+            // Explicit refusal: no intent, fence or compensation request is recorded, so nothing can wedge.
+            return [
+                'status' => 'refused',
+                'reason' => 'transit_incident_owns_remedy',
+                'remedy' => $refused,
+                'requestId' => $id,
+            ];
+        }
         if ($assignment->root_run === null) {
             // A genuine recorded owner registration may still arrive. Never open a ledger from this lookup.
             return [

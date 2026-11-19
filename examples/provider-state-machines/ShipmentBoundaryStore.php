@@ -114,11 +114,16 @@ final readonly class ShipmentBoundaryStore
             throw new LogicException('Recipient delivery must come from the original admitted Shipment.');
         }
         $publication = $this->publication($plan, $binding);
-        return [
+        $value = [
             'confirmed' => $publication !== null,
             'publication' => $publication,
             'originOpen' => ! WorkflowRun::query()->findOrFail($binding->admission->childRunId)->status->isTerminal(),
         ];
+        if ($this->authority->transit->selected($actor->root_key)) {
+            // Legacy milestone results lack this field; only an admitted original incident sets it.
+            $value['incident'] = $publication === null && app(IncidentStore::class)->remedy($parent)['incident'];
+        }
+        return $value;
     }
 
     public function notify(WorkflowRun $actual): array
