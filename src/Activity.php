@@ -44,6 +44,15 @@ class Activity implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
 
     public $key = '';
 
+    /**
+     * @internal Whether another job of this activity failed and its outcome
+     * is not yet recorded, once read for this handling. Unset typed
+     * properties are not serialized, so payloads are unchanged.
+     */
+    public bool $awaitingRecordedFailure;
+
+    private bool $ownsFailureMark;
+
     private Container $container;
 
     public function __construct(
@@ -111,12 +120,32 @@ class Activity implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
 
         $this->container = App::make(Container::class);
 
+        if (self::awaitsRecordedFailure($this)) {
+            return;
+        }
+
         if ($this->storedWorkflow->hasLogByIndex($this->index)) {
             return;
         }
 
+        // The Exception job forgets the failure only after recording it, so
+        // logs loaded with this job's payload may predate that record.
+        if ($this->storedWorkflow->relationLoaded('logs') && $this->storedWorkflow->logs()
+            ->whereIndex($this->index)
+            ->exists()) {
+            return;
+        }
+
         try {
-            return $this->{'execute'}(...$this->resolveClassMethodDependencies($this->arguments, $this, 'execute'));
+            $result = $this->{'execute'}(
+                ...$this->resolveClassMethodDependencies($this->arguments, $this, 'execute')
+            );
+
+            if ($this->ownsFailureMark ?? false) {
+                Cache::forget(self::failureKey($this->storedWorkflow->id, $this->index));
+            }
+
+            return $result;
         } catch (\Throwable $throwable) {
             $this->storedWorkflow->exceptions()
                 ->create([
@@ -124,12 +153,56 @@ class Activity implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
                     'exception' => Serializer::serialize($throwable),
                 ]);
 
+            // Recorded before the job can fail and release its unique lock.
+            // It expires so that a lost Exception job cannot strand the run.
+            $uuid = $this->queueJobUuid();
+            if ($uuid !== null) {
+                Cache::put(
+                    self::failureKey($this->storedWorkflow->id, $this->index),
+                    $uuid,
+                    self::failureMarkSeconds()
+                );
+            }
+
             if ($throwable instanceof NonRetryableExceptionContract) {
                 $this->fail($throwable);
             }
 
             throw $throwable;
         }
+    }
+
+    /**
+     * @internal A failed job's outcome is recorded later by a queued Exception
+     * job, after this activity's unique lock is gone. A replay in between
+     * dispatches the activity again; that copy must not run it again. Read
+     * once per handling, before the activity is reported as started.
+     */
+    public static function awaitsRecordedFailure(self $activity): bool
+    {
+        if (! isset($activity->awaitingRecordedFailure)) {
+            $failedJob = Cache::get(self::failureKey($activity->storedWorkflow->id, $activity->index));
+            $activity->ownsFailureMark = $failedJob !== null && $failedJob === $activity->queueJobUuid();
+            $activity->awaitingRecordedFailure = $failedJob !== null && ! $activity->ownsFailureMark;
+        }
+
+        return $activity->awaitingRecordedFailure;
+    }
+
+    /**
+     * @internal
+     */
+    public static function failureMarkSeconds(): int
+    {
+        return max(1, (int) config('workflows.activity_failure_mark_seconds', 3600));
+    }
+
+    /**
+     * @internal
+     */
+    public static function failureKey(int|string $workflowId, int $index): string
+    {
+        return 'laravel-workflow-activity-failure:' . $workflowId . ':' . $index;
     }
 
     public function middleware()
@@ -182,5 +255,12 @@ class Activity implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
         if ($this->timeout) {
             Cache::put($this->key, 1, $this->timeout);
         }
+    }
+
+    private function queueJobUuid(): ?string
+    {
+        $uuid = $this->job?->uuid();
+
+        return is_string($uuid) && $uuid !== '' ? $uuid : null;
     }
 }

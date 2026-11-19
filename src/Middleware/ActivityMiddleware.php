@@ -7,6 +7,7 @@ namespace Workflow\Middleware;
 use Illuminate\Support\Str;
 use LimitIterator;
 use SplFileObject;
+use Workflow\Activity;
 use Workflow\Events\ActivityCompleted;
 use Workflow\Events\ActivityFailed;
 use Workflow\Events\ActivityStarted;
@@ -22,6 +23,12 @@ final class ActivityMiddleware
 
     public function handle($job, $next): void
     {
+        // A copy of an activity whose failed job is not yet recorded neither
+        // runs nor reports anything; the Exception job records the outcome.
+        if ($job instanceof Activity && Activity::awaitsRecordedFailure($job)) {
+            return;
+        }
+
         $this->job = $job;
         $this->uuid = (string) Str::uuid();
 

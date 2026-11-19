@@ -14,6 +14,7 @@ use Tests\Fixtures\TestActivity;
 use Tests\Fixtures\TestModelNotFoundWorkflow;
 use Tests\Fixtures\TestWorkflow;
 use Tests\TestCase;
+use Workflow\Activity;
 use Workflow\Events\ActivityCompleted;
 use Workflow\Events\ActivityFailed;
 use Workflow\Events\ActivityStarted;
@@ -66,6 +67,33 @@ final class ActivityMiddlewareTest extends TestCase
         Event::assertDispatched(ActivityStarted::class);
         Event::assertDispatched(ActivityCompleted::class);
         Queue::assertPushed(TestWorkflow::class, 2);
+    }
+
+    public function testCopyAwaitingAnotherJobsRecordedFailureNeitherRunsNorReports(): void
+    {
+        Event::fake();
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestWorkflow::class);
+        $workflow->start();
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        Cache::forever(Activity::failureKey($storedWorkflow->id, 0), 'failed-job');
+
+        $activity = $this->mock(TestActivity::class);
+        $activity->index = 0;
+        $activity->now = now()
+            ->toDateTimeString();
+        $activity->storedWorkflow = $storedWorkflow;
+
+        (new ActivityMiddleware())->handle($activity, function (): void {
+            $this->fail('The copy must not run.');
+        });
+
+        $this->assertTrue($activity->awaitingRecordedFailure);
+        $this->assertFalse(isset($activity->onUnlock));
+        Event::assertNotDispatched(ActivityStarted::class);
+        Event::assertNotDispatched(ActivityCompleted::class);
+        Event::assertNotDispatched(ActivityFailed::class);
     }
 
     public function testAlreadyCompleted(): void
