@@ -78,10 +78,8 @@ final class ServicePeriodPayment extends Workflow
             ];
         } catch (WorkflowCancellationRequestedException|BusinessCancellationRequested $error) {
             self::cancellationShield(fn () => $this->compensate());
-            $verified = self::cancellationShield(static fn () => $scope->verifyCompensation());
-            if (($verified['status'] ?? null) !== 'verified') {
-                throw $error;
-            }
+            // verifyCompensation() returns only once every obligation is verified; otherwise its activity fails.
+            self::cancellationShield(static fn () => $scope->verifyCompensation());
             return [
                 'originalRunId' => $this->runId(),
                 'businessOutcome' => 'compensated',

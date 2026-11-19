@@ -13,6 +13,7 @@ use DurableWorkflow\Examples\ProviderStateMachines\IncidentStore;
 use DurableWorkflow\Examples\ProviderStateMachines\TransitPolicy;
 use Illuminate\Support\Facades\DB;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\WorkflowStub;
 
 /**
@@ -141,5 +142,17 @@ trait TransitIncidentFixture
     {
         $this->provider->shipments()
             ->record($commands['graph'], 'replacement-' . $kind, $kind, $this->terms->quantity);
+    }
+
+    /**
+     * Replaying the incident and the given runs issues no provider request.
+     */
+    protected function assertIncidentReplayQuiet(string ...$runs): void
+    {
+        $requests = $this->requests();
+        foreach ([$this->incidentRun()->id, ...$runs] as $id) {
+            app(WorkflowReplayer::class)->replay(WorkflowRun::query()->findOrFail($id));
+        }
+        $this->assertSame($requests, $this->requests());
     }
 }
