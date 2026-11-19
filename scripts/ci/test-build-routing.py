@@ -85,7 +85,7 @@ class FeatureShardRoutingTest(unittest.TestCase):
         "tests/Feature/SmokeQueryReplayTest.php",
         "tests/Feature/SmokePersistedPayloadTest.php",
     ]
-    # Enough profiled files for every MySQL feature shard (20) to receive one.
+    # Enough profiled files for every MySQL feature shard (22) to receive one.
     filler_features = [
         "tests/Feature/FillerOneTest.php",
         "tests/Feature/FillerTwoTest.php",
@@ -103,6 +103,8 @@ class FeatureShardRoutingTest(unittest.TestCase):
         "tests/Feature/FillerFourteenTest.php",
         "tests/Feature/FillerFifteenTest.php",
         "tests/Feature/FillerSixteenTest.php",
+        "tests/Feature/FillerSeventeenTest.php",
+        "tests/Feature/FillerEighteenTest.php",
     ]
     unseen_feature = "tests/Feature/V2/UnprofiledFeatureTest.php"
 
@@ -211,7 +213,7 @@ class FeatureShardRoutingTest(unittest.TestCase):
     def shard_assignments(self, profile: str) -> list[list[str]]:
         assignments = []
 
-        count = 20 if profile == "mysql" else 12
+        count = 22 if profile == "mysql" else 14
         for shard in range(count):
             result = self.run_php(
                 "scripts/ci/split-feature-tests.php",
