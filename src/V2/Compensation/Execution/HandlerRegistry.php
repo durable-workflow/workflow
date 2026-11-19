@@ -11,7 +11,7 @@ use Workflow\V2\Compensation\Persistence\ChildScopes;
 /**
  * Configured by trusted host code. Stored descriptors select keys, never executable classes.
  *
- * @experimental The Compensation API is not covered by stability guarantees and may change in a minor release.
+ * @api Stable compensation-scope API (#1063). See docs/api-stability.md#compensation-scopes.
  */
 final readonly class HandlerRegistry
 {

@@ -124,13 +124,13 @@ The semver guarantee below covers all three surfaces. Breaking changes to
 anything marked `@api` require a major version bump, except surfaces explicitly
 marked `@experimental` as described below.
 
-## Experimental compensation scopes
+## Compensation scopes
 
-The `Workflow\V2\Compensation` API is experimental. Its API and persisted storage
-contract may change in a minor release until it is promoted. Promotion is
-planned for a later minor release. It covers exactly the members below, which
-`tests/Unit/V2/Compensation/CompensationPublicSurfaceTest.php` pins. Nothing else in
-the namespace is planned for promotion.
+From the release that first ships this promotion (after 2.32.0; see the CHANGELOG)
+exactly the members below are stable `@api` and follow the semver guarantee in this
+document.
+`tests/Unit/V2/Compensation/CompensationPublicSurfaceTest.php` pins their signatures.
+Nothing else in the `Workflow\V2\Compensation` namespace is stable.
 
 **Authoring**
 
@@ -204,7 +204,12 @@ the namespace is planned for promotion.
 - 128 requests per scope. Host requests and engine requests share this budget: a parent issues one child
   request per run that compensates it, and automatic recovery reuses the primary request.
 
-**Recorded identities**
+**Recorded identities, replay and storage**
+
+Recorded compensation histories replay on every later 2.x release, and new behavior
+arrives only behind a new recorded marker. Ledger migrations only add. A schema
+rollback refuses while the ledger holds any scope, released tombstones are permanent,
+and nothing expires automatically. These recorded identities are covered:
 
 - The `dw.compensation.*.v1` activity types and the `dw.compensation.recovery.v1` workflow type.
 - The `dw.compensation.scope-activities` and `dw.compensation.recovery-activities` version markers.
@@ -213,7 +218,7 @@ the namespace is planned for promotion.
 - `ScopeIdentity::id()` is the lowercase hex SHA-256 of the canonical JSON of `toArray()`. The canonical
   recovery workflow instance is `dw-compensation-` followed by that ID.
 
-Experimental, and not planned for this promotion:
+These remain `@experimental` and may change in a minor release:
 
 - `DurableScope::reserveChild()`, which depends on the experimental `StateMachine\Binding` types;
 - original root admission (`Admission\*`);
