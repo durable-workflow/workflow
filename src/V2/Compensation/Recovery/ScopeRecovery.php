@@ -42,6 +42,94 @@ final readonly class ScopeRecovery
         string $reason,
         ?StartOptions $profile = null,
     ): array {
+        $result = $this->route($scope, $requestKey, $principal, $reason, $profile);
+        if ($result['route'] !== 'verified') {
+            // An authorized request is a reason to retry now rather than after the long wait.
+            CompensationWake::scope($scope);
+        }
+        return $result;
+    }
+
+    /**
+     * Read-only operator view of a scope's compensation, including automatic
+     * recovery after its origin closed and any recorded authorization refusal.
+     */
+    public function describe(ScopeIdentity $scope, string $principal): array
+    {
+        $this->assertHostContext();
+        $policyVersion = $this->authorization->assertAllowed($scope, $principal, 'inspect');
+        PortableDescriptor::identifier($policyVersion, 'authorization policy version');
+        $ledger = $this->repository->inspect($scope);
+        $origin = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+            ->where('namespace', $scope->namespace)
+            ->find($ledger['original_run_id']);
+        $instance = ConfiguredV2Models::query('instance_model', WorkflowInstance::class)
+            ->where('namespace', $scope->namespace)
+            ->find($scope->recoveryInstanceId());
+        $recovery = $instance instanceof WorkflowInstance ? CurrentRunResolver::forInstance($instance) : null;
+        $database = ConfiguredV2Models::connection();
+        $routed = $database->table('workflow_compensation_requests')
+            ->where('scope_id', $scope->id())
+            ->whereNotNull('recovery_route')
+            ->exists();
+        $refusal = null;
+        foreach ($this->repository->journal($scope) as $entry) {
+            if ($entry['kind'] === CompensationAutoRecovery::REFUSED) {
+                $refusal = json_decode($entry['data'], true, flags: JSON_THROW_ON_ERROR);
+            }
+        }
+        $originClosed = $origin instanceof WorkflowRun && $origin->status->isTerminal();
+        $automatic = match (true) {
+            in_array($ledger['status'], ['verified', 'released'], true) && ! $routed => 'not_needed',
+            $routed => 'routed',
+            $refusal !== null => CompensationAutoRecovery::REFUSED,
+            $ledger['status'] !== 'requested' => 'not_needed',
+            $originClosed => 'pending',
+            default => 'not_needed',
+        };
+        $nextAction = match (true) {
+            in_array($ledger['status'], ['verified', 'released'], true) => 'none',
+            $recovery instanceof WorkflowRun && ! $recovery->status->isTerminal() => 'observe_recovery',
+            $recovery instanceof WorkflowRun && $recovery->status === RunStatus::Completed
+                => 'inspect_unresolved_obligations',
+            $recovery instanceof WorkflowRun => 'submit_fresh_authorized_request',
+            $automatic === CompensationAutoRecovery::REFUSED => 'submit_fresh_authorized_request',
+            $automatic === 'pending' => 'await_automatic_recovery',
+            $ledger['status'] === 'requested' => 'observe_origin',
+            default => 'none',
+        };
+        $unresolved = [];
+        foreach ($ledger['obligations'] as $obligation) {
+            if ($obligation['compensation_status'] === 'verified') {
+                continue;
+            }
+            $evidence = $obligation['evidence'] === null ? null
+                : json_decode($obligation['evidence'], true, flags: JSON_THROW_ON_ERROR);
+            $unresolved[] = [
+                'key' => $obligation['descriptor']['key'],
+                'status' => $obligation['compensation_status'],
+                'reason' => $evidence['reason'] ?? null,
+            ];
+        }
+        return [
+            'scopeStatus' => $ledger['status'],
+            'originStatus' => $origin instanceof WorkflowRun ? $origin->status->value : null,
+            'recoveryRunId' => $recovery?->id,
+            'recoveryStatus' => $recovery?->status->value,
+            'automaticRecovery' => $automatic,
+            'refusal' => $refusal,
+            'nextAction' => $nextAction,
+            'unresolved' => $unresolved,
+        ];
+    }
+
+    private function route(
+        ScopeIdentity $scope,
+        string $requestKey,
+        string $principal,
+        string $reason,
+        ?StartOptions $profile,
+    ): array {
         $this->assertHostContext();
         $policyVersion = $this->authorization->assertAllowed($scope, $principal, 'request');
         $this->assertHostContext();

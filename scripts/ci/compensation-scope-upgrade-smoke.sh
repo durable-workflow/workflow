@@ -396,11 +396,15 @@ ledger_rows() {
   '
 }
 
-column_exists() {
-  TABLE="$1" COLUMN="$2" DATABASE_PATH="$database_path" php -r '
+schema_snapshot() {
+  DATABASE_PATH="$database_path" php -r '
     $database = new PDO("sqlite:" . getenv("DATABASE_PATH"));
-    $columns = $database->query(sprintf("PRAGMA table_info(\"%s\")", getenv("TABLE")))->fetchAll(PDO::FETCH_COLUMN, 1);
-    echo in_array(getenv("COLUMN"), $columns, true) ? "yes" : "no";
+    $snapshot = [];
+    foreach ($database->query("SELECT name, sql FROM sqlite_master WHERE name NOT LIKE '"'"'sqlite_%'"'"' ORDER BY name")->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $snapshot["schema"][] = $row;
+    }
+    $snapshot["migrations"] = $database->query("SELECT migration, batch FROM migrations ORDER BY id")->fetchAll(PDO::FETCH_ASSOC);
+    echo hash("sha256", json_encode($snapshot, JSON_THROW_ON_ERROR));
   '
 }
 
@@ -525,16 +529,17 @@ if [ "$(compensation_log)" != 'forward:reserve-stock,forward:book-carrier' ]; th
 fi
 origin_history=$(hash_origin_history "$origin_run_id")
 
-# 5. A populated ledger refuses schema rollback without changing its rows.
-# The refusal stops the batch at the ledger migration. Later migrations in the
-# same batch have already rolled back; migrate restores them.
+# 5. A populated ledger refuses schema rollback before any migration in the
+# batch runs down(), so the schema and migration records stay intact.
 ledger_before=$(hash_tables "$ledger_tables")
-if rollback_output=$(php artisan migrate:rollback --force --no-interaction 2>&1); then
+schema_before=$(schema_snapshot)
+if rollback_output=$(COLUMNS=1000 php artisan migrate:rollback --force --no-interaction 2>&1 | tr -s ' \n' ' '; exit "${PIPESTATUS[0]}"); then
   printf '%s\n' "$rollback_output" >&2
   echo 'Schema rollback discarded retained compensation scopes.' >&2
   exit 1
 fi
-if ! grep -q 'Retained compensation scopes cannot be discarded by a schema rollback' <<<"$rollback_output"; then
+if ! grep -q 'Retained compensation scopes cannot be discarded by a schema rollback' <<<"$rollback_output" \
+  || ! grep -q 'refused before any migration ran' <<<"$rollback_output"; then
   printf '%s\n' "$rollback_output" >&2
   echo 'Schema rollback failed for an unexpected reason.' >&2
   exit 1
@@ -543,18 +548,8 @@ if [ "$(hash_tables "$ledger_tables")" != "$ledger_before" ]; then
   echo 'A refused schema rollback changed retained compensation rows.' >&2
   exit 1
 fi
-if [ "$(column_exists workflow_instances native_root_reservation)" != no ]; then
-  echo 'Expected the later root reservation migration to have rolled back before the refusal.' >&2
-  exit 1
-fi
-php artisan migrate --force --no-interaction
-if [ "$(column_exists workflow_instances native_root_reservation)" != yes ] \
-  || [ "$(column_exists workflow_instances native_child_reservation)" != yes ]; then
-  echo 'Migrate did not restore the migrations rolled back before the refusal.' >&2
-  exit 1
-fi
-if [ "$(hash_tables "$ledger_tables")" != "$ledger_before" ]; then
-  echo 'Restoring the batch changed retained compensation rows.' >&2
+if [ "$(schema_snapshot)" != "$schema_before" ]; then
+  echo 'A refused schema rollback still rolled back part of its batch.' >&2
   exit 1
 fi
 
@@ -613,22 +608,21 @@ repeat=$(artisan_output upgrade:scope-recover cancel-1)
 json_assert "$repeat" '$r["runId"] === "'"$recovery_run_id"'" && $r["scopeStatus"] === "verified"' \
   "Repeating the recovery request did not return its original run."
 
-# 8. A released tombstone still refuses rollback. The ledger migration is now
-# in an earlier batch than the six restored in step 5, so roll back all seven.
+# 8. A released tombstone still refuses rollback, again without partial effects.
 artisan_output upgrade:scope-release >/dev/null
 scope_state=$(artisan_output upgrade:scope-inspect)
 json_assert "$scope_state" '$r["scope_status"] === "released"' "Explicit release did not retire the scope."
-if rollback_output=$(php artisan migrate:rollback --step=7 --force --no-interaction 2>&1); then
+schema_before=$(schema_snapshot)
+if rollback_output=$(COLUMNS=1000 php artisan migrate:rollback --force --no-interaction 2>&1 | tr -s ' \n' ' '; exit "${PIPESTATUS[0]}"); then
   printf '%s\n' "$rollback_output" >&2
   echo 'Schema rollback discarded a released scope tombstone.' >&2
   exit 1
 fi
 grep -q 'Retained compensation scopes cannot be discarded by a schema rollback' <<<"$rollback_output"
-if [ "$(ledger_rows)" -ne 2 ]; then
-  echo 'Released tombstone rows were removed.' >&2
+if [ "$(ledger_rows)" -ne 2 ] || [ "$(schema_snapshot)" != "$schema_before" ]; then
+  echo 'A refused rollback removed released tombstone rows or part of its batch.' >&2
   exit 1
 fi
-php artisan migrate --force --no-interaction
 
 printf 'laravel=%s php=%s baseline=%s candidate=%s recovery=verified rollback=refused downgrade=retained status=passed\n' \
   "$laravel_version" "$(php -r 'echo PHP_MAJOR_VERSION . "." . PHP_MINOR_VERSION;')" \

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\Providers;
 
+use Illuminate\Database\Events\MigrationsStarted;
 use Illuminate\Database\Events\TransactionCommitted;
 use Illuminate\Database\Events\TransactionRolledBack;
 use Illuminate\Queue\Events\Looping;
@@ -30,6 +31,7 @@ use Workflow\Commands\V2UpgradeStatusCommand;
 use Workflow\Commands\WorkflowMakeCommand;
 use Workflow\Queue\DatabaseQueueCompatibility;
 use Workflow\Queue\DatabaseTaskDelivery;
+use Workflow\Support\MigrationRollbackPreflight;
 use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\CooperativeWorkflowTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionMaintenanceRole;
@@ -173,6 +175,8 @@ final class WorkflowServiceProvider extends ServiceProvider
         $v1Enabled = (bool) config('workflows.v1.enabled', true);
 
         $this->loadMigrationsFrom(__DIR__ . '/../migrations');
+        // Refuse a rollback that would discard retained state before any down() runs.
+        Event::listen(MigrationsStarted::class, [MigrationRollbackPreflight::class, 'handle']);
 
         if ($v1Enabled) {
             $this->loadMigrationsFrom(__DIR__ . '/../migrations-v1');

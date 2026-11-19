@@ -7,12 +7,25 @@ namespace Workflow\Support;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\MySqlConnection;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use LogicException;
 use UnexpectedValueException;
 
 abstract class WorkflowMigration extends Migration
 {
+    /**
+     * Why rolling this migration back would discard retained state, or null.
+     *
+     * MigrationRollbackPreflight calls this for every migration in a rollback
+     * before any of them runs down(), so read only through $connection.
+     */
+    public function rollbackRefusal(Connection $connection): ?string
+    {
+        return null;
+    }
+
     public function getConnection(): ?string
     {
         return config('workflows.storage.connection') ?? $this->connection;
@@ -65,9 +78,58 @@ abstract class WorkflowMigration extends Migration
      *
      * @template TResult
      *
-     * @param callable(): TResult $operation
      * @return TResult
      */
+    /**
+     * Refuse this migration's own rollback. The operation-wide preflight has
+     * already checked the whole rollback when the migrator runs it; this
+     * covers a direct down() call.
+     */
+    protected function refuseRetainedRollback(): void
+    {
+        $refusal = $this->rollbackRefusal(DB::connection());
+        if ($refusal !== null) {
+            throw new LogicException($refusal);
+        }
+    }
+
+    /**
+     * Refusal for a nullable column whose non-null values are permanent fences.
+     */
+    protected static function populatedColumnRefusal(
+        Connection $connection,
+        string $table,
+        string $column,
+        string $refusal,
+    ): ?string {
+        return $connection->getSchemaBuilder()
+            ->hasColumn($table, $column)
+            && $connection->table($table)
+                ->whereNotNull($column)
+                ->exists() ? $refusal : null;
+    }
+
+    protected function addNullableJsonColumn(string $table, string $column): void
+    {
+        if (Schema::hasColumn($table, $column)) {
+            return;
+        }
+        $this->withSchemaLockBudget(static function () use ($table, $column): void {
+            Schema::table($table, static function (Blueprint $blueprint) use ($column): void {
+                $blueprint->json($column)
+                    ->nullable();
+            });
+        });
+    }
+
+    protected function dropColumnUnlessRetained(string $table, string $column): void
+    {
+        $this->refuseRetainedRollback();
+        Schema::table($table, static function (Blueprint $blueprint) use ($column): void {
+            $blueprint->dropColumn($column);
+        });
+    }
+
     protected function withSchemaLockBudget(callable $operation): mixed
     {
         $connection = $this->schemaConnection();
