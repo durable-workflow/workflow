@@ -227,9 +227,13 @@ final class RunSummaryProjector
             ? null
             : self::diagnosticTimer($timers, self::nonEmptyString($openConditionWait['timer_id'] ?? null));
 
+        $childWaitFloor = $isTerminal || $openActivity !== null || $openUpdateWait !== null || $openSignalApplicationWait !== null || $openConditionWait !== null || $openTimer !== null
+            ? null
+            : self::signalWaitChildFloor($run);
+
         $openChildWait = $isTerminal || $openActivity !== null || $openUpdateWait !== null || $openSignalApplicationWait !== null || $openConditionWait !== null || $openTimer !== null || $nextTask !== null
             ? null
-            : self::openChildWait($run);
+            : self::openChildWait($run, $childWaitFloor);
         $diagnosticChildWait = (
             $isTerminal
             || $openActivity !== null
@@ -252,7 +256,7 @@ final class RunSummaryProjector
             || $diagnosticChildWait !== null
         )
             ? null
-            : self::pendingChildResolutionWait($run, $openChildWait !== null);
+            : self::pendingChildResolutionWait($run, $openChildWait !== null, $childWaitFloor);
 
         $unsupportedChildWait = (
             $isTerminal
@@ -2157,9 +2161,13 @@ final class RunSummaryProjector
      *     resume_source_id: string|null
      * }|null
      */
-    private static function openChildWait(WorkflowRun $run): ?array
+    private static function openChildWait(WorkflowRun $run, ?int $floor): ?array
     {
         foreach (ChildRunHistory::knownSequences($run) as $sequence) {
+            if ($floor !== null && $sequence < $floor) {
+                continue;
+            }
+
             $snapshot = ChildRunHistory::waitSnapshotForSequence($run, $sequence);
 
             if (
@@ -2180,6 +2188,37 @@ final class RunSummaryProjector
         }
 
         return null;
+    }
+
+    /**
+     * The first workflow sequence that can still resume a run suspended on a plain signal wait.
+     *
+     * Workflow code reached its latest open signal wait, so every call sequenced before that wait's
+     * outermost parallel or selection group was already replayed past. A child call there is either
+     * consumed or was never awaited (`startChild()`), so its closure cannot resume this wait and must
+     * not make the run look like it waits for, or needs a task to apply, that child.
+     */
+    private static function signalWaitChildFloor(WorkflowRun $run): ?int
+    {
+        $sequence = null;
+
+        foreach (SignalWaits::forRun($run) as $wait) {
+            $waitSequence = self::intValue($wait['sequence'] ?? null);
+
+            if ($wait['status'] === 'open' && $waitSequence !== null && ($sequence === null || $waitSequence > $sequence)) {
+                $sequence = $waitSequence;
+            }
+        }
+
+        if ($sequence === null) {
+            return null;
+        }
+
+        $groupPath = ParallelChildGroup::metadataPathForSequence($run, $sequence);
+
+        return $groupPath === []
+            ? $sequence
+            : min($sequence, $groupPath[0]['parallel_group_base_sequence']);
     }
 
     private static function isAuthoritativeOpenActivity(array $activity): bool
@@ -2214,9 +2253,13 @@ final class RunSummaryProjector
      *     resume_source_id: string|null
      * }|null
      */
-    private static function pendingChildResolutionWait(WorkflowRun $run, bool $hasOpenChildWait): ?array
+    private static function pendingChildResolutionWait(WorkflowRun $run, bool $hasOpenChildWait, ?int $floor): ?array
     {
         foreach (ChildRunHistory::knownSequences($run) as $sequence) {
+            if ($floor !== null && $sequence < $floor) {
+                continue;
+            }
+
             $snapshot = ChildRunHistory::waitSnapshotForSequence($run, $sequence);
 
             if ($snapshot === null || $snapshot['status'] === 'open' || $snapshot['resolution_event'] === null) {
