@@ -63,9 +63,14 @@ databases() {
 # The guard reports the largest files and stops the journey below the floor.
 disk_guard() {
   local floor_kb=$(( ${STATE_MACHINE_MIN_FREE_MB:-2048} * 1024 ))
-  local free_kb largest
+  local free_kb largest ticks=0
   while sleep 15; do
     free_kb=$(df -Pk "$fixture_root" | awk 'NR == 2 { print $4 }')
+    ticks=$((ticks + 1))
+    if (( ticks % 2 == 0 )); then
+      echo "Journey heartbeat: $((free_kb / 1024)) MB free; $(du -sh "$fixture_root" 2>/dev/null | cut -f1) fixture;" \
+        "$(find "$fixture_root" -name '*.log' -printf '%f=%s ' 2>/dev/null)" >&2
+    fi
     if (( free_kb >= floor_kb )); then
       continue
     fi
@@ -139,9 +144,21 @@ each_example() {
 }
 
 drain() {
-  local example="$1"
+  local example="$1" status=0
   in_example "$example" timeout 300 php artisan queue:work redis --queue="state-machine-${example}" \
-    --stop-when-empty --sleep=1 --tries=3 --no-interaction >>"$fixture_root/worker-${example}.log" 2>&1
+    --stop-when-empty --sleep=1 --tries=3 --no-interaction >>"$fixture_root/worker-${example}.log" 2>&1 || status=$?
+  if (( status != 0 )); then
+    {
+      echo "The ${example} queue worker exited with status ${status}."
+      echo "--- last 6000 bytes of worker-${example}.log"
+      tail -c 6000 "$fixture_root/worker-${example}.log" 2>/dev/null || true
+      echo "--- last 6000 bytes of storage/logs/laravel.log"
+      tail -c 6000 "$app_path/storage/logs/laravel.log" 2>/dev/null || true
+      echo "--- machine:inspect"
+      in_example "$example" php artisan machine:inspect 2>&1 | tail -c 4000 || true
+    } >&2
+    return "$status"
+  fi
 }
 
 # Runs the example's queue worker until machine:inspect satisfies the
