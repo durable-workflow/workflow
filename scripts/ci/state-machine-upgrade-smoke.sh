@@ -59,7 +59,37 @@ databases() {
     '
 }
 
+# A runaway writer must fail with evidence, not by filling the runner's disk.
+# The guard reports the largest files and stops the journey below the floor.
+disk_guard() {
+  local floor_kb=$(( ${STATE_MACHINE_MIN_FREE_MB:-2048} * 1024 ))
+  local free_kb largest
+  while sleep 15; do
+    free_kb=$(df -Pk "$fixture_root" | awk 'NR == 2 { print $4 }')
+    if (( free_kb >= floor_kb )); then
+      continue
+    fi
+    largest=$(find "$fixture_root" "${HOME:-/root}" /tmp -xdev -type f -size +20M -printf '%s %p\n' 2>/dev/null \
+      | sort -rn | head -n 5)
+    {
+      echo "Disk guard: ${free_kb} KB free below the ${floor_kb} KB floor. Largest files:"
+      echo "$largest"
+      while read -r _ file; do
+        [[ -n "$file" ]] || continue
+        echo "--- last 4000 bytes of $file"
+        tail -c 4000 "$file"
+      done <<<"$(echo "$largest" | head -n 2)"
+    } >&2
+    kill -TERM "$journey_pid"
+    return
+  done
+}
+journey_pid=$$
+disk_guard &
+disk_guard_pid=$!
+
 cleanup() {
+  kill "$disk_guard_pid" 2>/dev/null || true
   if [[ "${KEEP_UPGRADE_FIXTURE:-0}" == 1 ]]; then
     printf 'Preserving diagnostic fixture: app=%s databases=%s_*\n' "$app_path" "$database_prefix" >&2
     return
