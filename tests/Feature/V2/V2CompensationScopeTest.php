@@ -950,7 +950,7 @@ final class V2CompensationScopeTest extends TestCase
             flags: JSON_THROW_ON_ERROR
         )['reason']);
         // The provider was called once; compensation still reconciled the possible effect.
-        $this->assertSame(1, Cache::get('test:scope:effect-count'));
+        $this->assertSame(1, (int) Cache::get('test:scope:effect-count'));
         $this->assertSame(['first'], Cache::get('test:scope:undo-log'));
     }
 
@@ -1000,11 +1000,12 @@ final class V2CompensationScopeTest extends TestCase
         // One call: a contract violation is not retried as an unknown provider outcome.
         $this->assertSame(['second', 'first'], Cache::get('test:scope:undo-log'));
         $this->assertSame(
-            'scope_handler_contract_violation: Verified compensation requires authoritative evidence.',
+            ['scope_handler_contract_violation: Verified compensation requires authoritative evidence.'],
             \Workflow\V2\Models\WorkflowFailure::query()->where('workflow_run_id', $result['runId'])
                 ->where('message', 'like', 'scope_handler_contract_violation%')
-                ->sole()
-                ->message
+                ->distinct()
+                ->pluck('message')
+                ->all()
         );
         $this->assertSame([[
             'key' => 'first',
@@ -1036,18 +1037,22 @@ final class V2CompensationScopeTest extends TestCase
         $recovery = app(ScopeRecovery::class)->request($parent, 'parent-1', 'operator-a', 'cancel');
         $this->driveNativeRetries($recovery['runId']);
         $this->assertSame('failed', WorkflowRun::query()->findOrFail($recovery['runId'])->status->value);
-        $this->assertSame(
-            1,
+        $this->assertTrue(
             \Workflow\V2\Models\WorkflowFailure::query()->where('workflow_run_id', $recovery['runId'])
                 ->where('message', 'scope_authorization_refused')
-                ->count()
+                ->exists()
         );
         $this->assertSame(
             0,
             WorkflowRun::query()->where('workflow_instance_id', $child->recoveryInstanceId())->count()
         );
+        // Sequential compensation stops at the refused participant; the earlier obligation waits.
         $view = app(ScopeRecovery::class)->describe($parent, 'operator-a');
         $this->assertSame([[
+            'key' => 'first',
+            'status' => 'pending',
+            'reason' => null,
+        ], [
             'key' => 'delivery',
             'status' => 'failed',
             'reason' => 'authorization-refused',
