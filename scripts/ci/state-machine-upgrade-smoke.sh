@@ -93,6 +93,31 @@ journey_pid=$$
 disk_guard &
 disk_guard_pid=$!
 
+# Prints the example's run summaries and latest workflow tasks, so a worker
+# that never empties its queue shows which runs keep receiving work.
+task_report() {
+  DB_DRIVER="$db_connection" DB_HOST="$db_host" DB_PORT="$db_port" DB_USERNAME="$db_username" \
+    DB_PASSWORD="$db_password" DB_NAME="${database_prefix}_$1" php -r '
+      $driver = getenv("DB_DRIVER");
+      $dsn = sprintf("%s:host=%s;port=%s;dbname=%s", $driver, getenv("DB_HOST"), getenv("DB_PORT"), getenv("DB_NAME"));
+      $pdo = new PDO($dsn, getenv("DB_USERNAME"), getenv("DB_PASSWORD"), [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+      $queries = [
+          "runs" => "SELECT s.id, s.workflow_type, s.status, s.liveness_state, s.liveness_reason, s.wait_kind,"
+              . " s.task_problem, s.next_task_type, s.next_task_status, s.repair_attention,"
+              . " (SELECT COUNT(*) FROM workflow_tasks t WHERE t.workflow_run_id = s.id) AS tasks"
+              . " FROM workflow_run_summaries s ORDER BY s.created_at",
+          "tasks" => "SELECT t.workflow_run_id, t.task_type, t.status, t.created_at, t.attempt_count, t.repair_count,"
+              . " t.last_error, t.payload FROM workflow_tasks t ORDER BY t.created_at DESC, t.id DESC LIMIT 20",
+      ];
+      foreach ($queries as $label => $query) {
+          echo "--- {$label}\n";
+          foreach ($pdo->query($query, PDO::FETCH_ASSOC) as $row) {
+              echo substr(json_encode($row, JSON_UNESCAPED_SLASHES), 0, 600), "\n";
+          }
+      }
+    ' || true
+}
+
 cleanup() {
   kill "$disk_guard_pid" 2>/dev/null || true
   if [[ "${KEEP_UPGRADE_FIXTURE:-0}" == 1 ]]; then
@@ -156,6 +181,7 @@ drain() {
       tail -c 6000 "$app_path/storage/logs/laravel.log" 2>/dev/null || true
       echo "--- machine:inspect"
       in_example "$example" php artisan machine:inspect 2>&1 | tail -c 4000 || true
+      task_report "$example"
     } >&2
     return "$status"
   fi
