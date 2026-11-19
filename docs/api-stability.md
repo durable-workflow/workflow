@@ -126,7 +126,7 @@ marked `@experimental` as described below.
 
 ## Compensation scopes
 
-From 2.32.0 (the minor release that first ships this promotion, #1063) exactly the
+From 2.32.0 (the minor release that first ships this promotion) exactly the
 members below are stable `@api` and follow the semver guarantee in this document.
 `tests/Unit/V2/Compensation/CompensationPublicSurfaceTest.php` pins their signatures.
 Nothing else in the `Workflow\V2\Compensation` namespace is stable.
@@ -206,7 +206,7 @@ and nothing expires automatically. These recorded identities are covered:
 
 These remain `@experimental` and may change in a minor release:
 
-- `DurableScope::reserveChild()`, which depends on the `StateMachine\Binding` types (#1069);
+- `DurableScope::reserveChild()`, which depends on the experimental `StateMachine\Binding` types;
 - original root admission (`Admission\*`);
 - parallel compensation and deeper nesting.
 
