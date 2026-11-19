@@ -45,10 +45,13 @@ class Activity implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
     public $key = '';
 
     /**
-     * @internal Set while handling, when another job of this activity failed
-     * and its outcome is not yet recorded. Unset, it is not serialized.
+     * @internal Whether another job of this activity failed and its outcome
+     * is not yet recorded, once read for this handling. Unset typed
+     * properties are not serialized, so payloads are unchanged.
      */
     public bool $awaitingRecordedFailure;
+
+    private bool $ownsFailureMark;
 
     private Container $container;
 
@@ -117,24 +120,17 @@ class Activity implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
 
         $this->container = App::make(Container::class);
 
-        // A failed job's outcome is recorded later by a queued Exception job,
-        // after this activity's unique lock is gone. A replay in between
-        // dispatches the activity again; that copy must not run it again.
-        $failedJob = Cache::get(self::failureKey($this->storedWorkflow->id, $this->index));
+        if (self::awaitsRecordedFailure($this)) {
+            return;
+        }
 
         if ($this->storedWorkflow->hasLogByIndex($this->index)) {
             return;
         }
 
-        if ($failedJob !== null && $failedJob !== $this->queueJobUuid()) {
-            $this->awaitingRecordedFailure = true;
-
-            return;
-        }
-
         // The Exception job forgets the failure only after recording it, so
         // logs loaded with this job's payload may predate that record.
-        if ($failedJob === null && $this->storedWorkflow->relationLoaded('logs') && $this->storedWorkflow->logs()
+        if ($this->storedWorkflow->relationLoaded('logs') && $this->storedWorkflow->logs()
             ->whereIndex($this->index)
             ->exists()) {
             return;
@@ -145,7 +141,7 @@ class Activity implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
                 ...$this->resolveClassMethodDependencies($this->arguments, $this, 'execute')
             );
 
-            if ($failedJob !== null) {
+            if ($this->ownsFailureMark ?? false) {
                 Cache::forget(self::failureKey($this->storedWorkflow->id, $this->index));
             }
 
@@ -158,9 +154,14 @@ class Activity implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
                 ]);
 
             // Recorded before the job can fail and release its unique lock.
+            // It expires so that a lost Exception job cannot strand the run.
             $uuid = $this->queueJobUuid();
             if ($uuid !== null) {
-                Cache::forever(self::failureKey($this->storedWorkflow->id, $this->index), $uuid);
+                Cache::put(
+                    self::failureKey($this->storedWorkflow->id, $this->index),
+                    $uuid,
+                    self::failureMarkSeconds()
+                );
             }
 
             if ($throwable instanceof NonRetryableExceptionContract) {
@@ -169,6 +170,31 @@ class Activity implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
 
             throw $throwable;
         }
+    }
+
+    /**
+     * @internal A failed job's outcome is recorded later by a queued Exception
+     * job, after this activity's unique lock is gone. A replay in between
+     * dispatches the activity again; that copy must not run it again. Read
+     * once per handling, before the activity is reported as started.
+     */
+    public static function awaitsRecordedFailure(self $activity): bool
+    {
+        if (! isset($activity->awaitingRecordedFailure)) {
+            $failedJob = Cache::get(self::failureKey($activity->storedWorkflow->id, $activity->index));
+            $activity->ownsFailureMark = $failedJob !== null && $failedJob === $activity->queueJobUuid();
+            $activity->awaitingRecordedFailure = $failedJob !== null && ! $activity->ownsFailureMark;
+        }
+
+        return $activity->awaitingRecordedFailure;
+    }
+
+    /**
+     * @internal
+     */
+    public static function failureMarkSeconds(): int
+    {
+        return max(1, (int) config('workflows.activity_failure_mark_seconds', 3600));
     }
 
     /**

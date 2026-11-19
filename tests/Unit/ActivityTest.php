@@ -170,6 +170,21 @@ final class ActivityTest extends TestCase
         $this->assertNull(Cache::get(Activity::failureKey($workflow->id(), 0)));
     }
 
+    public function testFailureMarkExpiresAfterTheConfiguredSeconds(): void
+    {
+        $this->assertSame(3600, Activity::failureMarkSeconds());
+
+        config([
+            'workflows.activity_failure_mark_seconds' => 120,
+        ]);
+        $this->assertSame(120, Activity::failureMarkSeconds());
+
+        config([
+            'workflows.activity_failure_mark_seconds' => 0,
+        ]);
+        $this->assertSame(1, Activity::failureMarkSeconds());
+    }
+
     public function testActivityAlreadyComplete(): void
     {
         $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());

@@ -64,10 +64,19 @@
   unique lock is released, so a wake in between (a signal, timer or sibling
   result) dispatched the activity again and the copy executed it, adding an
   exception row and repeating its side effects. The failed job now marks the
-  activity in the cache before its lock is released; a copy that finds the mark
-  completes without executing or recording a result, and the Exception job
-  removes the mark once it has recorded the failure or let it go. Recorded
-  history, job payloads and replay are unchanged.
+  activity in the cache before its lock is released. A copy that finds the mark
+  completes without executing, recording a result or firing activity events, and
+  the Exception job removes the mark once it has recorded the failure or let it
+  go. Recorded history, job payloads and replay are unchanged.
+  - The mark expires after `workflows.activity_failure_mark_seconds`
+    (`DW_V1_ACTIVITY_FAILURE_MARK_SECONDS`, default 3600). If the Exception job
+    is lost (a flushed queue, an undecryptable payload), a later wake then runs
+    the activity again, as before this release, instead of the workflow waiting
+    forever. Keep it well above the time an Exception job can wait behind
+    earlier pending work.
+  - A job that times out, or exhausts its attempts after a worker crash, fails
+    without running the activity's catch block, so it writes no mark and the
+    redispatch race stays open on those paths, as before.
 
 ## 2.33.0 - 2026-11-19
 

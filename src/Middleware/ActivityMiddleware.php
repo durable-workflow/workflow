@@ -7,6 +7,7 @@ namespace Workflow\Middleware;
 use Illuminate\Support\Str;
 use LimitIterator;
 use SplFileObject;
+use Workflow\Activity;
 use Workflow\Events\ActivityCompleted;
 use Workflow\Events\ActivityFailed;
 use Workflow\Events\ActivityStarted;
@@ -22,6 +23,12 @@ final class ActivityMiddleware
 
     public function handle($job, $next): void
     {
+        // A copy of an activity whose failed job is not yet recorded neither
+        // runs nor reports anything; the Exception job records the outcome.
+        if ($job instanceof Activity && Activity::awaitsRecordedFailure($job)) {
+            return;
+        }
+
         $this->job = $job;
         $this->uuid = (string) Str::uuid();
 
@@ -38,10 +45,7 @@ final class ActivityMiddleware
         try {
             $this->result = $next($job);
 
-            // A copy skipped for another job's unrecorded failure has no result.
-            if (($job->awaitingRecordedFailure ?? false) !== true) {
-                $job->onUnlock = fn (bool $shouldSignal) => $this->onUnlock($shouldSignal);
-            }
+            $job->onUnlock = fn (bool $shouldSignal) => $this->onUnlock($shouldSignal);
         } catch (\Throwable $throwable) {
             $file = new SplFileObject($throwable->getFile());
             $iterator = new LimitIterator($file, max(0, $throwable->getLine() - 4), 7);

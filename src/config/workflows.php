@@ -47,6 +47,15 @@ return [
     // below this release requires draining the runs that recorded v2 first.
     'definition_fingerprint_version' => env('DW_DEFINITION_FINGERPRINT_VERSION', 'v1'),
 
+    // Seconds a failed v1 activity stays marked while its queued
+    // Workflow\Exception job records the failure. A copy of the activity
+    // dispatched by a replay in that window does not run it again. The mark
+    // expires so that a lost Exception job (a flushed queue, an undecryptable
+    // payload) cannot leave the workflow waiting forever; a later wake then
+    // runs the activity again. A top-level key, so an application whose
+    // published workflows.php predates it still receives the default.
+    'activity_failure_mark_seconds' => (int) env('DW_V1_ACTIVITY_FAILURE_MARK_SECONDS', 3600),
+
     'v1' => [
         // Existing installations keep their v1 drain. Disable only for a
         // fresh v2-only application or after all legacy work is retired.

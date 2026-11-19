@@ -11,6 +11,7 @@ use Symfony\Component\Process\Process;
 use Tests\Fixtures\TestFailedActivityRedispatchActivity;
 use Tests\Fixtures\TestFailedActivityRedispatchWorkflow;
 use Tests\TestCase;
+use Workflow\Activity;
 use Workflow\Exception;
 use Workflow\States\WorkflowCompletedStatus;
 use Workflow\States\WorkflowWaitingStatus;
@@ -24,6 +25,8 @@ use Workflow\WorkflowStub;
  */
 final class FailedActivityRedispatchTest extends TestCase
 {
+    private const SHORT_MARK_SECONDS = 2;
+
     public function testActivityRedispatchedBeforeItsFailureIsRecordedDoesNotRunAgain(): void
     {
         $queue = 'failed-activity-redispatch-' . Str::uuid();
@@ -93,17 +96,79 @@ final class FailedActivityRedispatchTest extends TestCase
         }
     }
 
-    private function work(string $queue): void
+    public function testLostExceptionJobLeavesTheActivityRunnableAfterTheMarkExpires(): void
+    {
+        $queue = 'lost-exception-job-' . Str::uuid();
+        $directory = sys_get_temp_dir() . '/' . $queue;
+        mkdir($directory, 0700);
+        $redis = Queue::connection('redis')->getConnection();
+        $key = Queue::connection('redis')->getQueue($queue);
+        $environment = [
+            'DW_V1_ACTIVITY_FAILURE_MARK_SECONDS' => (string) self::SHORT_MARK_SECONDS,
+        ];
+
+        try {
+            $workflow = WorkflowStub::make(TestFailedActivityRedispatchWorkflow::class);
+            $workflow->start($directory, new WorkflowOptions(connection: 'redis', queue: $queue));
+            $this->work($queue, $environment);
+            $this->work($queue, $environment);
+            $this->assertSame(1, $this->executions($directory));
+            $this->assertSame(1, $redis->llen($key), 'The Exception job is queued.');
+            $mark = Activity::failureKey($workflow->id(), 0);
+            $this->assertNotNull(Cache::get($mark));
+
+            // The Exception job is lost (a flushed queue, an undecryptable payload).
+            $redis->del($key);
+
+            // While the mark lasts, a wake's copy of the activity does not run.
+            $workflow->resume();
+            $this->work($queue, $environment);
+            $this->assertSame(1, $redis->llen($key));
+            $this->work($queue, $environment);
+            $this->assertSame(1, $this->executions($directory));
+            $this->assertSame(WorkflowWaitingStatus::class, $workflow->fresh()->status());
+
+            // Once it expires, the next wake runs the activity again.
+            $deadline = microtime(true) + self::SHORT_MARK_SECONDS + 5;
+            while (Cache::get($mark) !== null) {
+                if (microtime(true) > $deadline) {
+                    $this->fail('The failure mark did not expire.');
+                }
+                usleep(100000);
+            }
+            $workflow->resume();
+            $this->drain($queue, $workflow, $environment);
+
+            $this->assertSame(WorkflowCompletedStatus::class, $workflow->status());
+            $this->assertSame('caught: activity failed', $workflow->output());
+            $this->assertSame(2, $this->executions($directory));
+            $this->assertSame([Exception::class], $workflow->logs()->pluck('class')->all());
+        } finally {
+            foreach (glob($directory . '/*') ?: [] as $file) {
+                unlink($file);
+            }
+            rmdir($directory);
+        }
+    }
+
+    /**
+     * @param array<string, string> $environment
+     */
+    private function work(string $queue, array $environment = []): void
     {
         $process = new Process(['php', __DIR__ . '/../../vendor/bin/testbench', 'queue:work', 'redis',
             '--queue=' . $queue, '--once', '--sleep=0'], env: [
                 'WORKFLOW_WATCHDOG_ENABLED' => 'false',
+                ...$environment,
             ]);
         $process->setTimeout(30);
         $process->mustRun();
     }
 
-    private function drain(string $queue, WorkflowStub $workflow): void
+    /**
+     * @param array<string, string> $environment
+     */
+    private function drain(string $queue, WorkflowStub $workflow, array $environment = []): void
     {
         $deadline = microtime(true) + 30;
 
@@ -112,7 +177,7 @@ final class FailedActivityRedispatchTest extends TestCase
                 $this->fail('The workflow did not finish after its failure was recorded.');
             }
 
-            $this->work($queue);
+            $this->work($queue, $environment);
             usleep(100000);
         }
     }
