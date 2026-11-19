@@ -10,7 +10,12 @@ use Workflow\V2\Compensation\Definition\PortableDescriptor;
 use Workflow\V2\StateMachine\Definition\ConditionDefinition;
 use Workflow\V2\StateMachine\Definition\RuleReference;
 
-/** Trusted bootstrap supplies rule objects. Recorded configuration can select only their exact keys. */
+/**
+ * Trusted bootstrap supplies rule objects. Recorded configuration can select only their exact keys.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
+ */
 final readonly class RuleRegistry
 {
     /**

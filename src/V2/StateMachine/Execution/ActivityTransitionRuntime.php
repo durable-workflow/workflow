@@ -16,7 +16,12 @@ use Workflow\V2\StateMachine\Transition\SnapshotPhase;
 use Workflow\V2\StateMachine\Transition\TransitionContext;
 use Workflow\V2\Workflow;
 
-/** Records application boundary results with ordinary DW activities and portable payloads. */
+/**
+ * Records application boundary results with ordinary DW activities and portable payloads.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
+ */
 final readonly class ActivityTransitionRuntime implements TransitionRuntime
 {
     public function __construct(

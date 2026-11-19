@@ -11,6 +11,9 @@ use Workflow\V2\StateMachine\Execution\ExecutionReference;
  * [1] target check -> [2] permitted work -> [3] fresh target check -> [4] caller commits.
  * Guards are pure projections of the context's recorded assessments.
  * execute() can suspend through DW. A receipt is not required to compensate.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
  */
 interface TransitionStep
 {

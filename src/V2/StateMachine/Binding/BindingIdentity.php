@@ -13,7 +13,10 @@ use Workflow\V2\Support\ChildWorkflowOptions;
 /**
  * Original business/state-entry identity, independent of any later current-state pointer.
  *
- * @experimental This value is not authentication or a persistence/concurrency fence.
+ * This value is not authentication or a persistence/concurrency fence.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
  */
 final readonly class BindingIdentity
 {

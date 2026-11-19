@@ -7,7 +7,12 @@ namespace Workflow\V2\StateMachine\Definition;
 use InvalidArgumentException;
 use Workflow\V2\StateMachine\Execution\ResourceLimitExceeded;
 
-/** Pinned bounds on a shared machine and its configured policy conditions. */
+/**
+ * Pinned bounds on a shared machine and its configured policy conditions.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
+ */
 final readonly class DefinitionLimits
 {
     public function __construct(
