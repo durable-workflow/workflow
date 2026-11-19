@@ -34,6 +34,7 @@ use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Support\WorkflowContinuationCache;
 use Workflow\V2\Support\WorkflowExecutor;
 use Workflow\V2\Support\WorkflowSignalReadScope;
+use Workflow\V2\Support\WorkflowTaskJobTimeout;
 use Workflow\V2\Support\WorkflowTaskLease;
 use Workflow\V2\Support\WorkflowTaskLeaseLoss;
 
@@ -45,6 +46,12 @@ final class RunWorkflowTask implements ShouldQueue
     use SerializesModels;
 
     public int $tries = 1;
+
+    /**
+     * The job's own queue timeout ({@see WorkflowTaskJobTimeout}), set when
+     * the task is dispatched; null leaves the worker's --timeout in force.
+     */
+    public ?int $timeout = null;
 
     // Mixed so malformed telemetry cannot prevent an older job from loading.
     public mixed $dispatchObservabilityContext = null;

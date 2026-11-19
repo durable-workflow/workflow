@@ -8,9 +8,9 @@ use RuntimeException;
 
 /**
  * A run failed because its workflow task kept losing its lease without
- * completing, with workflows.v2.workflow_task_lost_leases.fail_run enabled
- * (#1231). The usual cause is a queue worker job timeout shorter than the
- * workflow task.
+ * completing, with workflows.v2.workflow_task_lost_leases.fail_run enabled.
+ * A lease is lost when the worker running the task is killed, times out, or
+ * loses its connection before the task completes.
  */
 final class WorkflowTaskLeaseLostException extends RuntimeException
 {
@@ -20,8 +20,8 @@ final class WorkflowTaskLeaseLostException extends RuntimeException
         public readonly int $leaseSeconds,
     ) {
         parent::__construct(sprintf(
-            'Workflow task %s lost its lease %d times without completing. Its queue worker may be killing it '
-            . 'at the job timeout; run workers with --timeout=0 or above the longest workflow task.',
+            'Workflow task %s lost its lease %d times in a row without completing (its worker was killed, '
+            . 'timed out, or lost its connection).',
             $taskId,
             $lostLeases,
         ));

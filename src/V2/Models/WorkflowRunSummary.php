@@ -42,6 +42,7 @@ class WorkflowRunSummary extends Model
     protected $casts = [
         'is_current_run' => 'bool',
         'repair_attention' => 'bool',
+        'task_attention' => 'array',
         'task_problem' => 'bool',
         'visibility_labels' => 'array',
         'projection_schema_version' => 'integer',

@@ -81,6 +81,7 @@ use Workflow\V2\Support\TaskFairnessState;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\WorkerTimeoutAdvisory;
 use Workflow\V2\Support\WorkflowModeGuard;
+use Workflow\V2\Support\WorkflowTaskLeaseLoss;
 use Workflow\Watchdog;
 
 final class WorkflowServiceProvider extends ServiceProvider
@@ -223,6 +224,7 @@ final class WorkflowServiceProvider extends ServiceProvider
         // Refuse an unsupported definition fingerprint version before any
         // workflow can run; at runtime the setting never fails a run.
         SourceFingerprint::validateConfiguration();
+        WorkflowTaskLeaseLoss::validateConfiguration();
         $this->configureSqliteStorageConnection();
 
         // Register long-poll wake signal observers
@@ -239,14 +241,15 @@ final class WorkflowServiceProvider extends ServiceProvider
         $this->validateCacheBackend();
 
         if (class_exists(\Illuminate\Queue\Events\WorkerStarting::class)) {
-            // A job timeout below the workflow task lease can kill a workflow
-            // task on every retry; warn once per worker (#1231).
+            // A low retry_after caps how long a workflow task may run on the
+            // workflow queue; warn that queue's workers once.
             Event::listen(
                 \Illuminate\Queue\Events\WorkerStarting::class,
                 static function (object $event): void {
-                    if (isset($event->workerOptions) && is_object($event->workerOptions)) {
-                        WorkerTimeoutAdvisory::workerStarting($event->workerOptions);
-                    }
+                    WorkerTimeoutAdvisory::workerStarting(
+                        is_string($event->connectionName ?? null) ? $event->connectionName : null,
+                        is_string($event->queue ?? null) ? $event->queue : null,
+                    );
                 },
             );
         }

@@ -26,14 +26,6 @@ final class RepairBlockedReason
                 'tone' => 'dark',
                 'badge_visible' => true,
             ],
-            WorkflowTaskLeaseLoss::CODE => [
-                'label' => 'Task Timing Out',
-                'description' => 'The workflow task keeps losing its lease without completing; its queue worker '
-                    . 'may be killing it at the job timeout. Run workers with --timeout=0 or above the longest '
-                    . 'workflow task.',
-                'tone' => 'warning',
-                'badge_visible' => true,
-            ],
             'waiting_for_compatible_worker' => [
                 'label' => 'Compat Blocked',
                 'description' => 'Repair is blocked because the task is waiting for a compatible worker.',
@@ -134,11 +126,6 @@ final class RepairBlockedReason
 
         if (self::isClosed($run)) {
             return 'run_closed';
-        }
-
-        // Repair keeps redispatching a task that never completes (#1231).
-        if (WorkflowTaskLeaseLoss::runNeedsAttention($run)) {
-            return WorkflowTaskLeaseLoss::CODE;
         }
 
         if ($livenessState === 'repair_needed') {

@@ -20,7 +20,7 @@
     "issue": "durable-workflow/workflow#1231",
     "attention_threshold": 3,
     "fail_run": true,
-    "note": "The run's only workflow task lost its lease three times without completing, as when a pcntl queue worker kills it at the job timeout. With workflows.v2.workflow_task_lost_leases.fail_run enabled, the next claim fails the run with the typed WorkflowTaskLeaseLostException (task_failure) before any workflow code runs. Lost leases themselves write no history; with fail_run off the same run keeps retrying and only shows workflow_task_lease_lost repair attention."
+    "note": "The run's only workflow task lost its lease three times without completing, as when its worker is killed, times out or loses its connection. With workflows.v2.workflow_task_lost_leases.fail_run enabled, the next claim fails the run with the typed WorkflowTaskLeaseLostException (task_failure) before any workflow code runs. Lost leases themselves write no history; with fail_run off the same run keeps retrying and its summary carries the additive task_attention field."
   },
   "history": [
     {
@@ -57,14 +57,14 @@
       "sequence": 2,
       "event_type": "WorkflowFailed",
       "payload": {
-        "message": "Workflow task lost-lease-task lost its lease 3 times without completing. Its queue worker may be killing it at the job timeout; run workers with --timeout=0 or above the longest workflow task.",
+        "message": "Workflow task lost-lease-task lost its lease 3 times in a row without completing (its worker was killed, timed out, or lost its connection).",
         "exception": {
           "code": 0,
           "file": "/app/src/V2/Support/WorkflowTaskLeaseLoss.php",
           "line": 152,
           "class": "Workflow\\V2\\Exceptions\\WorkflowTaskLeaseLostException",
           "trace": [],
-          "message": "Workflow task lost-lease-task lost its lease 3 times without completing. Its queue worker may be killing it at the job timeout; run workers with --timeout=0 or above the longest workflow task."
+          "message": "Workflow task lost-lease-task lost its lease 3 times in a row without completing (its worker was killed, timed out, or lost its connection)."
         },
         "source_id": "lost-lease-run",
         "failure_id": "lost-lease-failure",

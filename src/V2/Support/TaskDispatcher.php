@@ -188,6 +188,11 @@ final class TaskDispatcher
             $job->onQueue($task->queue);
         }
 
+        if ($job instanceof RunWorkflowTask) {
+            // A short worker --timeout must not kill workflow tasks.
+            $job->timeout = WorkflowTaskJobTimeout::seconds($task->connection);
+        }
+
         if ($task->available_at !== null && $task->available_at->isFuture()) {
             // Queue backends store second-resolution deadlines. Never round a wakeup down.
             $availableAt = $task->available_at->copy()

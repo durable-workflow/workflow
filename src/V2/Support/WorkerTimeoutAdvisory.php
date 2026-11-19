@@ -7,12 +7,15 @@ namespace Workflow\V2\Support;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Warn once per worker process when Laravel's job timeout can kill a
- * workflow task before its lease ends (#1231).
+ * Warn once per worker process when its queue connection limits how long a
+ * workflow task can run.
  *
- * With pcntl loaded, `queue:work` kills a job after `--timeout` seconds (60 by
- * default). A workflow task killed there rolls back its work and is retried
- * after its lease expires, so a task longer than the timeout never finishes.
+ * A workflow task's job carries its own timeout ({@see WorkflowTaskJobTimeout}),
+ * so the worker's `--timeout` no longer applies to it. That timeout is kept
+ * below the connection's `retry_after`, so a low `retry_after` (90 seconds in
+ * Laravel's default configuration) still caps workflow tasks well below their
+ * lease. Only workers that serve the queue the package dispatches workflow
+ * tasks to are warned, and only where pcntl enforces job timeouts.
  *
  * @internal
  */
@@ -21,35 +24,71 @@ final class WorkerTimeoutAdvisory
     private static bool $warned = false;
 
     /**
-     * The warning for a worker started with $timeoutSeconds, or null when the
-     * job timeout cannot end a workflow task before its lease.
+     * The warning for a worker on $connection, or null when workflow tasks
+     * there can run up to their uncapped timeout.
      */
-    public static function message(int $timeoutSeconds, bool $pcntlLoaded, int $leaseSeconds): ?string
-    {
-        if (! $pcntlLoaded || $timeoutSeconds <= 0 || $timeoutSeconds >= $leaseSeconds) {
+    public static function message(
+        bool $pcntlLoaded,
+        ?int $workflowTaskTimeout,
+        int $uncappedTimeout,
+        ?int $retryAfter,
+        string $connection,
+    ): ?string {
+        if (! $pcntlLoaded || ($workflowTaskTimeout !== null && $workflowTaskTimeout >= $uncappedTimeout)) {
             return null;
         }
 
         return sprintf(
-            '[Durable Workflow] This queue worker kills a job after %d s (--timeout), before the %d s workflow task '
-            . 'lease. A workflow task that runs longer, such as a wide all() fan-out, is killed, rolled back and '
-            . 'retried after its lease expires, and can never finish. Run workers with --timeout=0 or a value above '
-            . 'your longest workflow task, and keep workflows.v2.workflow_task_lease_seconds above --timeout.',
-            $timeoutSeconds,
-            $leaseSeconds,
+            '[Durable Workflow] Queue connection "%s" has retry_after = %s s, so a workflow task on it can run '
+            . 'for at most %s before the worker kills it and the task is retried after its lease expires. '
+            . 'Set this connection\'s retry_after above %d s (the workflow task timeout plus %d s), ideally on '
+            . 'a connection dedicated to workflow tasks, so workflow tasks can run for %d s.',
+            $connection,
+            $retryAfter === null ? 'unset' : (string) $retryAfter,
+            $workflowTaskTimeout === null ? 'the worker --timeout' : $workflowTaskTimeout . ' s',
+            $uncappedTimeout + WorkflowTaskJobTimeout::RETRY_AFTER_MARGIN_SECONDS,
+            WorkflowTaskJobTimeout::RETRY_AFTER_MARGIN_SECONDS,
+            $uncappedTimeout,
         );
     }
 
-    public static function workerStarting(object $workerOptions): void
+    /**
+     * Whether a worker started for $connection and $queues serves the queue
+     * the package dispatches workflow tasks to by default.
+     */
+    public static function servesWorkflowQueue(?string $connection, ?string $queues): bool
     {
-        if (self::$warned || ! property_exists($workerOptions, 'timeout')) {
+        $workflowConnection = config('workflows.v2.connection');
+        $workflowConnection = is_string($workflowConnection) && $workflowConnection !== ''
+            ? $workflowConnection
+            : config('queue.default');
+
+        if (! is_string($workflowConnection) || $connection !== $workflowConnection) {
+            return false;
+        }
+
+        $workflowQueue = config('workflows.v2.queue');
+        $workflowQueue = is_string($workflowQueue) && $workflowQueue !== ''
+            ? $workflowQueue
+            : config('queue.connections.' . $workflowConnection . '.queue', 'default');
+
+        $served = array_map('trim', explode(',', (string) ($queues ?? '')));
+
+        return in_array((string) $workflowQueue, $served, true);
+    }
+
+    public static function workerStarting(?string $connection, ?string $queues): void
+    {
+        if (self::$warned || $connection === null || ! self::servesWorkflowQueue($connection, $queues)) {
             return;
         }
 
         $message = self::message(
-            (int) $workerOptions->timeout,
             extension_loaded('pcntl'),
-            WorkflowTaskLease::seconds(),
+            WorkflowTaskJobTimeout::seconds($connection),
+            WorkflowTaskJobTimeout::uncappedSeconds(),
+            WorkflowTaskJobTimeout::retryAfter($connection),
+            $connection,
         );
 
         if ($message === null) {
@@ -58,8 +97,10 @@ final class WorkerTimeoutAdvisory
 
         self::$warned = true;
         Log::warning($message, [
-            'code' => 'worker_timeout_below_workflow_task_lease',
-            'worker_timeout_seconds' => (int) $workerOptions->timeout,
+            'code' => 'workflow_task_timeout_capped_by_retry_after',
+            'connection' => $connection,
+            'retry_after_seconds' => WorkflowTaskJobTimeout::retryAfter($connection),
+            'workflow_task_timeout_seconds' => WorkflowTaskJobTimeout::seconds($connection),
             'workflow_task_lease_seconds' => WorkflowTaskLease::seconds(),
         ]);
     }

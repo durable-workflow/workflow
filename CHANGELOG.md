@@ -13,25 +13,31 @@
   Docblocks and documentation only; no behavior changes.
 
 - A workflow task that keeps losing its lease without completing no longer
-  retries silently forever (#1231). This usually happens when a pcntl
-  `queue:work` kills it at the job timeout, which is 60 s by default.
+  retries silently forever (#1231). A lease is lost when the worker running
+  the task is killed, times out, or loses its connection.
+  - Workflow task jobs carry their own queue timeout: the workflow task lease
+    less 30 s (`workflows.v2.workflow_task_job_timeout_seconds` can lower it),
+    kept 10 s below the connection's `retry_after`. A short worker `--timeout`
+    no longer kills workflow tasks, and activity jobs keep the worker's
+    bounded `--timeout`. A worker on the workflow queue logs one warning at
+    start when `retry_after` caps workflow tasks below that.
   - Task repair counts each lost lease on the task (`lost_lease_count`,
-    `last_lease_lost_at`; new migration). The next claim logs a typed
+    `last_lease_lost_at`). The next claim logs a typed
     `workflow_task_lease_lost` diagnostic. No history is written, and run
     semantics are unchanged.
-  - After three consecutive lost leases
+  - At three consecutive lost leases
     (`workflows.v2.workflow_task_lost_leases.attention_threshold`), the run
-    reports `repair_blocked_reason` `workflow_task_lease_lost` ("Task Timing
-    Out") with repair attention in the summary, describe and Waterline. Operator
-    metrics add `runs.workflow_task_lease_lost`, `tasks.lease_lost_repeatedly`
-    and `tasks.max_lost_lease_count`.
-  - Opt-in (`workflows.v2.workflow_task_lost_leases.fail_run`, off by default):
-    at the threshold, the next claim fails the run with a typed
-    `WorkflowTaskLeaseLostException` (`task_failure`) instead of retrying.
-  - A queue worker that starts with pcntl and a `--timeout` below the workflow
-    task lease logs one warning. The README documents running workflow
-    workers with `--timeout=0` or above the longest workflow task.
-
+    summary, list items and describe carry an additive `task_attention` field
+    (`reason`, `consecutive`, `threshold`), and operator metrics add
+    `runs.task_attention`, `tasks.lease_lost_repeatedly` and
+    `tasks.max_lost_lease_count`. Repair-blocked reasons, repair attention
+    and `can_repair` are unchanged.
+  - Opt-in (`workflows.v2.workflow_task_lost_leases.fail_run`, off by default;
+    boot refuses a threshold below 2): at the threshold, the next claim fails
+    the run with a typed `WorkflowTaskLeaseLostException` (`task_failure`)
+    instead of retrying.
+  - The migration adds the columns outside a transaction under the schema
+    lock budget.
 - Workflow definition and `await()` condition fingerprints are versioned, and
   a new opt-in version 2 makes comment-only and whitespace-only edits replay-safe
   (#1227). The prefix names the version:

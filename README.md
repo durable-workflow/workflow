@@ -61,20 +61,48 @@ existing tables.
 Run a Laravel queue worker or Horizon to execute workflows and activities:
 
 ```bash
-php artisan queue:work --timeout=0
+php artisan queue:work
 ```
 
-With the `pcntl` extension, `queue:work` kills a job after `--timeout` seconds
-(60 by default). A workflow task that runs longer, such as one that schedules or
-finishes a wide `all()`, is rolled back and retried after its lease expires, so it
-never finishes. Run workers with `--timeout=0` or a value above your longest
-workflow task, and keep `workflows.v2.workflow_task_lease_seconds` (300 by
-default) above it; Horizon's `timeout` option is the same setting. A worker
-started with a shorter timeout logs a warning. Each lease a workflow task loses
-is counted, and after three in a row (`DW_V2_WORKFLOW_TASK_LOST_LEASE_ATTENTION_THRESHOLD`)
-the run reports `repair_blocked_reason` `workflow_task_lease_lost` with repair
-attention. Set `DW_V2_WORKFLOW_TASK_LOST_LEASE_FAIL_RUN=true` to fail such a run
-with a typed task failure instead.
+With the `pcntl` extension, a queue worker kills any job that runs longer than
+its timeout. A workflow task that is killed loses its lease, and it is retried
+only after the lease expires (`workflows.v2.workflow_task_lease_seconds`, 300
+seconds by default). Workflow task jobs therefore carry their own timeout in
+place of the worker's `--timeout`: the lease less 30 seconds, or
+`DW_V2_WORKFLOW_TASK_JOB_TIMEOUT_SECONDS` if that is lower. Activity jobs keep
+the worker's bounded `--timeout`, so a hung activity cannot hold a worker
+forever.
+
+Laravel requires a queue connection's `retry_after` to exceed every job's
+timeout, so a workflow task's timeout is also kept 10 seconds below its
+connection's `retry_after`. With Laravel's default `retry_after` of 90 seconds,
+workflow tasks are limited to 80 seconds, and a worker on that queue logs a
+warning when it starts. Wide `all()` fan-outs need longer. Give workflow tasks
+a queue connection whose `retry_after` exceeds the lease, and run dedicated
+workers for it. Activities run on their workflow's queue unless the activity
+class sets its own `$connection` or `$queue`:
+
+```php
+// config/queue.php: a connection for workflow tasks
+'workflows' => [
+    'driver' => 'redis',
+    'connection' => 'default',
+    'queue' => 'workflows',
+    'retry_after' => 330, // above the 300-second workflow task lease
+],
+```
+
+```bash
+# DW_V2_CONNECTION=workflows DW_V2_QUEUE=workflows
+php artisan queue:work workflows --queue=workflows
+php artisan queue:work --queue=default --timeout=60   # activities, bounded
+```
+
+If a workflow task loses its lease three times in a row
+(`DW_V2_WORKFLOW_TASK_LOST_LEASE_ATTENTION_THRESHOLD`), the run summary and
+describe carry an additive `task_attention` field, and operator metrics count
+it. Set `DW_V2_WORKFLOW_TASK_LOST_LEASE_FAIL_RUN=true` to fail such a run with a
+typed task failure instead; that requires a threshold of at least 2.
 
 For the default database queue on SQLite, failed reservation writes preserve
 unclaimed work after a proven rollback. See [SQLite queue reservations](docs/sqlite-queue-reservations.md)
