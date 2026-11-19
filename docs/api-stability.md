@@ -127,7 +127,7 @@ marked `@experimental` as described below.
 ## Experimental compensation scopes
 
 The `Workflow\V2\Compensation` API is experimental. Its API and persisted storage
-contract may change in a minor release until it is promoted (#1063). Promotion is
+contract may change in a minor release until it is promoted. Promotion is
 planned for a later minor release. It covers exactly the members below, which
 `tests/Unit/V2/Compensation/CompensationPublicSurfaceTest.php` pins. Nothing else in
 the namespace is planned for promotion.
@@ -202,7 +202,7 @@ the namespace is planned for promotion.
 
 Experimental, and not planned for this promotion:
 
-- `DurableScope::reserveChild()`, which depends on the `StateMachine\Binding` types (#1069);
+- `DurableScope::reserveChild()`, which depends on the experimental `StateMachine\Binding` types;
 - original root admission (`Admission\*`);
 - parallel compensation and deeper nesting.
 

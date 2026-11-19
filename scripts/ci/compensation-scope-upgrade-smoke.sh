@@ -210,7 +210,11 @@ final class BookingOperation implements ScopedOperation
     {
         self::log('compensate', $context);
 
-        return Resolution::verified(['undo:' . $context->operationId], true);
+        $evidence = ['undo:' . $context->operationId];
+        // Published releases before the explicit-outcome API take (evidence, forwardSettled).
+        return (new \ReflectionMethod(Resolution::class, 'verified'))->getNumberOfParameters() > 1
+            ? Resolution::verified($evidence, true)
+            : Resolution::verified($evidence);
     }
 
     private static function log(string $kind, OperationContext $context): void
