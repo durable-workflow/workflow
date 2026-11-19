@@ -119,7 +119,12 @@ if (! function_exists(__NAMESPACE__ . '\\child')) {
 }
 
 if (! function_exists(__NAMESPACE__ . '\\startChild')) {
-    /** Confirm an embedded native child admission without waiting for completion. */
+    /**
+     * Confirm an embedded native child admission without waiting for completion.
+     *
+     * @experimental Native child start may change in a minor release.
+     * See docs/api-stability.md#state-machines.
+     */
     function startChild(string $workflow, mixed ...$arguments): StartedChildWorkflow
     {
         $options = null;

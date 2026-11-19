@@ -8,7 +8,12 @@ use InvalidArgumentException;
 use Workflow\V2\Support\AwaitStartedChildWorkflowCall;
 use Workflow\V2\Support\WorkflowFiberContext;
 
-/** A confirmed native child admission, independent of its eventual result. */
+/**
+ * A confirmed native child admission, independent of its eventual result.
+ *
+ * @experimental Native child start may change in a minor release.
+ * See docs/api-stability.md#state-machines.
+ */
 final readonly class StartedChildWorkflow
 {
     public function __construct(

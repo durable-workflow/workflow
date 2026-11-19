@@ -8,7 +8,12 @@ use InvalidArgumentException;
 use Workflow\V2\StateMachine\Execution\ExecutionReference;
 use Workflow\V2\StateMachine\Execution\TransitionStatus;
 
-/** Acknowledges the application's protected commit, including an idempotent replay of it. */
+/**
+ * Acknowledges the application's protected commit, including an idempotent replay of it.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
+ */
 final readonly class CommitResult
 {
     public function __construct(

@@ -11,6 +11,7 @@ on:
       - 'src/migrations/**'
       - 'src/V2/Compensation/**'
       - 'scripts/ci/compensation-scope-upgrade-smoke.sh'
+      - 'scripts/ci/upgrade-journey-lib.sh'
       - 'scripts/ci/laravel-embedded-upgrade-matrix.php'
       - 'resources/laravel-embedded-upgrade-contract.json'
       - '.github/workflows/compensation-upgrade.yml'

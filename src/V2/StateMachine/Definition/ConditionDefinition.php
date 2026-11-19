@@ -7,7 +7,12 @@ namespace Workflow\V2\StateMachine\Definition;
 use InvalidArgumentException;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 
-/** Bounded condition structure over registered rules, with no expression evaluation or class loading. */
+/**
+ * Bounded condition structure over registered rules, with no expression evaluation or class loading.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
+ */
 final readonly class ConditionDefinition
 {
     public const MAX_NODES = 64;

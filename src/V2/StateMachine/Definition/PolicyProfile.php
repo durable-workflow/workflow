@@ -8,7 +8,12 @@ use InvalidArgumentException;
 use LogicException;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 
-/** A pinned application definition. Selection and authorization belong to the application. */
+/**
+ * A pinned application definition. Selection and authorization belong to the application.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
+ */
 final readonly class PolicyProfile
 {
     public string $machine;

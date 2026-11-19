@@ -519,6 +519,9 @@ abstract class Workflow
      *
      * This milestone is available in embedded execution. A queued request is
      * insufficient: the returned receipt identifies the durable child run.
+     *
+     * @experimental Native child start may change in a minor release.
+     * See docs/api-stability.md#state-machines.
      */
     public static function startChild(string $workflow, mixed ...$arguments): StartedChildWorkflow
     {

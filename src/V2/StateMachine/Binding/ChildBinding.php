@@ -10,7 +10,10 @@ use Workflow\V2\StartedChildWorkflow;
 /**
  * A confirmed native receipt tied to one immutable business/state-entry generation.
  *
- * @experimental Persistence and live authorization are supplied by the binding runtime.
+ * Persistence and live authorization are supplied by the binding runtime.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
  */
 final readonly class ChildBinding
 {

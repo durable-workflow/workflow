@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- The business state-machine API is explicitly experimental (#1069). Every
+  public class, interface and enum in `Workflow\V2\StateMachine`, native child
+  start (`Workflow::startChild()`, `startChild()` and `StartedChildWorkflow`) and
+  `DurableScope::reserveChild()` are marked `@experimental`. They may change
+  incompatibly in a minor release, never in a patch release.
+  `docs/api-stability.md#state-machines` lists them and the release each first
+  shipped in: the transition contract and `TransitionRunner` in 2.23.0, and the
+  definitions, rules, budgets, child bindings and native child start in 2.29.0.
+  Docblocks and documentation only; no behavior changes.
+
 - A workflow task that keeps losing its lease without completing no longer
   retries silently forever (#1231). This usually happens when a pcntl
   `queue:work` kills it at the job timeout, which is 60 s by default.
@@ -57,6 +67,27 @@
     `definition_version`. Under `v2` both become `sha256-tokens:` values, so the
     same code compiles to a new version string once, and comment-only edits no
     longer produce a new one.
+- **Upgrade 2.32.0 hosts to 2.33.0.** On 2.32.0, a run that waits for a signal
+  after it consumed a child's result receives a no-op workflow task on every
+  watchdog pass, for as long as it waits (#1219). The business state-machine
+  examples hit this: a booked Order waits for `finish` after its payment and
+  booking children complete, so a queue worker run with `--stop-when-empty`
+  never stops. 2.33.0 fixes it. Existing rows self-heal: the watchdog
+  re-projects the run before it would create a task, so the run then reads
+  `waiting_for_signal`. Recorded history is unchanged.
+- CI now installs published 2.33.0 into a new Laravel application and checks
+  the state-machine examples across an upgrade (#1069). Provider-backed and
+  configured Orders are left mid-flight on queue workers with MySQL or
+  PostgreSQL and Redis. One has a cancellation waiting on a processing provider
+  refund. After the upgrade, every recorded run replays, and the Orders finish
+  or recover without repeating a provider effect. The job also checks that
+  schema rollback is refused while their scopes are retained. It checks a
+  package downgrade that keeps that state, followed by an upgrade that recovers
+  it. It runs on pull requests that change the examples, state-machine,
+  compensation or migration code, and on stable release tags against the
+  published package. `docs/business-state-machines.md` describes what it
+  checks. The compensation-scope and state-machine journeys now share
+  `scripts/ci/upgrade-journey-lib.sh`.
 
 ## 2.33.0 - 2026-11-19
 
