@@ -8,7 +8,12 @@ use InvalidArgumentException;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
 
-/** @experimental Immutable retained participation, not an authorization or settlement receipt. */
+/**
+ * Immutable retained participation, not an authorization or settlement receipt.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
+ */
 final readonly class ChildScopeParticipation
 {
     public function __construct(

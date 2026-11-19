@@ -18,9 +18,12 @@ use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\WorkflowDefinition;
 
 /**
- * @experimental Recorded activities call this host boundary. Guards/replay must
+ * Recorded activities call this host boundary. Guards/replay must
  * not call it. Reservation, native admission and closure share one instance row.
  * Closed unused rows are permanent fences, not run-retention candidates.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
  */
 final class ChildReservationStore
 {

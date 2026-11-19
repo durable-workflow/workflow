@@ -7,7 +7,12 @@ namespace Workflow\V2\StateMachine\Definition;
 use InvalidArgumentException;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 
-/** Shared state identity and meaning, independently of an integration's allowed edges. */
+/**
+ * Shared state identity and meaning, independently of an integration's allowed edges.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
+ */
 final readonly class MachineState
 {
     public function __construct(

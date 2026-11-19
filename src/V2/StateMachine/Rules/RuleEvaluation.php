@@ -8,7 +8,12 @@ use InvalidArgumentException;
 use Workflow\V2\Compensation\Definition\PortableDescriptor;
 use Workflow\V2\StateMachine\Definition\RuleReference;
 
-/** An explicit result channel: rule/version/parameters, recorded facts and missing evidence stay correlated. */
+/**
+ * An explicit result channel: rule/version/parameters, recorded facts and missing evidence stay correlated.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
+ */
 final readonly class RuleEvaluation
 {
     /**

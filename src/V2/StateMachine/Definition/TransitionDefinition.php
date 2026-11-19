@@ -6,6 +6,10 @@ namespace Workflow\V2\StateMachine\Definition;
 
 use InvalidArgumentException;
 
+/**
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
+ */
 final readonly class TransitionDefinition
 {
     public string $key;

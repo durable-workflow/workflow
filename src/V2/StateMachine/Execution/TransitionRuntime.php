@@ -14,6 +14,9 @@ use Workflow\V2\StateMachine\Transition\TransitionContext;
 /**
  * Implement I/O through recorded DW activities, not direct I/O in workflow code.
  * Portable activity results are decoded into these in-memory types by the adapter.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
  */
 interface TransitionRuntime
 {

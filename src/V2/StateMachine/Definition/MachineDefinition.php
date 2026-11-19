@@ -12,7 +12,12 @@ use Workflow\V2\StateMachine\Rules\ConditionEvaluation;
 use Workflow\V2\StateMachine\Rules\RecordedFacts;
 use Workflow\V2\StateMachine\Rules\RuleRegistry;
 
-/** A shared, pinned machine contract. Profiles select edges and handlers within this definition. */
+/**
+ * A shared, pinned machine contract. Profiles select edges and handlers within this definition.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
+ */
 final readonly class MachineDefinition
 {
     /**

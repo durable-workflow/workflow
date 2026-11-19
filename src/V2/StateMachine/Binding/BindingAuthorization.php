@@ -4,7 +4,12 @@ declare(strict_types=1);
 
 namespace Workflow\V2\StateMachine\Binding;
 
-/** @experimental The host checks the authenticated principal and original business owner. */
+/**
+ * The host checks the authenticated principal and original business owner.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
+ */
 interface BindingAuthorization
 {
     /**
