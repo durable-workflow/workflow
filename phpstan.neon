@@ -4,5 +4,6 @@ parameters:
         - examples/business-state-machines
         - examples/configured-state-machines
         - examples/provider-state-machines
+        - examples/compensation-scopes
     scanFiles:
         - scripts/ci/check-committed-composer-locks.php

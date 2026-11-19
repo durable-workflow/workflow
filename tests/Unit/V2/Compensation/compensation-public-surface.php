@@ -7,14 +7,14 @@ declare(strict_types=1);
 return [
     \Workflow\V2\Compensation\DurableScope::class => [
         '__construct(Workflow\\V2\\Workflow $workflow, Workflow\\V2\\Compensation\\Definition\\ScopeIdentity $identity, string $principal)',
-        'execute(Workflow\\V2\\Compensation\\Definition\\Obligation $obligation, ?Workflow\\V2\\Support\\ActivityOptions $options = NULL): array',
+        'execute(Workflow\\V2\\Compensation\\Definition\\Obligation $obligation, ?Workflow\\V2\\Support\\ActivityOptions $options = null): array',
         'register(Workflow\\V2\\Compensation\\Definition\\Obligation $obligation): Workflow\\V2\\Compensation\\RegisteredObligation',
         'participate(string $key, Workflow\\V2\\Compensation\\Definition\\ScopeIdentity $child): void',
         'verifyCompensation(): array',
     ],
     \Workflow\V2\Compensation\RegisteredObligation::class => [
-        'execute(?Workflow\\V2\\Support\\ActivityOptions $options = NULL): array',
-        'compensate(?Workflow\\V2\\Support\\ActivityOptions $options = NULL): void',
+        'execute(?Workflow\\V2\\Support\\ActivityOptions $options = null): array',
+        'compensate(?Workflow\\V2\\Support\\ActivityOptions $options = null): void',
     ],
     \Workflow\V2\Compensation\Definition\Obligation::class => [
         'property string $key',
@@ -61,8 +61,7 @@ return [
         'property string $reason',
         'static observed(array $value, array $evidence): self',
         'static unknown(string $reason): self',
-        'static rejected(string $reason, array $evidence = array (
-)): self',
+        'static rejected(string $reason, array $evidence = []): self',
     ],
     \Workflow\V2\Compensation\Execution\Resolution::class => [
         'const VERIFIED = \'verified\'',
@@ -74,22 +73,20 @@ return [
         'property array $evidence',
         'static verified(array $evidence): self',
         'static unknown(string $reason): self',
-        'static failed(string $reason, array $evidence = array (
-)): self',
+        'static failed(string $reason, array $evidence = []): self',
     ],
     \Workflow\V2\Compensation\Execution\HandlerRegistry::class => [
         'const RESERVED_PREFIX = \'dw.\'',
-        '__construct(array $handlers = array (
-))',
+        '__construct(array $handlers = [])',
     ],
     \Workflow\V2\Compensation\Security\ScopeAuthorization::class => [
         'assertAllowed(Workflow\\V2\\Compensation\\Definition\\ScopeIdentity $scope, string $principal, string $operation): string',
     ],
     \Workflow\V2\Compensation\Security\ScopeAuthorizationRefused::class => [
-        '__construct(string $message = \'The compensation scope operation was refused.\', ?Throwable $previous = NULL)',
+        '__construct(string $message = \'The compensation scope operation was refused.\', ?Throwable $previous = null)',
     ],
     \Workflow\V2\Compensation\Recovery\ScopeRecovery::class => [
-        'request(Workflow\\V2\\Compensation\\Definition\\ScopeIdentity $scope, string $requestKey, string $principal, string $reason, ?Workflow\\V2\\StartOptions $profile = NULL): array',
+        'request(Workflow\\V2\\Compensation\\Definition\\ScopeIdentity $scope, string $requestKey, string $principal, string $reason, ?Workflow\\V2\\StartOptions $profile = null): array',
         'describe(Workflow\\V2\\Compensation\\Definition\\ScopeIdentity $scope, string $principal): array',
     ],
     \Workflow\V2\Compensation\Recovery\ScopeRetention::class => [
@@ -140,11 +137,10 @@ return [
         'property ?int $heartbeatTimeout',
         'property array $nonRetryableErrorTypes',
         'property ?Workflow\\V2\\Support\\WorkerSessionOptions $workerSession',
-        '__construct(?string $connection = NULL, ?string $queue = NULL, ?int $maxAttempts = NULL, array|int|null $backoff = NULL, ?int $startToCloseTimeout = NULL, ?int $scheduleToStartTimeout = NULL, ?int $scheduleToCloseTimeout = NULL, ?int $heartbeatTimeout = NULL, array $nonRetryableErrorTypes = array (
-), ?Workflow\\V2\\Support\\WorkerSessionOptions $workerSession = NULL, ?int $priority = NULL, ?string $fairnessKey = NULL, ?int $fairnessWeight = NULL)',
+        '__construct(?string $connection = null, ?string $queue = null, ?int $maxAttempts = null, array|int|null $backoff = null, ?int $startToCloseTimeout = null, ?int $scheduleToStartTimeout = null, ?int $scheduleToCloseTimeout = null, ?int $heartbeatTimeout = null, array $nonRetryableErrorTypes = [], ?Workflow\\V2\\Support\\WorkerSessionOptions $workerSession = null, ?int $priority = null, ?string $fairnessKey = null, ?int $fairnessWeight = null)',
         'withWorkerSession(Workflow\\V2\\Support\\WorkerSessionOptions $workerSession): self',
         'withPriority(?int $priority): self',
-        'withFairness(?string $fairnessKey, ?int $fairnessWeight = NULL): self',
+        'withFairness(?string $fairnessKey, ?int $fairnessWeight = null): self',
     ],
     \Workflow\V2\StartOptions::class => [
         'property Workflow\\V2\\Enums\\DuplicateStartPolicy $duplicateStartPolicy',
@@ -158,14 +154,10 @@ return [
         'property int $priority',
         'property ?string $fairnessKey',
         'property int $fairnessWeight',
-        '__construct(Workflow\\V2\\Enums\\DuplicateStartPolicy $duplicateStartPolicy = \\Workflow\\V2\\Enums\\DuplicateStartPolicy::RejectDuplicate, ?string $businessKey = NULL, array $labels = array (
-), array $memo = array (
-), array $searchAttributes = array (
-), ?int $executionTimeoutSeconds = NULL, ?int $runTimeoutSeconds = NULL, ?int $priority = NULL, ?string $fairnessKey = NULL, ?int $fairnessWeight = NULL, ?int $timeoutCleanupSeconds = NULL)',
+        '__construct(Workflow\\V2\\Enums\\DuplicateStartPolicy $duplicateStartPolicy = Workflow\\V2\\Enums\\DuplicateStartPolicy::RejectDuplicate, ?string $businessKey = null, array $labels = [], array $memo = [], array $searchAttributes = [], ?int $executionTimeoutSeconds = null, ?int $runTimeoutSeconds = null, ?int $priority = null, ?string $fairnessKey = null, ?int $fairnessWeight = null, ?int $timeoutCleanupSeconds = null)',
         'static rejectDuplicate(): self',
         'static returnExistingActive(): self',
-        'static withVisibility(?string $businessKey = NULL, array $labels = array (
-), Workflow\\V2\\Enums\\DuplicateStartPolicy $duplicateStartPolicy = \\Workflow\\V2\\Enums\\DuplicateStartPolicy::RejectDuplicate): self',
+        'static withVisibility(?string $businessKey = null, array $labels = [], Workflow\\V2\\Enums\\DuplicateStartPolicy $duplicateStartPolicy = Workflow\\V2\\Enums\\DuplicateStartPolicy::RejectDuplicate): self',
         'withBusinessKey(?string $businessKey): self',
         'withLabels(array $labels): self',
         'withMemo(array $memo): self',
@@ -174,6 +166,6 @@ return [
         'withRunTimeout(?int $seconds): self',
         'withTimeoutCleanup(?int $seconds): self',
         'withPriority(?int $priority): self',
-        'withFairness(?string $fairnessKey, ?int $fairnessWeight = NULL): self',
+        'withFairness(?string $fairnessKey, ?int $fairnessWeight = null): self',
     ],
 ];

@@ -77,7 +77,7 @@ final class CompensationPublicSurfaceTest extends TestCase
         $members = [];
         foreach ($reflection->getReflectionConstants() as $constant) {
             if ($constant->isPublic() && $constant->getDeclaringClass()->getName() === $class) {
-                $members[] = 'const ' . $constant->getName() . ' = ' . var_export($constant->getValue(), true);
+                $members[] = 'const ' . $constant->getName() . ' = ' . self::value($constant->getValue());
             }
         }
         foreach ($reflection->getProperties(ReflectionProperty::IS_PUBLIC) as $property) {
@@ -109,9 +109,24 @@ final class CompensationPublicSurfaceTest extends TestCase
             $parameter->getType()
         ) . ' ' . ($parameter->isVariadic() ? '...' : '') . '$' . $parameter->getName();
         if ($parameter->isDefaultValueAvailable()) {
-            $text .= ' = ' . var_export($parameter->getDefaultValue(), true);
+            $text .= ' = ' . self::value($parameter->getDefaultValue());
         }
         return ltrim($text);
+    }
+
+    /**
+     * A PHP-version-independent rendering of constant and default values.
+     */
+    private static function value(mixed $value): string
+    {
+        return match (true) {
+            $value === null => 'null',
+            is_bool($value) => $value ? 'true' : 'false',
+            is_string($value) => "'" . $value . "'",
+            is_array($value) => json_encode($value, JSON_THROW_ON_ERROR),
+            $value instanceof \UnitEnum => $value::class . '::' . $value->name,
+            default => (string) $value,
+        };
     }
 
     private static function type(?ReflectionType $type): string
