@@ -14,6 +14,8 @@ use Throwable;
  * boundaries retry it, and automatic recovery tries again on a later watchdog
  * pass. Refuse unknown operation names with this exception. The message is
  * host-provided diagnostic text and is not machine-stable.
+ *
+ * @api Stable compensation-scope API (#1063). See docs/api-stability.md#compensation-scopes.
  */
 final class ScopeAuthorizationRefused extends LogicException
 {

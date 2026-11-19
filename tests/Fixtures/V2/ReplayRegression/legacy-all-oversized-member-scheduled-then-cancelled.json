@@ -1,0 +1,467 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "legacy-all-oversized-member-scheduled-then-cancelled",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestOversizedFanOutMemberWorkflow",
+    "arguments": [
+      6,
+      3,
+      8192,
+      "activity"
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-19T00:00:00.000000Z"
+    },
+    {
+      "sequence": 2,
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "activity_execution_id": "activity-1",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "sequence": 1,
+        "activity": {
+          "id": "activity-1",
+          "idempotency_key": "activity-1",
+          "sequence": 1,
+          "type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "local_activity": false,
+          "status": "pending",
+          "payload_codec": "avro",
+          "attempt_count": 0,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [
+              1,
+              2,
+              5,
+              10,
+              15,
+              30,
+              60,
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "connection": "database",
+          "queue": "default",
+          "created_at": "2026-11-19T00:00:01.000000Z",
+          "arguments": "wwHioz3/VYAiNwwCCgxpdGVtLTAA",
+          "parallel_group_id": "parallel-activities:1:6",
+          "parallel_group_kind": "activity",
+          "parallel_group_base_sequence": 1,
+          "parallel_group_size": 6,
+          "parallel_group_index": 0,
+          "parallel_group_path": [
+            {
+              "parallel_group_id": "parallel-activities:1:6",
+              "parallel_group_kind": "activity",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 6,
+              "parallel_group_index": 0
+            }
+          ]
+        },
+        "parallel_group_id": "parallel-activities:1:6",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 6,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:6",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 6,
+            "parallel_group_index": 0
+          }
+        ]
+      },
+      "recorded_at": "2026-11-19T00:00:01.000000Z"
+    },
+    {
+      "sequence": 3,
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "activity_execution_id": "activity-2",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "sequence": 2,
+        "activity": {
+          "id": "activity-2",
+          "idempotency_key": "activity-2",
+          "sequence": 2,
+          "type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "local_activity": false,
+          "status": "pending",
+          "payload_codec": "avro",
+          "attempt_count": 0,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [
+              1,
+              2,
+              5,
+              10,
+              15,
+              30,
+              60,
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "connection": "database",
+          "queue": "default",
+          "created_at": "2026-11-19T00:00:01.000000Z",
+          "arguments": "wwHioz3/VYAiNwwCCgxpdGVtLTEA",
+          "parallel_group_id": "parallel-activities:1:6",
+          "parallel_group_kind": "activity",
+          "parallel_group_base_sequence": 1,
+          "parallel_group_size": 6,
+          "parallel_group_index": 1,
+          "parallel_group_path": [
+            {
+              "parallel_group_id": "parallel-activities:1:6",
+              "parallel_group_kind": "activity",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 6,
+              "parallel_group_index": 1
+            }
+          ]
+        },
+        "parallel_group_id": "parallel-activities:1:6",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 6,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:6",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 6,
+            "parallel_group_index": 1
+          }
+        ]
+      },
+      "recorded_at": "2026-11-19T00:00:01.000000Z"
+    },
+    {
+      "sequence": 4,
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "activity_execution_id": "activity-3",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "sequence": 3,
+        "activity": {
+          "id": "activity-3",
+          "idempotency_key": "activity-3",
+          "sequence": 3,
+          "type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "local_activity": false,
+          "status": "pending",
+          "payload_codec": "avro",
+          "attempt_count": 0,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [
+              1,
+              2,
+              5,
+              10,
+              15,
+              30,
+              60,
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "connection": "database",
+          "queue": "default",
+          "created_at": "2026-11-19T00:00:01.000000Z",
+          "arguments": "wwHioz3/VYAiNwwCCgxpdGVtLTIA",
+          "parallel_group_id": "parallel-activities:1:6",
+          "parallel_group_kind": "activity",
+          "parallel_group_base_sequence": 1,
+          "parallel_group_size": 6,
+          "parallel_group_index": 2,
+          "parallel_group_path": [
+            {
+              "parallel_group_id": "parallel-activities:1:6",
+              "parallel_group_kind": "activity",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 6,
+              "parallel_group_index": 2
+            }
+          ]
+        },
+        "parallel_group_id": "parallel-activities:1:6",
+        "parallel_group_kind": "activity",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 6,
+        "parallel_group_index": 2,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:6",
+            "parallel_group_kind": "activity",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 6,
+            "parallel_group_index": 2
+          }
+        ]
+      },
+      "recorded_at": "2026-11-19T00:00:01.000000Z"
+    },
+    {
+      "sequence": 5,
+      "event_type": "ActivityCancelled",
+      "payload": {
+        "activity_execution_id": "activity-1",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "sequence": 1,
+        "attempt_number": 0,
+        "cancelled_at": "2026-11-19T00:00:01.000000Z",
+        "activity": {
+          "id": "activity-1",
+          "idempotency_key": "activity-1",
+          "sequence": 1,
+          "type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "local_activity": false,
+          "status": "cancelled",
+          "payload_codec": "avro",
+          "attempt_count": 1,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [
+              1,
+              2,
+              5,
+              10,
+              15,
+              30,
+              60,
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "connection": "database",
+          "queue": "default",
+          "created_at": "2026-11-19T00:00:01.000000Z",
+          "closed_at": "2026-11-19T00:00:01.000000Z",
+          "arguments": "wwHioz3/VYAiNwwCCgxpdGVtLTAA",
+          "parallel_group_id": "parallel-activities:1:6",
+          "parallel_group_kind": "activity",
+          "parallel_group_base_sequence": 1,
+          "parallel_group_size": 6,
+          "parallel_group_index": 0,
+          "parallel_group_path": [
+            {
+              "parallel_group_id": "parallel-activities:1:6",
+              "parallel_group_kind": "activity",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 6,
+              "parallel_group_index": 0
+            }
+          ]
+        },
+        "cancellation_reason": "run_closed"
+      },
+      "recorded_at": "2026-11-19T00:00:01.000000Z"
+    },
+    {
+      "sequence": 6,
+      "event_type": "ActivityCancelled",
+      "payload": {
+        "activity_execution_id": "activity-2",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "sequence": 2,
+        "attempt_number": 0,
+        "cancelled_at": "2026-11-19T00:00:01.000000Z",
+        "activity": {
+          "id": "activity-2",
+          "idempotency_key": "activity-2",
+          "sequence": 2,
+          "type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "local_activity": false,
+          "status": "cancelled",
+          "payload_codec": "avro",
+          "attempt_count": 1,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [
+              1,
+              2,
+              5,
+              10,
+              15,
+              30,
+              60,
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "connection": "database",
+          "queue": "default",
+          "created_at": "2026-11-19T00:00:01.000000Z",
+          "closed_at": "2026-11-19T00:00:01.000000Z",
+          "arguments": "wwHioz3/VYAiNwwCCgxpdGVtLTEA",
+          "parallel_group_id": "parallel-activities:1:6",
+          "parallel_group_kind": "activity",
+          "parallel_group_base_sequence": 1,
+          "parallel_group_size": 6,
+          "parallel_group_index": 1,
+          "parallel_group_path": [
+            {
+              "parallel_group_id": "parallel-activities:1:6",
+              "parallel_group_kind": "activity",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 6,
+              "parallel_group_index": 1
+            }
+          ]
+        },
+        "cancellation_reason": "run_closed"
+      },
+      "recorded_at": "2026-11-19T00:00:01.000000Z"
+    },
+    {
+      "sequence": 7,
+      "event_type": "ActivityCancelled",
+      "payload": {
+        "activity_execution_id": "activity-3",
+        "activity_class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+        "sequence": 3,
+        "attempt_number": 0,
+        "cancelled_at": "2026-11-19T00:00:01.000000Z",
+        "activity": {
+          "id": "activity-3",
+          "idempotency_key": "activity-3",
+          "sequence": 3,
+          "type": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "class": "Tests\\Fixtures\\V2\\TestGreetingActivity",
+          "local_activity": false,
+          "status": "cancelled",
+          "payload_codec": "avro",
+          "attempt_count": 1,
+          "retry_policy": {
+            "snapshot_version": 1,
+            "max_attempts": 1,
+            "backoff_seconds": [
+              1,
+              2,
+              5,
+              10,
+              15,
+              30,
+              60,
+              120
+            ],
+            "start_to_close_timeout": null,
+            "schedule_to_start_timeout": null,
+            "schedule_to_close_timeout": null,
+            "heartbeat_timeout": null,
+            "non_retryable_error_types": []
+          },
+          "connection": "database",
+          "queue": "default",
+          "created_at": "2026-11-19T00:00:01.000000Z",
+          "closed_at": "2026-11-19T00:00:01.000000Z",
+          "arguments": "wwHioz3/VYAiNwwCCgxpdGVtLTIA",
+          "parallel_group_id": "parallel-activities:1:6",
+          "parallel_group_kind": "activity",
+          "parallel_group_base_sequence": 1,
+          "parallel_group_size": 6,
+          "parallel_group_index": 2,
+          "parallel_group_path": [
+            {
+              "parallel_group_id": "parallel-activities:1:6",
+              "parallel_group_kind": "activity",
+              "parallel_group_base_sequence": 1,
+              "parallel_group_size": 6,
+              "parallel_group_index": 2
+            }
+          ]
+        },
+        "cancellation_reason": "run_closed"
+      },
+      "recorded_at": "2026-11-19T00:00:01.000000Z"
+    },
+    {
+      "sequence": 8,
+      "event_type": "WorkflowFailed",
+      "payload": {
+        "failure_id": "oversized-member-failure",
+        "source_kind": "workflow_run",
+        "source_id": "oversized-member-run",
+        "failure_category": "structural_limit",
+        "non_retryable": true,
+        "exception_type": null,
+        "exception_class": "Workflow\\V2\\Exceptions\\StructuralLimitExceededException",
+        "message": "Structural limit exceeded: payload size 10948 bytes (limit 4096 bytes).",
+        "failed_step_sequence": 1,
+        "failed_step_kind": "structural_limit",
+        "structural_limit_kind": "payload_size",
+        "structural_limit_value": 10948,
+        "structural_limit_configured": 4096
+      },
+      "recorded_at": "2026-11-19T00:00:01.000000Z"
+    }
+  ],
+  "expected_failure": {
+    "type": "workflow_history_shape_mismatch",
+    "exception": "Workflow\\V2\\Exceptions\\HistoryEventShapeMismatchException"
+  },
+  "oversized_fan_out_member": {
+    "issue": "durable-workflow/workflow#1232",
+    "payload_size_bytes": 4096,
+    "note": "The history 2.32.0 and earlier record for the same refused all(): the members before the oversized one are recorded ActivityScheduled, then ActivityCancelled when the run fails with the payload_size refusal. Recorded history is never rewritten. The embedded replayer (WorkflowReplayer, QueryStateReplayer) replays it to the all() as before #1232. The cold fiber runner rejects it as a partial group, as it did before #1232: only part of the authored leaf set is recorded. A new run of the same workflow writes only the refusal (all-oversized-member-refused-before-first-write)."
+  }
+}
