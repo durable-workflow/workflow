@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Compensation scopes are stable `@api` (#1063). Exactly the members listed in
+  `docs/api-stability.md#compensation-scopes` are covered:
+  - authoring: `DurableScope`, `RegisteredObligation`, `Obligation`, `ScopeIdentity`;
+  - handler contract: `ScopedOperation`, `OperationContext`, `ForwardResult`,
+    `Resolution`, `HandlerRegistry`, `HandlerContractViolation`;
+  - host: `ScopeAuthorization`, `ScopeAuthorizationRefused`,
+    `ScopeRecovery::request()` and `describe()`, `ScopeRetention::release()`, and
+    the result enums, which may gain cases in a minor release.
+
+  They now follow the 2.x compatibility policy, as do their recorded replay
+  identities, ledger storage and minimum limits. `DurableScope::reserveChild()` and
+  original root admission remain experimental.
+
+## 2.32.0 - 2026-11-19
+
+Compensation scopes remain **experimental** in 2.32.0, without a
+compatibility promise; see `docs/api-stability.md`. This release applies the
+review changes that prepare them for promotion; their promotion to stable API
+follows in a later minor release (#1063).
+
 - The experimental compensation-scope API was prepared for promotion after an
   independent review (#1063). These are breaking changes to an experimental API:
   - **Outcomes.**
@@ -59,18 +79,38 @@
       followed by the violation message. It is no longer reported as
       `provider-outcome-unknown` and retried.
 
-- Compensation scopes are stable `@api` (#1063). Exactly the members listed in
-  `docs/api-stability.md#compensation-scopes` are covered:
-  - authoring: `DurableScope`, `RegisteredObligation`, `Obligation`, `ScopeIdentity`;
-  - handler contract: `ScopedOperation`, `OperationContext`, `ForwardResult`,
-    `Resolution`, `HandlerRegistry`, `HandlerContractViolation`;
-  - host: `ScopeAuthorization`, `ScopeAuthorizationRefused`,
-    `ScopeRecovery::request()` and `describe()`, `ScopeRetention::release()`, and
-    the result enums, which may gain cases in a minor release.
+- The experimental provider state-machine example settles a carrier-confirmed
+  parcel loss, or confirmed transport damage before handover, with an explicit
+  customer remedy (#1069). A trusted bootstrap opts a business generation into
+  `TransitPolicy` (`refund` or `replace`), accepted only for
+  `authorization-after-stock` with unit money; grants without it keep the
+  earlier behavior. A confirmed `lost` or `damaged` carrier event starts one
+  separate native `TransitIncident` run, and the Order gains one state,
+  `remedied`:
+  - **Refund** repays every original unit. Lost goods are never restocked or
+    waited for.
+  - **Replace** reserves, books and delivers a replacement. A refused
+    reservation or booking, or a failed replacement delivery, refunds instead;
+    an unknown reservation outcome is reconciled, never treated as a refusal.
+  - **Every remedy ends explicitly** as `settled` or `owed` (for example
+    `refund-refused` or `replacement-unresolved`). An owed remedy leaves the
+    Order `ready` and unsettled instead of failing its run.
+  - **Claims and damaged goods.** The carrier claim is filed after the remedy
+    and never blocks or changes it. A damaged parcel is returned and
+    inspected, and only accepted saleable units are restocked.
+  - **Cancellation is refused** once an incident is admitted:
+    `CancellationStore::request()` returns `refused`
+    (`transit_incident_owns_remedy`) and records nothing.
 
-  They now follow the 2.x compatibility policy, as do their recorded replay
-  identities, ledger storage and minimum limits. `DurableScope::reserveChild()` and
-  original root admission remain experimental.
+  New replay fixtures pin the recorded histories. See
+  `examples/provider-state-machines/README.md`.
+- Authorized payments, cash on delivery and carrier-collected balances have
+  real worker-loss coverage (#1069). A worker killed with SIGKILL after the
+  provider commits an authorization, capture, void, collection registration,
+  collection close or payer refund recovers through the production watchdog:
+  each effect commits once, with the original obligation identity, descriptor
+  and deadline. Cancellation cuts settle through automatic recovery without a
+  fresh request. These are test-only changes, apart from the example README.
 
 ## 2.31.0 - 2026-11-19
 

@@ -190,6 +190,28 @@ trait WorkerLossDriver
     }
 
     /**
+     * Like workerIdle(), but later business timers may stay pending: nothing is leased and nothing is due
+     * within the ordinary short scheduling horizon.
+     */
+    private function workerCurrent(string $namespace, int $horizonSeconds = 30): bool
+    {
+        $due = static function () use ($namespace, $horizonSeconds): bool {
+            $through = Carbon::now()->copy()->addSeconds($horizonSeconds)->format('Y-m-d H:i:s.u');
+            return WorkflowTask::query()->whereRelation('run', 'namespace', $namespace)
+                ->where('status', TaskStatus::Ready)
+                ->where(static function ($query) use ($through): void {
+                    $query->whereNull('available_at')
+                        ->orWhere('available_at', '<=', $through);
+                })->exists();
+        };
+        if ($due()) {
+            return false;
+        }
+        TaskWatchdog::runPass(respectThrottle: false);
+        return ! $due() && ! WorkflowTask::query()->where('status', TaskStatus::Leased)->exists();
+    }
+
+    /**
      * Due work first; a later task only when nothing is due.
      */
     private function readyTaskIn(string $namespace): ?WorkflowTask
