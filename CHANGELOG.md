@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- A wide `all()` no longer makes its workflow tasks grow with the square of the
+  fan-out width (#1231, #1203). A 300-member fan-out of 10 KB activities took
+  134 s to schedule and 58–85 s to finish on 2.32.0, so Laravel's default
+  60-second queue job timeout killed it on every retry. Per-member cost is now
+  roughly constant:
+  - A workflow task publishes the tasks it committed in bounded batches and
+    refreshes each affected run summary once, instead of rebuilding the run's
+    whole summary, in its own transaction, for every member it published.
+  - Replay, child-call, parallel-group, lineage and activity lookups index the
+    loaded history by sequence once, instead of rescanning the whole history
+    for every member. A child closure no longer rescans the parent's history
+    for every sibling.
+  - Activity starts refresh only their own timeline points, like outcomes, and
+    projections skip decoding payloads that cannot name the activity or a
+    failure.
+
+  Recorded history and every projection row are unchanged. Each member's own
+  activity or child task still rebuilds its run summary once.
+
 ## 2.32.0 - 2026-11-19
 
 Compensation scopes remain **experimental** in 2.32.0, without a

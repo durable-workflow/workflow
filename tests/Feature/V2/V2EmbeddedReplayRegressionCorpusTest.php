@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use DateTimeImmutable;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Queue\WorkerOptions;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
@@ -15,6 +16,7 @@ use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Mockery;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use Symfony\Component\Uid\Ulid;
@@ -93,6 +95,7 @@ use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\EmbeddedV2HistoryImport;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\MemoPayload;
+use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\ReplayDiff;
 use Workflow\V2\Support\RunActivityView;
@@ -3115,6 +3118,103 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     }
 
     /**
+     * Replaying a fan-out looks up every member by sequence. Each lookup
+     * family indexes the loaded history once, so the recorded events are read
+     * a bounded number of times however many members the group has; a scan
+     * per member read the whole history again for each one (#1203, #1231).
+     * A live run on the current code records the evidence history unchanged.
+     *
+     * @return iterable<string, array{string, string, string}>
+     */
+    public static function fanOutHistoryIndexCorpus(): iterable
+    {
+        yield 'activities' => [
+            'fan-out-activity-all-history-index',
+            WorkflowStepHistory::ACTIVITY,
+            'activity_type',
+        ];
+        yield 'children' => [
+            'fan-out-child-all-history-index',
+            WorkflowStepHistory::CHILD_WORKFLOW,
+            'child_workflow_type',
+        ];
+    }
+
+    #[DataProvider('fanOutHistoryIndexCorpus')]
+    public function testFanOutCorpusReadsRecordedHistoryOncePerLookupFamily(
+        string $fixtureId,
+        string $shape,
+        string $detailField,
+    ): void {
+        $path = self::FIXTURE_DIR . "/{$fixtureId}.json";
+        if (! is_file($path)) {
+            $this->markTestSkipped('The fan-out history index evidence is absent.');
+        }
+        /** @var array<string, mixed> $fixture */
+        $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $history = $fixture['history'];
+        $members = [];
+        foreach ($history as $event) {
+            if (in_array($event['event_type'], ['ActivityScheduled', 'ChildWorkflowScheduled'], true)) {
+                $members[$event['payload']['sequence']] = $event['payload'][$detailField];
+            }
+        }
+        $this->assertCount(3, $members);
+
+        $run = new WorkflowRun([
+            'id' => 'fan-out-corpus-' . $fixtureId,
+        ]);
+        $run->setRelation('historyEvents', new EloquentCollection(array_map(
+            static fn (array $event): FanOutPayloadReadCountingEvent => (new FanOutPayloadReadCountingEvent())
+                ->forceFill([
+                    ...$event,
+                    'workflow_run_id' => $run->id,
+                ]),
+            $history,
+        )));
+        FanOutPayloadReadCountingEvent::$foreignReads = 0;
+        $indexed = false;
+
+        foreach ($members as $sequence => $type) {
+            // The first member's lookups may read the whole history to index it.
+            FanOutPayloadReadCountingEvent::$member = $indexed ? $sequence : null;
+            WorkflowStepHistory::assertCompatible($run, $sequence, $shape, [
+                $detailField => $type,
+            ]);
+            $this->assertSame(
+                $sequence,
+                ParallelChildGroup::metadataPathForSequence($run, $sequence)[0]['parallel_group_base_sequence']
+                    + ParallelChildGroup::metadataPathForSequence($run, $sequence)[0]['parallel_group_index'],
+            );
+            if ($shape === WorkflowStepHistory::CHILD_WORKFLOW) {
+                $this->assertSame(
+                    'ChildWorkflowScheduled',
+                    ChildRunHistory::scheduledEventForSequence($run, $sequence)?->event_type->value,
+                );
+                $this->assertSame(
+                    'ChildRunStarted',
+                    ChildRunHistory::startedEventForSequence($run, $sequence)?->event_type->value,
+                );
+                $this->assertSame(
+                    'ChildRunCompleted',
+                    ChildRunHistory::resolutionEventForSequence($run, $sequence)?->event_type->value,
+                );
+            }
+            $indexed = true;
+        }
+        FanOutPayloadReadCountingEvent::$member = null;
+
+        // Once indexed, a member's lookups read only that member's events.
+        $this->assertSame(
+            0,
+            FanOutPayloadReadCountingEvent::$foreignReads,
+            'Fan-out replay lookups rescanned other members\' recorded events for each member.',
+        );
+
+        $this->assertLiveFanOutRecordsEvidenceHistory($fixture);
+    }
+
+    /**
      * @param array<string, mixed> $fixture
      */
     private function assertVersionUsageRetainedDecision(array $fixture): void
@@ -3160,6 +3260,94 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         );
         $this->assertSame(1, $run->historyEvents()->where('event_type', HistoryEventType::ActivityScheduled)->count());
         $this->assertSame($history, array_slice($run->historyEvents()->get()->toArray(), 0, count($history)));
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function assertLiveFanOutRecordsEvidenceHistory(array $fixture): void
+    {
+        self::stopWorkers();
+        // The evidence was recorded on the redis queue connection.
+        config([
+            'queue.default' => 'redis',
+        ]);
+        Queue::fake();
+        $started = array_values(array_filter(
+            $fixture['history'],
+            static fn (array $event): bool => $event['event_type'] === 'WorkflowStarted',
+        ))[0];
+        $workflow = WorkflowStub::make($fixture['workflow']['type'], $started['payload']['workflow_instance_id']);
+        $workflow->start(...$fixture['workflow']['arguments']);
+        $runId = $workflow->runId();
+
+        for ($step = 0; $step < 100; $step++) {
+            /** @var WorkflowTask|null $task */
+            $task = WorkflowTask::query()
+                ->where('status', TaskStatus::Ready->value)
+                ->orderBy('created_at')
+                ->orderBy('id')
+                ->first();
+            if ($task === null) {
+                break;
+            }
+            $job = match ($task->task_type) {
+                TaskType::Workflow => new RunWorkflowTask($task->id),
+                TaskType::Activity => new RunActivityTask($task->id),
+                TaskType::Timer => new RunTimerTask($task->id),
+            };
+            $this->app->call([$job, 'handle']);
+        }
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame($fixture['expected']['result'], $workflow->output());
+        $recorded = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->orderBy('sequence')
+            ->get()
+            ->map(static fn (WorkflowHistoryEvent $event): array => [
+                'sequence' => $event->sequence,
+                'event_type' => $event->event_type->value,
+                // Evidence omits the claimed task and command snapshots.
+                'payload' => array_diff_key($event->payload, [
+                    'task' => true,
+                    'command' => true,
+                ]),
+            ])
+            ->all();
+        $evidence = array_map(static fn (array $event): array => [
+            'sequence' => $event['sequence'],
+            'event_type' => $event['event_type'],
+            'payload' => $event['payload'],
+        ], $fixture['history']);
+
+        $this->assertSame(self::withoutRunIdentity($evidence), self::withoutRunIdentity($recorded));
+    }
+
+    /**
+     * Mask generated identifiers and timestamps; every other recorded value,
+     * key and event position must match.
+     */
+    private static function withoutRunIdentity(mixed $value): mixed
+    {
+        if (is_array($value)) {
+            return array_map(self::withoutRunIdentity(...), $value);
+        }
+        if (! is_string($value)) {
+            return $value;
+        }
+        if (strlen($value) > 40 && preg_match('/^[A-Za-z0-9+\/]+={0,2}$/', $value) === 1) {
+            $decoded = base64_decode($value, true);
+            if ($decoded !== false && preg_match('/01[0-9A-Za-z]{24}/', $decoded) === 1) {
+                return 'payload-with-identity';
+            }
+        }
+
+        return preg_replace(
+            ['/01[0-9A-Za-z]{24}/', '/\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?/'],
+            ['<id>', '<time>'],
+            $value,
+        );
     }
 
     private function runReadyTaskOfType(string $runId, TaskType $taskType): void
@@ -6273,5 +6461,30 @@ final class TerminalCloseCorpusHistory extends WorkflowHistoryEvent
         }
 
         return parent::castAttribute($key, $value);
+    }
+}
+
+/**
+ * Counts payload reads of events outside the member being looked up. A
+ * subclass skips the model's own decoded-payload cache, so each read decodes.
+ */
+final class FanOutPayloadReadCountingEvent extends WorkflowHistoryEvent
+{
+    public static ?int $member = null;
+
+    public static int $foreignReads = 0;
+
+    public function getAttribute($key): mixed
+    {
+        if ($key === 'payload' && self::$member !== null) {
+            $stored = $this->getAttributes()['payload'] ?? null;
+            $payload = is_string($stored) ? json_decode($stored, true) : $stored;
+
+            if (! is_array($payload) || ($payload['sequence'] ?? null) !== self::$member) {
+                ++self::$foreignReads;
+            }
+        }
+
+        return parent::getAttribute($key);
     }
 }

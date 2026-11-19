@@ -20,6 +20,33 @@ use Workflow\V2\Models\WorkflowTask;
 final class ParallelChildGroup
 {
     /**
+     * History events that carry a parallel member's group metadata.
+     */
+    private const PARALLEL_MEMBER_EVENT_TYPES = [
+        HistoryEventType::ActivityScheduled,
+        HistoryEventType::ActivityStarted,
+        HistoryEventType::ActivityRetryScheduled,
+        HistoryEventType::ActivityCompleted,
+        HistoryEventType::ActivityFailed,
+        HistoryEventType::ActivityCancelled,
+        HistoryEventType::ActivityTimedOut,
+        HistoryEventType::TimerScheduled,
+        HistoryEventType::TimerFired,
+        HistoryEventType::TimerCancelled,
+        HistoryEventType::ConditionWaitOpened,
+        HistoryEventType::ConditionWaitSatisfied,
+        HistoryEventType::ConditionWaitTimedOut,
+        HistoryEventType::SignalWaitOpened,
+        HistoryEventType::SignalApplied,
+        HistoryEventType::ChildWorkflowScheduled,
+        HistoryEventType::ChildRunStarted,
+        HistoryEventType::ChildRunCompleted,
+        HistoryEventType::ChildRunFailed,
+        HistoryEventType::ChildRunCancelled,
+        HistoryEventType::ChildRunTerminated,
+    ];
+
+    /**
      * @return array{
      *     parallel_group_id: string,
      *     parallel_group_kind: string,
@@ -107,40 +134,43 @@ final class ParallelChildGroup
      */
     public static function metadataPathForSequence(WorkflowRun $run, int $sequence): array
     {
-        /** @var WorkflowHistoryEvent|null $event */
-        $event = $run->historyEvents->first(
-            static fn (WorkflowHistoryEvent $event): bool => in_array(
-                $event->event_type,
-                [
-                    HistoryEventType::ActivityScheduled,
-                    HistoryEventType::ActivityStarted,
-                    HistoryEventType::ActivityRetryScheduled,
-                    HistoryEventType::ActivityCompleted,
-                    HistoryEventType::ActivityFailed,
-                    HistoryEventType::ActivityCancelled,
-                    HistoryEventType::ActivityTimedOut,
-                    HistoryEventType::TimerScheduled,
-                    HistoryEventType::TimerFired,
-                    HistoryEventType::TimerCancelled,
-                    HistoryEventType::ConditionWaitOpened,
-                    HistoryEventType::ConditionWaitSatisfied,
-                    HistoryEventType::ConditionWaitTimedOut,
-                    HistoryEventType::SignalWaitOpened,
-                    HistoryEventType::SignalApplied,
-                    HistoryEventType::ChildWorkflowScheduled,
-                    HistoryEventType::ChildRunStarted,
-                    HistoryEventType::ChildRunCompleted,
-                    HistoryEventType::ChildRunFailed,
-                    HistoryEventType::ChildRunCancelled,
-                    HistoryEventType::ChildRunTerminated,
-                ],
-                true,
-            ) && ($event->payload['sequence'] ?? null) === $sequence
-                && (
-                    is_string($event->payload['parallel_group_id'] ?? null)
-                    || is_array($event->payload['parallel_group_path'] ?? null)
-                )
+        // Each fan-out member looks up its own path. Index the loaded history
+        // once instead of scanning it per member (#1231).
+        $eventsBySequence = HistoryEventIndex::remember(
+            $run->historyEvents,
+            'parallel-metadata-event-by-sequence',
+            static function (Collection $events): array {
+                $index = [];
+
+                foreach ($events as $event) {
+                    if (! $event instanceof WorkflowHistoryEvent || ! in_array(
+                        $event->event_type,
+                        self::PARALLEL_MEMBER_EVENT_TYPES,
+                        true,
+                    )) {
+                        continue;
+                    }
+
+                    $eventSequence = $event->payload['sequence'] ?? null;
+
+                    if (! is_int($eventSequence) || array_key_exists($eventSequence, $index)) {
+                        continue;
+                    }
+
+                    if (
+                        is_string($event->payload['parallel_group_id'] ?? null)
+                        || is_array($event->payload['parallel_group_path'] ?? null)
+                    ) {
+                        $index[$eventSequence] = $event;
+                    }
+                }
+
+                return $index;
+            },
         );
+
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $eventsBySequence[$sequence] ?? null;
 
         if (! $event instanceof WorkflowHistoryEvent || ! is_array($event->payload)) {
             return [];
@@ -1195,21 +1225,32 @@ final class ParallelChildGroup
 
     private static function waitKindForSequence(WorkflowRun $run, int $sequence): ?string
     {
-        foreach ($run->historyEvents as $event) {
-            if (($event->payload['sequence'] ?? null) !== $sequence) {
-                continue;
-            }
+        // Every member of a completed group is checked; index the first wait
+        // opening per sequence once per loaded history (#1203, #1231).
+        $kinds = HistoryEventIndex::remember(
+            $run->historyEvents,
+            'parallel-wait-kind-by-sequence',
+            static function (Collection $events): array {
+                $index = [];
 
-            if ($event->event_type === HistoryEventType::SignalWaitOpened) {
-                return 'signal';
-            }
+                foreach ($events as $event) {
+                    $kind = match ($event->event_type) {
+                        HistoryEventType::SignalWaitOpened => 'signal',
+                        HistoryEventType::ConditionWaitOpened => 'condition',
+                        default => null,
+                    };
+                    $eventSequence = $kind === null ? null : ($event->payload['sequence'] ?? null);
 
-            if ($event->event_type === HistoryEventType::ConditionWaitOpened) {
-                return 'condition';
-            }
-        }
+                    if (is_int($eventSequence) && ! array_key_exists($eventSequence, $index)) {
+                        $index[$eventSequence] = $kind;
+                    }
+                }
 
-        return null;
+                return $index;
+            },
+        );
+
+        return $kinds[$sequence] ?? null;
     }
 
     private static function waitCompletedSuccessfully(WorkflowRun $run, int $sequence, string $kind): bool

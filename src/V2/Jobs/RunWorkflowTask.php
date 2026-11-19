@@ -56,6 +56,13 @@ final class RunWorkflowTask implements ShouldQueue
 
     public function handle(WorkflowExecutor $executor): void
     {
+        // A fan-out publishes one task per member after commit. Refresh each
+        // affected run summary once for the whole task (#1231).
+        TaskDispatcher::coalescingRunSummaries(fn () => $this->handleTask($executor));
+    }
+
+    private function handleTask(WorkflowExecutor $executor): void
+    {
         // Apps sharing a database and queue names can receive each other's
         // jobs. Refuse a task outside this app's namespaces before any effect.
         if (! NamespaceScope::admitsQueuedTask($this->taskId, self::class)) {

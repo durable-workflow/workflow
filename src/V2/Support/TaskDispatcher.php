@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
+use Illuminate\Database\Connection;
 use Throwable;
 use Workflow\Queue\DatabaseTaskDelivery;
 use Workflow\Support\AfterCommit;
@@ -22,6 +23,70 @@ use Workflow\V2\WorkflowStub;
 
 final class TaskDispatcher
 {
+    /**
+     * Rows a coalescing scope writes per transaction. The scope commits its
+     * deferred publishes and summary refreshes in bounded batches instead of
+     * one autocommit transaction per row (#1231).
+     */
+    private const COALESCED_BATCH_SIZE = 50;
+
+    /**
+     * Publishes committed inside the active coalescing scope, in commit order.
+     *
+     * @var list<array{task_id: string, queue_timer_wakeup: bool, bounded: bool}>|null
+     */
+    private static ?array $deferredPublishes = null;
+
+    /**
+     * Run-summary refreshes owed by tasks published inside the active
+     * coalescing scope, keyed by run id (#1231).
+     *
+     * @var array<string, list<array{task_id: string, bounded: bool}>>|null
+     */
+    private static ?array $deferredRunSummaries = null;
+
+    private static bool $flushingPublishes = false;
+
+    /**
+     * Publish the tasks committed inside $operation after it returns, and
+     * refresh each affected run's summary once instead of once per task.
+     *
+     * A workflow task that schedules a fan-out commits one task per member.
+     * Each publish used to rebuild the run's whole summary in its own
+     * transaction, so the step cost grew with the square of the fan-out width.
+     * The deferred refresh reads the same committed state the last per-task
+     * refresh read. Publishing still happens only after the owning commit.
+     *
+     * @template T
+     * @param callable(): T $operation
+     * @return T
+     */
+    public static function coalescingRunSummaries(callable $operation): mixed
+    {
+        if (self::$deferredRunSummaries !== null) {
+            return $operation();
+        }
+
+        self::$deferredPublishes = [];
+        self::$deferredRunSummaries = [];
+
+        try {
+            $result = $operation();
+        } catch (Throwable $throwable) {
+            try {
+                self::flushCoalesced();
+            } catch (Throwable) {
+                // The operation's own failure is the one to report.
+            }
+
+            throw $throwable;
+        }
+
+        self::flushCoalesced();
+
+        return $result;
+    }
+
     public static function dispatch(
         WorkflowTask $task,
         bool $queueTimerWakeup = false,
@@ -29,9 +94,10 @@ final class TaskDispatcher
     ): void {
         $connection = $task->getConnection();
         if ($connection->transactionLevel() > 0) {
+            $taskId = (string) $task->id;
             AfterCommit::on(
                 $connection,
-                static fn () => self::publish($task->id, $queueTimerWakeup, $boundedWorkflowTaskProjection)
+                static fn () => self::publishOrDefer($taskId, $queueTimerWakeup, $boundedWorkflowTaskProjection)
             );
 
             return;
@@ -60,6 +126,105 @@ final class TaskDispatcher
         // Poll mode only updates metadata and projections. It publishes no job
         // and executes no workflow/activity body before this transaction commits.
         self::publish($task->id, false, $boundedWorkflowTaskProjection);
+    }
+
+    private static function publishOrDefer(
+        string $taskId,
+        bool $queueTimerWakeup,
+        bool $boundedWorkflowTaskProjection,
+    ): void {
+        if (self::$deferredPublishes !== null && ! WorkflowStub::faked()) {
+            self::$deferredPublishes[] = [
+                'task_id' => $taskId,
+                'queue_timer_wakeup' => $queueTimerWakeup,
+                'bounded' => $boundedWorkflowTaskProjection,
+            ];
+
+            return;
+        }
+
+        self::publish($taskId, $queueTimerWakeup, $boundedWorkflowTaskProjection);
+    }
+
+    private static function flushCoalesced(): void
+    {
+        $publishes = self::$deferredPublishes ?? [];
+        self::$deferredPublishes = null;
+        $failure = null;
+        self::$flushingPublishes = true;
+
+        try {
+            foreach (array_chunk($publishes, self::COALESCED_BATCH_SIZE) as $batch) {
+                $failure = self::inBatchTransaction(
+                    $batch[0]['task_id'],
+                    array_map(
+                        static fn (array $publish): \Closure => static fn () => self::publish(
+                            $publish['task_id'],
+                            $publish['queue_timer_wakeup'],
+                            $publish['bounded'],
+                        ),
+                        $batch,
+                    ),
+                ) ?? $failure;
+            }
+        } finally {
+            self::$flushingPublishes = false;
+            $summaries = self::$deferredRunSummaries ?? [];
+            self::$deferredRunSummaries = null;
+        }
+
+        foreach (array_chunk($summaries, self::COALESCED_BATCH_SIZE, true) as $batch) {
+            $entries = array_values($batch);
+            $failure = self::inBatchTransaction(
+                $entries[0][0]['task_id'],
+                array_map(
+                    static fn (string $runId, array $runEntries): \Closure => static fn () => self::refreshDeferredRunSummary(
+                        $runId,
+                        $runEntries,
+                    ),
+                    array_map('strval', array_keys($batch)),
+                    $entries,
+                ),
+            ) ?? $failure;
+        }
+
+        if ($failure !== null) {
+            throw $failure;
+        }
+    }
+
+    /**
+     * Run each step in one batch transaction, isolating every step in its own
+     * savepoint so one failure keeps the others, as separate transactions did.
+     * Returns the first failure for the caller to report after the batch.
+     *
+     * @param list<\Closure(): void> $steps
+     */
+    private static function inBatchTransaction(string $admissionTaskId, array $steps): ?Throwable
+    {
+        $failure = null;
+        $runSteps = static function (Connection $connection) use ($steps, &$failure): void {
+            foreach ($steps as $step) {
+                try {
+                    $connection->transaction(static fn () => $step());
+                } catch (Throwable $throwable) {
+                    $failure ??= $throwable;
+                }
+            }
+        };
+
+        $connection = ConfiguredV2Models::query('task_model', WorkflowTask::class)->getModel()
+            ->getConnection();
+
+        if ($connection->getDriverName() === 'sqlite') {
+            // Take SQLite's writer once for the batch. The steps publish jobs,
+            // so the batch is never repeated after it starts.
+            SqliteTransaction::forTask($admissionTaskId, static fn (Connection $database) => $runSteps($database));
+        } else {
+            $connection->transaction(static fn (Connection $database) => $runSteps($database), 1);
+        }
+
+        return $failure;
     }
 
     private static function publish(
@@ -239,6 +404,50 @@ final class TaskDispatcher
     }
 
     private static function refreshRunSummary(WorkflowTask $task, bool $boundedWorkflowTaskProjection): void
+    {
+        // A publish inside a caller's transaction (atomic poll repair) keeps
+        // its refresh in that transaction. Scope batches defer theirs.
+        if (
+            self::$deferredRunSummaries !== null
+            && ! WorkflowStub::faked()
+            && (self::$flushingPublishes || $task->getConnection()->transactionLevel() === 0)
+        ) {
+            self::$deferredRunSummaries[(string) $task->workflow_run_id][] = [
+                'task_id' => (string) $task->id,
+                'bounded' => $boundedWorkflowTaskProjection,
+            ];
+
+            return;
+        }
+
+        self::refreshRunSummaryNow($task, $boundedWorkflowTaskProjection);
+    }
+
+    /**
+     * @param list<array{task_id: string, bounded: bool}> $entries
+     */
+    private static function refreshDeferredRunSummary(string $runId, array $entries): void
+    {
+        if (count($entries) === 1) {
+            /** @var WorkflowTask|null $task */
+            $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)->find($entries[0]['task_id']);
+
+            if ($task instanceof WorkflowTask) {
+                self::refreshRunSummaryNow($task, $entries[0]['bounded']);
+
+                return;
+            }
+        }
+
+        /** @var WorkflowRun|null $run */
+        $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)->find($runId);
+
+        if ($run instanceof WorkflowRun) {
+            self::historyProjectionRole()->projectRun($run);
+        }
+    }
+
+    private static function refreshRunSummaryNow(WorkflowTask $task, bool $boundedWorkflowTaskProjection): void
     {
         /** @var WorkflowRun|null $run */
         $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)->find($task->workflow_run_id);

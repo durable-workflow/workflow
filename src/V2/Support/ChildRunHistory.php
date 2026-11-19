@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
+use Illuminate\Support\Collection;
 use RuntimeException;
 use Throwable;
 use Workflow\Serializers\Serializer;
@@ -292,53 +293,43 @@ final class ChildRunHistory
 
     public static function scheduledEventForSequence(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
     {
-        /** @var WorkflowHistoryEvent|null $event */
-        $event = $run->historyEvents->first(
-            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ChildWorkflowScheduled
-                && ($event->payload['sequence'] ?? null) === $sequence
-        );
-
-        return $event;
+        return self::childEventsBySequence($run)['scheduled'][$sequence] ?? null;
     }
 
     public static function startedEventForSequence(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
     {
-        /** @var WorkflowHistoryEvent|null $event */
-        $event = $run->historyEvents
-            ->filter(
-                static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ChildRunStarted
-                    && ($event->payload['sequence'] ?? null) === $sequence
-            )
-            ->sortByDesc('sequence')
-            ->first();
-
-        return $event;
+        return self::childEventsBySequence($run)['started'][$sequence] ?? null;
     }
 
     public static function resolutionEventForSequence(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
     {
-        /** @var WorkflowHistoryEvent|null $event */
-        $event = $run->historyEvents->first(
-            static fn (WorkflowHistoryEvent $event): bool => in_array(
-                $event->event_type,
-                self::resolutionEventTypes(),
-                true
-            )
-                && ($event->payload['sequence'] ?? null) === $sequence
-        );
-
-        return $event;
+        return self::childEventsBySequence($run)['resolution'][$sequence] ?? null;
     }
 
     public static function latestLinkForSequence(WorkflowRun $run, int $sequence): ?WorkflowLink
     {
-        /** @var WorkflowLink|null $link */
-        $link = $run->childLinks
-            ->filter(
-                static fn (WorkflowLink $link): bool => $link->link_type === 'child_workflow'
-                    && $link->sequence === $sequence
-            )
-            ->sort(static function (WorkflowLink $left, WorkflowLink $right): int {
+        $linksBySequence = HistoryEventIndex::remember(
+            $run->childLinks,
+            'child-workflow-links-by-sequence',
+            static function (Collection $links): array {
+                $index = [];
+
+                foreach ($links as $link) {
+                    if ($link instanceof WorkflowLink && $link->link_type === 'child_workflow' && is_int(
+                        $link->sequence
+                    )) {
+                        $index[$link->sequence][] = $link;
+                    }
+                }
+
+                return $index;
+            },
+        );
+
+        $candidates = $linksBySequence[$sequence] ?? [];
+
+        if (count($candidates) > 1) {
+            usort($candidates, static function (WorkflowLink $left, WorkflowLink $right): int {
                 $leftRunNumber = $left->childRun?->run_number ?? 0;
                 $rightRunNumber = $right->childRun?->run_number ?? 0;
 
@@ -354,10 +345,10 @@ final class ChildRunHistory
                 }
 
                 return $right->id <=> $left->id;
-            })
-            ->first();
+            });
+        }
 
-        return $link;
+        return $candidates[0] ?? null;
     }
 
     /**
@@ -1130,6 +1121,67 @@ final class ChildRunHistory
         }
 
         return $childRun;
+    }
+
+    /**
+     * The parent's child-call history events by durable sequence. A child
+     * projection looks up every fan-out member, so the loaded history is
+     * indexed once instead of scanned per member (#1203, #1231).
+     *
+     * Scheduled and resolution events keep the first match in history order;
+     * a started event keeps the one with the highest history sequence.
+     *
+     * @return array{
+     *     scheduled: array<int, WorkflowHistoryEvent>,
+     *     started: array<int, WorkflowHistoryEvent>,
+     *     resolution: array<int, WorkflowHistoryEvent>
+     * }
+     */
+    private static function childEventsBySequence(WorkflowRun $run): array
+    {
+        return HistoryEventIndex::remember(
+            $run->historyEvents,
+            'child-run-history-by-sequence',
+            static function (Collection $events): array {
+                $index = [
+                    'scheduled' => [],
+                    'started' => [],
+                    'resolution' => [],
+                ];
+                $resolutionTypes = self::resolutionEventTypes();
+
+                foreach ($events as $event) {
+                    if (! $event instanceof WorkflowHistoryEvent) {
+                        continue;
+                    }
+
+                    $kind = match (true) {
+                        $event->event_type === HistoryEventType::ChildWorkflowScheduled => 'scheduled',
+                        $event->event_type === HistoryEventType::ChildRunStarted => 'started',
+                        in_array($event->event_type, $resolutionTypes, true) => 'resolution',
+                        default => null,
+                    };
+
+                    if ($kind === null) {
+                        continue;
+                    }
+
+                    $sequence = $event->payload['sequence'] ?? null;
+
+                    if (! is_int($sequence)) {
+                        continue;
+                    }
+
+                    $existing = $index[$kind][$sequence] ?? null;
+
+                    if ($existing === null || ($kind === 'started' && $event->sequence > $existing->sequence)) {
+                        $index[$kind][$sequence] = $event;
+                    }
+                }
+
+                return $index;
+            },
+        );
     }
 
     private static function stringValue(mixed $value): ?string

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 use LogicException;
@@ -5825,21 +5826,7 @@ final class WorkflowExecutor
 
     private function activityCompletionEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
     {
-        /** @var WorkflowHistoryEvent|null $event */
-        $event = $run->historyEvents->first(
-            static fn (WorkflowHistoryEvent $event): bool => in_array(
-                $event->event_type,
-                [
-                    HistoryEventType::ActivityCompleted,
-                    HistoryEventType::ActivityFailed,
-                    HistoryEventType::ActivityCancelled,
-                    HistoryEventType::ActivityTimedOut,
-                ],
-                true,
-            ) && ($event->payload['sequence'] ?? null) === $sequence
-                // The run's own close recorded this; the workflow never saw it (#1117).
-                && ! ClosingRunOpenWork::settledAtClose($event)
-        );
+        $event = $this->activityEventsBySequence($run)['completion'][$sequence] ?? null;
 
         ExecutionTracing::linkOutcome($run, $event);
 
@@ -5848,21 +5835,63 @@ final class WorkflowExecutor
 
     private function activityOpenEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
     {
-        /** @var WorkflowHistoryEvent|null $event */
-        $event = $run->historyEvents->first(
-            static fn (WorkflowHistoryEvent $event): bool => in_array(
-                $event->event_type,
-                [
-                    HistoryEventType::ActivityScheduled,
-                    HistoryEventType::ActivityStarted,
-                    HistoryEventType::ActivityHeartbeatRecorded,
-                    HistoryEventType::ActivityRetryScheduled,
-                ],
-                true,
-            ) && ($event->payload['sequence'] ?? null) === $sequence
-        );
+        return $this->activityEventsBySequence($run)['open'][$sequence] ?? null;
+    }
 
-        return $event;
+    /**
+     * The first activity resolution and open event per durable sequence, in
+     * history order. Replaying a fan-out reads every member's events, so the
+     * loaded history is indexed once instead of scanned per member (#1231).
+     *
+     * @return array{
+     *     completion: array<int, WorkflowHistoryEvent>,
+     *     open: array<int, WorkflowHistoryEvent>
+     * }
+     */
+    private function activityEventsBySequence(WorkflowRun $run): array
+    {
+        return HistoryEventIndex::remember(
+            $run->historyEvents,
+            'activity-events-by-sequence',
+            static function (Collection $events): array {
+                $index = [
+                    'completion' => [],
+                    'open' => [],
+                ];
+
+                foreach ($events as $event) {
+                    if (! $event instanceof WorkflowHistoryEvent) {
+                        continue;
+                    }
+
+                    $kind = match ($event->event_type) {
+                        HistoryEventType::ActivityCompleted,
+                        HistoryEventType::ActivityFailed,
+                        HistoryEventType::ActivityCancelled,
+                        HistoryEventType::ActivityTimedOut => 'completion',
+                        HistoryEventType::ActivityScheduled,
+                        HistoryEventType::ActivityStarted,
+                        HistoryEventType::ActivityHeartbeatRecorded,
+                        HistoryEventType::ActivityRetryScheduled => 'open',
+                        default => null,
+                    };
+                    $sequence = $kind === null ? null : ($event->payload['sequence'] ?? null);
+
+                    if (! is_int($sequence) || isset($index[$kind][$sequence])) {
+                        continue;
+                    }
+
+                    // The run's own close recorded this; the workflow never saw it (#1117).
+                    if ($kind === 'completion' && ClosingRunOpenWork::settledAtClose($event)) {
+                        continue;
+                    }
+
+                    $index[$kind][$sequence] = $event;
+                }
+
+                return $index;
+            },
+        );
     }
 
     private function activityHistoryEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
