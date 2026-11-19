@@ -40,6 +40,57 @@
     example adds `CancellationFinalizer` as the recommended pattern: it calls
     `finish()` when the Order's recovery verifies.
 
+- A workflow task completion now counts every row it inserts, updates or
+  deletes against a new limit, `completion_rows`
+  (`DW_V2_LIMIT_COMPLETION_ROWS`) (#1116). Task, run, timer, activity,
+  child, signal, update, continue-as-new, memo, search attribute and
+  projection writes all count. Each statement is charged before it runs, and
+  a write that can change several existing rows is counted first with a
+  bounded read. Before its first write, a completion is also checked against
+  an estimate computed from its command list. If over the limit, it is
+  refused with `completion_budget_exceeded` without writing anything, and its
+  task keeps its lease.
+  **Two settings, no upgrade action needed:**
+  - `history_transaction_rows` (`DW_V2_LIMIT_HISTORY_TRANSACTION_ROWS`,
+    default 20,000) is unchanged. It still counts two rows per history event
+    plus local activity records, exactly as in 2.29. A `config/workflows.php`
+    published from 2.29, which pins it at 20,000, behaves the same after
+    upgrading.
+  - `completion_rows` ships unset. Unset, it is derived from the event limit
+    (`DW_V2_LIMIT_HISTORY_TRANSACTION_SIZE`, default 5,000): 103 rows per
+    event × 5,000 + 5,000 = 520,000. 103 is the most rows any first-party
+    command writes per history event (an upsert of a run's full 100 memos or
+    search attributes), so it never refuses a completion the event limit
+    admits. For example, 1,000 children and 1,000 activities is 4,000
+    events, 25,003 completion rows and at least 4,000 history rows. Set
+    `completion_rows` only to bound real rows more tightly; a value you set
+    is honored as is, and 0 disables it.
+- An ordinary run past its execution or run deadline whose workflow task sits
+  Ready and unclaimed, or whose lease expired, is now timed out by the
+  watchdog instead of staying open. A live lease still leaves the close to that
+  worker's completion. Opted-in timeout cleanup is unchanged.
+- An ordinary deadline close with more open work than one completion's
+  budget now runs in bounded batches. Each batch cancels open activities,
+  timers and tasks with the same history the single close writes, releases
+  the workflow task, and answers the worker with
+  `reason: run_deadline_closing`. The watchdog finishes the close without a
+  worker. Accepted updates failed by the close, and children its parent-close
+  policy acts on, are settled in bounded batches too. While they are, the
+  run already reads Failed, and its closing task stays Leased by
+  `deadline-close-settlement`. No worker can claim it, a stale worker's
+  completion or failure leaves it alone, and only the settlement can
+  release it. The watchdog continues the settlement within its own scope,
+  oldest first. A failed pass records its error and retries with backoff;
+  it is never dropped. Pending and stuck settlements appear in operator
+  metrics, queue visibility (`deadline_close_settlements`) and run describe
+  (`deadline_close_settlement`). Retention keeps the run until the
+  settlement completes. A run's history equals a single close's, and
+  histories recorded by earlier versions replay unchanged.
+- The watchdog takes expired runs oldest deadline first. It no longer
+  selects runs it cannot close yet, such as a pending cooperative
+  cancellation with an open workflow task, so they cannot starve other
+  runs.
+
 ## 2.30.0 - 2026-11-18
 
 - **Security fix:** webhook `token` authentication with no token configured
