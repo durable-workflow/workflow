@@ -324,7 +324,14 @@ final class StructuralLimits
             return;
         }
 
-        self::guardPendingActivityCount(self::pendingActivityCount($run));
+        $count = self::pendingCount(
+            'activities',
+            $run,
+            true,
+            self::pendingActivityLimit(),
+            static fn (): int => self::pendingActivityCount($run),
+        );
+        self::guardPendingActivityCount($count);
     }
 
     /**
@@ -353,7 +360,14 @@ final class StructuralLimits
             return;
         }
 
-        self::guardPendingChildCount(self::pendingChildCount($run));
+        $count = self::pendingCount(
+            'children',
+            $run,
+            true,
+            self::pendingChildLimit(),
+            static fn (): int => self::pendingChildCount($run),
+        );
+        self::guardPendingChildCount($count);
     }
 
     /**
@@ -559,10 +573,13 @@ final class StructuralLimits
      */
     public static function warnApproachingPendingActivities(WorkflowRun $run): ?array
     {
-        $count = ActivityExecution::query()
-            ->where('workflow_run_id', $run->id)
-            ->whereIn('status', [ActivityStatus::Pending->value, ActivityStatus::Running->value])
-            ->count();
+        $count = self::pendingCount(
+            'activities',
+            $run,
+            false,
+            self::warningThreshold(StructuralLimitKind::PendingActivityCount),
+            static fn (): int => self::pendingActivityCount($run),
+        );
 
         return self::checkApproaching(StructuralLimitKind::PendingActivityCount, $count);
     }
@@ -572,18 +589,13 @@ final class StructuralLimits
      */
     public static function warnApproachingPendingChildren(WorkflowRun $run): ?array
     {
-        $count = WorkflowLink::query()
-            ->where('parent_workflow_run_id', $run->id)
-            ->where('link_type', 'child_workflow')
-            ->whereHas('childRun', static function ($query) {
-                $query->whereNotIn('status', [
-                    RunStatus::Completed->value,
-                    RunStatus::Failed->value,
-                    RunStatus::Cancelled->value,
-                    RunStatus::Terminated->value,
-                ]);
-            })
-            ->count();
+        $count = self::pendingCount(
+            'children',
+            $run,
+            false,
+            self::warningThreshold(StructuralLimitKind::PendingChildCount),
+            static fn (): int => self::pendingChildCount($run),
+        );
 
         return self::checkApproaching(StructuralLimitKind::PendingChildCount, $count);
     }
@@ -746,6 +758,63 @@ final class StructuralLimits
             'external_payload_transaction_bytes' => self::externalPayloadTransactionBytesLimit(),
             'warning_threshold_percent' => self::warningThresholdPercent(),
         ];
+    }
+
+    /**
+     * A pending count that decides exactly like the stored count (#1203, #1231).
+     *
+     * A workflow task schedules a fan-out's members one at a time while it
+     * holds the run lock, checking the pending count before each. Counting
+     * the stored rows every time made the task's cost grow with the square of
+     * the width. Within one task, the first check counts the rows, and each
+     * later guard check adds the one member scheduled since; members that
+     * close meanwhile only lower the stored count, so the running value is an
+     * upper bound. Below $decisionAt the bound decides like the stored count;
+     * at or above it the rows are counted again and that count is returned.
+     *
+     * @param 'activities'|'children' $kind
+     * @param \Closure(): int $countRows
+     */
+    private static function pendingCount(
+        string $kind,
+        WorkflowRun $run,
+        bool $advance,
+        int $decisionAt,
+        \Closure $countRows,
+    ): int {
+        $key = "structural-limits-pending-{$kind}:{$run->id}";
+        $remembered = TaskScopeMemo::get($key);
+
+        if (is_int($remembered)) {
+            $bound = $remembered + ($advance ? 1 : 0);
+
+            if ($bound < $decisionAt) {
+                TaskScopeMemo::put($key, $bound);
+
+                return $bound;
+            }
+        }
+
+        $count = $countRows();
+        TaskScopeMemo::put($key, $count);
+
+        return $count;
+    }
+
+    /**
+     * The count at which checkApproaching() starts warning, or PHP_INT_MAX
+     * when it never warns for $kind.
+     */
+    private static function warningThreshold(StructuralLimitKind $kind): int
+    {
+        $thresholdPercent = self::warningThresholdPercent();
+        $limit = self::limitForKind($kind);
+
+        if ($thresholdPercent <= 0 || $limit <= 0) {
+            return PHP_INT_MAX;
+        }
+
+        return (int) floor($limit * $thresholdPercent / 100);
     }
 
     // ── Internal ────��───────────────────────────────────────────────

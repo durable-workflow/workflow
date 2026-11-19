@@ -239,19 +239,7 @@ final class WorkflowStepHistory
     ): array {
         $eventTypes = [];
 
-        foreach (self::historyEventsForRun($run)->sortBy('sequence') as $event) {
-            if (! $event instanceof WorkflowHistoryEvent) {
-                continue;
-            }
-
-            if (! self::isWorkflowStepEvent($event)) {
-                continue;
-            }
-
-            if (self::intValue($event->payload['sequence'] ?? null) !== $sequence) {
-                continue;
-            }
-
+        foreach (self::stepEventsForSequence($run, $sequence) as $event) {
             if (self::eventMatchesShape($event, $expectedShape)) {
                 continue;
             }
@@ -317,16 +305,8 @@ final class WorkflowStepHistory
             return null;
         }
 
-        foreach (self::historyEventsForRun($run)->sortBy('sequence') as $event) {
-            if (! $event instanceof WorkflowHistoryEvent) {
-                continue;
-            }
-
-            if (! self::isWorkflowStepEvent($event) || ! self::eventMatchesShape($event, $expectedShape)) {
-                continue;
-            }
-
-            if (self::intValue($event->payload['sequence'] ?? null) !== $sequence) {
+        foreach (self::stepEventsForSequence($run, $sequence) as $event) {
+            if (! self::eventMatchesShape($event, $expectedShape)) {
                 continue;
             }
 
@@ -637,23 +617,46 @@ final class WorkflowStepHistory
     {
         $eventTypes = [];
 
-        foreach (self::historyEventsForRun($run)->sortBy('sequence') as $event) {
-            if (! $event instanceof WorkflowHistoryEvent) {
-                continue;
-            }
-
-            if (! self::isWorkflowStepEvent($event)) {
-                continue;
-            }
-
-            if (self::intValue($event->payload['sequence'] ?? null) !== $sequence) {
-                continue;
-            }
-
+        foreach (self::stepEventsForSequence($run, $sequence) as $event) {
             $eventTypes[] = $event->event_type->value;
         }
 
         return array_values(array_unique($eventTypes));
+    }
+
+    /**
+     * The run's workflow-step events recorded for one durable sequence, in
+     * history order. Replay validates every fan-out member, so the events are
+     * indexed by sequence once per loaded history instead of rescanned per
+     * member (#1231).
+     *
+     * @return list<WorkflowHistoryEvent>
+     */
+    private static function stepEventsForSequence(WorkflowRun $run, int $sequence): array
+    {
+        $index = HistoryEventIndex::remember(
+            self::historyEventsForRun($run),
+            'workflow-step-events-by-sequence',
+            static function (Collection $events): array {
+                $index = [];
+
+                foreach ($events->sortBy('sequence') as $event) {
+                    if (! $event instanceof WorkflowHistoryEvent || ! self::isWorkflowStepEvent($event)) {
+                        continue;
+                    }
+
+                    $eventSequence = self::intValue($event->payload['sequence'] ?? null);
+
+                    if ($eventSequence !== null) {
+                        $index[$eventSequence][] = $event;
+                    }
+                }
+
+                return $index;
+            },
+        );
+
+        return $index[$sequence] ?? [];
     }
 
     /**
