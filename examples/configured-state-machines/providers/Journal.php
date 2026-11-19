@@ -153,6 +153,9 @@ final readonly class Journal
             }
             $plan = $this->assertPlan($request);
             $status = Status::from($plan['status']);
+            if ($request->action === 'refund-authorized' && $this->unitQuoted($request->target)) {
+                throw new LogicException('A unit-accounted capture requires its original unit refund gateway.');
+            }
             if (CartReservationLedger::handles($request)) {
                 $status = $this->cart
                     ->admit($request, $status);
@@ -367,6 +370,17 @@ final readonly class Journal
             throw new LogicException('Compensation targets another original provider action.');
         }
         return $row['status'] === Status::Confirmed->value;
+    }
+
+    private function unitQuoted(?Identity $capture): bool
+    {
+        return $capture !== null && $this->query(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'unit_money_quotes'",
+            []
+        )->fetchColumn() !== false && $this->query(
+            'SELECT id FROM unit_money_quotes WHERE id = ?',
+            [$capture->key()]
+        )->fetchColumn() !== false;
     }
 
     private function recordRequest(Request $request, string $kind): void

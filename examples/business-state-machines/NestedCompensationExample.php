@@ -289,6 +289,93 @@ final readonly class NestedCompensationExample
         return app(ScopeRecovery::class)->request($scope, $requestId, self::PRINCIPAL, 'business_cancellation');
     }
 
+    /**
+     * Operator view of a cancellation. It only reads: automatic recovery after
+     * the Order closes, any recorded authorization refusal, and every unresolved
+     * Shipment and Order obligation with its reason.
+     */
+    public function cancellationOutcome(string $subject, string $parentRun): array
+    {
+        $recovery = app(ScopeRecovery::class);
+        $parent = $recovery->describe(ExampleOwnershipPolicy::scope($subject, $parentRun, 'parent'), self::PRINCIPAL);
+        $child = $recovery->describe(ExampleOwnershipPolicy::scope($subject, $parentRun, 'child'), self::PRINCIPAL);
+        $unresolved = [];
+        foreach ([
+            'child' => $child,
+            'parent' => $parent,
+        ] as $role => $view) {
+            foreach ($view['unresolved'] as $obligation) {
+                $unresolved[] = [
+                    'role' => $role,
+                    ...$obligation,
+                ];
+            }
+        }
+        return [
+            'recoveryStatus' => $parent['recoveryStatus'],
+            'scopeStatus' => $parent['scopeStatus'],
+            'automaticRecovery' => $parent['automaticRecovery'],
+            'nextAction' => $parent['nextAction'],
+            'unresolved' => $unresolved,
+        ];
+    }
+
+    /**
+     * After the operator resolves the blocker, submit fresh authorized keys. A failed Shipment
+     * needs its own request; the Order request never creates it implicitly.
+     */
+    public function resubmitCancellation(string $subject, string $parentRun, string $requestId): array
+    {
+        foreach (['child', 'parent'] as $role) {
+            $scope = ExampleOwnershipPolicy::scope($subject, $parentRun, $role);
+            (new ExampleOwnershipPolicy(self::PRINCIPAL))->assertScopeAllowed($scope, self::PRINCIPAL, 'request');
+            $receipt = app(ScopeRecovery::class)->request(
+                $scope,
+                $requestId,
+                self::PRINCIPAL,
+                'business_cancellation'
+            );
+        }
+        return $receipt;
+    }
+
+    /**
+     * The carrier took the parcel; voiding the delivery now needs the parcel back.
+     */
+    public function recordCarrierHandoff(string $subject): void
+    {
+        $this->moveDelivery($subject, 'active', 'dispatched');
+    }
+
+    /**
+     * The carrier returned the parcel, so the delivery can be voided again.
+     */
+    public function recordCarrierReturn(string $subject): void
+    {
+        $this->moveDelivery($subject, 'dispatched', 'active');
+    }
+
+    private function moveDelivery(string $subject, string $from, string $to): void
+    {
+        $this->db->transaction(function () use ($subject, $from, $to): void {
+            $shipment = $this->db->table('example_machine_subjects')
+                ->where('subject', $subject)
+                ->where('scope', ExampleOwnershipPolicy::APPLICATION . '.shipment')
+                ->lockForUpdate()
+                ->sole();
+            $moved = $this->db->table('example_machine_effects')
+                ->where('subject_id', $shipment->id)
+                ->where('action', 'deliver')
+                ->where('status', $from)
+                ->update([
+                    'status' => $to,
+                ]);
+            if ($moved !== 1) {
+                throw new LogicException('The Shipment delivery is not ' . $from . '.');
+            }
+        });
+    }
+
     private function subject(ExecutionReference $execution): object
     {
         $row = $this->db->table('example_machine_subjects')

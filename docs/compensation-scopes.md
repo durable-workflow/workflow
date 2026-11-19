@@ -124,8 +124,9 @@ per parent and at most 256 obligations per scope (at most 4,352 across that tree
 Children cannot be shared between parents. One application/namespace graph-integrity
 row serializes edge changes before scope locks. It contains no executor, lease,
 heartbeat or retry state. A missing or unverified child stops earlier parent work.
-Long child cleanup can exhaust the ordinary native activity retry budget; the
-parent remains unresolved. A failed child requires a fresh authorized child
+A child cleanup that outlasts the recovery run's compensation retry schedule
+leaves the parent unresolved. That schedule outlasts one crashed child attempt
+(see below). A failed child requires a fresh authorized child
 request. The stable parent-operation key never creates that request implicitly.
 After the child ledger becomes verified, a fresh authorized parent request can
 redrive the parent and observe that result before earlier parent work resumes.
@@ -139,13 +140,55 @@ work unresolved rather than silently adopting another principal. Requesting clea
 on an active origin requests cancellation of the entire native run: all its Saga
 callbacks can run, including other scopes and ordinary non-scope compensations.
 
-The default scoped forward/compensation activities use three native attempts and
-the native backoff. No scope retry loop is introduced. `DurableScope.execute()`
-accepts native `ActivityOptions` for forward work. Immediate terminal cancellation
-or termination can prevent cleanup; retained obligations remain for explicit
-recovery. A request accepted on an active origin is durable routing evidence; if
-that origin closes without resolving its obligations, repeat the same authorized
-request to route it to canonical recovery.
+The default scoped forward and in-origin compensation activities use three
+native attempts and the native backoff. An origin compensating under cooperative
+cancellation therefore fails fast and hands unresolved work to recovery.
+`DurableScope.execute()` accepts native `ActivityOptions` for forward work.
+Immediate terminal cancellation or termination can prevent cleanup; retained
+obligations remain for recovery. No scope retry loop is introduced.
+
+### Automatic recovery after the origin closes
+
+A request accepted on an active origin is durable routing evidence. If that origin
+closes without resolving its obligations, the task watchdog routes the scope to
+canonical recovery on its next pass. The watchdog runs on queue worker loops and in
+`workflow:v2:repair-pass`. It repeats the scope's primary request: the same key,
+principal and reason an operator would repeat. The route is bound per request under
+the scope lock, and native admission to the canonical recovery instance returns an
+existing active run. Concurrent passes or a racing manual request therefore start
+one recovery run. A scope whose request already routed to recovery is not routed
+again: a failed recovery run still needs a fresh authorized request.
+
+The primary principal is authorized again for `request` immediately before
+routing. If that refuses, or the principal no longer exists in the host's policy,
+nothing is started. The ledger journal records one `recovery_authorization_failed`
+entry, and the watchdog does not retry it. `ScopeRecovery::describe($identity,
+$principal)` reports it as `automaticRecovery: recovery_authorization_failed` with
+the refusal, and `nextAction: submit_fresh_authorized_request`. A fresh authorized
+request then routes recovery manually.
+
+### Recovery retry schedule
+
+Compensation inside a canonical recovery run started after this change uses six
+attempts. It waits 1, 2, 5 and 10 seconds, then one activity lease plus one
+task-repair pass: `activity_task_lease_seconds + task_repair.loop_throttle_seconds
++ task_repair.failure_backoff_max_seconds`, about six minutes by default. A worker
+can crash while a child participant is being compensated. The child's attempt then
+holds its lease until task repair reclaims it, and the recovery run's last wait
+outlasts that, so the parent settles without operator action. A persistent failure
+still fails the recovery run after the sixth attempt, with the obligation left
+unresolved.
+
+`RecoveryWorkflow` gates the schedule with `patched()` and records the computed
+values with `sideEffect()`. A later lease or repair configuration change therefore
+cannot change replay. Recovery runs recorded before the change replay unchanged
+with three attempts.
+
+A waiting retry runs early when its reason to wait has gone. That happens on an
+authorized request for the scope, and when a child participant's scope becomes
+verified (for the parent's open runs). Waking moves only that retry's ready time.
+It keeps the attempt number, the recorded maximum and the history unchanged, and a
+retry that already ran or a run at its maximum is not affected.
 
 Cancelled or terminated canonical recovery can restart on that same instance
 only through a fresh authorized request naming its exact current predecessor.
@@ -177,10 +220,13 @@ the tombstones would let an old generation or request key be accepted again. To
 return to a release without these tables, restore a database backup taken before
 the upgrade. An empty ledger rolls back normally.
 
-The refusal stops `migrate:rollback` at the ledger migration. Migrations later in
-the same batch have already rolled back by then, for example the reservation
-columns. Run `php artisan migrate` to restore them; the retained rows are not
-changed.
+The refusal happens before any migration in the rollback runs `down()`. When the
+migrator starts a rollback or reset, the package checks every guarded migration in
+that operation: the compensation ledger, child and root reservation fences and
+schedule occurrence receipts. If any of them holds retained state, nothing is
+rolled back, including newer migrations in the same batch. `--pretend` is not
+refused because it runs no `down()`. `migrate:fresh` drops every table without
+running `down()`, so it is not guarded.
 
 Downgrading only the package (to 2.28.x or earlier) leaves the ledger tables and
 rows in place. The older engine keeps running ordinary workflows on the upgraded
@@ -260,8 +306,10 @@ Register that participant before dispatching new child work. Each child register
 its own provider obligations before effects. A missing child remains unresolved
 and cannot satisfy the parent barrier.
 
-After the origin closes, the host calls `ScopeRecovery::request($identity,
-$requestKey, $principal, $reason, $initialProfile)`. The optional `StartOptions`
+After the origin closes, the watchdog routes an accepted request automatically
+(see above). The host calls `ScopeRecovery::request($identity, $requestKey,
+$principal, $reason, $initialProfile)` itself for a request made after closure,
+after an automatic route was refused, or after a recovery run failed. The optional `StartOptions`
 profile sets the initial recovery budget; retain that same profile on later
 requests. Obtain the principal from trusted application
 authorization, not from untrusted request content. Repeating the same request
@@ -269,7 +317,12 @@ requires the same principal, reason and profile. A returned failed/stopped
 receipt means recovery remains unresolved; inspect it and submit a fresh
 authorized key to request another eligible run. Results report `recoveryStatus`,
 `scopeStatus` and `nextAction`; `submit_fresh_authorized_request` identifies that
-boundary. Only the verified scope ledger clears the unresolved obligation.
+boundary. `ScopeRecovery::describe($identity, $principal)` is the read-only view.
+It requires `inspect` authorization and reports `scopeStatus`, `originStatus`,
+`recoveryStatus`, `automaticRecovery` (`not_needed`, `pending`, `routed` or
+`recovery_authorization_failed`), the recorded refusal, `nextAction` and each
+unresolved obligation with its reason. Only the verified scope ledger clears the
+unresolved obligation.
 Inspecting or requesting retained work
 must go through an authorized host boundary; the `@internal` persistence classes
 are not an HTTP-facing data access API.

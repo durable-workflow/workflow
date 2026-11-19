@@ -50,8 +50,9 @@ The native source controls include a prior provider repayment of 499 followed
 by the remaining 1000 refund, payment-first and reservation-first common routes,
 unknown-result recovery, callback-free replay and ownership substitution. The
 prior repayment is a provider fixture control; native partial-stock selection is
-described in the next section. Partial customer returns and the full
-fault/installed/publication criteria still need their own integration. The legacy `reserve-first` recipe
+described in the next section. Partial customer returns are described under
+[Partial customer return after delivery](#partial-customer-return-after-delivery).
+The full fault/installed/publication criteria still need their own integration. The legacy `reserve-first` recipe
 and other payment families retain their original contracts; this opt-in does
 not silently reinterpret them.
 
@@ -199,6 +200,160 @@ remain pinned. Provider operation keys do not depend on task/attempt IDs.
 retained scope pair together; a trusted live ownership callback is still
 mandatory before native storage. Portable descriptors alone grant no authority.
 
+## Partial customer return after delivery
+
+The `authorization-after-stock` recipe can opt into the same explicit unit
+money through trusted bootstrap. The full physical route, its Order and its
+FullShipment classes are unchanged; the authorized Payment only registers a
+different handler at the same `payment.capture` position when the opted-in
+initialization names it. Legacy initializations, other authorization recipes
+and `authorization-after-delivery` keep their exact descriptors and commands.
+
+```php
+$authority = new Authority($businessDb, $workerPrincipal, [$terms->subjectKey()], [
+    $terms->subjectKey() => FinancialCatalogue::AFTER_STOCK,
+], unitAmounts: [$terms->subjectKey() => [500, 500, 499]]);
+$refunds = new UnitRefundGateway($independentProviderPdo, $terms->client);
+$refunds->install();
+$store = MachineStore::configure($app, $authority, $provider, unitRefunds: $refunds);
+// Install return-schema.php after schema.php; ReturnStore is bound by configure().
+$store->seed($terms);
+// ... after the Order is fulfilled and the original Shipment delivered:
+app(ReturnStore::class)->request($terms->subjectKey(), 'rma-1', [2]);
+```
+
+The quote is pinned in the independent payment service before the original
+`capture-authorized` admission. A full-amount `refund-authorized` of a quoted
+capture is refused. Cancellation of the captured payment repays only original
+units that no earlier confirmed repayment of the same capture already covered.
+
+`ReturnStore::request()` persists one immutable return assignment for an
+original fulfilled and delivered Order generation: an explicit return key and
+explicit delivered unit ordinals. Repeating the same key and units returns the
+original native run; changed units, an earlier delivery stage, a cancelled
+Order or a unit already in another return are refused before provider access.
+The separate `UnitReturn` workflow owns its own retained scope. Its provider
+identities derive from the original booking owner and the return key, never
+from tasks or attempts:
+
+1. `provider.return.request` requests the return of the named units. The
+   provider admits it only after original delivery. It is not receipt,
+   acceptance or settlement.
+2. A recorded observation waits, with `return-milestone` hints, for warehouse
+   receipt and then inspection of that return. Receipt alone keeps waiting.
+   The first inspection-based plan is stored and never changes.
+3. `provider.return.restock` restocks only accepted saleable units under a
+   separate restock identity, after the original stock deduction.
+4. `provider.return.refund` repays exactly those units' original amounts
+   through the unit gateway, with a return-specific request key.
+5. A recorded, immutable outcome lists the requested, received, accepted,
+   saleable, discrepancy, restocked and refunded units and the refunded amount.
+
+Selected example policy: rejected units and accepted units that are unsuitable
+for sale are neither restocked nor refunded; the outcome records them as
+discrepancies for a separate decision. The return request and restocking are
+monotonic physical facts and the refund is a monotonic customer repayment, so
+compensation of the return scope fences or verifies and never reverses them.
+The Order stays `fulfilled`, the Shipment stays `delivered`, the original
+delivery evidence stays historical and the Order and Shipment histories are
+not rewritten. Every handler checks the native return run, its scope, the
+exact registered obligation and the assignment before provider I/O.
+
+A unit can belong to only one return. Once a unit return exists, a later
+business cancellation of that Order cannot use the full-parcel return: the
+provider refuses the full return, nothing is restocked or refunded again, and
+the cancellation stays unsettled rather than reporting `cancelled`. Settling the
+remaining units of such an Order, return expiry/windows, carrier return labels
+and a real warehouse remain outside this synthetic source example; a replacement for another size is the separate
+[same-price exchange](#same-price-exchange-for-another-size).
+`V2PartialReturnMachineTest` covers the delivered three-unit return,
+discrepancies, early and substituted requests, later returns and cancellation;
+`V2PartialReturnProcessLossTest` kills a real worker after the return request,
+restock and refund commit. They are synthetic recorded-task fixtures, not
+installed-package or real-provider qualification.
+
+```shell
+vendor/bin/phpunit tests/Feature/V2/V2PartialReturnMachineTest.php
+```
+
+## Same-price exchange for another size
+
+The same opted-in delivered Order (authorization-after-stock with explicit
+unit money) can exchange one delivered unit for another SKU at the same price.
+Install `exchange-schema.php` after `return-schema.php`; `ExchangeStore` is
+bound by `configure()` next to `ReturnStore`, so no new grant field is needed
+and legacy recipes, initializations and histories are unchanged:
+
+```php
+app(ExchangeStore::class)->request($terms->subjectKey(), 'swap-1', 2, 'sku-1-size-l', 499);
+```
+
+Selected example decision: the replacement stays linked to the original Order
+generation instead of a new Order. A separate native `UnitExchange` workflow
+owns its own retained scope; the Order stays `fulfilled`, the original
+Shipment stays `delivered` and neither history is rewritten. The request pins
+one immutable assignment: the exchange key, one original unit ordinal, the
+replacement SKU and a price that must equal the original unit amount. A price
+difference, the original SKU, an unknown unit, a unit already in a return or
+another exchange, an undelivered or cancelled Order and changed terms for the
+same key are refused before provider access; repeating the same request
+returns the original native run. Customer returns cannot use the reserved
+`exchange.` return-key prefix.
+
+1. `provider.exchange.request` requests the return of the original unit under
+   the return key `exchange.<key>`, through the same provider unit-return
+   ledger as `UnitReturn`. It is not receipt or acceptance.
+2. A recorded observation waits with `exchange-milestone` hints for warehouse
+   receipt and inspection. The first inspection-based plan is stored and never
+   changes; an accepted original pins the replacement shipment graph at the
+   provider before any replacement effect.
+3. `provider.exchange.restock` restocks the original unit only if it was
+   accepted and saleable.
+4. `provider.exchange.reserve` confirms availability with an authoritative
+   provider reservation of one replacement unit (`exchange.<key>.reserve`, with
+   its own `release`). It is not a stock lookup.
+5. `provider.exchange.book` books the replacement through the full-shipment
+   handler with its own graph (`exchange.<key>.book`, `cancel`, `return`,
+   `restock`). A recorded observation then waits for the replacement's carrier
+   handover and recipient delivery. Replacement stock deduction is not modelled;
+   the confirmed reservation is the replacement's stock hold.
+6. A recorded, immutable outcome keeps the original booking, the return and the
+   replacement reservation and booking as four distinct identities, plus the
+   received, accepted, saleable, discrepancy and restocked units.
+
+| Branch | Selected outcome |
+| --- | --- |
+| Replacement delivered | `settled` / `replaced`. No money moves. |
+| Original rejected at inspection | `settled` / `original-rejected`. No restock, reservation, replacement or refund; the unit is a discrepancy. |
+| Replacement reservation refused | `settled` / `refunded-replacement-unavailable`. `provider.exchange.refund` repays exactly the original unit amount through the unit gateway with request key `unit-exchange-<key>`. |
+| Replacement booking refused | `compensated` / `replacement-dispatch-refused`. The exchange compensates its own scope: it fences the replacement booking and releases the replacement reservation. The returned original stays returned. The outcome records the unit amount as `refundOwedMinor`; it is not paid. |
+| Unknown reservation or booking outcome | The same operation is reconciled by native recovery (lookup of the same identity). It is never treated as a refusal. |
+
+Handlers check the native exchange run, its scope, the exact registered
+obligation and the stored assignment and plan before provider I/O. A booking
+requires the recorded confirmed reservation, and a refund requires the
+recorded refusal. Substituted keys, units, SKUs, bookings, owners and runs
+are refused. The exchange and the original Order compensate disjoint graphs.
+A later business cancellation of the original Order cannot cancel, return,
+restock or refund the replacement. The provider also refuses an original-owner
+cancellation that names the replacement booking, and the exchanged unit cannot
+enter a customer return.
+
+`V2ExchangeMachineTest` covers each branch, the old-compensation boundary,
+substitution and idempotent requests. `V2ExchangeProcessLossTest` kills a real
+worker after the exchange return request, replacement reservation, replacement
+booking and fallback refund commit; a fresh process recovers each effect
+exactly once. These are synthetic recorded-task fixtures, not installed-package,
+real-carrier or real-warehouse qualification. Price-difference exchanges,
+paying the owed amount after a refused booking, a lost or damaged replacement,
+exchange windows/deadlines, replacement stock deduction, exchanging several
+units at once and replacement returns remain open policy. The exchange has no
+admission deadline, so no deadline can restart.
+
+```shell
+vendor/bin/phpunit tests/Feature/V2/V2ExchangeMachineTest.php
+```
+
 ## Disposable application assembly
 
 Load `bootstrap.php` in the Laravel client and worker bootstrap, and include
@@ -251,13 +406,30 @@ provider operation keys remain unchanged.
 
 Child recovery executes independently of its parent's compensation activity.
 If the child's ledger is still unresolved when that activity exhausts its
-finite attempts, the original native run can fail before the child finishes.
-The parent scope stays requested and earlier compensation remains blocked.
-After inspecting the child's verified ledger or a confirmed late provider
-result, submit a fresh authorized cancellation request key to resume the
-original retained scope. Reusing the failed request key does not select a new
-recovery route. The finalizer still requires the original parent scope to be
-verified; a completed child recovery alone cannot settle the Order.
+finite in-origin attempts, the original native run can fail before the child
+finishes. The parent scope stays requested and earlier compensation remains
+blocked. On its next pass the task watchdog routes the accepted request to the
+parent's canonical recovery run (#1205), re-authorizing the original principal.
+That run waits long enough for one crashed child attempt to be repaired, and
+the child's verification wakes it. No operator request is needed. Submit a
+fresh authorized cancellation request key only when `ScopeRecovery::describe()`
+reports `recovery_authorization_failed`, or when a recovery run itself failed:
+for example, a refund that stayed unknown through all its attempts. Reusing a
+failed request key does not select a new recovery route. The finalizer still
+requires the original parent scope to be verified; a completed child recovery
+alone cannot settle the Order. `CancellationStore::finish()` remains the
+application's step after verification.
+
+**Recommended: finalize automatically.** DW settles compensation. The business
+`cancelled` commit is the application's decision. Register
+`CancellationFinalizer::register($events, $authority, $cancellations)` in the
+worker application. When a canonical recovery run completes for an Order's root
+scope, it calls `CancellationStore::finish()` with the earliest original request,
+so the Order reaches `cancelled` with no operator step. `finish()` refuses an
+unverified scope and is idempotent, so a repeated or early call changes nothing.
+`V2CheckoutProcessLossTest` runs its replacement worker with the finalizer
+registered. The cuts that lose a closed child's compensation worker end
+`cancelled` without any operator request.
 
 If the native root closes before genuine recorded owner registration, a missing
 scope stays unresolved. A host lookup, cancellation flag or terminal technical
@@ -396,8 +568,9 @@ financially unsettled until the original captured payment is verifiably
 refunded. It creates neither a booking nor a fictitious reservation release.
 The protected cancellation publication carries that stock-refusal receipt;
 a technical cancellation result alone is insufficient. A later confirmed
-refund can resume the original retained scope through a fresh authorized
-request and the existing proof-only finalizer.
+refund resumes the original retained scope: either a recovery run still
+waiting retries it, or a fresh authorized request routes recovery after an
+earlier run failed. The existing proof-only finalizer then settles the Order.
 
 The focused source cases are `V2PaymentFirstProviderMachineTest.php` and
 `V2CommonReserveFirstProviderMachineTest.php`; the original seven cases remain

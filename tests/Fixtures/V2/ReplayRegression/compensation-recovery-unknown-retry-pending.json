@@ -1,0 +1,580 @@
+{
+    "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+    "fixture_schema": "durable-workflow.replay-regression/v1",
+    "id": "compensation-recovery-unknown-retry-pending",
+    "protocol_version": "1.20",
+    "bindings": [
+        "php"
+    ],
+    "workflow": {
+        "type": "Workflow\\V2\\Compensation\\Recovery\\RecoveryWorkflow",
+        "arguments": [
+            {
+                "version": 1,
+                "application": "example.fulfilment",
+                "namespace": "business-example",
+                "key": "item-aaaaaaaaaaaaaaaa.child",
+                "generation": "01m7qt4d834vm19jfb2fpwstrk"
+            }
+        ],
+        "payload_codec": "avro"
+    },
+    "history": [
+        {
+            "sequence": 1,
+            "event_type": "WorkflowStarted",
+            "payload": {
+                "workflow_type": "dw.compensation.recovery.v1"
+            },
+            "recorded_at": "2026-11-18 17:09:10"
+        },
+        {
+            "sequence": 2,
+            "event_type": "VersionMarkerRecorded",
+            "payload": {
+                "sequence": 1,
+                "change_id": "dw.compensation.recovery-activities",
+                "version": 1,
+                "min_supported": 1,
+                "max_supported": 1
+            },
+            "recorded_at": "2026-11-18 17:09:10"
+        },
+        {
+            "sequence": 3,
+            "event_type": "ActivityScheduled",
+            "payload": {
+                "activity_execution_id": "01m7qt4ghq75rj3757zye839hq",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\PrepareRecoveryActivity",
+                "activity_type": "dw.compensation.prepare-recovery.v1",
+                "sequence": 2,
+                "activity": {
+                    "id": "01m7qt4ghq75rj3757zye839hq",
+                    "idempotency_key": "01m7qt4ghq75rj3757zye839hq",
+                    "sequence": 2,
+                    "type": "dw.compensation.prepare-recovery.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\PrepareRecoveryActivity",
+                    "local_activity": false,
+                    "status": "pending",
+                    "payload_codec": "avro",
+                    "attempt_count": 0,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 3,
+                        "backoff_seconds": [
+                            1,
+                            2,
+                            5,
+                            10,
+                            15,
+                            30,
+                            60,
+                            120
+                        ],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "connection": "redis",
+                    "queue": "default",
+                    "created_at": "2026-11-18T17:09:10.839630Z",
+                    "arguments": "wwHioz3/VYAiNwwCDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCiRleGFtcGxlLmZ1bGZpbG1lbnQSbmFtZXNwYWNlCiBidXNpbmVzcy1leGFtcGxlBmtleQo2aXRlbS1hYWFhYWFhYWFhYWFhYWFhLmNoaWxkFGdlbmVyYXRpb24KNDAxbTdxdDRkODM0dm0xOWpmYjJmcHdzdHJrAAA="
+                }
+            },
+            "recorded_at": "2026-11-18 17:09:10"
+        },
+        {
+            "sequence": 4,
+            "event_type": "ActivityStarted",
+            "payload": {
+                "activity_execution_id": "01m7qt4ghq75rj3757zye839hq",
+                "activity_attempt_id": "01M7QT4GJGW7TD1YB252FBWM4V",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\PrepareRecoveryActivity",
+                "activity_type": "dw.compensation.prepare-recovery.v1",
+                "sequence": 2,
+                "attempt_number": 1,
+                "activity": {
+                    "id": "01m7qt4ghq75rj3757zye839hq",
+                    "idempotency_key": "01m7qt4ghq75rj3757zye839hq",
+                    "sequence": 2,
+                    "type": "dw.compensation.prepare-recovery.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\PrepareRecoveryActivity",
+                    "local_activity": false,
+                    "attempt_id": "01M7QT4GJGW7TD1YB252FBWM4V",
+                    "status": "running",
+                    "payload_codec": "avro",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 3,
+                        "backoff_seconds": [
+                            1,
+                            2,
+                            5,
+                            10,
+                            15,
+                            30,
+                            60,
+                            120
+                        ],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "connection": "redis",
+                    "queue": "default",
+                    "created_at": "2026-11-18T17:09:10.839630Z",
+                    "started_at": "2026-11-18T17:09:10.864549Z",
+                    "arguments": "wwHioz3/VYAiNwwCDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCiRleGFtcGxlLmZ1bGZpbG1lbnQSbmFtZXNwYWNlCiBidXNpbmVzcy1leGFtcGxlBmtleQo2aXRlbS1hYWFhYWFhYWFhYWFhYWFhLmNoaWxkFGdlbmVyYXRpb24KNDAxbTdxdDRkODM0dm0xOWpmYjJmcHdzdHJrAAA="
+                }
+            },
+            "recorded_at": "2026-11-18 17:09:10"
+        },
+        {
+            "sequence": 5,
+            "event_type": "ActivityCompleted",
+            "payload": {
+                "activity_execution_id": "01m7qt4ghq75rj3757zye839hq",
+                "activity_attempt_id": "01M7QT4GJGW7TD1YB252FBWM4V",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\PrepareRecoveryActivity",
+                "activity_type": "dw.compensation.prepare-recovery.v1",
+                "sequence": 2,
+                "attempt_number": 1,
+                "result": "wwHioz3/VYAiNwwCCoABZDM0MjE4NGE2MDJhZGI4NmE1MmE0OWYyMjA0MTk1NDcxOTdlN2JmOGFmYWFkNDNkZGNhNTFlNDJmNzMwZWJlZgA=",
+                "payload_codec": "avro",
+                "activity": {
+                    "id": "01m7qt4ghq75rj3757zye839hq",
+                    "idempotency_key": "01m7qt4ghq75rj3757zye839hq",
+                    "sequence": 2,
+                    "type": "dw.compensation.prepare-recovery.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\PrepareRecoveryActivity",
+                    "local_activity": false,
+                    "attempt_id": "01M7QT4GJGW7TD1YB252FBWM4V",
+                    "status": "completed",
+                    "payload_codec": "avro",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 3,
+                        "backoff_seconds": [
+                            1,
+                            2,
+                            5,
+                            10,
+                            15,
+                            30,
+                            60,
+                            120
+                        ],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "connection": "redis",
+                    "queue": "default",
+                    "created_at": "2026-11-18T17:09:10.839630Z",
+                    "started_at": "2026-11-18T17:09:10.864549Z",
+                    "closed_at": "2026-11-18T17:09:10.980138Z",
+                    "arguments": "wwHioz3/VYAiNwwCDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCiRleGFtcGxlLmZ1bGZpbG1lbnQSbmFtZXNwYWNlCiBidXNpbmVzcy1leGFtcGxlBmtleQo2aXRlbS1hYWFhYWFhYWFhYWFhYWFhLmNoaWxkFGdlbmVyYXRpb24KNDAxbTdxdDRkODM0dm0xOWpmYjJmcHdzdHJrAAA=",
+                    "result": "wwHioz3/VYAiNwwCCoABZDM0MjE4NGE2MDJhZGI4NmE1MmE0OWYyMjA0MTk1NDcxOTdlN2JmOGFmYWFkNDNkZGNhNTFlNDJmNzMwZWJlZgA="
+                }
+            },
+            "recorded_at": "2026-11-18 17:09:10"
+        },
+        {
+            "sequence": 6,
+            "event_type": "ActivityScheduled",
+            "payload": {
+                "activity_execution_id": "01m7qt4gq74rjps8a4j5fr6kct",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
+                "activity_type": "dw.compensation.compensate-obligation.v1",
+                "sequence": 3,
+                "activity": {
+                    "id": "01m7qt4gq74rjps8a4j5fr6kct",
+                    "idempotency_key": "01m7qt4gq74rjps8a4j5fr6kct",
+                    "sequence": 3,
+                    "type": "dw.compensation.compensate-obligation.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
+                    "local_activity": false,
+                    "status": "pending",
+                    "payload_codec": "avro",
+                    "attempt_count": 0,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 3,
+                        "backoff_seconds": [
+                            1,
+                            2,
+                            5,
+                            10,
+                            15,
+                            30,
+                            60,
+                            120
+                        ],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "connection": "redis",
+                    "queue": "default",
+                    "created_at": "2026-11-18T17:09:11.015184Z",
+                    "arguments": "wwHioz3/VYAiNwwEDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCiRleGFtcGxlLmZ1bGZpbG1lbnQSbmFtZXNwYWNlCiBidXNpbmVzcy1leGFtcGxlBmtleQo2aXRlbS1hYWFhYWFhYWFhYWFhYWFhLmNoaWxkFGdlbmVyYXRpb24KNDAxbTdxdDRkODM0dm0xOWpmYjJmcHdzdHJrAAqAAWQzNDIxODRhNjAyYWRiODZhNTJhNDlmMjIwNDE5NTQ3MTk3ZTdiZjhhZmFhZDQzZGRjYTUxZTQyZjczMGViZWYA"
+                }
+            },
+            "recorded_at": "2026-11-18 17:09:11"
+        },
+        {
+            "sequence": 7,
+            "event_type": "ActivityStarted",
+            "payload": {
+                "activity_execution_id": "01m7qt4gq74rjps8a4j5fr6kct",
+                "activity_attempt_id": "01M7QT4GR34926P2BCGWQB6EH2",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
+                "activity_type": "dw.compensation.compensate-obligation.v1",
+                "sequence": 3,
+                "attempt_number": 1,
+                "activity": {
+                    "id": "01m7qt4gq74rjps8a4j5fr6kct",
+                    "idempotency_key": "01m7qt4gq74rjps8a4j5fr6kct",
+                    "sequence": 3,
+                    "type": "dw.compensation.compensate-obligation.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
+                    "local_activity": false,
+                    "attempt_id": "01M7QT4GR34926P2BCGWQB6EH2",
+                    "status": "running",
+                    "payload_codec": "avro",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 3,
+                        "backoff_seconds": [
+                            1,
+                            2,
+                            5,
+                            10,
+                            15,
+                            30,
+                            60,
+                            120
+                        ],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "connection": "redis",
+                    "queue": "default",
+                    "created_at": "2026-11-18T17:09:11.015184Z",
+                    "started_at": "2026-11-18T17:09:11.043235Z",
+                    "arguments": "wwHioz3/VYAiNwwEDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCiRleGFtcGxlLmZ1bGZpbG1lbnQSbmFtZXNwYWNlCiBidXNpbmVzcy1leGFtcGxlBmtleQo2aXRlbS1hYWFhYWFhYWFhYWFhYWFhLmNoaWxkFGdlbmVyYXRpb24KNDAxbTdxdDRkODM0dm0xOWpmYjJmcHdzdHJrAAqAAWQzNDIxODRhNjAyYWRiODZhNTJhNDlmMjIwNDE5NTQ3MTk3ZTdiZjhhZmFhZDQzZGRjYTUxZTQyZjczMGViZWYA"
+                }
+            },
+            "recorded_at": "2026-11-18 17:09:11"
+        },
+        {
+            "sequence": 8,
+            "event_type": "ActivityRetryScheduled",
+            "payload": {
+                "activity_execution_id": "01m7qt4gq74rjps8a4j5fr6kct",
+                "activity_attempt_id": "01M7QT4GR34926P2BCGWQB6EH2",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
+                "activity_type": "dw.compensation.compensate-obligation.v1",
+                "sequence": 3,
+                "retry_task_id": "01m7qt4gw5bx273ft2ms4rhbh5",
+                "retry_of_task_id": "01m7qt4gq9ktwbh00286wkjw99",
+                "retry_available_at": "2026-11-18T17:09:12.172153Z",
+                "retry_backoff_seconds": 1,
+                "retry_after_attempt_id": "01M7QT4GR34926P2BCGWQB6EH2",
+                "retry_after_attempt": 1,
+                "max_attempts": 3,
+                "retry_policy": {
+                    "snapshot_version": 1,
+                    "max_attempts": 3,
+                    "backoff_seconds": [
+                        1,
+                        2,
+                        5,
+                        10,
+                        15,
+                        30,
+                        60,
+                        120
+                    ],
+                    "start_to_close_timeout": null,
+                    "schedule_to_start_timeout": null,
+                    "schedule_to_close_timeout": null,
+                    "heartbeat_timeout": null,
+                    "non_retryable_error_types": []
+                },
+                "exception_type": null,
+                "activity_attempt": {
+                    "id": "01M7QT4GR34926P2BCGWQB6EH2",
+                    "activity_execution_id": "01m7qt4gq74rjps8a4j5fr6kct",
+                    "task_id": "01m7qt4gq9ktwbh00286wkjw99",
+                    "status": "failed",
+                    "lease_owner": "01m7qt4gq9ktwbh00286wkjw99",
+                    "closed_at": "2026-11-18T17:09:11.172208Z"
+                },
+                "exception_class": "RuntimeException",
+                "message": "scope_compensation_unknown",
+                "code": 0,
+                "exception": {
+                    "class": "RuntimeException",
+                    "message": "scope_compensation_unknown",
+                    "code": 0,
+                    "file": "src/V2/Compensation/Activities/CompensateObligationActivity.php",
+                    "line": 89,
+                    "trace": []
+                },
+                "activity": {
+                    "id": "01m7qt4gq74rjps8a4j5fr6kct",
+                    "idempotency_key": "01m7qt4gq74rjps8a4j5fr6kct",
+                    "sequence": 3,
+                    "type": "dw.compensation.compensate-obligation.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
+                    "local_activity": false,
+                    "attempt_id": "01M7QT4GR34926P2BCGWQB6EH2",
+                    "status": "pending",
+                    "payload_codec": "avro",
+                    "attempt_count": 1,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 3,
+                        "backoff_seconds": [
+                            1,
+                            2,
+                            5,
+                            10,
+                            15,
+                            30,
+                            60,
+                            120
+                        ],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "connection": "redis",
+                    "queue": "default",
+                    "created_at": "2026-11-18T17:09:11.015184Z",
+                    "started_at": "2026-11-18T17:09:11.043235Z",
+                    "arguments": "wwHioz3/VYAiNwwEDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCiRleGFtcGxlLmZ1bGZpbG1lbnQSbmFtZXNwYWNlCiBidXNpbmVzcy1leGFtcGxlBmtleQo2aXRlbS1hYWFhYWFhYWFhYWFhYWFhLmNoaWxkFGdlbmVyYXRpb24KNDAxbTdxdDRkODM0dm0xOWpmYjJmcHdzdHJrAAqAAWQzNDIxODRhNjAyYWRiODZhNTJhNDlmMjIwNDE5NTQ3MTk3ZTdiZjhhZmFhZDQzZGRjYTUxZTQyZjczMGViZWYA",
+                    "exception": "wwHioz3/VYAiNw4OCmNsYXNzCiBSdW50aW1lRXhjZXB0aW9uDm1lc3NhZ2UKNHNjb3BlX2NvbXBlbnNhdGlvbl91bmtub3duCGNvZGUEAAhmaWxlCogBL2FwcC9zcmMvVjIvQ29tcGVuc2F0aW9uL0FjdGl2aXRpZXMvQ29tcGVuc2F0ZU9ibGlnYXRpb25BY3Rpdml0eS5waHAIbGluZQSyAQp0cmFjZQwoDgoKY2xhc3MKgAFXb3JrZmxvd1xWMlxDb21wZW5zYXRpb25cQWN0aXZpdGllc1xDb21wZW5zYXRlT2JsaWdhdGlvbkFjdGl2aXR5CHR5cGUKBC0+EGZ1bmN0aW9uCgxoYW5kbGUIZmlsZQpIL2FwcC9zcmMvVjIvSm9icy9SdW5BY3Rpdml0eVRhc2sucGhwCGxpbmUEzgIADgoKY2xhc3MKQFdvcmtmbG93XFYyXEpvYnNcUnVuQWN0aXZpdHlUYXNrCHR5cGUKBC0+EGZ1bmN0aW9uCixleGVjdXRlTWFpbnRhaW5lZENsYWltCGZpbGUKSC9hcHAvc3JjL1YyL0pvYnMvUnVuQWN0aXZpdHlUYXNrLnBocAhsaW5lBOgBAA4KCmNsYXNzCkBXb3JrZmxvd1xWMlxKb2JzXFJ1bkFjdGl2aXR5VGFzawh0eXBlCgQtPhBmdW5jdGlvbgoYZXhlY3V0ZUNsYWltCGZpbGUKSC9hcHAvc3JjL1YyL0pvYnMvUnVuQWN0aXZpdHlUYXNrLnBocAhsaW5lBKYBAA4KCmNsYXNzCkBXb3JrZmxvd1xWMlxKb2JzXFJ1bkFjdGl2aXR5VGFzawh0eXBlCgQtPhBmdW5jdGlvbgoMaGFuZGxlCGZpbGUKjAEvYXBwL3ZlbmRvci9sYXJhdmVsL2ZyYW1ld29yay9zcmMvSWxsdW1pbmF0ZS9Db250YWluZXIvQm91bmRNZXRob2QucGhwCGxpbmUESAAOCgpjbGFzcwpASWxsdW1pbmF0ZVxDb250YWluZXJcQm91bmRNZXRob2QIdHlwZQoEOjoQZnVuY3Rpb24KPElsbHVtaW5hdGVcQ29udGFpbmVyXHtjbG9zdXJlfQhmaWxlCn4vYXBwL3ZlbmRvci9sYXJhdmVsL2ZyYW1ld29yay9zcmMvSWxsdW1pbmF0ZS9Db250YWluZXIvVXRpbC5waHAIbGluZQRWAA4KCmNsYXNzCjJJbGx1bWluYXRlXENvbnRhaW5lclxVdGlsCHR5cGUKBDo6EGZ1bmN0aW9uCh51bndyYXBJZkNsb3N1cmUIZmlsZQqMAS9hcHAvdmVuZG9yL2xhcmF2ZWwvZnJhbWV3b3JrL3NyYy9JbGx1bWluYXRlL0NvbnRhaW5lci9Cb3VuZE1ldGhvZC5waHAIbGluZQTAAQAOCgpjbGFzcwpASWxsdW1pbmF0ZVxDb250YWluZXJcQm91bmRNZXRob2QIdHlwZQoEOjoQZnVuY3Rpb24KHmNhbGxCb3VuZE1ldGhvZAhmaWxlCowBL2FwcC92ZW5kb3IvbGFyYXZlbC9mcmFtZXdvcmsvc3JjL0lsbHVtaW5hdGUvQ29udGFpbmVyL0JvdW5kTWV0aG9kLnBocAhsaW5lBEYADgoKY2xhc3MKQElsbHVtaW5hdGVcQ29udGFpbmVyXEJvdW5kTWV0aG9kCHR5cGUKBDo6EGZ1bmN0aW9uCghjYWxsCGZpbGUKiAEvYXBwL3ZlbmRvci9sYXJhdmVsL2ZyYW1ld29yay9zcmMvSWxsdW1pbmF0ZS9Db250YWluZXIvQ29udGFpbmVyLnBocAhsaW5lBMYMAA4KCmNsYXNzCjxJbGx1bWluYXRlXENvbnRhaW5lclxDb250YWluZXIIdHlwZQoELT4QZnVuY3Rpb24KCGNhbGwIZmlsZQpyL2FwcC90ZXN0cy9GZWF0dXJlL1YyL1YyTmVzdGVkQ29tcGVuc2F0aW9uRXhhbXBsZVRlc3QucGhwCGxpbmUEgAgADgoKY2xhc3MKYFRlc3RzXEZlYXR1cmVcVjJcVjJOZXN0ZWRDb21wZW5zYXRpb25FeGFtcGxlVGVzdAh0eXBlCgQtPhBmdW5jdGlvbgoKZHJhaW4IZmlsZQpyL2FwcC90ZXN0cy9GZWF0dXJlL1YyL1YyTmVzdGVkQ29tcGVuc2F0aW9uRXhhbXBsZVRlc3QucGhwCGxpbmUEjgUADgoKY2xhc3MKYFRlc3RzXEZlYXR1cmVcVjJcVjJOZXN0ZWRDb21wZW5zYXRpb25FeGFtcGxlVGVzdAh0eXBlCgQtPhBmdW5jdGlvbgqOAXRlc3REaXNwYXRjaGVkU2hpcG1lbnRGYWlsc0NvbXBlbnNhdGlvblZpc2libHlVbnRpbFRoZU9wZXJhdG9yUmVzdWJtaXRzCGZpbGUKbC9hcHAvdmVuZG9yL3BocHVuaXQvcGhwdW5pdC9zcmMvRnJhbWV3b3JrL1Rlc3RDYXNlLnBocAhsaW5lBIQVAA4KCmNsYXNzCjRQSFBVbml0XEZyYW1ld29ya1xUZXN0Q2FzZQh0eXBlCgQtPhBmdW5jdGlvbgogaW52b2tlVGVzdE1ldGhvZAhmaWxlCmwvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL0ZyYW1ld29yay9UZXN0Q2FzZS5waHAIbGluZQTOFQAOCgpjbGFzcwo0UEhQVW5pdFxGcmFtZXdvcmtcVGVzdENhc2UIdHlwZQoELT4QZnVuY3Rpb24KDnJ1blRlc3QIZmlsZQpsL2FwcC92ZW5kb3IvcGhwdW5pdC9waHB1bml0L3NyYy9GcmFtZXdvcmsvVGVzdENhc2UucGhwCGxpbmUEkggADgoKY2xhc3MKNFBIUFVuaXRcRnJhbWV3b3JrXFRlc3RDYXNlCHR5cGUKBC0+EGZ1bmN0aW9uCg5ydW5CYXJlCGZpbGUKhgEvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL0ZyYW1ld29yay9UZXN0UnVubmVyL1Rlc3RSdW5uZXIucGhwCGxpbmUExAEADgoKY2xhc3MKOFBIUFVuaXRcRnJhbWV3b3JrXFRlc3RSdW5uZXIIdHlwZQoELT4QZnVuY3Rpb24KBnJ1bghmaWxlCmwvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL0ZyYW1ld29yay9UZXN0Q2FzZS5waHAIbGluZQTSBQAOCgpjbGFzcwo0UEhQVW5pdFxGcmFtZXdvcmtcVGVzdENhc2UIdHlwZQoELT4QZnVuY3Rpb24KBnJ1bghmaWxlCm4vYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL0ZyYW1ld29yay9UZXN0U3VpdGUucGhwCGxpbmUE9gUADgoKY2xhc3MKNlBIUFVuaXRcRnJhbWV3b3JrXFRlc3RTdWl0ZQh0eXBlCgQtPhBmdW5jdGlvbgoGcnVuCGZpbGUKai9hcHAvdmVuZG9yL3BocHVuaXQvcGhwdW5pdC9zcmMvVGV4dFVJL1Rlc3RSdW5uZXIucGhwCGxpbmUEgAEADgoKY2xhc3MKMlBIUFVuaXRcVGV4dFVJXFRlc3RSdW5uZXIIdHlwZQoELT4QZnVuY3Rpb24KBnJ1bghmaWxlCmwvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL1RleHRVSS9BcHBsaWNhdGlvbi5waHAIbGluZQTKAwAOCgpjbGFzcwo0UEhQVW5pdFxUZXh0VUlcQXBwbGljYXRpb24IdHlwZQoELT4QZnVuY3Rpb24KBnJ1bghmaWxlCkYvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvcGhwdW5pdAhsaW5lBNABAA4GEGZ1bmN0aW9uCg5pbmNsdWRlCGZpbGUKLi9hcHAvdmVuZG9yL2Jpbi9waHB1bml0CGxpbmUE9AEAABRwcm9wZXJ0aWVzDAAA"
+                }
+            },
+            "recorded_at": "2026-11-18 17:09:11"
+        },
+        {
+            "sequence": 9,
+            "event_type": "ActivityStarted",
+            "payload": {
+                "activity_execution_id": "01m7qt4gq74rjps8a4j5fr6kct",
+                "activity_attempt_id": "01M7QT4GZZJK5NYBYT4GKXH2JC",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
+                "activity_type": "dw.compensation.compensate-obligation.v1",
+                "sequence": 3,
+                "attempt_number": 2,
+                "activity": {
+                    "id": "01m7qt4gq74rjps8a4j5fr6kct",
+                    "idempotency_key": "01m7qt4gq74rjps8a4j5fr6kct",
+                    "sequence": 3,
+                    "type": "dw.compensation.compensate-obligation.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
+                    "local_activity": false,
+                    "attempt_id": "01M7QT4GZZJK5NYBYT4GKXH2JC",
+                    "status": "running",
+                    "payload_codec": "avro",
+                    "attempt_count": 2,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 3,
+                        "backoff_seconds": [
+                            1,
+                            2,
+                            5,
+                            10,
+                            15,
+                            30,
+                            60,
+                            120
+                        ],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "connection": "redis",
+                    "queue": "default",
+                    "created_at": "2026-11-18T17:09:11.015184Z",
+                    "started_at": "2026-11-18T17:09:12.798694Z",
+                    "arguments": "wwHioz3/VYAiNwwEDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCiRleGFtcGxlLmZ1bGZpbG1lbnQSbmFtZXNwYWNlCiBidXNpbmVzcy1leGFtcGxlBmtleQo2aXRlbS1hYWFhYWFhYWFhYWFhYWFhLmNoaWxkFGdlbmVyYXRpb24KNDAxbTdxdDRkODM0dm0xOWpmYjJmcHdzdHJrAAqAAWQzNDIxODRhNjAyYWRiODZhNTJhNDlmMjIwNDE5NTQ3MTk3ZTdiZjhhZmFhZDQzZGRjYTUxZTQyZjczMGViZWYA",
+                    "exception": "wwHioz3/VYAiNw4OCmNsYXNzCiBSdW50aW1lRXhjZXB0aW9uDm1lc3NhZ2UKNHNjb3BlX2NvbXBlbnNhdGlvbl91bmtub3duCGNvZGUEAAhmaWxlCogBL2FwcC9zcmMvVjIvQ29tcGVuc2F0aW9uL0FjdGl2aXRpZXMvQ29tcGVuc2F0ZU9ibGlnYXRpb25BY3Rpdml0eS5waHAIbGluZQSyAQp0cmFjZQwoDgoKY2xhc3MKgAFXb3JrZmxvd1xWMlxDb21wZW5zYXRpb25cQWN0aXZpdGllc1xDb21wZW5zYXRlT2JsaWdhdGlvbkFjdGl2aXR5CHR5cGUKBC0+EGZ1bmN0aW9uCgxoYW5kbGUIZmlsZQpIL2FwcC9zcmMvVjIvSm9icy9SdW5BY3Rpdml0eVRhc2sucGhwCGxpbmUEzgIADgoKY2xhc3MKQFdvcmtmbG93XFYyXEpvYnNcUnVuQWN0aXZpdHlUYXNrCHR5cGUKBC0+EGZ1bmN0aW9uCixleGVjdXRlTWFpbnRhaW5lZENsYWltCGZpbGUKSC9hcHAvc3JjL1YyL0pvYnMvUnVuQWN0aXZpdHlUYXNrLnBocAhsaW5lBOgBAA4KCmNsYXNzCkBXb3JrZmxvd1xWMlxKb2JzXFJ1bkFjdGl2aXR5VGFzawh0eXBlCgQtPhBmdW5jdGlvbgoYZXhlY3V0ZUNsYWltCGZpbGUKSC9hcHAvc3JjL1YyL0pvYnMvUnVuQWN0aXZpdHlUYXNrLnBocAhsaW5lBKYBAA4KCmNsYXNzCkBXb3JrZmxvd1xWMlxKb2JzXFJ1bkFjdGl2aXR5VGFzawh0eXBlCgQtPhBmdW5jdGlvbgoMaGFuZGxlCGZpbGUKjAEvYXBwL3ZlbmRvci9sYXJhdmVsL2ZyYW1ld29yay9zcmMvSWxsdW1pbmF0ZS9Db250YWluZXIvQm91bmRNZXRob2QucGhwCGxpbmUESAAOCgpjbGFzcwpASWxsdW1pbmF0ZVxDb250YWluZXJcQm91bmRNZXRob2QIdHlwZQoEOjoQZnVuY3Rpb24KPElsbHVtaW5hdGVcQ29udGFpbmVyXHtjbG9zdXJlfQhmaWxlCn4vYXBwL3ZlbmRvci9sYXJhdmVsL2ZyYW1ld29yay9zcmMvSWxsdW1pbmF0ZS9Db250YWluZXIvVXRpbC5waHAIbGluZQRWAA4KCmNsYXNzCjJJbGx1bWluYXRlXENvbnRhaW5lclxVdGlsCHR5cGUKBDo6EGZ1bmN0aW9uCh51bndyYXBJZkNsb3N1cmUIZmlsZQqMAS9hcHAvdmVuZG9yL2xhcmF2ZWwvZnJhbWV3b3JrL3NyYy9JbGx1bWluYXRlL0NvbnRhaW5lci9Cb3VuZE1ldGhvZC5waHAIbGluZQTAAQAOCgpjbGFzcwpASWxsdW1pbmF0ZVxDb250YWluZXJcQm91bmRNZXRob2QIdHlwZQoEOjoQZnVuY3Rpb24KHmNhbGxCb3VuZE1ldGhvZAhmaWxlCowBL2FwcC92ZW5kb3IvbGFyYXZlbC9mcmFtZXdvcmsvc3JjL0lsbHVtaW5hdGUvQ29udGFpbmVyL0JvdW5kTWV0aG9kLnBocAhsaW5lBEYADgoKY2xhc3MKQElsbHVtaW5hdGVcQ29udGFpbmVyXEJvdW5kTWV0aG9kCHR5cGUKBDo6EGZ1bmN0aW9uCghjYWxsCGZpbGUKiAEvYXBwL3ZlbmRvci9sYXJhdmVsL2ZyYW1ld29yay9zcmMvSWxsdW1pbmF0ZS9Db250YWluZXIvQ29udGFpbmVyLnBocAhsaW5lBMYMAA4KCmNsYXNzCjxJbGx1bWluYXRlXENvbnRhaW5lclxDb250YWluZXIIdHlwZQoELT4QZnVuY3Rpb24KCGNhbGwIZmlsZQpyL2FwcC90ZXN0cy9GZWF0dXJlL1YyL1YyTmVzdGVkQ29tcGVuc2F0aW9uRXhhbXBsZVRlc3QucGhwCGxpbmUEgAgADgoKY2xhc3MKYFRlc3RzXEZlYXR1cmVcVjJcVjJOZXN0ZWRDb21wZW5zYXRpb25FeGFtcGxlVGVzdAh0eXBlCgQtPhBmdW5jdGlvbgoKZHJhaW4IZmlsZQpyL2FwcC90ZXN0cy9GZWF0dXJlL1YyL1YyTmVzdGVkQ29tcGVuc2F0aW9uRXhhbXBsZVRlc3QucGhwCGxpbmUEjgUADgoKY2xhc3MKYFRlc3RzXEZlYXR1cmVcVjJcVjJOZXN0ZWRDb21wZW5zYXRpb25FeGFtcGxlVGVzdAh0eXBlCgQtPhBmdW5jdGlvbgqOAXRlc3REaXNwYXRjaGVkU2hpcG1lbnRGYWlsc0NvbXBlbnNhdGlvblZpc2libHlVbnRpbFRoZU9wZXJhdG9yUmVzdWJtaXRzCGZpbGUKbC9hcHAvdmVuZG9yL3BocHVuaXQvcGhwdW5pdC9zcmMvRnJhbWV3b3JrL1Rlc3RDYXNlLnBocAhsaW5lBIQVAA4KCmNsYXNzCjRQSFBVbml0XEZyYW1ld29ya1xUZXN0Q2FzZQh0eXBlCgQtPhBmdW5jdGlvbgogaW52b2tlVGVzdE1ldGhvZAhmaWxlCmwvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL0ZyYW1ld29yay9UZXN0Q2FzZS5waHAIbGluZQTOFQAOCgpjbGFzcwo0UEhQVW5pdFxGcmFtZXdvcmtcVGVzdENhc2UIdHlwZQoELT4QZnVuY3Rpb24KDnJ1blRlc3QIZmlsZQpsL2FwcC92ZW5kb3IvcGhwdW5pdC9waHB1bml0L3NyYy9GcmFtZXdvcmsvVGVzdENhc2UucGhwCGxpbmUEkggADgoKY2xhc3MKNFBIUFVuaXRcRnJhbWV3b3JrXFRlc3RDYXNlCHR5cGUKBC0+EGZ1bmN0aW9uCg5ydW5CYXJlCGZpbGUKhgEvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL0ZyYW1ld29yay9UZXN0UnVubmVyL1Rlc3RSdW5uZXIucGhwCGxpbmUExAEADgoKY2xhc3MKOFBIUFVuaXRcRnJhbWV3b3JrXFRlc3RSdW5uZXIIdHlwZQoELT4QZnVuY3Rpb24KBnJ1bghmaWxlCmwvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL0ZyYW1ld29yay9UZXN0Q2FzZS5waHAIbGluZQTSBQAOCgpjbGFzcwo0UEhQVW5pdFxGcmFtZXdvcmtcVGVzdENhc2UIdHlwZQoELT4QZnVuY3Rpb24KBnJ1bghmaWxlCm4vYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL0ZyYW1ld29yay9UZXN0U3VpdGUucGhwCGxpbmUE9gUADgoKY2xhc3MKNlBIUFVuaXRcRnJhbWV3b3JrXFRlc3RTdWl0ZQh0eXBlCgQtPhBmdW5jdGlvbgoGcnVuCGZpbGUKai9hcHAvdmVuZG9yL3BocHVuaXQvcGhwdW5pdC9zcmMvVGV4dFVJL1Rlc3RSdW5uZXIucGhwCGxpbmUEgAEADgoKY2xhc3MKMlBIUFVuaXRcVGV4dFVJXFRlc3RSdW5uZXIIdHlwZQoELT4QZnVuY3Rpb24KBnJ1bghmaWxlCmwvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL1RleHRVSS9BcHBsaWNhdGlvbi5waHAIbGluZQTKAwAOCgpjbGFzcwo0UEhQVW5pdFxUZXh0VUlcQXBwbGljYXRpb24IdHlwZQoELT4QZnVuY3Rpb24KBnJ1bghmaWxlCkYvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvcGhwdW5pdAhsaW5lBNABAA4GEGZ1bmN0aW9uCg5pbmNsdWRlCGZpbGUKLi9hcHAvdmVuZG9yL2Jpbi9waHB1bml0CGxpbmUE9AEAABRwcm9wZXJ0aWVzDAAA"
+                }
+            },
+            "recorded_at": "2026-11-18 17:09:12"
+        },
+        {
+            "sequence": 10,
+            "event_type": "ActivityRetryScheduled",
+            "payload": {
+                "activity_execution_id": "01m7qt4gq74rjps8a4j5fr6kct",
+                "activity_attempt_id": "01M7QT4GZZJK5NYBYT4GKXH2JC",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
+                "activity_type": "dw.compensation.compensate-obligation.v1",
+                "sequence": 3,
+                "retry_task_id": "01m7qt4h15fs4b07f5ydkfbwbx",
+                "retry_of_task_id": "01m7qt4gw5bx273ft2ms4rhbh5",
+                "retry_available_at": "2026-11-18T17:09:14.798694Z",
+                "retry_backoff_seconds": 2,
+                "retry_after_attempt_id": "01M7QT4GZZJK5NYBYT4GKXH2JC",
+                "retry_after_attempt": 2,
+                "max_attempts": 3,
+                "retry_policy": {
+                    "snapshot_version": 1,
+                    "max_attempts": 3,
+                    "backoff_seconds": [
+                        1,
+                        2,
+                        5,
+                        10,
+                        15,
+                        30,
+                        60,
+                        120
+                    ],
+                    "start_to_close_timeout": null,
+                    "schedule_to_start_timeout": null,
+                    "schedule_to_close_timeout": null,
+                    "heartbeat_timeout": null,
+                    "non_retryable_error_types": []
+                },
+                "exception_type": null,
+                "activity_attempt": {
+                    "id": "01M7QT4GZZJK5NYBYT4GKXH2JC",
+                    "activity_execution_id": "01m7qt4gq74rjps8a4j5fr6kct",
+                    "task_id": "01m7qt4gw5bx273ft2ms4rhbh5",
+                    "status": "failed",
+                    "lease_owner": "01m7qt4gw5bx273ft2ms4rhbh5",
+                    "closed_at": "2026-11-18T17:09:12.798694Z"
+                },
+                "exception_class": "RuntimeException",
+                "message": "scope_compensation_unknown",
+                "code": 0,
+                "exception": {
+                    "class": "RuntimeException",
+                    "message": "scope_compensation_unknown",
+                    "code": 0,
+                    "file": "src/V2/Compensation/Activities/CompensateObligationActivity.php",
+                    "line": 89,
+                    "trace": []
+                },
+                "activity": {
+                    "id": "01m7qt4gq74rjps8a4j5fr6kct",
+                    "idempotency_key": "01m7qt4gq74rjps8a4j5fr6kct",
+                    "sequence": 3,
+                    "type": "dw.compensation.compensate-obligation.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
+                    "local_activity": false,
+                    "attempt_id": "01M7QT4GZZJK5NYBYT4GKXH2JC",
+                    "status": "pending",
+                    "payload_codec": "avro",
+                    "attempt_count": 2,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 3,
+                        "backoff_seconds": [
+                            1,
+                            2,
+                            5,
+                            10,
+                            15,
+                            30,
+                            60,
+                            120
+                        ],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "connection": "redis",
+                    "queue": "default",
+                    "created_at": "2026-11-18T17:09:11.015184Z",
+                    "started_at": "2026-11-18T17:09:12.798694Z",
+                    "arguments": "wwHioz3/VYAiNwwEDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCiRleGFtcGxlLmZ1bGZpbG1lbnQSbmFtZXNwYWNlCiBidXNpbmVzcy1leGFtcGxlBmtleQo2aXRlbS1hYWFhYWFhYWFhYWFhYWFhLmNoaWxkFGdlbmVyYXRpb24KNDAxbTdxdDRkODM0dm0xOWpmYjJmcHdzdHJrAAqAAWQzNDIxODRhNjAyYWRiODZhNTJhNDlmMjIwNDE5NTQ3MTk3ZTdiZjhhZmFhZDQzZGRjYTUxZTQyZjczMGViZWYA",
+                    "exception": "wwHioz3/VYAiNw4OCmNsYXNzCiBSdW50aW1lRXhjZXB0aW9uDm1lc3NhZ2UKNHNjb3BlX2NvbXBlbnNhdGlvbl91bmtub3duCGNvZGUEAAhmaWxlCogBL2FwcC9zcmMvVjIvQ29tcGVuc2F0aW9uL0FjdGl2aXRpZXMvQ29tcGVuc2F0ZU9ibGlnYXRpb25BY3Rpdml0eS5waHAIbGluZQSyAQp0cmFjZQwoDgoKY2xhc3MKgAFXb3JrZmxvd1xWMlxDb21wZW5zYXRpb25cQWN0aXZpdGllc1xDb21wZW5zYXRlT2JsaWdhdGlvbkFjdGl2aXR5CHR5cGUKBC0+EGZ1bmN0aW9uCgxoYW5kbGUIZmlsZQpIL2FwcC9zcmMvVjIvSm9icy9SdW5BY3Rpdml0eVRhc2sucGhwCGxpbmUEzgIADgoKY2xhc3MKQFdvcmtmbG93XFYyXEpvYnNcUnVuQWN0aXZpdHlUYXNrCHR5cGUKBC0+EGZ1bmN0aW9uCixleGVjdXRlTWFpbnRhaW5lZENsYWltCGZpbGUKSC9hcHAvc3JjL1YyL0pvYnMvUnVuQWN0aXZpdHlUYXNrLnBocAhsaW5lBOgBAA4KCmNsYXNzCkBXb3JrZmxvd1xWMlxKb2JzXFJ1bkFjdGl2aXR5VGFzawh0eXBlCgQtPhBmdW5jdGlvbgoYZXhlY3V0ZUNsYWltCGZpbGUKSC9hcHAvc3JjL1YyL0pvYnMvUnVuQWN0aXZpdHlUYXNrLnBocAhsaW5lBKYBAA4KCmNsYXNzCkBXb3JrZmxvd1xWMlxKb2JzXFJ1bkFjdGl2aXR5VGFzawh0eXBlCgQtPhBmdW5jdGlvbgoMaGFuZGxlCGZpbGUKjAEvYXBwL3ZlbmRvci9sYXJhdmVsL2ZyYW1ld29yay9zcmMvSWxsdW1pbmF0ZS9Db250YWluZXIvQm91bmRNZXRob2QucGhwCGxpbmUESAAOCgpjbGFzcwpASWxsdW1pbmF0ZVxDb250YWluZXJcQm91bmRNZXRob2QIdHlwZQoEOjoQZnVuY3Rpb24KPElsbHVtaW5hdGVcQ29udGFpbmVyXHtjbG9zdXJlfQhmaWxlCn4vYXBwL3ZlbmRvci9sYXJhdmVsL2ZyYW1ld29yay9zcmMvSWxsdW1pbmF0ZS9Db250YWluZXIvVXRpbC5waHAIbGluZQRWAA4KCmNsYXNzCjJJbGx1bWluYXRlXENvbnRhaW5lclxVdGlsCHR5cGUKBDo6EGZ1bmN0aW9uCh51bndyYXBJZkNsb3N1cmUIZmlsZQqMAS9hcHAvdmVuZG9yL2xhcmF2ZWwvZnJhbWV3b3JrL3NyYy9JbGx1bWluYXRlL0NvbnRhaW5lci9Cb3VuZE1ldGhvZC5waHAIbGluZQTAAQAOCgpjbGFzcwpASWxsdW1pbmF0ZVxDb250YWluZXJcQm91bmRNZXRob2QIdHlwZQoEOjoQZnVuY3Rpb24KHmNhbGxCb3VuZE1ldGhvZAhmaWxlCowBL2FwcC92ZW5kb3IvbGFyYXZlbC9mcmFtZXdvcmsvc3JjL0lsbHVtaW5hdGUvQ29udGFpbmVyL0JvdW5kTWV0aG9kLnBocAhsaW5lBEYADgoKY2xhc3MKQElsbHVtaW5hdGVcQ29udGFpbmVyXEJvdW5kTWV0aG9kCHR5cGUKBDo6EGZ1bmN0aW9uCghjYWxsCGZpbGUKiAEvYXBwL3ZlbmRvci9sYXJhdmVsL2ZyYW1ld29yay9zcmMvSWxsdW1pbmF0ZS9Db250YWluZXIvQ29udGFpbmVyLnBocAhsaW5lBMYMAA4KCmNsYXNzCjxJbGx1bWluYXRlXENvbnRhaW5lclxDb250YWluZXIIdHlwZQoELT4QZnVuY3Rpb24KCGNhbGwIZmlsZQpyL2FwcC90ZXN0cy9GZWF0dXJlL1YyL1YyTmVzdGVkQ29tcGVuc2F0aW9uRXhhbXBsZVRlc3QucGhwCGxpbmUEgAgADgoKY2xhc3MKYFRlc3RzXEZlYXR1cmVcVjJcVjJOZXN0ZWRDb21wZW5zYXRpb25FeGFtcGxlVGVzdAh0eXBlCgQtPhBmdW5jdGlvbgoKZHJhaW4IZmlsZQpyL2FwcC90ZXN0cy9GZWF0dXJlL1YyL1YyTmVzdGVkQ29tcGVuc2F0aW9uRXhhbXBsZVRlc3QucGhwCGxpbmUEjgUADgoKY2xhc3MKYFRlc3RzXEZlYXR1cmVcVjJcVjJOZXN0ZWRDb21wZW5zYXRpb25FeGFtcGxlVGVzdAh0eXBlCgQtPhBmdW5jdGlvbgqOAXRlc3REaXNwYXRjaGVkU2hpcG1lbnRGYWlsc0NvbXBlbnNhdGlvblZpc2libHlVbnRpbFRoZU9wZXJhdG9yUmVzdWJtaXRzCGZpbGUKbC9hcHAvdmVuZG9yL3BocHVuaXQvcGhwdW5pdC9zcmMvRnJhbWV3b3JrL1Rlc3RDYXNlLnBocAhsaW5lBIQVAA4KCmNsYXNzCjRQSFBVbml0XEZyYW1ld29ya1xUZXN0Q2FzZQh0eXBlCgQtPhBmdW5jdGlvbgogaW52b2tlVGVzdE1ldGhvZAhmaWxlCmwvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL0ZyYW1ld29yay9UZXN0Q2FzZS5waHAIbGluZQTOFQAOCgpjbGFzcwo0UEhQVW5pdFxGcmFtZXdvcmtcVGVzdENhc2UIdHlwZQoELT4QZnVuY3Rpb24KDnJ1blRlc3QIZmlsZQpsL2FwcC92ZW5kb3IvcGhwdW5pdC9waHB1bml0L3NyYy9GcmFtZXdvcmsvVGVzdENhc2UucGhwCGxpbmUEkggADgoKY2xhc3MKNFBIUFVuaXRcRnJhbWV3b3JrXFRlc3RDYXNlCHR5cGUKBC0+EGZ1bmN0aW9uCg5ydW5CYXJlCGZpbGUKhgEvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL0ZyYW1ld29yay9UZXN0UnVubmVyL1Rlc3RSdW5uZXIucGhwCGxpbmUExAEADgoKY2xhc3MKOFBIUFVuaXRcRnJhbWV3b3JrXFRlc3RSdW5uZXIIdHlwZQoELT4QZnVuY3Rpb24KBnJ1bghmaWxlCmwvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL0ZyYW1ld29yay9UZXN0Q2FzZS5waHAIbGluZQTSBQAOCgpjbGFzcwo0UEhQVW5pdFxGcmFtZXdvcmtcVGVzdENhc2UIdHlwZQoELT4QZnVuY3Rpb24KBnJ1bghmaWxlCm4vYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL0ZyYW1ld29yay9UZXN0U3VpdGUucGhwCGxpbmUE9gUADgoKY2xhc3MKNlBIUFVuaXRcRnJhbWV3b3JrXFRlc3RTdWl0ZQh0eXBlCgQtPhBmdW5jdGlvbgoGcnVuCGZpbGUKai9hcHAvdmVuZG9yL3BocHVuaXQvcGhwdW5pdC9zcmMvVGV4dFVJL1Rlc3RSdW5uZXIucGhwCGxpbmUEgAEADgoKY2xhc3MKMlBIUFVuaXRcVGV4dFVJXFRlc3RSdW5uZXIIdHlwZQoELT4QZnVuY3Rpb24KBnJ1bghmaWxlCmwvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL1RleHRVSS9BcHBsaWNhdGlvbi5waHAIbGluZQTKAwAOCgpjbGFzcwo0UEhQVW5pdFxUZXh0VUlcQXBwbGljYXRpb24IdHlwZQoELT4QZnVuY3Rpb24KBnJ1bghmaWxlCkYvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvcGhwdW5pdAhsaW5lBNABAA4GEGZ1bmN0aW9uCg5pbmNsdWRlCGZpbGUKLi9hcHAvdmVuZG9yL2Jpbi9waHB1bml0CGxpbmUE9AEAABRwcm9wZXJ0aWVzDAAA"
+                }
+            },
+            "recorded_at": "2026-11-18 17:09:12"
+        },
+        {
+            "sequence": 11,
+            "event_type": "ActivityStarted",
+            "payload": {
+                "activity_execution_id": "01m7qt4gq74rjps8a4j5fr6kct",
+                "activity_attempt_id": "01M7QT4H4ZN21WRJPVNCA2AYEW",
+                "activity_class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
+                "activity_type": "dw.compensation.compensate-obligation.v1",
+                "sequence": 3,
+                "attempt_number": 3,
+                "activity": {
+                    "id": "01m7qt4gq74rjps8a4j5fr6kct",
+                    "idempotency_key": "01m7qt4gq74rjps8a4j5fr6kct",
+                    "sequence": 3,
+                    "type": "dw.compensation.compensate-obligation.v1",
+                    "class": "Workflow\\V2\\Compensation\\Activities\\CompensateObligationActivity",
+                    "local_activity": false,
+                    "attempt_id": "01M7QT4H4ZN21WRJPVNCA2AYEW",
+                    "status": "running",
+                    "payload_codec": "avro",
+                    "attempt_count": 3,
+                    "retry_policy": {
+                        "snapshot_version": 1,
+                        "max_attempts": 3,
+                        "backoff_seconds": [
+                            1,
+                            2,
+                            5,
+                            10,
+                            15,
+                            30,
+                            60,
+                            120
+                        ],
+                        "start_to_close_timeout": null,
+                        "schedule_to_start_timeout": null,
+                        "schedule_to_close_timeout": null,
+                        "heartbeat_timeout": null,
+                        "non_retryable_error_types": []
+                    },
+                    "connection": "redis",
+                    "queue": "default",
+                    "created_at": "2026-11-18T17:09:11.015184Z",
+                    "started_at": "2026-11-18T17:09:15.798694Z",
+                    "arguments": "wwHioz3/VYAiNwwEDgoOdmVyc2lvbgQCFmFwcGxpY2F0aW9uCiRleGFtcGxlLmZ1bGZpbG1lbnQSbmFtZXNwYWNlCiBidXNpbmVzcy1leGFtcGxlBmtleQo2aXRlbS1hYWFhYWFhYWFhYWFhYWFhLmNoaWxkFGdlbmVyYXRpb24KNDAxbTdxdDRkODM0dm0xOWpmYjJmcHdzdHJrAAqAAWQzNDIxODRhNjAyYWRiODZhNTJhNDlmMjIwNDE5NTQ3MTk3ZTdiZjhhZmFhZDQzZGRjYTUxZTQyZjczMGViZWYA",
+                    "exception": "wwHioz3/VYAiNw4OCmNsYXNzCiBSdW50aW1lRXhjZXB0aW9uDm1lc3NhZ2UKNHNjb3BlX2NvbXBlbnNhdGlvbl91bmtub3duCGNvZGUEAAhmaWxlCogBL2FwcC9zcmMvVjIvQ29tcGVuc2F0aW9uL0FjdGl2aXRpZXMvQ29tcGVuc2F0ZU9ibGlnYXRpb25BY3Rpdml0eS5waHAIbGluZQSyAQp0cmFjZQwoDgoKY2xhc3MKgAFXb3JrZmxvd1xWMlxDb21wZW5zYXRpb25cQWN0aXZpdGllc1xDb21wZW5zYXRlT2JsaWdhdGlvbkFjdGl2aXR5CHR5cGUKBC0+EGZ1bmN0aW9uCgxoYW5kbGUIZmlsZQpIL2FwcC9zcmMvVjIvSm9icy9SdW5BY3Rpdml0eVRhc2sucGhwCGxpbmUEzgIADgoKY2xhc3MKQFdvcmtmbG93XFYyXEpvYnNcUnVuQWN0aXZpdHlUYXNrCHR5cGUKBC0+EGZ1bmN0aW9uCixleGVjdXRlTWFpbnRhaW5lZENsYWltCGZpbGUKSC9hcHAvc3JjL1YyL0pvYnMvUnVuQWN0aXZpdHlUYXNrLnBocAhsaW5lBOgBAA4KCmNsYXNzCkBXb3JrZmxvd1xWMlxKb2JzXFJ1bkFjdGl2aXR5VGFzawh0eXBlCgQtPhBmdW5jdGlvbgoYZXhlY3V0ZUNsYWltCGZpbGUKSC9hcHAvc3JjL1YyL0pvYnMvUnVuQWN0aXZpdHlUYXNrLnBocAhsaW5lBKYBAA4KCmNsYXNzCkBXb3JrZmxvd1xWMlxKb2JzXFJ1bkFjdGl2aXR5VGFzawh0eXBlCgQtPhBmdW5jdGlvbgoMaGFuZGxlCGZpbGUKjAEvYXBwL3ZlbmRvci9sYXJhdmVsL2ZyYW1ld29yay9zcmMvSWxsdW1pbmF0ZS9Db250YWluZXIvQm91bmRNZXRob2QucGhwCGxpbmUESAAOCgpjbGFzcwpASWxsdW1pbmF0ZVxDb250YWluZXJcQm91bmRNZXRob2QIdHlwZQoEOjoQZnVuY3Rpb24KPElsbHVtaW5hdGVcQ29udGFpbmVyXHtjbG9zdXJlfQhmaWxlCn4vYXBwL3ZlbmRvci9sYXJhdmVsL2ZyYW1ld29yay9zcmMvSWxsdW1pbmF0ZS9Db250YWluZXIvVXRpbC5waHAIbGluZQRWAA4KCmNsYXNzCjJJbGx1bWluYXRlXENvbnRhaW5lclxVdGlsCHR5cGUKBDo6EGZ1bmN0aW9uCh51bndyYXBJZkNsb3N1cmUIZmlsZQqMAS9hcHAvdmVuZG9yL2xhcmF2ZWwvZnJhbWV3b3JrL3NyYy9JbGx1bWluYXRlL0NvbnRhaW5lci9Cb3VuZE1ldGhvZC5waHAIbGluZQTAAQAOCgpjbGFzcwpASWxsdW1pbmF0ZVxDb250YWluZXJcQm91bmRNZXRob2QIdHlwZQoEOjoQZnVuY3Rpb24KHmNhbGxCb3VuZE1ldGhvZAhmaWxlCowBL2FwcC92ZW5kb3IvbGFyYXZlbC9mcmFtZXdvcmsvc3JjL0lsbHVtaW5hdGUvQ29udGFpbmVyL0JvdW5kTWV0aG9kLnBocAhsaW5lBEYADgoKY2xhc3MKQElsbHVtaW5hdGVcQ29udGFpbmVyXEJvdW5kTWV0aG9kCHR5cGUKBDo6EGZ1bmN0aW9uCghjYWxsCGZpbGUKiAEvYXBwL3ZlbmRvci9sYXJhdmVsL2ZyYW1ld29yay9zcmMvSWxsdW1pbmF0ZS9Db250YWluZXIvQ29udGFpbmVyLnBocAhsaW5lBMYMAA4KCmNsYXNzCjxJbGx1bWluYXRlXENvbnRhaW5lclxDb250YWluZXIIdHlwZQoELT4QZnVuY3Rpb24KCGNhbGwIZmlsZQpyL2FwcC90ZXN0cy9GZWF0dXJlL1YyL1YyTmVzdGVkQ29tcGVuc2F0aW9uRXhhbXBsZVRlc3QucGhwCGxpbmUEgAgADgoKY2xhc3MKYFRlc3RzXEZlYXR1cmVcVjJcVjJOZXN0ZWRDb21wZW5zYXRpb25FeGFtcGxlVGVzdAh0eXBlCgQtPhBmdW5jdGlvbgoKZHJhaW4IZmlsZQpyL2FwcC90ZXN0cy9GZWF0dXJlL1YyL1YyTmVzdGVkQ29tcGVuc2F0aW9uRXhhbXBsZVRlc3QucGhwCGxpbmUEjgUADgoKY2xhc3MKYFRlc3RzXEZlYXR1cmVcVjJcVjJOZXN0ZWRDb21wZW5zYXRpb25FeGFtcGxlVGVzdAh0eXBlCgQtPhBmdW5jdGlvbgqOAXRlc3REaXNwYXRjaGVkU2hpcG1lbnRGYWlsc0NvbXBlbnNhdGlvblZpc2libHlVbnRpbFRoZU9wZXJhdG9yUmVzdWJtaXRzCGZpbGUKbC9hcHAvdmVuZG9yL3BocHVuaXQvcGhwdW5pdC9zcmMvRnJhbWV3b3JrL1Rlc3RDYXNlLnBocAhsaW5lBIQVAA4KCmNsYXNzCjRQSFBVbml0XEZyYW1ld29ya1xUZXN0Q2FzZQh0eXBlCgQtPhBmdW5jdGlvbgogaW52b2tlVGVzdE1ldGhvZAhmaWxlCmwvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL0ZyYW1ld29yay9UZXN0Q2FzZS5waHAIbGluZQTOFQAOCgpjbGFzcwo0UEhQVW5pdFxGcmFtZXdvcmtcVGVzdENhc2UIdHlwZQoELT4QZnVuY3Rpb24KDnJ1blRlc3QIZmlsZQpsL2FwcC92ZW5kb3IvcGhwdW5pdC9waHB1bml0L3NyYy9GcmFtZXdvcmsvVGVzdENhc2UucGhwCGxpbmUEkggADgoKY2xhc3MKNFBIUFVuaXRcRnJhbWV3b3JrXFRlc3RDYXNlCHR5cGUKBC0+EGZ1bmN0aW9uCg5ydW5CYXJlCGZpbGUKhgEvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL0ZyYW1ld29yay9UZXN0UnVubmVyL1Rlc3RSdW5uZXIucGhwCGxpbmUExAEADgoKY2xhc3MKOFBIUFVuaXRcRnJhbWV3b3JrXFRlc3RSdW5uZXIIdHlwZQoELT4QZnVuY3Rpb24KBnJ1bghmaWxlCmwvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL0ZyYW1ld29yay9UZXN0Q2FzZS5waHAIbGluZQTSBQAOCgpjbGFzcwo0UEhQVW5pdFxGcmFtZXdvcmtcVGVzdENhc2UIdHlwZQoELT4QZnVuY3Rpb24KBnJ1bghmaWxlCm4vYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL0ZyYW1ld29yay9UZXN0U3VpdGUucGhwCGxpbmUE9gUADgoKY2xhc3MKNlBIUFVuaXRcRnJhbWV3b3JrXFRlc3RTdWl0ZQh0eXBlCgQtPhBmdW5jdGlvbgoGcnVuCGZpbGUKai9hcHAvdmVuZG9yL3BocHVuaXQvcGhwdW5pdC9zcmMvVGV4dFVJL1Rlc3RSdW5uZXIucGhwCGxpbmUEgAEADgoKY2xhc3MKMlBIUFVuaXRcVGV4dFVJXFRlc3RSdW5uZXIIdHlwZQoELT4QZnVuY3Rpb24KBnJ1bghmaWxlCmwvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvc3JjL1RleHRVSS9BcHBsaWNhdGlvbi5waHAIbGluZQTKAwAOCgpjbGFzcwo0UEhQVW5pdFxUZXh0VUlcQXBwbGljYXRpb24IdHlwZQoELT4QZnVuY3Rpb24KBnJ1bghmaWxlCkYvYXBwL3ZlbmRvci9waHB1bml0L3BocHVuaXQvcGhwdW5pdAhsaW5lBNABAA4GEGZ1bmN0aW9uCg5pbmNsdWRlCGZpbGUKLi9hcHAvdmVuZG9yL2Jpbi9waHB1bml0CGxpbmUE9AEAABRwcm9wZXJ0aWVzDAAA"
+                }
+            },
+            "recorded_at": "2026-11-18 17:09:15"
+        }
+    ],
+    "expected": {
+        "completed": false,
+        "result": null,
+        "commands": []
+    }
+}
