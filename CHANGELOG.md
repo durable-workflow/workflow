@@ -28,6 +28,36 @@
   summaries are corrected the next time the run is projected, which the
   watchdog does before it would create a task. Recorded history is
   unchanged.
+- An embedded `all()` that a structural limit refuses is now refused before its
+  first member is written (#1232). Before, a member over `payload_size_bytes`, or
+  past the pending activity or child count, was refused only when its turn came, so
+  every member before it was already written: activities were recorded
+  `ActivityScheduled` and then cancelled by the run's failure, and children were
+  started and left to the parent-close policy. Now the group's pending activity and
+  child counts and each new activity's and child's stored argument size are checked,
+  in member order, before any member is written. The run fails with the same typed
+  `structural_limit` failure, and its history is `WorkflowStarted` then
+  `WorkflowFailed`. A continue-as-new refused for its payload size no longer changes
+  the instance's workflow class first. Recorded histories are unchanged: the
+  partial-group shape that 2.32.0 recorded replays as before
+  (`legacy-all-oversized-member-scheduled-then-cancelled`), and the new shape is
+  `all-oversized-member-refused-before-first-write`.
+- A pending-timer refusal inside `all()` is unchanged in every group shape (#1232).
+  As for a sequential `timer()`, it escapes the workflow task, whose transaction
+  rolls back every member written before it, and leaves the task failed and
+  recoverable. It keeps precedence over a later member's refusal: the check stops at
+  a timer the pending-timer limit may refuse and leaves that timer and every member
+  after it to their own dispatch, as before. A signal or condition wait with a
+  timeout is counted as opening its timeout timer, so the check also stops when such
+  a wait would leave the timer within the limit by not opening one; the members
+  after it are then guarded one at a time, as before.
+- Error precedence inside one `all()` (#1232): when an earlier member would fail a
+  check that the pre-write check does not repeat (a condition that throws, or an
+  error while writing that member) and a later activity or child is over a
+  structural limit, the run now fails with the later member's structural-limit error
+  before anything is written. Before, the earlier member's error came first. Checks
+  that are repeated keep their order: an earlier invalid activity class or attempt
+  count, or an earlier timer over the pending-timer limit, still wins.
 
 ## 2.32.0 - 2026-11-19
 
