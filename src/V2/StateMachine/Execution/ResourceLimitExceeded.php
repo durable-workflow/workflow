@@ -7,7 +7,12 @@ namespace Workflow\V2\StateMachine\Execution;
 use InvalidArgumentException;
 use LogicException;
 
-/** A configured boundary was exhausted; it is not evidence of business cancellation. */
+/**
+ * A configured boundary was exhausted; it is not evidence of business cancellation.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
+ */
 final class ResourceLimitExceeded extends LogicException
 {
     public function __construct(

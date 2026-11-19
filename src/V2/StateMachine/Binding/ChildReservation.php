@@ -11,7 +11,12 @@ use Workflow\V2\Support\ChildWorkflowCall;
 use Workflow\V2\Support\StartChildWorkflowCall;
 use Workflow\V2\Support\WorkflowFiberContext;
 
-/** @experimental An immutable descriptor, not proof of authorization or admission. */
+/**
+ * An immutable descriptor, not proof of authorization or admission.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
+ */
 final readonly class ChildReservation
 {
     public function __construct(

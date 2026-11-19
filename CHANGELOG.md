@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- The business state-machine API is explicitly experimental (#1069). Every
+  public class, interface and enum in `Workflow\V2\StateMachine`, native child
+  start (`Workflow::startChild()`, `startChild()` and `StartedChildWorkflow`) and
+  `DurableScope::reserveChild()` are marked `@experimental`. They may change
+  incompatibly in a minor release, never in a patch release.
+  `docs/api-stability.md#state-machines` lists them and the release each first
+  shipped in: the transition contract and `TransitionRunner` in 2.23.0, and the
+  definitions, rules, budgets, child bindings and native child start in 2.29.0.
+  Docblocks and documentation only; no behavior changes.
+
 - Workflow definition and `await()` condition fingerprints are versioned, and
   a new opt-in version 2 makes comment-only and whitespace-only edits replay-safe
   (#1227). The prefix names the version:
@@ -174,6 +184,25 @@ in a minor release: `DurableScope::reserveChild()`, original root admission
   could never run: the call returns `verified` or fails its recorded activity.
   The activity calls and their order are unchanged, so recorded commands are the
   same. Examples only.
+
+- A wide `all()` no longer makes its workflow tasks grow with the square of the
+  fan-out width (#1231, #1203). A 300-member fan-out of 10 KB activities took
+  134 s to schedule and 58–85 s to finish on 2.32.0, so Laravel's default
+  60-second queue job timeout killed it on every retry. Per-member cost is now
+  roughly constant:
+  - A workflow task publishes the tasks it committed in bounded batches and
+    refreshes each affected run summary once, instead of rebuilding the run's
+    whole summary, in its own transaction, for every member it published.
+  - Replay, child-call, parallel-group, lineage and activity lookups index the
+    loaded history by sequence once, instead of rescanning the whole history
+    for every member. A child closure no longer rescans the parent's history
+    for every sibling.
+  - Activity starts refresh only their own timeline points, like outcomes, and
+    projections skip decoding payloads that cannot name the activity or a
+    failure.
+
+  Recorded history and every projection row are unchanged. Each member's own
+  activity or child task still rebuilds its run summary once.
 
 ## 2.32.0 - 2026-11-19
 

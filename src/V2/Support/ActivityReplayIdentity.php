@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Exceptions\ActivityRetryPolicyMismatchException;
+use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 
 final class ActivityReplayIdentity
@@ -41,34 +42,21 @@ final class ActivityReplayIdentity
         if (! $run->relationLoaded('historyEvents')) {
             $run->load('historyEvents');
         }
-        foreach ($run->historyEvents as $event) {
-            if ($event->event_type !== HistoryEventType::ActivityScheduled) {
-                continue;
-            }
-
-            $recordedSequence = $event->payload['sequence'] ?? null;
-            if (is_string($recordedSequence) && is_numeric($recordedSequence)) {
-                $recordedSequence = (int) $recordedSequence;
-            }
-            if ($recordedSequence !== $sequence
-                || ($event->payload['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE
-                || ($event->payload['activity']['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE) {
-                continue;
-            }
-
-            $snapshot = $event->payload['activity']['retry_policy'] ?? $event->payload['retry_policy'] ?? null;
-            if ($snapshot === null) {
-                // Legacy absence is not an invitation to invent today's class defaults.
-                return;
-            }
-            if (! is_array($snapshot)) {
-                throw new ActivityRetryPolicyMismatchException($sequence, 'retry_policy');
-            }
-
-            self::assertPolicy($snapshot, $call->options, $sequence);
-
+        $event = self::scheduledEventForSequence($run, $sequence);
+        if (! $event instanceof WorkflowHistoryEvent) {
             return;
         }
+
+        $snapshot = $event->payload['activity']['retry_policy'] ?? $event->payload['retry_policy'] ?? null;
+        if ($snapshot === null) {
+            // Legacy absence is not an invitation to invent today's class defaults.
+            return;
+        }
+        if (! is_array($snapshot)) {
+            throw new ActivityRetryPolicyMismatchException($sequence, 'retry_policy');
+        }
+
+        self::assertPolicy($snapshot, $call->options, $sequence);
     }
 
     /**
@@ -128,5 +116,42 @@ final class ActivityReplayIdentity
                 throw new ActivityRetryPolicyMismatchException($sequence, $field);
             }
         }
+    }
+
+    /**
+     * The first non-local ActivityScheduled event for a recorded sequence, in
+     * history order. Every member of a replayed fan-out is checked, so the
+     * loaded history is indexed as far as each lookup needs instead of
+     * scanned per member (#1231).
+     */
+    private static function scheduledEventForSequence(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
+    {
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = HistoryEventIndex::find(
+            $run->historyEvents,
+            'activity-scheduled-event-by-sequence',
+            $sequence,
+            static function (mixed $event): array {
+                if ($event->event_type !== HistoryEventType::ActivityScheduled) {
+                    return [];
+                }
+
+                $recordedSequence = $event->payload['sequence'] ?? null;
+                if (is_string($recordedSequence) && is_numeric($recordedSequence)) {
+                    $recordedSequence = (int) $recordedSequence;
+                }
+                if (! is_int($recordedSequence)
+                    || ($event->payload['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE
+                    || ($event->payload['activity']['execution_mode'] ?? null) === LocalActivityRuntime::EXECUTION_MODE) {
+                    return [];
+                }
+
+                return [
+                    $recordedSequence => $event,
+                ];
+            },
+        );
+
+        return $event;
     }
 }

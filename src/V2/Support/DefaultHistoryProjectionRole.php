@@ -55,7 +55,7 @@ final class DefaultHistoryProjectionRole implements HistoryProjectionRole, Histo
         $parallelMetadataPath = ParallelChildGroup::metadataPathForSequence($run, (int) $execution->sequence);
         $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
 
-        WorkflowHistoryEvent::record($run, HistoryEventType::ActivityStarted, array_merge([
+        $started = WorkflowHistoryEvent::record($run, HistoryEventType::ActivityStarted, array_merge([
             'activity_execution_id' => $execution->id,
             'activity_attempt_id' => $attempt->id,
             'activity_class' => $execution->activity_class,
@@ -74,7 +74,15 @@ final class DefaultHistoryProjectionRole implements HistoryProjectionRole, Histo
             (int) $attempt->attempt_number,
         );
 
-        return $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']) ?? $run);
+        // Like an outcome, a start changes only its own activity's timeline
+        // points, so a current summary refreshes just those (#1231).
+        return ActivityOutcomeProjectionContext::run(
+            $run,
+            $started,
+            fn (): WorkflowRunSummary => $this->projectRun(
+                $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']) ?? $run
+            ),
+        );
     }
 
     public function pruneStaleProjectionRowsForRun(

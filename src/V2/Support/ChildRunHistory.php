@@ -5,10 +5,10 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
+use Illuminate\Support\Collection;
 use RuntimeException;
 use Throwable;
 use Workflow\Serializers\Serializer;
-use Workflow\Support\AfterCommit;
 use Workflow\V2\Enums\ChildCallStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\ParentClosePolicy;
@@ -293,52 +293,48 @@ final class ChildRunHistory
     public static function scheduledEventForSequence(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
     {
         /** @var WorkflowHistoryEvent|null $event */
-        $event = $run->historyEvents->first(
-            static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ChildWorkflowScheduled
-                && ($event->payload['sequence'] ?? null) === $sequence
-        );
+        $event = self::firstChildEventForSequence($run, 'scheduled', $sequence);
 
         return $event;
     }
 
     public static function startedEventForSequence(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
     {
-        /** @var WorkflowHistoryEvent|null $event */
-        $event = $run->historyEvents
-            ->filter(
-                static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::ChildRunStarted
-                    && ($event->payload['sequence'] ?? null) === $sequence
-            )
-            ->sortByDesc('sequence')
-            ->first();
-
-        return $event;
+        return self::startedEventsBySequence($run)[$sequence] ?? null;
     }
 
     public static function resolutionEventForSequence(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
     {
         /** @var WorkflowHistoryEvent|null $event */
-        $event = $run->historyEvents->first(
-            static fn (WorkflowHistoryEvent $event): bool => in_array(
-                $event->event_type,
-                self::resolutionEventTypes(),
-                true
-            )
-                && ($event->payload['sequence'] ?? null) === $sequence
-        );
+        $event = self::firstChildEventForSequence($run, 'resolution', $sequence);
 
         return $event;
     }
 
     public static function latestLinkForSequence(WorkflowRun $run, int $sequence): ?WorkflowLink
     {
-        /** @var WorkflowLink|null $link */
-        $link = $run->childLinks
-            ->filter(
-                static fn (WorkflowLink $link): bool => $link->link_type === 'child_workflow'
-                    && $link->sequence === $sequence
-            )
-            ->sort(static function (WorkflowLink $left, WorkflowLink $right): int {
+        $linksBySequence = HistoryEventIndex::remember(
+            $run->childLinks,
+            'child-workflow-links-by-sequence',
+            static function (Collection $links): array {
+                $index = [];
+
+                foreach ($links as $link) {
+                    if ($link instanceof WorkflowLink && $link->link_type === 'child_workflow' && is_int(
+                        $link->sequence
+                    )) {
+                        $index[$link->sequence][] = $link;
+                    }
+                }
+
+                return $index;
+            },
+        );
+
+        $candidates = $linksBySequence[$sequence] ?? [];
+
+        if (count($candidates) > 1) {
+            usort($candidates, static function (WorkflowLink $left, WorkflowLink $right): int {
                 $leftRunNumber = $left->childRun?->run_number ?? 0;
                 $rightRunNumber = $right->childRun?->run_number ?? 0;
 
@@ -354,10 +350,10 @@ final class ChildRunHistory
                 }
 
                 return $right->id <=> $left->id;
-            })
-            ->first();
+            });
+        }
 
-        return $link;
+        return $candidates[0] ?? null;
     }
 
     /**
@@ -793,24 +789,20 @@ final class ChildRunHistory
 
     private static function afterAuthoritativeCommit(callable $projection): void
     {
-        $callback = static function () use ($projection): void {
-            try {
-                $projection();
-            } catch (Throwable $throwable) {
-                report($throwable);
-            }
-        };
-
         if (ConfiguredV2Models::connection()->transactionLevel() > 0) {
             // The projection writes one child-call row after commit, outside
             // the completion's meter: charge it now, before any write (#1116).
             HistoryTransactionMeter::current()?->chargeCompletionRows(1);
-            AfterCommit::on(ConfiguredV2Models::connection(), $callback);
+            TaskDispatcher::afterCommitWrite(ConfiguredV2Models::connection(), static fn () => $projection());
 
             return;
         }
 
-        $callback();
+        try {
+            $projection();
+        } catch (Throwable $throwable) {
+            report($throwable);
+        }
     }
 
     /**
@@ -1130,6 +1122,76 @@ final class ChildRunHistory
         }
 
         return $childRun;
+    }
+
+    /**
+     * The first scheduled or resolution event for one child-call sequence in
+     * history order. A child projection looks up every fan-out member, so the
+     * loaded history is indexed as far as each lookup needs instead of
+     * scanned per member (#1203, #1231).
+     *
+     * @param 'scheduled'|'resolution' $kind
+     */
+    private static function firstChildEventForSequence(WorkflowRun $run, string $kind, int $sequence): mixed
+    {
+        $types = $kind === 'scheduled'
+            ? [HistoryEventType::ChildWorkflowScheduled]
+            : self::resolutionEventTypes();
+
+        return HistoryEventIndex::find(
+            $run->historyEvents,
+            "child-run-{$kind}-event-by-sequence",
+            $sequence,
+            static function (mixed $event) use ($types): array {
+                if (! $event instanceof WorkflowHistoryEvent || ! in_array($event->event_type, $types, true)) {
+                    return [];
+                }
+
+                $eventSequence = $event->payload['sequence'] ?? null;
+
+                return is_int($eventSequence) ? [
+                    $eventSequence => $event,
+                ] : [];
+            },
+        );
+    }
+
+    /**
+     * The started event with the highest history sequence per child-call
+     * sequence, indexed once per loaded history (#1203, #1231).
+     *
+     * @return array<int, WorkflowHistoryEvent>
+     */
+    private static function startedEventsBySequence(WorkflowRun $run): array
+    {
+        return HistoryEventIndex::remember(
+            $run->historyEvents,
+            'child-run-started-event-by-sequence',
+            static function (Collection $events): array {
+                $index = [];
+
+                foreach ($events as $event) {
+                    if (! $event instanceof WorkflowHistoryEvent
+                        || $event->event_type !== HistoryEventType::ChildRunStarted) {
+                        continue;
+                    }
+
+                    $sequence = $event->payload['sequence'] ?? null;
+
+                    if (! is_int($sequence)) {
+                        continue;
+                    }
+
+                    $existing = $index[$sequence] ?? null;
+
+                    if ($existing === null || $event->sequence > $existing->sequence) {
+                        $index[$sequence] = $event;
+                    }
+                }
+
+                return $index;
+            },
+        );
     }
 
     private static function stringValue(mixed $value): ?string

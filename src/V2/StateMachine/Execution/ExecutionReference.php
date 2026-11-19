@@ -6,7 +6,12 @@ namespace Workflow\V2\StateMachine\Execution;
 
 use InvalidArgumentException;
 
-/** Business identity survives activity retries and does not depend on a workflow run ID. */
+/**
+ * Business identity survives activity retries and does not depend on a workflow run ID.
+ *
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
+ */
 final readonly class ExecutionReference
 {
     public function __construct(

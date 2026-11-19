@@ -158,6 +158,7 @@ final class RunSummaryProjector
         $scopeActivityTimeline = ! $run->status->isTerminal()
             && $activityResolution?->workflow_run_id === $run->id
             && in_array($activityResolution?->event_type, [
+                HistoryEventType::ActivityStarted,
                 HistoryEventType::ActivityCompleted,
                 HistoryEventType::ActivityFailed,
             ], true)

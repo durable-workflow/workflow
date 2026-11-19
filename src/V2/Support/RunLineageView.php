@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
+use Illuminate\Support\Collection;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\ParentClosePolicy;
 use Workflow\V2\Enums\RunStatus;
@@ -677,19 +678,47 @@ final class RunLineageView
     ): ?WorkflowHistoryEvent {
         $parentRun->loadMissing('historyEvents');
 
-        /** @var WorkflowHistoryEvent|null $event */
-        $event = $parentRun->historyEvents
-            ->filter(static fn (WorkflowHistoryEvent $event): bool => in_array(
-                $event->event_type,
-                [HistoryEventType::ParentClosePolicyApplied, HistoryEventType::ParentClosePolicyFailed],
-                true,
-            ) && self::stringValue(
-                is_array($event->payload) ? ($event->payload['child_run_id'] ?? null) : null
-            ) === $childRunId)
-            ->sortBy(static fn (WorkflowHistoryEvent $event): int => $event->sequence ?? PHP_INT_MAX)
-            ->last();
+        // Lineage lists every child of a fan-out. Index the latest policy
+        // outcome per child once per loaded history (#1203, #1231): the
+        // highest history sequence wins, and a tie keeps the later event.
+        $latestByChild = HistoryEventIndex::remember(
+            $parentRun->historyEvents,
+            'parent-close-policy-event-by-child-run',
+            static function (Collection $events): array {
+                $index = [];
 
-        return $event instanceof WorkflowHistoryEvent ? $event : null;
+                foreach ($events as $event) {
+                    if (! $event instanceof WorkflowHistoryEvent || ! in_array(
+                        $event->event_type,
+                        [HistoryEventType::ParentClosePolicyApplied, HistoryEventType::ParentClosePolicyFailed],
+                        true,
+                    )) {
+                        continue;
+                    }
+
+                    $eventChildRunId = self::stringValue(
+                        is_array($event->payload) ? ($event->payload['child_run_id'] ?? null) : null
+                    );
+
+                    if ($eventChildRunId === null) {
+                        continue;
+                    }
+
+                    $order = $event->sequence ?? PHP_INT_MAX;
+
+                    if (! isset($index[$eventChildRunId]) || $order >= $index[$eventChildRunId]['order']) {
+                        $index[$eventChildRunId] = [
+                            'order' => $order,
+                            'event' => $event,
+                        ];
+                    }
+                }
+
+                return $index;
+            },
+        );
+
+        return $latestByChild[$childRunId]['event'] ?? null;
     }
 
     private static function normalizePolicy(mixed $value): ?string

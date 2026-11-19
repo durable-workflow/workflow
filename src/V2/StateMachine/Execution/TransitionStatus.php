@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 namespace Workflow\V2\StateMachine\Execution;
 
+/**
+ * @experimental Part of the business state-machine API, which may change in a minor release.
+ * See docs/api-stability.md#state-machines.
+ */
 enum TransitionStatus: string
 {
     case Unavailable = 'unavailable';

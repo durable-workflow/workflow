@@ -1,0 +1,126 @@
+name: Fan-out scaling
+
+# The literal documented fan-out limit (#1203, #1231): one all() of 1,000
+# activities and one of 1,000 child workflows with 10 KB arguments. Each
+# workflow task must finish inside the default 60-second queue job
+# timeout and cost roughly ten times the 100-member run's. The 30-versus-300
+# member guard runs in the ordinary feature shards.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/V2/**'
+      - 'tests/Performance/FanOutWidthLiteralTest.php'
+      - 'tests/Support/FanOutWidthProbe.php'
+      - 'tests/Support/MemberPhaseProjectionRole.php'
+      - 'tests/Fixtures/V2/TestFanOutPayload*.php'
+      - '.github/workflows/fan-out-scaling.yml'
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fan-out-scaling-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  literal-fan-out:
+    name: Literal 1,000-member fan-out (${{ matrix.kind }}, ${{ matrix.database }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Starting 1,000 children takes 33-65 s on hosted MySQL runners, around
+    # the bound (#1238); report it without failing the build until then.
+    continue-on-error: ${{ matrix.kind == 'children' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [sqlite, mysql]
+        kind: [activities, children]
+
+    services:
+      mysql:
+        image: mysql
+        env:
+          MYSQL_ROOT_PASSWORD: password
+        options: >-
+          --tmpfs /var/lib/mysql:rw,noexec,nosuid,size=2048m
+        ports:
+        - 3306
+
+      redis:
+        image: redis
+        ports:
+        - 6379
+
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      with:
+        persist-credentials: false
+
+    - name: Cache Composer packages
+      if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5
+      with:
+        path: vendor
+        key: ${{ github.event_name }}-${{ runner.os }}-php-${{ hashFiles('**/composer.lock') }}
+        restore-keys: |
+          ${{ github.event_name }}-${{ runner.os }}-php-
+
+    - name: Install dependencies
+      run: |
+        for attempt in 1 2 3; do
+          composer install --prefer-dist --no-progress && exit 0
+          sleep $((attempt * 20))
+        done
+        exit 1
+
+    - name: Resolve service endpoints and export test defaults
+      env:
+        DATABASE: ${{ matrix.database }}
+        MYSQL_PUBLISHED_PORT: ${{ job.services.mysql.ports['3306'] }}
+        REDIS_PUBLISHED_PORT: ${{ job.services.redis.ports['6379'] }}
+      run: |
+        {
+          echo "APP_KEY=base64:i3g6f+dV8FfsIkcxqd7gbiPn2oXk5r00sTmdD6V5utI="
+          echo "REDIS_HOST=127.0.0.1"
+          echo "REDIS_PORT=${REDIS_PUBLISHED_PORT}"
+          echo "REDIS_PASSWORD="
+          echo "QUEUE_CONNECTION=redis"
+          echo "QUEUE_FAILED_DRIVER=null"
+          echo "CACHE_DRIVER=array"
+          echo "CACHE_STORE=array"
+          if [ "$DATABASE" = mysql ]; then
+            echo "DB_CONNECTION=mysql"
+            echo "DB_HOST=127.0.0.1"
+            echo "DB_PORT=${MYSQL_PUBLISHED_PORT}"
+            echo "DB_DATABASE=testbench"
+            echo "DB_USERNAME=root"
+            echo "DB_PASSWORD=password"
+          else
+            echo "DB_CONNECTION=sqlite"
+            echo "DB_DATABASE=${RUNNER_TEMP}/fan-out-scaling.sqlite"
+          fi
+        } >> "$GITHUB_ENV"
+
+    - name: Create the database
+      run: |
+        if [ "$DB_CONNECTION" = mysql ]; then
+          mysql -e 'CREATE DATABASE testbench' -h"$DB_HOST" -uroot -ppassword -P "$DB_PORT"
+        else
+          touch "$DB_DATABASE"
+        fi
+
+    - name: Run the literal 1,000-member fan-out
+      run: >-
+        vendor/bin/phpunit --no-coverage --fail-on-skipped
+        --filter "testLiteralThousandMemberFanOut@${KIND}"
+        --log-junit build/test-results/fan-out-scaling.xml
+        tests/Performance/FanOutWidthLiteralTest.php
+      env:
+        FANOUT_LITERAL: '1'
+        KIND: ${{ matrix.kind }}
+        XDEBUG_MODE: off
