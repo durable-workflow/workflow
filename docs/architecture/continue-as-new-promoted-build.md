@@ -249,13 +249,13 @@ history, successor and transition writes, no promotion lookup, no
 | # | Setup | Command | Expected |
 | --- | --- | --- | --- |
 | 14 | Supporting runtime, opt-in active | `target_build: null` | 422 `invalid_target_build`, `retryable: false`, `request_admitted: false` |
-| 15 | Same | `target_build` is `true`, `false`, `0`, `1`, `[]` or `{}` | Same as #14 |
-| 16 | Same | `target_build` is `""`, `"Promoted"`, `"latest"` or `"promoted "` | Same as #14 |
+| 15 | Same | `target_build` is `true`, `false`, `0`, `1`, `[]` or `{}` | Same as vector 14 |
+| 16 | Same | `target_build` is `""`, `"Promoted"`, `"latest"` or `"promoted "` | Same as vector 14 |
 | 17 | Same | Field absent | Accepted as `inherited` (vector 2), proving that only absence selects the default |
 | 18 | SDK connected to a runtime that does not advertise `continue_as_new_target_build` | Author calls the promoted-build option | SDK raises `unsupported_target_build` locally; no command is sent |
 | 19 | Runtime recognises the field, opt-in not active | `target_build: "promoted"` or `"inherited"` | 422 `unsupported_target_build`, `retryable: false`, `request_admitted: false`; never inherited |
 | 20 | Embedded runtime with the opt-in disabled | `continueAsNew()->onPromotedBuild()` | Raises `unsupported_target_build` at the authoring call; the task does not complete on the inherited build |
-| 21 | Promoted cohort B is drained, draining or retired | `onPromotedBuild()` | Treated as unavailable: `promoted_build_unavailable` (#3), never a successor on B |
+| 21 | Promoted cohort B is drained, draining or retired | `onPromotedBuild()` | Treated as unavailable: `promoted_build_unavailable` (vector 3), never a successor on B |
 | 22 | Native retirement of A races a promoted transition off A | — | Serialized: either retirement sees the open predecessor and returns `live_dependencies`, or it runs after the commit and does not count the chain against A |
 
 Vectors 21 and 22 are the eligibility and retirement cases; unlike 14 to 20 they
