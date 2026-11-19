@@ -11,7 +11,10 @@ use Workflow\V2\Compensation\Definition\PortableDescriptor;
 /** Called inside the provider's own transaction, never the application or DW transaction. */
 final readonly class ShipmentLedger
 {
-    public const ACTIONS = ['ship-book', 'ship-cancel-booking', 'request-return', 'restock', 'deduct-stock'];
+    public const ACTIONS = [
+        'ship-book', 'ship-cancel-booking', 'request-return', 'restock', 'deduct-stock',
+        UnitReturnTerms::REQUEST, UnitReturnTerms::RESTOCK,
+    ];
 
     public function __construct(
         private PDO $db
@@ -27,6 +30,8 @@ final readonly class ShipmentLedger
             'CREATE TABLE provider_shipment_events (id TEXT PRIMARY KEY, booking_id TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL, payload_sha256 TEXT NOT NULL, UNIQUE(booking_id, kind))'
         );
         $this->db->exec('CREATE TABLE provider_shipment_admissions (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL)');
+        $this->units()
+            ->install();
     }
 
     public function register(ShipmentDescriptor $descriptor): void
@@ -48,6 +53,10 @@ final readonly class ShipmentLedger
 
     public function admit(Request $request, Status $planned): Status
     {
+        if (UnitReturnLedger::handles($request)) {
+            return $this->units()
+                ->admit($request, $planned);
+        }
         if ($request->action === 'ship-book') {
             $this->root($request);
             $this->recordAdmission($request);
@@ -69,6 +78,11 @@ final readonly class ShipmentLedger
 
     public function assertCompletion(Request $request): void
     {
+        if (UnitReturnLedger::handles($request)) {
+            $this->units()
+                ->assertCompletion($request);
+            return;
+        }
         $booking = $request->action === 'ship-book' ? $request : $this->booking($request);
         $root = $this->root($booking);
         $this->assertOriginalRequest($request, $root);
@@ -185,7 +199,15 @@ final readonly class ShipmentLedger
         );
     }
 
-    private function recordAdmission(Request $request): void
+    public function units(): UnitReturnLedger
+    {
+        return new UnitReturnLedger($this->db, $this);
+    }
+
+    /**
+     * @internal Same provider transaction only.
+     */
+    public function recordAdmission(Request $request): void
     {
         $this->query(
             'INSERT INTO provider_shipment_admissions (id, fingerprint) VALUES (?, ?) ON CONFLICT DO NOTHING',
@@ -197,6 +219,70 @@ final readonly class ShipmentLedger
         )->fetchColumn() !== $request->fingerprint()) {
             throw new LogicException('The original physical effect admission changed content.');
         }
+    }
+
+    /**
+     * @internal Same provider transaction only.
+     */
+    public function deducted(Request $booking): bool
+    {
+        $root = $this->root($booking);
+        $descriptor = ShipmentDescriptor::fromArray(json_decode($root['descriptor'], true, flags: JSON_THROW_ON_ERROR));
+        return $descriptor->deduction === null || $this->confirmed($descriptor->deduction);
+    }
+
+    /**
+     * @internal Same provider transaction only.
+     */
+    public function originalTarget(Request $request): Request
+    {
+        $row = $this->query('SELECT * FROM provider_operations WHERE id = ?', [$request->target?->key()])->fetch(
+            PDO::FETCH_ASSOC
+        );
+        if ($row === false || ! hash_equals($row['fingerprint'], hash('sha256', $row['request']))) {
+            throw new LogicException('The original physical predecessor is missing or changed.');
+        }
+        $target = Request::fromArray(json_decode($row['request'], true, flags: JSON_THROW_ON_ERROR));
+        if ($target->identity->toArray() !== $request->target?->toArray()) {
+            throw new LogicException('The physical predecessor identity was substituted.');
+        }
+        return $target;
+    }
+
+    /**
+     * @internal Same provider transaction only.
+     */
+    public function confirmed(Request $request): bool
+    {
+        $row = $this->query('SELECT o.fingerprint, o.status, o.request, e.effect_id FROM provider_operations o
+            LEFT JOIN provider_effects e ON e.operation_id = o.id WHERE o.id = ?', [$request->identity->key()])->fetch(
+            PDO::FETCH_ASSOC
+        );
+        if ($row === false) {
+            return false;
+        }
+        if ($row['fingerprint'] !== $request->fingerprint() || ! hash_equals(
+            $row['fingerprint'],
+            hash('sha256', $row['request'])
+        )) {
+            throw new LogicException('The original physical operation content was substituted.');
+        }
+        return $row['status'] === Status::Confirmed->value && $row['effect_id'] === 'effect-' . $request->identity->key();
+    }
+
+    /**
+     * @internal Same provider transaction only.
+     */
+    public function root(Request $booking): array
+    {
+        $row = $this->query('SELECT * FROM provider_shipments WHERE id = ?', [$booking->identity->key()])->fetch(
+            PDO::FETCH_ASSOC
+        );
+        if ($row === false || $row['fingerprint'] !== $booking->fingerprint()
+            || ! hash_equals($row['descriptor_sha256'], hash('sha256', $row['descriptor']))) {
+            throw new LogicException('The original physical shipment admission is unavailable.');
+        }
+        return $row;
     }
 
     private function assertEvent(
@@ -234,7 +320,10 @@ final readonly class ShipmentLedger
         $events = $this->events($booking);
         return match ($request->action) {
             'ship-cancel-booking' => ! isset($events['handed-over']),
-            'request-return' => isset($events['handed-over']) && ! isset($events['lost']),
+            // Units already in a customer unit return cannot also return or restock through the full parcel.
+            'request-return' => isset($events['handed-over']) && ! isset($events['lost'])
+                && ! $this->units()
+                    ->blocksFullReturn($booking),
             'deduct-stock' => isset($events['handed-over']) && ! isset($events['received']),
             'restock' => $this->confirmed($this->originalTarget($request)) && isset($events['inspected'])
                 && $events['inspected']['saleable'] === $booking->terms['quantity'] && $this->deducted($booking),
@@ -257,58 +346,6 @@ final readonly class ShipmentLedger
             throw new LogicException('Physical settlement must name its original booking and terms.');
         }
         return $target;
-    }
-
-    private function deducted(Request $booking): bool
-    {
-        $root = $this->root($booking);
-        $descriptor = ShipmentDescriptor::fromArray(json_decode($root['descriptor'], true, flags: JSON_THROW_ON_ERROR));
-        return $descriptor->deduction === null || $this->confirmed($descriptor->deduction);
-    }
-
-    private function originalTarget(Request $request): Request
-    {
-        $row = $this->query('SELECT * FROM provider_operations WHERE id = ?', [$request->target?->key()])->fetch(
-            PDO::FETCH_ASSOC
-        );
-        if ($row === false || ! hash_equals($row['fingerprint'], hash('sha256', $row['request']))) {
-            throw new LogicException('The original physical predecessor is missing or changed.');
-        }
-        $target = Request::fromArray(json_decode($row['request'], true, flags: JSON_THROW_ON_ERROR));
-        if ($target->identity->toArray() !== $request->target?->toArray()) {
-            throw new LogicException('The physical predecessor identity was substituted.');
-        }
-        return $target;
-    }
-
-    private function confirmed(Request $request): bool
-    {
-        $row = $this->query('SELECT o.fingerprint, o.status, o.request, e.effect_id FROM provider_operations o
-            LEFT JOIN provider_effects e ON e.operation_id = o.id WHERE o.id = ?', [$request->identity->key()])->fetch(
-            PDO::FETCH_ASSOC
-        );
-        if ($row === false) {
-            return false;
-        }
-        if ($row['fingerprint'] !== $request->fingerprint() || ! hash_equals(
-            $row['fingerprint'],
-            hash('sha256', $row['request'])
-        )) {
-            throw new LogicException('The original physical operation content was substituted.');
-        }
-        return $row['status'] === Status::Confirmed->value && $row['effect_id'] === 'effect-' . $request->identity->key();
-    }
-
-    private function root(Request $booking): array
-    {
-        $row = $this->query('SELECT * FROM provider_shipments WHERE id = ?', [$booking->identity->key()])->fetch(
-            PDO::FETCH_ASSOC
-        );
-        if ($row === false || $row['fingerprint'] !== $booking->fingerprint()
-            || ! hash_equals($row['descriptor_sha256'], hash('sha256', $row['descriptor']))) {
-            throw new LogicException('The original physical shipment admission is unavailable.');
-        }
-        return $row;
     }
 
     private function assertOriginalRequest(Request $request, array $root): void

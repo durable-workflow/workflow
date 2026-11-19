@@ -28,9 +28,14 @@ final class AuthorizedPayment extends Workflow
             $authorization = $machine->scope->register(
                 new Obligation('payment.authorize', 'provider.financial.authorize', '1', $graph)
             );
-            $money = $machine->scope->register(
-                new Obligation('payment.capture', 'provider.financial.capture', '1', $graph)
-            );
+            // Only an opted-in unit-money grant records this field; legacy histories keep the original capture.
+            $capture = $machine->initialization['capture'] ?? null;
+            $money = $machine->scope->register(new Obligation(
+                'payment.capture',
+                $capture['handler'] ?? 'provider.financial.capture',
+                '1',
+                $capture['input'] ?? $graph
+            ));
             $step = new FinancialStep($authorization, $money);
             $permission = $machine->transition('authorize', $step);
             if ($permission->status !== TransitionStatus::Committed) {

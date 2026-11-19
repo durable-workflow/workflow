@@ -16,11 +16,11 @@ final readonly class OriginalUnitAmounts
     ) {
         $total = $capture->terms['amountMinor'] ?? null;
         $currency = $capture->terms['currency'] ?? null;
-        if ($capture->action !== 'capture' || ! is_int($total) || $total <= 0
+        if (! in_array($capture->action, ['capture', 'capture-authorized'], true) || ! is_int($total) || $total <= 0
             || ! is_string($currency) || preg_match('/\A[A-Z]{3}\z/D', $currency) !== 1
             || ! array_is_list($amounts) || $amounts === [] || count($amounts) > 1000) {
             throw new InvalidArgumentException(
-                'Unit allocation requires its complete original direct capture and explicit unit amounts.'
+                'Unit allocation requires its complete original capture and explicit unit amounts.'
             );
         }
         $sum = 0;
