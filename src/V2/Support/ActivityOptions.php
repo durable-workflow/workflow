@@ -14,6 +14,9 @@ use InvalidArgumentException;
  * code to route individual activity calls to specific queues, override
  * retry policy, or set timeout constraints without changing the activity
  * class itself.
+ *
+ * @api Stable v2 authoring API: the constructor, the public readonly properties and the with*() methods.
+ *      toSnapshot() and the has*Overrides() helpers are engine-facing and @internal.
  */
 final class ActivityOptions
 {
@@ -66,6 +69,8 @@ final class ActivityOptions
      *     fairness_key: string|null,
      *     fairness_weight: int|null
      * }
+     *
+     * @internal Engine-facing.
      */
     public function toSnapshot(): array
     {
@@ -86,6 +91,9 @@ final class ActivityOptions
         ];
     }
 
+    /**
+     * @internal Engine-facing.
+     */
     public function hasRoutingOverrides(): bool
     {
         return $this->connection !== null
@@ -94,11 +102,17 @@ final class ActivityOptions
             || $this->workerSession?->queue !== null;
     }
 
+    /**
+     * @internal Engine-facing.
+     */
     public function hasRetryOverrides(): bool
     {
         return $this->maxAttempts !== null || $this->backoff !== null || $this->nonRetryableErrorTypes !== [];
     }
 
+    /**
+     * @internal Engine-facing.
+     */
     public function hasTimeoutOverrides(): bool
     {
         return $this->startToCloseTimeout !== null
@@ -164,6 +178,9 @@ final class ActivityOptions
         );
     }
 
+    /**
+     * @internal Engine-facing.
+     */
     public function hasSchedulingOverrides(): bool
     {
         return $this->priority !== null

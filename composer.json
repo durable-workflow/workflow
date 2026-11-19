@@ -25,7 +25,7 @@
     },
     "scripts": {
         "ecs": "vendor/bin/ecs check --fix",
-        "stan": "vendor/bin/phpstan analyse src tests examples/business-state-machines examples/configured-state-machines examples/provider-state-machines",
+        "stan": "vendor/bin/phpstan analyse src tests examples/compensation-scopes examples/business-state-machines examples/configured-state-machines examples/provider-state-machines",
         "feature": [
             "Composer\\Config::disableProcessTimeout",
             "phpunit --testdox --testsuite feature"
@@ -87,7 +87,7 @@
             "dev-main": "2.0.x-dev"
         },
         "durable-workflow": {
-            "product-train": "2.31.0",
+            "product-train": "2.32.0",
             "laravel-embedded-upgrade-contract": "resources/laravel-embedded-upgrade-contract.json",
             "laravel-dependency-security-policy": "resources/laravel-dependency-security-policy.json"
         },

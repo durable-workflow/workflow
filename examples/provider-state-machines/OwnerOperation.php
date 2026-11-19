@@ -46,8 +46,7 @@ final readonly class OwnerOperation implements ScopedOperation
         $this->assertInput($context->obligation->input);
         [$root] = $this->authority->authorizeOperation($context, 'compensate', true);
         return (bool) $root->cancellation_requested ? Resolution::verified(
-            ['owner-fenced:' . $context->operationId],
-            true
+            ['owner-fenced:' . $context->operationId]
         )
             : Resolution::unknown('original-business-cancellation-required');
     }

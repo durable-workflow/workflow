@@ -15,9 +15,20 @@ redriving or retrying a child with an existing generation does not transfer its
 ownership; new registration refuses with nonretryable `scope_execution_owner_mismatch`.
 The native default namespace remains `null`; it is never replaced by an invented
 alias. The original run and a later recovery run have separate identities. One scope
-contains at most 256 obligations. Stored descriptors contain a closed handler
-identifier and version, stable operation key and portable data (16 KiB, depth 8,
-512 values). They never contain executable closures or arbitrary class names.
+contains at most 256 obligations, including at most 16 child participants. Stored
+descriptors contain a closed handler identifier and version, a stable operation key
+and portable input. Input is limited to 15,360 bytes as JSON, 500 values and depth 7
+on its own; the descriptor envelope is reserved above that. Descriptors never contain
+executable closures or arbitrary class names. Identifiers (application, key,
+generation, operation key, handler version) use 1 to 128 characters from
+`A-Z a-z 0-9 . _ : / -` and start with a letter or digit. Handler types use
+`a-z 0-9 . _ -`, start with a lowercase letter, and must not start with `dw.`, which
+is reserved for the engine. Workflows that record the
+`dw.compensation.registration-checks` patch refuse such types at registration. A
+`HandlerRegistry` may still map a `dw.` type that an earlier history registered, so
+those obligations stay compensable; the engine's own child-scope types cannot be mapped. `ScopeIdentity::id()` is the lowercase hex SHA-256 of
+the canonical JSON of the identity, and the canonical recovery workflow (type
+`dw.compensation.recovery.v1`) runs on instance `dw-compensation-<id>`.
 Applications store protected references instead of credentials or customer data.
 Scope identities, obligations, forward results and compensation resolutions use
 closed version-1 envelopes. Their canonical arrays are explicit rather than PHP
@@ -98,18 +109,37 @@ origin/current run, activity and attempt references. Child participation records
 the child authorization policy separately from the parent registration policy.
 A missing or invalid policy version refuses participation before registration.
 The host must bind
-`ScopeAuthorization`; there is no permissive default.
+`ScopeAuthorization`; there is no permissive default. To refuse permanently, throw
+`ScopeAuthorizationRefused`, including for an operation name the policy does not
+know. Any other exception is treated as transient: activity boundaries retry it, and
+automatic recovery tries again on a later watchdog pass. A refusal while a parent
+compensates a child participant is also permanent: the parent obligation becomes
+`failed` with reason `authorization-refused`, and the activity fails with
+non-retryable `scope_authorization_refused` until a fresh authorized request.
 
 `HandlerRegistry` is supplied by trusted host code. Its entries implement
 `ScopedOperation::assertInput()`, `execute()` and `compensate()`. These are provider
 boundary handlers; they do not change the four `TransitionStep` methods. Forward
 and compensation outcomes accept a list of at most 32 immutable evidence
 references, each at most 128 bytes. This leaves room for native identity metadata inside the
-existing 16 KiB, 512-value journal bound. Larger provider proofs should be stored
-as protected evidence bundles and referenced by a stable identifier. An
-uncertain forward result requires reconciliation against the stable operation ID
-before an unsafe provider reissue. `Resolution::verified()` additionally requires
-settled-forward evidence; neither a callback return nor a native terminal run proves
+existing journal bound. Larger provider proofs should be stored as protected
+evidence bundles and referenced by a stable identifier.
+
+`execute()` returns `ForwardResult::observed($value, $evidence)` (value limited to
+11,264 bytes, 400 values and depth 7 for workflows that record the
+`dw.compensation.registration-checks` patch; runs recorded before it keep the envelope
+limit), `unknown($reason)` when the outcome is
+uncertain, or `rejected($reason, $evidence)` when the provider definitely made no
+effect. A rejected forward fails the workflow's call with non-retryable
+`scope_forward_rejected`, and its compensation verifies without a provider call.
+`OperationContext::$reconcileBeforeForward` is true when an earlier forward attempt
+may have taken effect; reconcile by operation ID before an unsafe reissue.
+`compensate()` returns `Resolution::verified($evidence)` only when the effect is
+undone and no late forward effect is possible, `unknown($reason)` otherwise, or
+`failed($reason)` when compensation definitely cannot complete; a failed obligation
+is not retried in that run and stays visible until a fresh authorized request.
+`OperationContext::$forwardOutcomeUnconfirmed` is true when the forward effect was
+never confirmed observed. Neither a callback return nor a native terminal run proves
 that business result. Handler unavailability and descriptor hash mismatch refuse
 before both forward and compensation provider operations. Forward handler and input
 validation run before dispatch admission: a missing pinned handler or incompatible
@@ -117,6 +147,16 @@ input retains its native nonretryable reason without creating provider uncertain
 A refused retry preserves any earlier uncertain attempt. Exceptions after provider
 dispatch remain unknown and require reconciliation, even if their PHP type is
 nonretryable.
+
+The one exception is `HandlerContractViolation`. The `ForwardResult` and `Resolution`
+factories throw it for an invalid reason, evidence or value, and the engine raises it
+for an observed value over the limit. The outcome is recorded as unknown, so
+compensation still reconciles by operation ID, and the activity fails with
+non-retryable `scope_handler_contract_violation` followed by the violation message
+instead of retrying as `provider-outcome-unknown`. Handlers written for earlier
+releases that call `Resolution::verified($evidence, true)` keep working with an
+`E_USER_DEPRECATED` notice; `verified($evidence, false)` returns
+`unknown('late-forward-possible')`.
 
 `ChildScopes` registers compensation participants, not state-machine bindings.
 The initial graph is a bounded tree with one nesting level, at most 16 children
@@ -282,7 +322,9 @@ remains inside the host's trust boundary.
 Inside a native workflow, create `DurableScope($this, $identity, $principal)` and
 call `execute(new Obligation($key, $handlerType, $handlerVersion, $input))`. Register
 all effects through this helper. On cleanup, call the existing
-`$this->compensate()` and then `$scope->verifyCompensation()`. The helper does not
+`$this->compensate()` and then `$scope->verifyCompensation()`. It returns
+`['scopeId' => <id>, 'status' => 'verified']`; while any obligation is unresolved it
+does not return, because its recorded verify activity fails. The helper does not
 catch the application's business failures or decide its business state.
 
 When business compensation order differs from forward dispatch order, use
@@ -315,14 +357,23 @@ requests. Obtain the principal from trusted application
 authorization, not from untrusted request content. Repeating the same request
 requires the same principal, reason and profile. A returned failed/stopped
 receipt means recovery remains unresolved; inspect it and submit a fresh
-authorized key to request another eligible run. Results report `recoveryStatus`,
-`scopeStatus` and `nextAction`; `submit_fresh_authorized_request` identifies that
-boundary. `ScopeRecovery::describe($identity, $principal)` is the read-only view.
-It requires `inspect` authorization and reports `scopeStatus`, `originStatus`,
-`recoveryStatus`, `automaticRecovery` (`not_needed`, `pending`, `routed` or
-`recovery_authorization_failed`), the recorded refusal, `nextAction` and each
-unresolved obligation with its reason. Only the verified scope ledger clears the
-unresolved obligation.
+authorized key to request another eligible run. Every result has exactly the keys
+`route` (`origin`, `recovery`, `verified`), `runId`, `commandId`, `recoveryStatus`,
+`scopeStatus` (`open`, `requested`, `verified`, `released`) and `nextAction`;
+`submit_fresh_authorized_request` identifies that boundary.
+`ScopeRecovery::describe($identity, $principal)` is the read-only view. It requires
+`inspect` authorization and always returns `scopeStatus`, `originStatus`,
+`recoveryRunId`, `recoveryStatus`, `automaticRecovery` (`not_needed`, `pending`,
+`routed`, `recovery_authorization_failed`), `refusal` (null, or a stable `code` plus
+a host `message` that is not machine-stable), `nextAction` and `unresolved`, a list
+of `key`, `status` (`pending`, `unresolved`, `failed`) and `reason`. The value sets
+are the `ScopeStatus`, `RecoveryRoute`, `NextAction`, `AutomaticRecovery` and
+`ObligationStatus` enums. These enums may gain cases in a minor release, so handle
+values you do not recognize with a default branch. Resolve `ScopeRecovery` and `ScopeRetention` from the
+container; their constructors are internal. Each scope accepts at most 128 requests,
+shared between host requests and engine requests (one child request per parent run
+that compensates the child). Only the verified scope ledger clears the unresolved
+obligation.
 Inspecting or requesting retained work
 must go through an authorized host boundary; the `@internal` persistence classes
 are not an HTTP-facing data access API.
@@ -391,6 +442,8 @@ closure then returns either the original admission or a permanent never-admitted
 receipt. See [original root scope admission](experimental-root-admission.md).
 
 ## Runnable Order and Shipment example
+
+[examples/compensation-scopes](../examples/compensation-scopes/README.md) uses only the API planned for promotion, with `participate()`. The example below uses the experimental `reserveChild()` path.
 
 The [application example](../examples/business-state-machines/README.md#native-order-and-shipment-compensation)
 uses native Order/Shipment workflows, recorded SQL activities and reserved child

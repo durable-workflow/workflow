@@ -70,6 +70,16 @@ trait AdvanceBalanceMachineFixture
 
     protected function startAdvance(string $recipe): WorkflowStub
     {
+        $origin = $this->beginAdvance($recipe);
+        $this->pump();
+        return $origin;
+    }
+
+    /**
+     * Seeds and starts the original Order without running any of its tasks.
+     */
+    protected function beginAdvance(string $recipe): WorkflowStub
+    {
         $now = now()
             ->getTimestamp();
         $base = new OrderTerms('shop-a', 'purchase-advance', 'g1', 1499, 'USD', 'sku-1', 2);
@@ -132,7 +142,6 @@ trait AdvanceBalanceMachineFixture
             Catalogue::NAMESPACE
         );
         $origin->start($this->terms->subjectKey());
-        $this->pump();
         return $origin;
     }
 

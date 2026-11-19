@@ -173,7 +173,15 @@ final readonly class MachineStore
 
             public function assertAllowed(ScopeIdentity $scope, string $principal, string $operation): string
             {
-                return $this->authority->authorizeScope($scope, $principal, $operation);
+                try {
+                    return $this->authority->authorizeScope($scope, $principal, $operation);
+                } catch (\LogicException $refused) {
+                    // Policy refusals are permanent; other failures stay retryable.
+                    throw new \Workflow\V2\Compensation\Security\ScopeAuthorizationRefused(
+                        $refused->getMessage(),
+                        $refused
+                    );
+                }
             }
         });
         if ($authority->roots->grants() !== []) {
