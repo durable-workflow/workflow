@@ -60,6 +60,19 @@ trait PhysicalMachineFixture
 
     protected function startPhysical(): WorkflowStub
     {
+        $origin = $this->beginPhysical();
+        $this->drain(fn (): bool => $this->subjectState('order') === 'ready');
+        $origin->withRequestId('request-original-fulfillment')
+            ->signal('fulfill');
+        $this->current();
+        return $origin;
+    }
+
+    /**
+     * Plans every original provider outcome and starts the Order without running any of its tasks.
+     */
+    protected function beginPhysical(): WorkflowStub
+    {
         foreach ([
             $this->terms->descriptor('order'),
             $this->terms->financialDescriptor(),
@@ -75,10 +88,6 @@ trait PhysicalMachineFixture
             Catalogue::NAMESPACE
         );
         $origin->start($this->terms->subjectKey());
-        $this->drain(fn (): bool => $this->subjectState('order') === 'ready');
-        $origin->withRequestId('request-original-fulfillment')
-            ->signal('fulfill');
-        $this->current();
         return $origin;
     }
 
@@ -126,11 +135,16 @@ trait PhysicalMachineFixture
 
     protected function deliveredPublication(): bool
     {
+        return $this->published('shipment', 'delivered');
+    }
+
+    protected function published(string $role, string $state): bool
+    {
         return DB::table('example_machine_publications')->where(
             'subject_id',
-            Authority::subjectId($this->terms->subjectKey(), 'shipment')
+            Authority::subjectId($this->terms->subjectKey(), $role)
         )
-            ->where('payload', 'like', '%"state":"delivered"%')
+            ->where('payload', 'like', '%"state":"' . $state . '"%')
             ->exists();
     }
 
