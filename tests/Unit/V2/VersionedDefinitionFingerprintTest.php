@@ -201,18 +201,49 @@ PHP;
             );
         }
 
-        foreach (['v3', '2', true] as $invalid) {
+        foreach (['V2.0', 'v3', '2', true] as $invalid) {
             config([
                 SourceFingerprint::CONFIG_KEY => $invalid,
             ]);
 
+            // Recording never throws: a configuration error must not fail a run.
+            $this->assertSame(SourceFingerprint::V1, SourceFingerprint::recordingVersion());
+            $this->assertSame(
+                WorkflowDefinition::fingerprint($class, SourceFingerprint::V1),
+                WorkflowDefinition::fingerprint($class),
+            );
+
+            // Boot validation refuses it.
             try {
-                SourceFingerprint::recordingVersion();
-                $this->fail('An unsupported fingerprint version must be refused.');
+                SourceFingerprint::validateConfiguration();
+                $this->fail('An unsupported fingerprint version must be refused at boot.');
             } catch (\InvalidArgumentException $exception) {
                 $this->assertStringContainsString(SourceFingerprint::CONFIG_KEY, $exception->getMessage());
+                $this->assertStringContainsString('DW_DEFINITION_FINGERPRINT_VERSION', $exception->getMessage());
             }
         }
+
+        config([
+            SourceFingerprint::CONFIG_KEY => 'v2',
+        ]);
+        $this->assertSame(SourceFingerprint::V2, SourceFingerprint::validateConfiguration());
+        $this->assertSame(SourceFingerprint::V2, SourceFingerprint::recordingVersion());
+    }
+
+    public function testTypeRegistrationDoesNotDependOnTheRecordingSetting(): void
+    {
+        $type = 'versioned-fingerprint-registration-' . bin2hex(random_bytes(4));
+
+        foreach (['v1', 'v2', 'V2.0', 'v1'] as $configured) {
+            config([
+                SourceFingerprint::CONFIG_KEY => $configured,
+            ]);
+
+            WorkflowDefinition::assertWorkflowTypeRegistration($type, TestCommentOnlyFingerprintWorkflow::class);
+        }
+
+        $this->expectException(\LogicException::class);
+        WorkflowDefinition::assertWorkflowTypeRegistration($type, TestCommandTargetWorkflow::class);
     }
 
     public function testAnOlderWorkerOnlyAgreesWithVersionOneRecordings(): void

@@ -15,7 +15,8 @@
     and new runs still **record version 1** by default. Set
     `DW_DEFINITION_FINGERPRINT_VERSION=v2` (`workflows.definition_fingerprint_version`)
     to record version 2, **only after every worker that can claim these runs
-    is on this release or later**. An older worker compares a version 2 run
+    is on this release or later**. Any other value stops the application or
+    worker at boot; recording never fails a run over this setting. An older worker compares a version 2 run
     by version 1, sees a changed definition, and takes the legacy default for
     a missing marker; a newer worker would then take the current branch for
     the same run. Switching back to `v1` is safe: existing runs keep the

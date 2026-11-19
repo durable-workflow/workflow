@@ -75,6 +75,7 @@ use Workflow\V2\Support\HistoryProjectionMaintenanceFallback;
 use Workflow\V2\Support\InMemoryTaskFairnessState;
 use Workflow\V2\Support\LongPollCacheValidator;
 use Workflow\V2\Support\PhpClassScheduleStarter;
+use Workflow\V2\Support\SourceFingerprint;
 use Workflow\V2\Support\SqliteSavepointRelease;
 use Workflow\V2\Support\TaskFairnessState;
 use Workflow\V2\Support\TypeRegistry;
@@ -218,6 +219,9 @@ final class WorkflowServiceProvider extends ServiceProvider
         TypeRegistry::validateTypeMap();
         WorkflowModeGuard::check();
         ConfiguredV2Models::validateConfiguration();
+        // Refuse an unsupported definition fingerprint version before any
+        // workflow can run; at runtime the setting never fails a run.
+        SourceFingerprint::validateConfiguration();
         $this->configureSqliteStorageConnection();
 
         // Register long-poll wake signal observers

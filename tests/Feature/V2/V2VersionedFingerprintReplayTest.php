@@ -6,13 +6,16 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestCommentOnlyFingerprintWorkflow;
+use Tests\Fixtures\V2\TestParentWaitingOnChildWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Exceptions\ConditionWaitDefinitionMismatchException;
 use Workflow\V2\Jobs\RunWorkflowTask;
+use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
+use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\AwaitCall;
@@ -57,6 +60,47 @@ final class V2VersionedFingerprintReplayTest extends TestCase
         $this->assertTrue($workflow->attemptUpdate('approve', true)->completed());
         $this->assertTrue($workflow->refresh()->completed());
         $this->assertTrue($workflow->output()['patched']);
+    }
+
+    public function testAnInFlightParentStartsItsChildUnderAnyConfiguredValue(): void
+    {
+        foreach ([
+            'unset' => [null, SourceFingerprint::V1_PREFIX],
+            'v1' => ['v1', SourceFingerprint::V1_PREFIX],
+            'v2' => ['v2', SourceFingerprint::V2_PREFIX],
+            // Boot refuses these; a value that changes afterwards records v1
+            // instead of failing the parent.
+            'typo' => ['V2.0', SourceFingerprint::V1_PREFIX],
+            'unknown' => ['v3', SourceFingerprint::V1_PREFIX],
+        ] as $case => [$configured, $prefix]) {
+            $this->recordVersion('v1');
+            $parent = WorkflowStub::make(
+                TestParentWaitingOnChildWorkflow::class,
+                'versioned-fingerprint-parent-' . $case
+            );
+            $parent->start(60);
+            $this->recordVersion($configured);
+
+            $this->runReadyTask($parent);
+
+            $failures = WorkflowFailure::query()
+                ->where('workflow_run_id', $parent->runId())
+                ->pluck('message')
+                ->all();
+            $this->assertSame('waiting', $parent->refresh()->status(), $case . ': ' . implode('; ', $failures));
+            $link = WorkflowLink::query()
+                ->where('parent_workflow_run_id', $parent->runId())
+                ->sole();
+            $childStarted = WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $link->child_workflow_run_id)
+                ->where('event_type', HistoryEventType::WorkflowStarted->value)
+                ->sole();
+            $this->assertStringStartsWith(
+                $prefix,
+                (string) ($childStarted->payload['workflow_definition_fingerprint'] ?? null),
+                $case,
+            );
+        }
     }
 
     public function testOptedInRunsRecordVersionTwoAndKeepItAfterSwitchingBack(): void
@@ -195,7 +239,7 @@ final class V2VersionedFingerprintReplayTest extends TestCase
             ->currentState();
     }
 
-    private function recordVersion(string $version): void
+    private function recordVersion(?string $version): void
     {
         config()
             ->set(SourceFingerprint::CONFIG_KEY, $version);
@@ -205,6 +249,14 @@ final class V2VersionedFingerprintReplayTest extends TestCase
     {
         $workflow = WorkflowStub::make(TestCommentOnlyFingerprintWorkflow::class, $instanceId);
         $workflow->start();
+        $this->runReadyTask($workflow);
+        $this->assertSame('waiting', $workflow->refresh()->status());
+
+        return $workflow;
+    }
+
+    private function runReadyTask(WorkflowStub $workflow): void
+    {
         /** @var WorkflowTask $task */
         $task = WorkflowTask::query()
             ->where('workflow_run_id', $workflow->runId())
@@ -212,9 +264,6 @@ final class V2VersionedFingerprintReplayTest extends TestCase
             ->where('status', TaskStatus::Ready->value)
             ->sole();
         $this->app->call([new RunWorkflowTask($task->id), 'handle']);
-        $this->assertSame('waiting', $workflow->refresh()->status());
-
-        return $workflow;
     }
 
     private function recordAsOlderWorker(WorkflowStub $workflow, string $definition, string $condition): void

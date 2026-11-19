@@ -290,7 +290,9 @@ Guarantees:
     compares by version 1.
   - `workflows.definition_fingerprint_version`
     (`DW_DEFINITION_FINGERPRINT_VERSION`, `v1` or `v2`, default `v1`)
-    chooses what new runs record. An older worker compares only version
+    chooses what new runs record. The service provider refuses any
+    other value at boot, and recording never fails a run over it. An
+    older worker compares only version
     1, so it treats a version 2 run as changed and takes the legacy
     default for a missing version marker, while a newer worker takes the
     current branch. That is non-deterministic replay. Set `v2` only after

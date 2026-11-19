@@ -43,6 +43,13 @@ final class SourceFingerprint
     private const MAX_CACHED_FILES = 64;
 
     /**
+     * The last configured recording value and the version it parsed to.
+     *
+     * @var array{configured: mixed, version: int}|null
+     */
+    private static ?array $recording = null;
+
+    /**
      * @var array<string, array{hash: string, lines: list<int>, texts: list<string>}>
      */
     private static array $files = [];
@@ -69,28 +76,49 @@ final class SourceFingerprint
     }
 
     /**
+     * Check the configured recording version and remember it. The service
+     * provider calls this at boot, so an unsupported value stops the
+     * application or worker from starting instead of reaching a workflow run.
+     */
+    public static function validateConfiguration(): int
+    {
+        $configured = self::configuredVersion();
+        $version = self::parseVersion($configured);
+        self::$recording = [
+            'configured' => $configured,
+            'version' => $version,
+        ];
+
+        return $version;
+    }
+
+    /**
      * The version new runs record, from `workflows.definition_fingerprint_version`
-     * (`v1` or `v2`; `v1` when unset). Anything else is a configuration error.
+     * (`v1` or `v2`; `v1` when unset). It never throws: workflow code calls
+     * it while recording, and a configuration error must not fail a run. Boot
+     * validation refuses an unsupported value; one that only appears later
+     * records version 1, which every release compares.
      */
     public static function recordingVersion(): int
     {
         $configured = self::configuredVersion();
 
-        if ($configured === null) {
+        if (self::$recording !== null && self::$recording['configured'] === $configured) {
+            return self::$recording['version'];
+        }
+
+        try {
+            $version = self::parseVersion($configured);
+        } catch (InvalidArgumentException) {
             return self::V1;
         }
 
-        $normalized = is_string($configured) ? strtolower(trim($configured)) : $configured;
+        self::$recording = [
+            'configured' => $configured,
+            'version' => $version,
+        ];
 
-        return match ($normalized) {
-            '', 'v1' => self::V1,
-            'v2' => self::V2,
-            default => throw new InvalidArgumentException(sprintf(
-                'Unsupported %s [%s]; use "v1" or "v2".',
-                self::CONFIG_KEY,
-                is_scalar($configured) ? (string) $configured : get_debug_type($configured),
-            )),
-        };
+        return $version;
     }
 
     /**
@@ -154,6 +182,25 @@ final class SourceFingerprint
         }
 
         return $framed === '' ? null : $framed;
+    }
+
+    private static function parseVersion(mixed $configured): int
+    {
+        if ($configured === null) {
+            return self::V1;
+        }
+
+        $normalized = is_string($configured) ? strtolower(trim($configured)) : $configured;
+
+        return match ($normalized) {
+            '', 'v1' => self::V1,
+            'v2' => self::V2,
+            default => throw new InvalidArgumentException(sprintf(
+                'Unsupported %s (DW_DEFINITION_FINGERPRINT_VERSION) [%s]; use "v1" or "v2".',
+                self::CONFIG_KEY,
+                is_scalar($configured) ? var_export($configured, true) : get_debug_type($configured),
+            )),
+        };
     }
 
     private static function configuredVersion(): mixed

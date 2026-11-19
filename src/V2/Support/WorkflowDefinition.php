@@ -420,6 +420,11 @@ final class WorkflowDefinition
             return;
         }
 
+        // Compare in the registered fingerprint's version, so the recording
+        // setting cannot make the same definition look re-registered.
+        $fingerprint = self::fingerprint($class, SourceFingerprint::versionOf($existing['fingerprint']))
+            ?? $fingerprint;
+
         if (hash_equals($existing['fingerprint'], $fingerprint)) {
             return;
         }

@@ -2267,16 +2267,6 @@ final class WorkflowStub
     }
 
     /**
-     * @param array{
-     *     memo: array|null,
-     *     search_attributes: array|null,
-     *     execution_timeout_seconds: int|null,
-     *     run_timeout_seconds: int|null,
-     *     execution_deadline_at: CarbonInterface|null,
-     *     run_deadline_at: CarbonInterface|null
-     * } $startMetadata
-     */
-    /**
      * A compensation recovery run records the definition version its admission
      * receipt bound, which stays version 1 like other compensation descriptors.
      * Other starts record the configured version.
@@ -2291,6 +2281,16 @@ final class WorkflowStub
         return is_string($definition) ? SourceFingerprint::versionOf($definition) : null;
     }
 
+    /**
+     * @param array{
+     *     memo: array|null,
+     *     search_attributes: array|null,
+     *     execution_timeout_seconds: int|null,
+     *     run_timeout_seconds: int|null,
+     *     execution_deadline_at: CarbonInterface|null,
+     *     run_deadline_at: CarbonInterface|null
+     * } $startMetadata
+     */
     private function recordWorkflowStartedHistory(
         WorkflowInstance $instance,
         WorkflowRun $run,
