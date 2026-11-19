@@ -95,6 +95,25 @@
   published package. `docs/business-state-machines.md` describes what it
   checks. The compensation-scope and state-machine journeys now share
   `scripts/ci/upgrade-journey-lib.sh`.
+- A v1 activity whose job failed no longer runs a second time when the
+  workflow replays before the failure is recorded (#1241). The failure is
+  recorded by a separately queued `Workflow\Exception` job after the activity's
+  unique lock is released, so a wake in between (a signal, timer or sibling
+  result) dispatched the activity again and the copy executed it, adding an
+  exception row and repeating its side effects. The failed job now marks the
+  activity in the cache before its lock is released. A copy that finds the mark
+  completes without executing, recording a result or firing activity events, and
+  the Exception job removes the mark once it has recorded the failure or let it
+  go. Recorded history, job payloads and replay are unchanged.
+  - The mark expires after `workflows.activity_failure_mark_seconds`
+    (`DW_V1_ACTIVITY_FAILURE_MARK_SECONDS`, default 3600). If the Exception job
+    is lost (a flushed queue, an undecryptable payload), a later wake then runs
+    the activity again, as before this release, instead of the workflow waiting
+    forever. Keep it well above the time an Exception job can wait behind
+    earlier pending work.
+  - A job that times out, or exhausts its attempts after a worker crash, fails
+    without running the activity's catch block, so it writes no mark and the
+    redispatch race stays open on those paths, as before.
 
 ## 2.33.0 - 2026-11-19
 
@@ -192,6 +211,25 @@ in a minor release: `DurableScope::reserveChild()`, original root admission
   could never run: the call returns `verified` or fails its recorded activity.
   The activity calls and their order are unchanged, so recorded commands are the
   same. Examples only.
+
+- A wide `all()` no longer makes its workflow tasks grow with the square of the
+  fan-out width (#1231, #1203). A 300-member fan-out of 10 KB activities took
+  134 s to schedule and 58–85 s to finish on 2.32.0, so Laravel's default
+  60-second queue job timeout killed it on every retry. Per-member cost is now
+  roughly constant:
+  - A workflow task publishes the tasks it committed in bounded batches and
+    refreshes each affected run summary once, instead of rebuilding the run's
+    whole summary, in its own transaction, for every member it published.
+  - Replay, child-call, parallel-group, lineage and activity lookups index the
+    loaded history by sequence once, instead of rescanning the whole history
+    for every member. A child closure no longer rescans the parent's history
+    for every sibling.
+  - Activity starts refresh only their own timeline points, like outcomes, and
+    projections skip decoding payloads that cannot name the activity or a
+    failure.
+
+  Recorded history and every projection row are unchanged. Each member's own
+  activity or child task still rebuilds its run summary once.
 
 ## 2.32.0 - 2026-11-19
 

@@ -1,0 +1,394 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "fan-out-child-all-history-index",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestFanOutPayloadChildWorkflow",
+    "arguments": [
+      3,
+      16
+    ],
+    "payload_codec": "avro"
+  },
+  "fan_out_child_all_history_index": {
+    "issue": "durable-workflow/workflow#1203",
+    "note": "A recorded all() of three child workflows with payload arguments. Child starts, closures and the final barrier look up each member by sequence through an index built once per loaded history instead of a scan per member, and the recorded history is unchanged. The run completes with every child result."
+  },
+  "history": [
+    {
+      "id": "01m7skjpc2149wkgs84cbxyvq0",
+      "sequence": 1,
+      "event_type": "StartAccepted",
+      "recorded_at": "2026-11-19T09:53:04.385800Z",
+      "payload": {
+        "workflow_command_id": "01m7skjpc0xbwgt40hzf0d7rzs",
+        "workflow_instance_id": "dump-child",
+        "workflow_run_id": "01m7skjpc0xbwgt40hzf0d7rzr",
+        "workflow_class": "Tests\\Fixtures\\V2\\TestFanOutPayloadChildWorkflow",
+        "workflow_type": "test-fan-out-payload-child-workflow",
+        "business_key": null,
+        "visibility_labels": null,
+        "memo": null,
+        "search_attributes": null,
+        "outcome": "started_new"
+      }
+    },
+    {
+      "id": "01m7skjpc359fz48j4pp4nvegd",
+      "sequence": 2,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-19T09:53:04.387110Z",
+      "payload": {
+        "workflow_class": "Tests\\Fixtures\\V2\\TestFanOutPayloadChildWorkflow",
+        "workflow_type": "test-fan-out-payload-child-workflow",
+        "workflow_instance_id": "dump-child",
+        "workflow_run_id": "01m7skjpc0xbwgt40hzf0d7rzr",
+        "workflow_command_id": "01m7skjpc0xbwgt40hzf0d7rzs",
+        "business_key": null,
+        "visibility_labels": null,
+        "memo": null,
+        "search_attributes": null,
+        "execution_timeout_seconds": null,
+        "run_timeout_seconds": null,
+        "execution_deadline_at": null,
+        "run_deadline_at": null,
+        "workflow_definition_fingerprint": "sha256:9a3afc3a3e6c325ab5607a3a7f31f96fa88a907146342c7120e0c6baf804697a",
+        "declared_queries": [],
+        "declared_query_contracts": [],
+        "declared_signals": [],
+        "declared_signal_contracts": [],
+        "declared_updates": [],
+        "declared_update_contracts": [],
+        "declared_entry_method": "handle",
+        "declared_entry_mode": "canonical",
+        "declared_entry_declaring_class": "Tests\\Fixtures\\V2\\TestFanOutPayloadChildWorkflow"
+      }
+    },
+    {
+      "id": "01m7skjpe50hjg30sb5xpcgp8a",
+      "sequence": 3,
+      "event_type": "ChildWorkflowScheduled",
+      "recorded_at": "2026-11-19T09:53:04.452656Z",
+      "payload": {
+        "sequence": 1,
+        "workflow_link_id": "01M7SKJPE2NV8TXCM0H53H6X1M",
+        "child_call_id": "01M7SKJPE2NV8TXCM0H53H6X1M",
+        "child_workflow_instance_id": "01m7skjpe0nq6tn72fkdrhs71q",
+        "child_workflow_run_id": "01m7skjpe0nq6tn72fkdrhs71r",
+        "child_workflow_class": "Tests\\Fixtures\\V2\\TestFanOutPayloadLeafWorkflow",
+        "child_workflow_type": "test-fan-out-payload-leaf-workflow",
+        "parent_close_policy": "abandon",
+        "cancellation_policy": "abandon",
+        "parallel_group_id": "parallel-children:1:3",
+        "parallel_group_kind": "child",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 3,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-children:1:3",
+            "parallel_group_kind": "child",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 3,
+            "parallel_group_index": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "01m7skjpe6bm84cte7wmttynvb",
+      "sequence": 4,
+      "event_type": "ChildRunStarted",
+      "recorded_at": "2026-11-19T09:53:04.453964Z",
+      "payload": {
+        "sequence": 1,
+        "workflow_link_id": "01M7SKJPE2NV8TXCM0H53H6X1M",
+        "child_call_id": "01M7SKJPE2NV8TXCM0H53H6X1M",
+        "child_workflow_instance_id": "01m7skjpe0nq6tn72fkdrhs71q",
+        "child_workflow_run_id": "01m7skjpe0nq6tn72fkdrhs71r",
+        "child_workflow_class": "Tests\\Fixtures\\V2\\TestFanOutPayloadLeafWorkflow",
+        "child_workflow_type": "test-fan-out-payload-leaf-workflow",
+        "child_run_number": 1,
+        "parent_close_policy": "abandon",
+        "cancellation_policy": "abandon",
+        "parallel_group_id": "parallel-children:1:3",
+        "parallel_group_kind": "child",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 3,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-children:1:3",
+            "parallel_group_kind": "child",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 3,
+            "parallel_group_index": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "01m7skjpegecekwavpmxsxwymk",
+      "sequence": 5,
+      "event_type": "ChildWorkflowScheduled",
+      "recorded_at": "2026-11-19T09:53:04.464188Z",
+      "payload": {
+        "sequence": 2,
+        "workflow_link_id": "01M7SKJPEENB806NTGEXPMBTWH",
+        "child_call_id": "01M7SKJPEENB806NTGEXPMBTWH",
+        "child_workflow_instance_id": "01m7skjped9dv6k6j7mb8ycbmx",
+        "child_workflow_run_id": "01m7skjped9dv6k6j7mb8ycbmy",
+        "child_workflow_class": "Tests\\Fixtures\\V2\\TestFanOutPayloadLeafWorkflow",
+        "child_workflow_type": "test-fan-out-payload-leaf-workflow",
+        "parent_close_policy": "abandon",
+        "cancellation_policy": "abandon",
+        "parallel_group_id": "parallel-children:1:3",
+        "parallel_group_kind": "child",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 3,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-children:1:3",
+            "parallel_group_kind": "child",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 3,
+            "parallel_group_index": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "01m7skjpehzvz9ksp7z5fr8jkb",
+      "sequence": 6,
+      "event_type": "ChildRunStarted",
+      "recorded_at": "2026-11-19T09:53:04.465372Z",
+      "payload": {
+        "sequence": 2,
+        "workflow_link_id": "01M7SKJPEENB806NTGEXPMBTWH",
+        "child_call_id": "01M7SKJPEENB806NTGEXPMBTWH",
+        "child_workflow_instance_id": "01m7skjped9dv6k6j7mb8ycbmx",
+        "child_workflow_run_id": "01m7skjped9dv6k6j7mb8ycbmy",
+        "child_workflow_class": "Tests\\Fixtures\\V2\\TestFanOutPayloadLeafWorkflow",
+        "child_workflow_type": "test-fan-out-payload-leaf-workflow",
+        "child_run_number": 1,
+        "parent_close_policy": "abandon",
+        "cancellation_policy": "abandon",
+        "parallel_group_id": "parallel-children:1:3",
+        "parallel_group_kind": "child",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 3,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-children:1:3",
+            "parallel_group_kind": "child",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 3,
+            "parallel_group_index": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "01m7skjpevpnprtw1ct5wfg1ym",
+      "sequence": 7,
+      "event_type": "ChildWorkflowScheduled",
+      "recorded_at": "2026-11-19T09:53:04.475119Z",
+      "payload": {
+        "sequence": 3,
+        "workflow_link_id": "01M7SKJPESWMST085ZD2ZF018W",
+        "child_call_id": "01M7SKJPESWMST085ZD2ZF018W",
+        "child_workflow_instance_id": "01m7skjperex1y1gdgc9gwhw9s",
+        "child_workflow_run_id": "01m7skjperex1y1gdgc9gwhw9t",
+        "child_workflow_class": "Tests\\Fixtures\\V2\\TestFanOutPayloadLeafWorkflow",
+        "child_workflow_type": "test-fan-out-payload-leaf-workflow",
+        "parent_close_policy": "abandon",
+        "cancellation_policy": "abandon",
+        "parallel_group_id": "parallel-children:1:3",
+        "parallel_group_kind": "child",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 3,
+        "parallel_group_index": 2,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-children:1:3",
+            "parallel_group_kind": "child",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 3,
+            "parallel_group_index": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "01m7skjpewbs47p140jk411wnv",
+      "sequence": 8,
+      "event_type": "ChildRunStarted",
+      "recorded_at": "2026-11-19T09:53:04.476271Z",
+      "payload": {
+        "sequence": 3,
+        "workflow_link_id": "01M7SKJPESWMST085ZD2ZF018W",
+        "child_call_id": "01M7SKJPESWMST085ZD2ZF018W",
+        "child_workflow_instance_id": "01m7skjperex1y1gdgc9gwhw9s",
+        "child_workflow_run_id": "01m7skjperex1y1gdgc9gwhw9t",
+        "child_workflow_class": "Tests\\Fixtures\\V2\\TestFanOutPayloadLeafWorkflow",
+        "child_workflow_type": "test-fan-out-payload-leaf-workflow",
+        "child_run_number": 1,
+        "parent_close_policy": "abandon",
+        "cancellation_policy": "abandon",
+        "parallel_group_id": "parallel-children:1:3",
+        "parallel_group_kind": "child",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 3,
+        "parallel_group_index": 2,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-children:1:3",
+            "parallel_group_kind": "child",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 3,
+            "parallel_group_index": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "01m7skjpm4qk480ra0ypdxvfh1",
+      "sequence": 9,
+      "event_type": "ChildRunCompleted",
+      "recorded_at": "2026-11-19T09:53:04.644212Z",
+      "payload": {
+        "sequence": 1,
+        "workflow_link_id": "01M7SKJPE2NV8TXCM0H53H6X1M",
+        "child_call_id": "01M7SKJPE2NV8TXCM0H53H6X1M",
+        "child_workflow_instance_id": "01m7skjpe0nq6tn72fkdrhs71q",
+        "child_workflow_run_id": "01m7skjpe0nq6tn72fkdrhs71r",
+        "child_workflow_class": "Tests\\Fixtures\\V2\\TestFanOutPayloadLeafWorkflow",
+        "child_workflow_type": "test-fan-out-payload-leaf-workflow",
+        "child_run_number": 1,
+        "child_status": "completed",
+        "closed_reason": "completed",
+        "closed_at": "2026-11-19T09:53:04.638058Z",
+        "output": "wwHioz3/VYAiNwQg",
+        "result": "wwHioz3/VYAiNwQg",
+        "payload_codec": "avro",
+        "parallel_group_id": "parallel-children:1:3",
+        "parallel_group_kind": "child",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 3,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-children:1:3",
+            "parallel_group_kind": "child",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 3,
+            "parallel_group_index": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "01m7skjppt750qhtt6kdzjtjrs",
+      "sequence": 10,
+      "event_type": "ChildRunCompleted",
+      "recorded_at": "2026-11-19T09:53:04.729980Z",
+      "payload": {
+        "sequence": 2,
+        "workflow_link_id": "01M7SKJPEENB806NTGEXPMBTWH",
+        "child_call_id": "01M7SKJPEENB806NTGEXPMBTWH",
+        "child_workflow_instance_id": "01m7skjped9dv6k6j7mb8ycbmx",
+        "child_workflow_run_id": "01m7skjped9dv6k6j7mb8ycbmy",
+        "child_workflow_class": "Tests\\Fixtures\\V2\\TestFanOutPayloadLeafWorkflow",
+        "child_workflow_type": "test-fan-out-payload-leaf-workflow",
+        "child_run_number": 1,
+        "child_status": "completed",
+        "closed_reason": "completed",
+        "closed_at": "2026-11-19T09:53:04.724579Z",
+        "output": "wwHioz3/VYAiNwQg",
+        "result": "wwHioz3/VYAiNwQg",
+        "payload_codec": "avro",
+        "parallel_group_id": "parallel-children:1:3",
+        "parallel_group_kind": "child",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 3,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-children:1:3",
+            "parallel_group_kind": "child",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 3,
+            "parallel_group_index": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "01m7skjpsvw8ezr0ffgct34h3n",
+      "sequence": 11,
+      "event_type": "ChildRunCompleted",
+      "recorded_at": "2026-11-19T09:53:04.827753Z",
+      "payload": {
+        "sequence": 3,
+        "workflow_link_id": "01M7SKJPESWMST085ZD2ZF018W",
+        "child_call_id": "01M7SKJPESWMST085ZD2ZF018W",
+        "child_workflow_instance_id": "01m7skjperex1y1gdgc9gwhw9s",
+        "child_workflow_run_id": "01m7skjperex1y1gdgc9gwhw9t",
+        "child_workflow_class": "Tests\\Fixtures\\V2\\TestFanOutPayloadLeafWorkflow",
+        "child_workflow_type": "test-fan-out-payload-leaf-workflow",
+        "child_run_number": 1,
+        "child_status": "completed",
+        "closed_reason": "completed",
+        "closed_at": "2026-11-19T09:53:04.821877Z",
+        "output": "wwHioz3/VYAiNwQg",
+        "result": "wwHioz3/VYAiNwQg",
+        "payload_codec": "avro",
+        "parallel_group_id": "parallel-children:1:3",
+        "parallel_group_kind": "child",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 3,
+        "parallel_group_index": 2,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-children:1:3",
+            "parallel_group_kind": "child",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 3,
+            "parallel_group_index": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "01m7skjpynwver2ffe396xq7v3",
+      "sequence": 12,
+      "event_type": "WorkflowCompleted",
+      "recorded_at": "2026-11-19T09:53:04.980705Z",
+      "payload": {
+        "output": "wwHioz3/VYAiNw4EDm1lbWJlcnMEBhZ0b3RhbF9ieXRlcwRgAA==",
+        "payload_codec": "avro"
+      }
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "members": 3,
+      "total_bytes": 48
+    },
+    "commands": [
+      {
+        "type": "complete_workflow"
+      }
+    ]
+  }
+}

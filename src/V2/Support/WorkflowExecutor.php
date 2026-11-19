@@ -5906,20 +5906,7 @@ final class WorkflowExecutor
     private function activityCompletionEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
     {
         /** @var WorkflowHistoryEvent|null $event */
-        $event = $run->historyEvents->first(
-            static fn (WorkflowHistoryEvent $event): bool => in_array(
-                $event->event_type,
-                [
-                    HistoryEventType::ActivityCompleted,
-                    HistoryEventType::ActivityFailed,
-                    HistoryEventType::ActivityCancelled,
-                    HistoryEventType::ActivityTimedOut,
-                ],
-                true,
-            ) && ($event->payload['sequence'] ?? null) === $sequence
-                // The run's own close recorded this; the workflow never saw it (#1117).
-                && ! ClosingRunOpenWork::settledAtClose($event)
-        );
+        $event = $this->firstActivityEventForSequence($run, 'completion', $sequence);
 
         ExecutionTracing::linkOutcome($run, $event);
 
@@ -5929,20 +5916,57 @@ final class WorkflowExecutor
     private function activityOpenEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
     {
         /** @var WorkflowHistoryEvent|null $event */
-        $event = $run->historyEvents->first(
-            static fn (WorkflowHistoryEvent $event): bool => in_array(
-                $event->event_type,
-                [
-                    HistoryEventType::ActivityScheduled,
-                    HistoryEventType::ActivityStarted,
-                    HistoryEventType::ActivityHeartbeatRecorded,
-                    HistoryEventType::ActivityRetryScheduled,
-                ],
-                true,
-            ) && ($event->payload['sequence'] ?? null) === $sequence
-        );
+        $event = $this->firstActivityEventForSequence($run, 'open', $sequence);
 
         return $event;
+    }
+
+    /**
+     * The first activity resolution or open event for one durable sequence,
+     * in history order. Replaying a fan-out reads every member's events, so
+     * the loaded history is indexed as far as each lookup needs instead of
+     * scanned per member (#1231).
+     *
+     * @param 'completion'|'open' $kind
+     */
+    private function firstActivityEventForSequence(WorkflowRun $run, string $kind, int $sequence): mixed
+    {
+        $types = $kind === 'completion'
+            ? [
+                HistoryEventType::ActivityCompleted,
+                HistoryEventType::ActivityFailed,
+                HistoryEventType::ActivityCancelled,
+                HistoryEventType::ActivityTimedOut,
+            ]
+            : [
+                HistoryEventType::ActivityScheduled,
+                HistoryEventType::ActivityStarted,
+                HistoryEventType::ActivityHeartbeatRecorded,
+                HistoryEventType::ActivityRetryScheduled,
+            ];
+
+        return HistoryEventIndex::find(
+            $run->historyEvents,
+            "activity-{$kind}-event-by-sequence",
+            $sequence,
+            static function (mixed $event) use ($kind, $types): array {
+                if (! $event instanceof WorkflowHistoryEvent || ! in_array($event->event_type, $types, true)) {
+                    return [];
+                }
+
+                $eventSequence = $event->payload['sequence'] ?? null;
+
+                // The run's own close recorded this; the workflow never saw it (#1117).
+                if (! is_int($eventSequence)
+                    || ($kind === 'completion' && ClosingRunOpenWork::settledAtClose($event))) {
+                    return [];
+                }
+
+                return [
+                    $eventSequence => $event,
+                ];
+            },
+        );
     }
 
     private function activityHistoryEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent

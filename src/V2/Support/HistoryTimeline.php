@@ -65,13 +65,23 @@ final class HistoryTimeline
 
         foreach ($run->historyEvents->sortBy('sequence') as $event) {
             if ($activityExecutionId !== null) {
-                $payload = is_array($event->payload) ? $event->payload : [];
-                $activitySnapshot = is_array($payload['activity'] ?? null) ? $payload['activity'] : [];
                 $task = $tasks->get((string) $event->workflow_task_id);
-                $eventActivityId = $payload['activity_execution_id'] ?? $activitySnapshot['id'] ?? null;
                 $taskActivityId = $task instanceof WorkflowTask
                     ? ($task->payload['activity_execution_id'] ?? null)
                     : null;
+
+                // A sibling's stored payload that never names this activity
+                // cannot match it, so skip decoding it (#1231).
+                if (
+                    $taskActivityId !== $activityExecutionId
+                    && ! StoredHistoryPayload::mayContain($event, $activityExecutionId)
+                ) {
+                    continue;
+                }
+
+                $payload = is_array($event->payload) ? $event->payload : [];
+                $activitySnapshot = is_array($payload['activity'] ?? null) ? $payload['activity'] : [];
+                $eventActivityId = $payload['activity_execution_id'] ?? $activitySnapshot['id'] ?? null;
 
                 // Older points can use current execution or task metadata as
                 // a fallback. Refresh those points along with the new outcome.

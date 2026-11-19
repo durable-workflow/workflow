@@ -37,7 +37,11 @@ final class FailureSnapshots
         }
 
         foreach ($run->historyEvents->sortBy('sequence') as $event) {
-            if (! $event instanceof WorkflowHistoryEvent) {
+            // Most events carry no failure; skip decoding them (#1231).
+            if (! $event instanceof WorkflowHistoryEvent || ! StoredHistoryPayload::mayContain(
+                $event,
+                '"failure_id"'
+            )) {
                 continue;
             }
 
