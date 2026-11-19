@@ -135,6 +135,14 @@ API is planned for a later minor release (#1063).
   host-facing. Both remain `@experimental`. The static native-fence hook
   `RootReservationStore::assertOrdinaryStartAllowed()` is now marked
   `@internal`.
+- `docs/architecture/continue-as-new-promoted-build.md` defines the contract
+  for letting continue-as-new opt in to starting its successor on the
+  currently promoted build (#880): the `target_build` field (`inherited` by
+  default, or `promoted`), its refusals (`promoted_build_unavailable`,
+  `invalid_target_build`, `unsupported_target_build`), the recorded build
+  transition that replay never re-resolves, and conformance vectors.
+  Documentation only: nothing is implemented or advertised, and a unit test
+  pins that the capability stays off.
 - CI splits the MySQL feature suite into 22 shards (was 16) and PostgreSQL
   into 14 (was 10), from recomputed hosted timings. Each shard also uploads a
   timed event log, so a timeout shows which test held the time.
