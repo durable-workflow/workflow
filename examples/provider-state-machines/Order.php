@@ -38,10 +38,8 @@ final class Order extends Workflow
             ];
         } catch (WorkflowCancellationRequestedException|BusinessCancellationRequested $error) {
             self::cancellationShield(fn () => $this->compensate());
-            $proof = self::cancellationShield(static fn () => $machine->scope->verifyCompensation());
-            if (($proof['status'] ?? null) !== 'verified') {
-                throw $error;
-            }
+            // verifyCompensation() returns only once every obligation is verified; otherwise its activity fails.
+            self::cancellationShield(static fn () => $machine->scope->verifyCompensation());
             // Cancellation is a separate protected, proof-only business transition after all dependent work.
             return self::cancellationShield(static fn () => $machine->transition('cancel')->toArray());
         }

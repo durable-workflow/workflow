@@ -41,10 +41,8 @@ final class CheckoutOrder extends Workflow
             ];
         } catch (WorkflowCancellationRequestedException|BusinessCancellationRequested $error) {
             self::cancellationShield(fn () => $this->compensate());
-            $proof = self::cancellationShield(static fn () => $machine->scope->verifyCompensation());
-            if (($proof['status'] ?? null) !== 'verified') {
-                throw $error;
-            }
+            // verifyCompensation() returns only once every obligation is verified; otherwise its activity fails.
+            self::cancellationShield(static fn () => $machine->scope->verifyCompensation());
             $settled = self::cancellationShield(static fn () => $machine->transition('cancel'));
             return [
                 'businessOutcome' => $settled->status === TransitionStatus::Committed ? 'cancelled' : 'unsettled',
