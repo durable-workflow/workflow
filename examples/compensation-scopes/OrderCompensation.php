@@ -9,6 +9,7 @@ use Illuminate\Database\ConnectionInterface;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
 use Workflow\V2\Compensation\Execution\HandlerRegistry;
 use Workflow\V2\Compensation\Recovery\ScopeRecovery;
+use Workflow\V2\Compensation\Recovery\ScopeRetention;
 use Workflow\V2\Compensation\Security\ScopeAuthorization;
 
 /**
@@ -61,5 +62,14 @@ final class OrderCompensation
     public static function describe(ScopeIdentity $scope): array
     {
         return app(ScopeRecovery::class)->describe($scope, self::PRINCIPAL);
+    }
+
+    /**
+     * Retire a verified scope once its runs have closed. Its obligation inputs and forward values are
+     * erased and describe() reports it released. Unresolved compensation cannot be released.
+     */
+    public static function release(ScopeIdentity $scope): void
+    {
+        app(ScopeRetention::class)->release($scope, self::PRINCIPAL);
     }
 }

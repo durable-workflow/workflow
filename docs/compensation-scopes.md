@@ -23,7 +23,10 @@ executable closures or arbitrary class names. Identifiers (application, key,
 generation, operation key, handler version) use 1 to 128 characters from
 `A-Z a-z 0-9 . _ : / -` and start with a letter or digit. Handler types use
 `a-z 0-9 . _ -`, start with a lowercase letter, and must not start with `dw.`, which
-is reserved for the engine. `ScopeIdentity::id()` is the lowercase hex SHA-256 of
+is reserved for the engine. Workflows that record the
+`dw.compensation.registration-checks` patch refuse such types at registration. A
+`HandlerRegistry` may still map a `dw.` type that an earlier history registered, so
+those obligations stay compensable; the engine's own child-scope types cannot be mapped. `ScopeIdentity::id()` is the lowercase hex SHA-256 of
 the canonical JSON of the identity, and the canonical recovery workflow (type
 `dw.compensation.recovery.v1`) runs on instance `dw-compensation-<id>`.
 Applications store protected references instead of credentials or customer data.
@@ -109,7 +112,10 @@ The host must bind
 `ScopeAuthorization`; there is no permissive default. To refuse permanently, throw
 `ScopeAuthorizationRefused`, including for an operation name the policy does not
 know. Any other exception is treated as transient: activity boundaries retry it, and
-automatic recovery tries again on a later watchdog pass.
+automatic recovery tries again on a later watchdog pass. A refusal while a parent
+compensates a child participant is also permanent: the parent obligation becomes
+`failed` with reason `authorization-refused`, and the activity fails with
+non-retryable `scope_authorization_refused` until a fresh authorized request.
 
 `HandlerRegistry` is supplied by trusted host code. Its entries implement
 `ScopedOperation::assertInput()`, `execute()` and `compensate()`. These are provider
@@ -120,7 +126,9 @@ existing journal bound. Larger provider proofs should be stored as protected
 evidence bundles and referenced by a stable identifier.
 
 `execute()` returns `ForwardResult::observed($value, $evidence)` (value limited to
-11,264 bytes, 400 values and depth 7), `unknown($reason)` when the outcome is
+11,264 bytes, 400 values and depth 7 for workflows that record the
+`dw.compensation.registration-checks` patch; runs recorded before it keep the envelope
+limit), `unknown($reason)` when the outcome is
 uncertain, or `rejected($reason, $evidence)` when the provider definitely made no
 effect. A rejected forward fails the workflow's call with non-retryable
 `scope_forward_rejected`, and its compensation verifies without a provider call.
@@ -139,6 +147,16 @@ input retains its native nonretryable reason without creating provider uncertain
 A refused retry preserves any earlier uncertain attempt. Exceptions after provider
 dispatch remain unknown and require reconciliation, even if their PHP type is
 nonretryable.
+
+The one exception is `HandlerContractViolation`. The `ForwardResult` and `Resolution`
+factories throw it for an invalid reason, evidence or value, and the engine raises it
+for an observed value over the limit. The outcome is recorded as unknown, so
+compensation still reconciles by operation ID, and the activity fails with
+non-retryable `scope_handler_contract_violation` followed by the violation message
+instead of retrying as `provider-outcome-unknown`. Handlers written for earlier
+releases that call `Resolution::verified($evidence, true)` keep working with an
+`E_USER_DEPRECATED` notice; `verified($evidence, false)` returns
+`unknown('late-forward-possible')`.
 
 `ChildScopes` registers compensation participants, not state-machine bindings.
 The initial graph is a bounded tree with one nesting level, at most 16 children
@@ -350,7 +368,8 @@ authorized key to request another eligible run. Every result has exactly the key
 a host `message` that is not machine-stable), `nextAction` and `unresolved`, a list
 of `key`, `status` (`pending`, `unresolved`, `failed`) and `reason`. The value sets
 are the `ScopeStatus`, `RecoveryRoute`, `NextAction`, `AutomaticRecovery` and
-`ObligationStatus` enums. Resolve `ScopeRecovery` and `ScopeRetention` from the
+`ObligationStatus` enums. These enums may gain cases in a minor release, so handle
+values you do not recognize with a default branch. Resolve `ScopeRecovery` and `ScopeRetention` from the
 container; their constructors are internal. Each scope accepts at most 128 requests,
 shared between host requests and engine requests (one child request per parent run
 that compensates the child). Only the verified scope ledger clears the unresolved

@@ -29,7 +29,7 @@ use Workflow\V2\Workflow;
 final readonly class DurableScope
 {
     /**
-     * Patch marker for registration checks added after 2.30 (caller input limits, reserved handler types).
+     * Patch marker for checks added after 2.31 (caller input and forward value limits, reserved handler types).
      */
     private const REGISTRATION_CHECKS = 'dw.compensation.registration-checks';
 
@@ -74,7 +74,7 @@ final readonly class DurableScope
             Workflow::activity(RequestScopeActivity::class, $scope, $principal);
             Workflow::activity(CompensateObligationActivity::class, $scope, $id);
         });
-        return new RegisteredObligation($this->identity, $id, $principal);
+        return new RegisteredObligation($this->identity, $id, $principal, $this->registrationChecks);
     }
 
     public function participate(string $key, ScopeIdentity $child): void
