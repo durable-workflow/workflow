@@ -682,6 +682,17 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 ];
             }
 
+            // A stale worker's failure must not drop a bounded close's
+            // settlement hold (#1116); the run is already closed.
+            if (DeadlineCloseSettlement::holds($task)) {
+                return [
+                    'recorded' => false,
+                    'task_id' => $taskId,
+                    'reason' => 'run_already_closed',
+                    'next_task_id' => null,
+                ];
+            }
+
             $errorMessage = self::failureMessage($failure);
 
             $task->forceFill([
@@ -774,8 +785,12 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             if ($this->executor->cancelIfCleanupDeadlineExpired($run, $task)) {
                 return $response('run_cancelled', $run);
             }
-            if ($this->executor->timeoutIfDeadlineExpired($run, $task)) {
-                return $response('run_timed_out', $run);
+            $deadlineClose = $this->executor->closeExpiredDeadline($run, $task);
+            if ($deadlineClose !== WorkflowExecutor::DEADLINE_NOT_EXPIRED) {
+                return $response(
+                    $deadlineClose === WorkflowExecutor::DEADLINE_CLOSING ? 'run_deadline_closing' : 'run_timed_out',
+                    $run
+                );
             }
             if ($task->lease_expires_at === null || now()->gte($task->lease_expires_at)) {
                 return $response('lease_expired', $run);
@@ -1337,10 +1352,14 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 }
 
                 if ($run->status->isTerminal()) {
-                    $task->forceFill([
-                        'status' => $run->status === RunStatus::Failed ? TaskStatus::Failed : TaskStatus::Completed,
-                        'lease_expires_at' => null,
-                    ])->save();
+                    // A task held for a bounded close's settlement stays
+                    // held; only the watchdog completes it (#1116).
+                    if (! DeadlineCloseSettlement::holds($task)) {
+                        $task->forceFill([
+                            'status' => $run->status === RunStatus::Failed ? TaskStatus::Failed : TaskStatus::Completed,
+                            'lease_expires_at' => null,
+                        ])->save();
+                    }
 
                     return [
                         'completed' => false,
@@ -1353,18 +1372,23 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 }
 
                 // A run's deadline close is the server's own work on stored
-                // state, not the worker's commands, and nothing else closes
-                // a run whose task is open: it is never metered (#930).
-                if (HistoryTransactionMeter::unmetered(
-                    fn (): bool => $this->executor->timeoutIfDeadlineExpired($run, $task)
-                )) {
+                // state, not the worker's commands, so the worker's budget
+                // never refuses it (#930). It is bounded instead (#1116): an
+                // oversized ordinary close cancels one batch of open work,
+                // releases this task and continues on later passes.
+                $deadlineClose = HistoryTransactionMeter::unmetered(
+                    fn (): string => $this->executor->closeExpiredDeadline($run, $task)
+                );
+                if ($deadlineClose !== WorkflowExecutor::DEADLINE_NOT_EXPIRED) {
                     return [
                         'completed' => false,
                         'task_id' => $taskId,
                         'workflow_run_id' => $run->id,
                         'run_status' => $run->status->value,
                         'created_task_ids' => [],
-                        'reason' => 'run_timed_out',
+                        'reason' => $deadlineClose === WorkflowExecutor::DEADLINE_CLOSING
+                            ? 'run_deadline_closing'
+                            : 'run_timed_out',
                     ];
                 }
 
@@ -1383,7 +1407,12 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
 
                 // The early whole-completion check (#930): after any deadline
                 // close, before the worker's first write; the lease stays.
-                if (WorkflowCommandNormalizer::completionBudgetErrors(array_values($commands)) !== []) {
+                // The row estimate is an upper bound on the rows the commands
+                // write, so an over-limit completion is refused here without
+                // a single write (#1116). The meter stays the exact backstop.
+                $rowLimit = StructuralLimits::completionRowsLimit();
+                if (WorkflowCommandNormalizer::completionBudgetErrors(array_values($commands)) !== []
+                    || ($rowLimit > 0 && CompletionRowEstimate::rows($run, array_values($commands)) > $rowLimit)) {
                     return [
                         'completed' => false,
                         'task_id' => $taskId,

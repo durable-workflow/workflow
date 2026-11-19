@@ -240,13 +240,13 @@ final class ChildSupervision
      */
     public static function followRetry(WorkflowRun $parentRun, int $sequence, WorkflowRun $retryRun): void
     {
-        ConfiguredV2Models::query('child_supervision_model', WorkflowChildSupervision::class)
+        $supervisions = ConfiguredV2Models::query('child_supervision_model', WorkflowChildSupervision::class)
             ->where('parent_workflow_run_id', $parentRun->id)
             ->where('sequence', $sequence)
-            ->where('child_workflow_instance_id', $retryRun->workflow_instance_id)
-            ->update([
-                'child_workflow_run_id' => $retryRun->id,
-            ]);
+            ->where('child_workflow_instance_id', $retryRun->workflow_instance_id);
+        HistoryTransactionMeter::affecting($supervisions, static fn (): int => $supervisions->update([
+            'child_workflow_run_id' => $retryRun->id,
+        ]));
     }
 
     /**

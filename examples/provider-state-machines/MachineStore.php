@@ -80,6 +80,7 @@ final readonly class MachineStore
         $app->instance(self::class, $store);
         if ($unitRefunds !== null) {
             $app->instance(ReturnStore::class, new ReturnStore($authority, $provider, $unitRefunds));
+            $app->instance(ExchangeStore::class, new ExchangeStore($authority, $provider, $unitRefunds));
         }
         if ($warehouse !== null && $unitRefunds !== null) {
             $app->instance(
@@ -503,6 +504,22 @@ final readonly class MachineStore
             ];
             $handlers[ReturnStore::REFUND_HANDLER] = [
                 '1' => new UnitRefundOperation($provider, $this->unitRefunds, $returns->operation(...)),
+            ];
+            $exchanges = app(ExchangeStore::class);
+            $handlers[ExchangeStore::REQUEST_HANDLER] = [
+                '1' => new UnitReturnOperation($provider, $exchanges->operation(...), UnitReturnTerms::REQUEST),
+            ];
+            $handlers[ExchangeStore::RESTOCK_HANDLER] = [
+                '1' => new UnitReturnOperation($provider, $exchanges->operation(...), UnitReturnTerms::RESTOCK),
+            ];
+            $handlers[ExchangeStore::RESERVE_HANDLER] = [
+                '1' => new RetainedOperation($provider, $exchanges->operation(...)),
+            ];
+            $handlers[ExchangeStore::BOOK_HANDLER] = [
+                '1' => new ShipmentOperation($provider, $exchanges->operation(...)),
+            ];
+            $handlers[ExchangeStore::REFUND_HANDLER] = [
+                '1' => new UnitRefundOperation($provider, $this->unitRefunds, $exchanges->operation(...)),
             ];
         }
         if ($this->warehouse !== null && $this->unitRefunds !== null) {

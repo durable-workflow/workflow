@@ -802,6 +802,9 @@ final class ChildRunHistory
         };
 
         if (ConfiguredV2Models::connection()->transactionLevel() > 0) {
+            // The projection writes one child-call row after commit, outside
+            // the completion's meter: charge it now, before any write (#1116).
+            HistoryTransactionMeter::current()?->chargeCompletionRows(1);
             AfterCommit::on(ConfiguredV2Models::connection(), $callback);
 
             return;

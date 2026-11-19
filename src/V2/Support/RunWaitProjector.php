@@ -34,18 +34,18 @@ final class RunWaitProjector
         ];
 
         if ($waitId !== null && $waitId !== '') {
-            $waitModel::query()
+            $selected = $waitModel::query()
                 ->where('workflow_run_id', $run->id)
-                ->where('wait_id', $waitId)
-                ->update($values);
+                ->where('wait_id', $waitId);
+            HistoryTransactionMeter::affecting($selected, static fn (): int => $selected->update($values));
         }
 
-        $waitModel::query()
+        $childWaits = $waitModel::query()
             ->where('workflow_run_id', $run->id)
             ->where('kind', 'child')
             ->where('task_id', $task->id)
-            ->whereIn('status', ['resolved', 'cancelled'])
-            ->update($values);
+            ->whereIn('status', ['resolved', 'cancelled']);
+        HistoryTransactionMeter::affecting($childWaits, static fn (): int => $childWaits->update($values));
 
         $run->unsetRelation('waits');
     }
@@ -92,30 +92,30 @@ final class RunWaitProjector
 
         $waitModel = self::waitModel();
         $resolvedAt = $event->recorded_at ?? $event->created_at;
-        $waitModel::query()
+        $resolved = $waitModel::query()
             ->where('workflow_run_id', $run->id)
-            ->where('wait_id', $waitId)
-            ->update([
-                'status' => in_array($sourceStatus, [
-                    RunStatus::Cancelled->value,
-                    RunStatus::Terminated->value,
-                ], true) ? 'cancelled' : 'resolved',
-                'source_status' => $sourceStatus,
-                'summary' => match ($sourceStatus) {
-                    RunStatus::Completed->value => sprintf('Child workflow %s completed.', $label),
-                    RunStatus::Failed->value => sprintf('Child workflow %s failed.', $label),
-                    RunStatus::Cancelled->value => sprintf('Child workflow %s cancelled.', $label),
-                    RunStatus::Terminated->value => sprintf('Child workflow %s terminated.', $label),
-                    default => sprintf('Child workflow %s resolved.', $label),
-                },
-                'resolved_at' => $resolvedAt === null ? null : UtcScheduleTimestamp::databaseValue($resolvedAt),
-                'task_backed' => true,
-                'task_id' => $task->id,
-                'task_type' => $task->task_type->value,
-                'task_status' => $task->status->value,
-                'history_authority' => ChildRunHistory::HISTORY_AUTHORITY_TYPED,
-                'history_unsupported_reason' => null,
-            ]);
+            ->where('wait_id', $waitId);
+        HistoryTransactionMeter::affecting($resolved, static fn (): int => $resolved->update([
+            'status' => in_array($sourceStatus, [
+                RunStatus::Cancelled->value,
+                RunStatus::Terminated->value,
+            ], true) ? 'cancelled' : 'resolved',
+            'source_status' => $sourceStatus,
+            'summary' => match ($sourceStatus) {
+                RunStatus::Completed->value => sprintf('Child workflow %s completed.', $label),
+                RunStatus::Failed->value => sprintf('Child workflow %s failed.', $label),
+                RunStatus::Cancelled->value => sprintf('Child workflow %s cancelled.', $label),
+                RunStatus::Terminated->value => sprintf('Child workflow %s terminated.', $label),
+                default => sprintf('Child workflow %s resolved.', $label),
+            },
+            'resolved_at' => $resolvedAt === null ? null : UtcScheduleTimestamp::databaseValue($resolvedAt),
+            'task_backed' => true,
+            'task_id' => $task->id,
+            'task_type' => $task->task_type->value,
+            'task_status' => $task->status->value,
+            'history_authority' => ChildRunHistory::HISTORY_AUTHORITY_TYPED,
+            'history_unsupported_reason' => null,
+        ]));
 
         $run->unsetRelation('waits');
     }

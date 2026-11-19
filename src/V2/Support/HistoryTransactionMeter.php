@@ -4,9 +4,13 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Database\ConnectionInterface;
+use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
+use Illuminate\Database\Query\Builder as QueryBuilder;
 use JsonException;
 use LogicException;
 use Throwable;
+use WeakMap;
 use Workflow\V2\Contracts\PredictableExternalPayloadStorageDriver;
 use Workflow\V2\Exceptions\HistoryTransactionLimitExceededException;
 
@@ -14,9 +18,13 @@ use Workflow\V2\Exceptions\HistoryTransactionLimitExceededException;
  * The whole-transaction budget of one workflow task completion (#930).
  *
  * History is charged where it is written ({@see \Workflow\V2\Models\WorkflowHistoryEvent::record()}):
- * one event and its bytes as {@see HistoryBudget} measures them. Write sites
- * that are metered charge the rows they will affect before their statement
- * runs. Raw external payload bytes are charged before each payload is staged
+ * one event and its bytes as {@see HistoryBudget} measures them. Rows are
+ * charged before every write statement runs (#1116): the storage
+ * connection's before-executing hook charges each insert, update or delete
+ * the completion issues, one row per statement or per inserted tuple, and a
+ * statement that can affect several existing rows is counted first by
+ * {@see self::affecting()}, reading at most the remaining rows plus one.
+ * Raw external payload bytes are charged before each payload is staged
  * or stored. Staged objects are stored only by {@see self::flush()}, after
  * the completion has passed every limit and before it commits, so a refused
  * completion stores none of them.
@@ -33,7 +41,18 @@ final class HistoryTransactionMeter
 
     public const BYTES = 'history_transaction_bytes';
 
+    /**
+     * History rows with their 2.29 meaning: two per history event (the event
+     * and its run position) and each local activity execution, attempt and
+     * failure row.
+     */
     public const ROWS = 'history_transaction_rows';
+
+    /**
+     * Every row the completion inserts, updates or deletes, charged before
+     * each statement runs (#1116).
+     */
+    public const COMPLETION_ROWS = 'completion_rows';
 
     public const STAGED_BYTES = 'external_payload_transaction_bytes';
 
@@ -53,6 +72,7 @@ final class HistoryTransactionMeter
         self::EVENTS => 0,
         self::BYTES => 0,
         self::ROWS => 0,
+        self::COMPLETION_ROWS => 0,
         self::STAGED_BYTES => 0,
     ];
 
@@ -64,6 +84,17 @@ final class HistoryTransactionMeter
     private array $stage = [];
 
     private ?HistoryTransactionLimitExceededException $tripped = null;
+
+    /**
+     * Rows already charged by {@see self::affecting()} for the next write
+     * statement, which the statement hook then does not charge again.
+     */
+    private bool $nextStatementCharged = false;
+
+    /**
+     * @var WeakMap<ConnectionInterface, true>|null
+     */
+    private static ?WeakMap $hookedConnections = null;
 
     /**
      * @param array<string, int> $limits
@@ -88,10 +119,13 @@ final class HistoryTransactionMeter
             throw new LogicException('A history transaction meter is already running.');
         }
 
+        self::hook(ConfiguredV2Models::connection());
+
         $meter = new self([
             self::EVENTS => StructuralLimits::historyTransactionSizeLimit(),
             self::BYTES => StructuralLimits::historyTransactionBytesLimit(),
             self::ROWS => StructuralLimits::historyTransactionRowsLimit(),
+            self::COMPLETION_ROWS => StructuralLimits::completionRowsLimit(),
             self::STAGED_BYTES => StructuralLimits::externalPayloadTransactionBytesLimit(),
         ]);
         self::$current = $meter;
@@ -112,6 +146,80 @@ final class HistoryTransactionMeter
     public static function current(): ?self
     {
         return self::$current;
+    }
+
+    /**
+     * Charge every write statement on this connection before it runs, while
+     * a meter is current. Registered once per connection instance.
+     */
+    public static function hook(ConnectionInterface $connection): void
+    {
+        self::$hookedConnections ??= new WeakMap();
+        if (isset(self::$hookedConnections[$connection]) || ! method_exists($connection, 'beforeExecuting')) {
+            return;
+        }
+        self::$hookedConnections[$connection] = true;
+        $connection->beforeExecuting(static function (string $query): void {
+            self::$current?->chargeStatement($query);
+        });
+    }
+
+    /**
+     * Run a write statement that may affect several existing rows. Inside a
+     * metered completion, the rows it will affect are counted first, reading
+     * at most the remaining rows plus one, and charged before it runs.
+     *
+     * @template T
+     * @param EloquentBuilder<\Illuminate\Database\Eloquent\Model>|QueryBuilder $query
+     * @param callable(): T $statement
+     * @return T
+     */
+    public static function affecting(EloquentBuilder|QueryBuilder $query, callable $statement): mixed
+    {
+        $meter = self::$current;
+        if ($meter === null) {
+            return $statement();
+        }
+
+        $meter->refuseIfTripped();
+        $base = $query instanceof EloquentBuilder ? $query->toBase() : $query;
+        $remaining = $meter->remainingRows();
+        $bounded = (clone $base)->select([])->selectRaw('1 as metered_row');
+        $bounded->orders = [];
+        $bounded->unionOrders = [];
+        if ($remaining !== null) {
+            $bounded->limit($remaining + 1);
+        }
+        $rows = (int) $base->newQuery()
+            ->fromSub($bounded, 'metered_rows')
+            ->count();
+        $meter->chargeCompletionRows($rows);
+        $meter->nextStatementCharged = true;
+
+        try {
+            return $statement();
+        } finally {
+            $meter->nextStatementCharged = false;
+        }
+    }
+
+    /**
+     * The rows one SQL statement writes, as the before-executing hook charges
+     * them: none for a read, one per tuple of a multi-row insert or upsert,
+     * and one for any other insert, update or delete.
+     */
+    public static function statementRows(string $query): int
+    {
+        if (preg_match('/^\s*(insert|update|delete|replace)\b/i', $query, $verb) !== 1) {
+            return 0;
+        }
+        if (strtolower($verb[1]) === 'insert' || strtolower($verb[1]) === 'replace') {
+            if (preg_match('/\bvalues\s*\(/i', $query, $values, PREG_OFFSET_CAPTURE) === 1) {
+                return substr_count(substr($query, $values[0][1]), '), (') + 1;
+            }
+        }
+
+        return 1;
     }
 
     /**
@@ -203,8 +311,8 @@ final class HistoryTransactionMeter
     }
 
     /**
-     * Rows the next statement will insert, update, upsert or delete,
-     * including any cascade it causes. Charged before the statement runs.
+     * History rows with their 2.29 meaning (the run position an event
+     * advances, a local activity record), charged before they are written.
      */
     public function chargeRows(int $rows): void
     {
@@ -215,14 +323,28 @@ final class HistoryTransactionMeter
     }
 
     /**
-     * How many more rows this completion may affect, or null when the row
-     * limit is disabled. Bulk write sites read at most this plus one row.
+     * Rows a statement will insert, update or delete, charged before it runs.
+     * The statement hook and {@see self::affecting()} charge these; a write
+     * that happens outside the transaction charges its rows in advance.
+     */
+    public function chargeCompletionRows(int $rows): void
+    {
+        if ($rows < 0) {
+            throw new LogicException('A write cannot affect a negative number of rows.');
+        }
+        $this->charge(self::COMPLETION_ROWS, $rows);
+    }
+
+    /**
+     * How many more rows this completion may insert, update or delete, or
+     * null when that limit is disabled. Bulk write sites read at most this
+     * plus one row.
      */
     public function remainingRows(): ?int
     {
-        $limit = $this->limits[self::ROWS];
+        $limit = $this->limits[self::COMPLETION_ROWS];
 
-        return $limit > 0 ? max(0, $limit - $this->used[self::ROWS]) : null;
+        return $limit > 0 ? max(0, $limit - $this->used[self::COMPLETION_ROWS]) : null;
     }
 
     /**
@@ -281,6 +403,20 @@ final class HistoryTransactionMeter
     public function used(): array
     {
         return $this->used;
+    }
+
+    private function chargeStatement(string $query): void
+    {
+        $rows = self::statementRows($query);
+        if ($rows === 0) {
+            return;
+        }
+        if ($this->nextStatementCharged) {
+            $this->nextStatementCharged = false;
+
+            return;
+        }
+        $this->charge(self::COMPLETION_ROWS, $rows);
     }
 
     /**

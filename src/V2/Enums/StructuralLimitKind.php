@@ -25,11 +25,13 @@ enum StructuralLimitKind: string
     case HistoryTransactionBytes = 'history_transaction_bytes';
 
     /**
-     * A single workflow task would write more metered rows than allowed: the
-     * rows its history events and local activity records write. Other command
-     * writes are not counted yet.
+     * A single workflow task would write more history rows than allowed: the
+     * rows its history events and local activity records write.
      */
     case HistoryTransactionRows = 'history_transaction_rows';
+
+    /** A single workflow task would insert, update or delete more rows than allowed. */
+    case CompletionRows = 'completion_rows';
 
     /** A single workflow task would externalize more raw payload bytes than allowed. */
     case ExternalPayloadTransactionBytes = 'external_payload_transaction_bytes';

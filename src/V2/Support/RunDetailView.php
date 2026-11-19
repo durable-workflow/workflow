@@ -379,6 +379,9 @@ final class RunDetailView
             'waits' => $waits,
             'tasks_scope' => 'selected_run',
             'tasks' => $tasks,
+            // A bounded deadline close still settling updates and children,
+            // with its failed passes and last error (#1116).
+            'deadline_close_settlement' => DeadlineCloseSettlement::describe($run),
             'timeline_scope' => 'selected_run',
             'timeline_projection_source' => $timelineSnapshot['source'],
             'timeline' => $timelineSnapshot['timeline'],
