@@ -54,6 +54,50 @@ final class HistoryEventIndex
     }
 
     /**
+     * Find the first entry for $key in history order, indexing the events
+     * only as far as needed. A single lookup stops at its match like a scan;
+     * every lookup together reads each event at most once.
+     *
+     * @param Collection<array-key, mixed> $events
+     * @param Closure(mixed): array<array-key, mixed> $entriesFor the keyed entries one event contributes
+     */
+    public static function find(Collection $events, string $name, int|string $key, Closure $entriesFor): mixed
+    {
+        $fingerprint = self::fingerprint($events);
+        self::$indexes ??= new WeakMap();
+        $indexes = self::$indexes[$events] ?? [];
+        $state = $indexes[$name] ?? null;
+
+        if ($state === null || $state['fingerprint'] !== $fingerprint) {
+            $state = [
+                'fingerprint' => $fingerprint,
+                'index' => [
+                    'entries' => [],
+                    'items' => array_values($events->all()),
+                    'position' => 0,
+                ],
+            ];
+        }
+
+        $index = $state['index'];
+
+        while (! array_key_exists($key, $index['entries']) && $index['position'] < count($index['items'])) {
+            foreach ($entriesFor($index['items'][$index['position']]) as $entryKey => $value) {
+                if (! array_key_exists($entryKey, $index['entries'])) {
+                    $index['entries'][$entryKey] = $value;
+                }
+            }
+            ++$index['position'];
+        }
+
+        $state['index'] = $index;
+        $indexes[$name] = $state;
+        self::$indexes[$events] = $indexes;
+
+        return $index['entries'][$key] ?? null;
+    }
+
+    /**
      * @param Collection<array-key, mixed> $events
      * @return array{int, int|null, int|null}
      */

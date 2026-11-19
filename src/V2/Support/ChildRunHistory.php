@@ -293,17 +293,23 @@ final class ChildRunHistory
 
     public static function scheduledEventForSequence(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
     {
-        return self::childEventsBySequence($run)['scheduled'][$sequence] ?? null;
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = self::firstChildEventForSequence($run, 'scheduled', $sequence);
+
+        return $event;
     }
 
     public static function startedEventForSequence(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
     {
-        return self::childEventsBySequence($run)['started'][$sequence] ?? null;
+        return self::startedEventsBySequence($run)[$sequence] ?? null;
     }
 
     public static function resolutionEventForSequence(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
     {
-        return self::childEventsBySequence($run)['resolution'][$sequence] ?? null;
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = self::firstChildEventForSequence($run, 'resolution', $sequence);
+
+        return $event;
     }
 
     public static function latestLinkForSequence(WorkflowRun $run, int $sequence): ?WorkflowLink
@@ -1124,45 +1130,54 @@ final class ChildRunHistory
     }
 
     /**
-     * The parent's child-call history events by durable sequence. A child
-     * projection looks up every fan-out member, so the loaded history is
-     * indexed once instead of scanned per member (#1203, #1231).
+     * The first scheduled or resolution event for one child-call sequence in
+     * history order. A child projection looks up every fan-out member, so the
+     * loaded history is indexed as far as each lookup needs instead of
+     * scanned per member (#1203, #1231).
      *
-     * Scheduled and resolution events keep the first match in history order;
-     * a started event keeps the one with the highest history sequence.
-     *
-     * @return array{
-     *     scheduled: array<int, WorkflowHistoryEvent>,
-     *     started: array<int, WorkflowHistoryEvent>,
-     *     resolution: array<int, WorkflowHistoryEvent>
-     * }
+     * @param 'scheduled'|'resolution' $kind
      */
-    private static function childEventsBySequence(WorkflowRun $run): array
+    private static function firstChildEventForSequence(WorkflowRun $run, string $kind, int $sequence): mixed
+    {
+        $types = $kind === 'scheduled'
+            ? [HistoryEventType::ChildWorkflowScheduled]
+            : self::resolutionEventTypes();
+
+        return HistoryEventIndex::find(
+            $run->historyEvents,
+            "child-run-{$kind}-event-by-sequence",
+            $sequence,
+            static function (mixed $event) use ($types): array {
+                if (! $event instanceof WorkflowHistoryEvent || ! in_array($event->event_type, $types, true)) {
+                    return [];
+                }
+
+                $eventSequence = $event->payload['sequence'] ?? null;
+
+                return is_int($eventSequence) ? [
+                    $eventSequence => $event,
+                ] : [];
+            },
+        );
+    }
+
+    /**
+     * The started event with the highest history sequence per child-call
+     * sequence, indexed once per loaded history (#1203, #1231).
+     *
+     * @return array<int, WorkflowHistoryEvent>
+     */
+    private static function startedEventsBySequence(WorkflowRun $run): array
     {
         return HistoryEventIndex::remember(
             $run->historyEvents,
-            'child-run-history-by-sequence',
+            'child-run-started-event-by-sequence',
             static function (Collection $events): array {
-                $index = [
-                    'scheduled' => [],
-                    'started' => [],
-                    'resolution' => [],
-                ];
-                $resolutionTypes = self::resolutionEventTypes();
+                $index = [];
 
                 foreach ($events as $event) {
-                    if (! $event instanceof WorkflowHistoryEvent) {
-                        continue;
-                    }
-
-                    $kind = match (true) {
-                        $event->event_type === HistoryEventType::ChildWorkflowScheduled => 'scheduled',
-                        $event->event_type === HistoryEventType::ChildRunStarted => 'started',
-                        in_array($event->event_type, $resolutionTypes, true) => 'resolution',
-                        default => null,
-                    };
-
-                    if ($kind === null) {
+                    if (! $event instanceof WorkflowHistoryEvent
+                        || $event->event_type !== HistoryEventType::ChildRunStarted) {
                         continue;
                     }
 
@@ -1172,10 +1187,10 @@ final class ChildRunHistory
                         continue;
                     }
 
-                    $existing = $index[$kind][$sequence] ?? null;
+                    $existing = $index[$sequence] ?? null;
 
-                    if ($existing === null || ($kind === 'started' && $event->sequence > $existing->sequence)) {
-                        $index[$kind][$sequence] = $event;
+                    if ($existing === null || $event->sequence > $existing->sequence) {
+                        $index[$sequence] = $event;
                     }
                 }
 

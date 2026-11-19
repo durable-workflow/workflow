@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
-use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 use LogicException;
@@ -5826,7 +5825,8 @@ final class WorkflowExecutor
 
     private function activityCompletionEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
     {
-        $event = $this->activityEventsBySequence($run)['completion'][$sequence] ?? null;
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $this->firstActivityEventForSequence($run, 'completion', $sequence);
 
         ExecutionTracing::linkOutcome($run, $event);
 
@@ -5835,61 +5835,56 @@ final class WorkflowExecutor
 
     private function activityOpenEvent(WorkflowRun $run, int $sequence): ?WorkflowHistoryEvent
     {
-        return $this->activityEventsBySequence($run)['open'][$sequence] ?? null;
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = $this->firstActivityEventForSequence($run, 'open', $sequence);
+
+        return $event;
     }
 
     /**
-     * The first activity resolution and open event per durable sequence, in
-     * history order. Replaying a fan-out reads every member's events, so the
-     * loaded history is indexed once instead of scanned per member (#1231).
+     * The first activity resolution or open event for one durable sequence,
+     * in history order. Replaying a fan-out reads every member's events, so
+     * the loaded history is indexed as far as each lookup needs instead of
+     * scanned per member (#1231).
      *
-     * @return array{
-     *     completion: array<int, WorkflowHistoryEvent>,
-     *     open: array<int, WorkflowHistoryEvent>
-     * }
+     * @param 'completion'|'open' $kind
      */
-    private function activityEventsBySequence(WorkflowRun $run): array
+    private function firstActivityEventForSequence(WorkflowRun $run, string $kind, int $sequence): mixed
     {
-        return HistoryEventIndex::remember(
+        $types = $kind === 'completion'
+            ? [
+                HistoryEventType::ActivityCompleted,
+                HistoryEventType::ActivityFailed,
+                HistoryEventType::ActivityCancelled,
+                HistoryEventType::ActivityTimedOut,
+            ]
+            : [
+                HistoryEventType::ActivityScheduled,
+                HistoryEventType::ActivityStarted,
+                HistoryEventType::ActivityHeartbeatRecorded,
+                HistoryEventType::ActivityRetryScheduled,
+            ];
+
+        return HistoryEventIndex::find(
             $run->historyEvents,
-            'activity-events-by-sequence',
-            static function (Collection $events): array {
-                $index = [
-                    'completion' => [],
-                    'open' => [],
-                ];
-
-                foreach ($events as $event) {
-                    if (! $event instanceof WorkflowHistoryEvent) {
-                        continue;
-                    }
-
-                    $kind = match ($event->event_type) {
-                        HistoryEventType::ActivityCompleted,
-                        HistoryEventType::ActivityFailed,
-                        HistoryEventType::ActivityCancelled,
-                        HistoryEventType::ActivityTimedOut => 'completion',
-                        HistoryEventType::ActivityScheduled,
-                        HistoryEventType::ActivityStarted,
-                        HistoryEventType::ActivityHeartbeatRecorded,
-                        HistoryEventType::ActivityRetryScheduled => 'open',
-                        default => null,
-                    };
-                    $sequence = $kind === null ? null : ($event->payload['sequence'] ?? null);
-
-                    if (! is_int($sequence) || isset($index[$kind][$sequence])) {
-                        continue;
-                    }
-
-                    // The run's own close recorded this; the workflow never saw it (#1117).
-                    if ($kind === 'completion' && ClosingRunOpenWork::settledAtClose($event)) {
-                        continue;
-                    }
-
-                    $index[$kind][$sequence] = $event;
+            "activity-{$kind}-event-by-sequence",
+            $sequence,
+            static function (mixed $event) use ($kind, $types): array {
+                if (! $event instanceof WorkflowHistoryEvent || ! in_array($event->event_type, $types, true)) {
+                    return [];
                 }
 
-                return $index;
+                $eventSequence = $event->payload['sequence'] ?? null;
+
+                // The run's own close recorded this; the workflow never saw it (#1117).
+                if (! is_int($eventSequence)
+                    || ($kind === 'completion' && ClosingRunOpenWork::settledAtClose($event))) {
+                    return [];
+                }
+
+                return [
+                    $eventSequence => $event,
+                ];
             },
         );
     }

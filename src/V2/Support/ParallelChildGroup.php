@@ -135,42 +135,31 @@ final class ParallelChildGroup
     public static function metadataPathForSequence(WorkflowRun $run, int $sequence): array
     {
         // Each fan-out member looks up its own path. Index the loaded history
-        // once instead of scanning it per member (#1231).
-        $eventsBySequence = HistoryEventIndex::remember(
+        // as far as each lookup needs instead of scanning it per member (#1231).
+        /** @var WorkflowHistoryEvent|null $event */
+        $event = HistoryEventIndex::find(
             $run->historyEvents,
             'parallel-metadata-event-by-sequence',
-            static function (Collection $events): array {
-                $index = [];
-
-                foreach ($events as $event) {
-                    if (! $event instanceof WorkflowHistoryEvent || ! in_array(
-                        $event->event_type,
-                        self::PARALLEL_MEMBER_EVENT_TYPES,
-                        true,
-                    )) {
-                        continue;
-                    }
-
-                    $eventSequence = $event->payload['sequence'] ?? null;
-
-                    if (! is_int($eventSequence) || array_key_exists($eventSequence, $index)) {
-                        continue;
-                    }
-
-                    if (
-                        is_string($event->payload['parallel_group_id'] ?? null)
-                        || is_array($event->payload['parallel_group_path'] ?? null)
-                    ) {
-                        $index[$eventSequence] = $event;
-                    }
+            $sequence,
+            static function (mixed $event): array {
+                if (! $event instanceof WorkflowHistoryEvent || ! in_array(
+                    $event->event_type,
+                    self::PARALLEL_MEMBER_EVENT_TYPES,
+                    true,
+                )) {
+                    return [];
                 }
 
-                return $index;
+                $eventSequence = $event->payload['sequence'] ?? null;
+
+                return is_int($eventSequence) && (
+                    is_string($event->payload['parallel_group_id'] ?? null)
+                    || is_array($event->payload['parallel_group_path'] ?? null)
+                ) ? [
+                    $eventSequence => $event,
+                ] : [];
             },
         );
-
-        /** @var WorkflowHistoryEvent|null $event */
-        $event = $eventsBySequence[$sequence] ?? null;
 
         if (! $event instanceof WorkflowHistoryEvent || ! is_array($event->payload)) {
             return [];
@@ -1226,31 +1215,24 @@ final class ParallelChildGroup
     private static function waitKindForSequence(WorkflowRun $run, int $sequence): ?string
     {
         // Every member of a completed group is checked; index the first wait
-        // opening per sequence once per loaded history (#1203, #1231).
-        $kinds = HistoryEventIndex::remember(
+        // opening per sequence as far as each lookup needs (#1203, #1231).
+        return HistoryEventIndex::find(
             $run->historyEvents,
             'parallel-wait-kind-by-sequence',
-            static function (Collection $events): array {
-                $index = [];
+            $sequence,
+            static function (mixed $event): array {
+                $kind = match ($event->event_type) {
+                    HistoryEventType::SignalWaitOpened => 'signal',
+                    HistoryEventType::ConditionWaitOpened => 'condition',
+                    default => null,
+                };
+                $eventSequence = $kind === null ? null : ($event->payload['sequence'] ?? null);
 
-                foreach ($events as $event) {
-                    $kind = match ($event->event_type) {
-                        HistoryEventType::SignalWaitOpened => 'signal',
-                        HistoryEventType::ConditionWaitOpened => 'condition',
-                        default => null,
-                    };
-                    $eventSequence = $kind === null ? null : ($event->payload['sequence'] ?? null);
-
-                    if (is_int($eventSequence) && ! array_key_exists($eventSequence, $index)) {
-                        $index[$eventSequence] = $kind;
-                    }
-                }
-
-                return $index;
+                return is_int($eventSequence) ? [
+                    $eventSequence => $kind,
+                ] : [];
             },
         );
-
-        return $kinds[$sequence] ?? null;
     }
 
     private static function waitCompletedSuccessfully(WorkflowRun $run, int $sequence, string $kind): bool

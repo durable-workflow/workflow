@@ -20,6 +20,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use Symfony\Component\Uid\Ulid;
+use Tests\Fixtures\V2\TestFanOutPayloadActivity;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestLocalActivityWorkflow;
@@ -82,7 +83,9 @@ use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\StartOptions;
+use Workflow\V2\Support\ActivityCall;
 use Workflow\V2\Support\ActivityCancellationAcknowledgement;
+use Workflow\V2\Support\ActivityReplayIdentity;
 use Workflow\V2\Support\BundleIntegrityVerifier;
 use Workflow\V2\Support\CancellationScopeDelivery;
 use Workflow\V2\Support\CancellationScopeHistory;
@@ -3176,11 +3179,18 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $indexed = false;
 
         foreach ($members as $sequence => $type) {
-            // The first member's lookups may read the whole history to index it.
+            // The first member's lookups may read the whole history.
             FanOutPayloadReadCountingEvent::$member = $indexed ? $sequence : null;
             WorkflowStepHistory::assertCompatible($run, $sequence, $shape, [
                 $detailField => $type,
             ]);
+            if ($shape === WorkflowStepHistory::ACTIVITY) {
+                ActivityReplayIdentity::assertCall(
+                    $run,
+                    new ActivityCall(TestFanOutPayloadActivity::class, [$sequence - 1, '']),
+                    $sequence,
+                );
+            }
             $this->assertSame(
                 $sequence,
                 ParallelChildGroup::metadataPathForSequence($run, $sequence)[0]['parallel_group_base_sequence']
@@ -3204,9 +3214,11 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         }
         FanOutPayloadReadCountingEvent::$member = null;
 
-        // Once indexed, a member's lookups read only that member's events.
-        $this->assertSame(
-            0,
+        // Indexing reads each recorded event at most once per lookup family,
+        // so all later members together read fewer foreign events than one
+        // more pass over the history. A scan per member reads them all again.
+        $this->assertLessThan(
+            count($history),
             FanOutPayloadReadCountingEvent::$foreignReads,
             'Fan-out replay lookups rescanned other members\' recorded events for each member.',
         );
