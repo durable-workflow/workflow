@@ -2033,6 +2033,66 @@ def _changed_paths(root: Path, base_ref: str) -> tuple[set[str], set[str]]:
     return changed | untracked, added | untracked
 
 
+_COMMENT_ONLY_CLASSIFICATIONS: dict[tuple[str, str, str], tuple[bool, str]] = {}
+
+
+def _comment_only_exemption(root: Path, base_ref: str, path: str) -> tuple[bool, str]:
+    """Classify a guarded PHP change as a safe comment-only edit, failing closed.
+
+    Workflow definition fingerprints and condition-wait fingerprints hash raw source, comments
+    included, and both affect replay. classify-comment-only-change.php therefore exempts only files
+    whose code tokens are unchanged and that declare no trait, closure, anonymous class or workflow
+    class. The result is cached per file and logged once.
+    """
+    key = (str(root), base_ref, path)
+    if key in _COMMENT_ONLY_CLASSIFICATIONS:
+        return _COMMENT_ONLY_CLASSIFICATIONS[key]
+    current_path = root / path
+    exempt, reason = False, "not a PHP file"
+    if path.endswith(".php"):
+        base = subprocess.run(
+            ["git", "show", f"{base_ref}:{path}"],
+            cwd=root,
+            check=False,
+            capture_output=True,
+        )
+        if base.returncode != 0:
+            reason = "the file was added"
+        elif not current_path.is_file():
+            reason = "the file was deleted"
+        else:
+            classifier = Path(__file__).with_name("classify-comment-only-change.php")
+            try:
+                classification = subprocess.run(
+                    ["php", str(classifier)],
+                    cwd=root,
+                    input=json.dumps({
+                        "path": path,
+                        "base": base.stdout.decode("utf-8"),
+                        "current": current_path.read_text(encoding="utf-8"),
+                    }),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                verdict = json.loads(classification.stdout) if classification.returncode == 0 else None
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                verdict = None
+            if (
+                isinstance(verdict, dict)
+                and isinstance(verdict.get("exempt"), bool)
+                and isinstance(verdict.get("reason"), str)
+            ):
+                exempt, reason = verdict["exempt"], verdict["reason"]
+            else:
+                reason = "the comment-only classifier failed"
+        if exempt or reason.startswith("comment-only change"):
+            outcome = "exempt" if exempt else "not exempt"
+            print(f"regression corpus: {path} is {outcome}: {reason}", file=sys.stderr)
+    _COMMENT_ONLY_CLASSIFICATIONS[key] = (exempt, reason)
+    return exempt, reason
+
+
 def _guard_matches(
     root: Path,
     base_ref: str,
@@ -2040,7 +2100,12 @@ def _guard_matches(
     raw_guard: Any,
 ) -> bool:
     guard = _object(raw_guard, "guard")
-    matching = sorted(path for path in changed if _matches(path, _string(guard["glob"], "guard.glob")))
+    matching = sorted(
+        path
+        for path in changed
+        if _matches(path, _string(guard["glob"], "guard.glob"))
+        and not _comment_only_exemption(root, base_ref, path)[0]
+    )
     if not matching:
         return False
     bridge_path = "src/V2/Support/DefaultWorkflowTaskBridge.php"

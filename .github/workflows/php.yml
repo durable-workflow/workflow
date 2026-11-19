@@ -99,6 +99,7 @@ jobs:
         php -l scripts/ci/check-laravel-dependency-security.php
         php -l scripts/ci/laravel-embedded-upgrade-matrix.php
         php -l scripts/ci/verify-history-export-source-identity.php
+        php -l scripts/ci/classify-comment-only-change.php
         php scripts/ci/check-v2-coverage.php --self-test
         python - <<'PY'
         import ast

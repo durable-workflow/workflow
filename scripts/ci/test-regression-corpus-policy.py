@@ -2231,6 +2231,184 @@ final class DefaultWorkflowTaskBridge {
                 self.assertNotEqual(0, result.returncode, result.stdout)
                 self.assertIn("replay implementation changed but its corpus did not grow", result.stderr)
 
+    COMMENT_ONLY_AUTOLOADER = """<?php
+spl_autoload_register(static function (string $class): void {
+    if (! str_starts_with($class, 'Workflow\\\\')) {
+        return;
+    }
+    $file = __DIR__ . '/../src/' . str_replace('\\\\', '/', substr($class, strlen('Workflow\\\\'))) . '.php';
+    if (is_file($file)) {
+        require $file;
+    }
+});
+"""
+
+    PLAIN_VALUE = """<?php
+
+namespace Workflow\\V2\\Compensation\\Definition;
+
+/** A plain value. */
+final readonly class PlainValue
+{
+    public const LABEL = 'plain';
+
+    public function __construct(public string $value)
+    {
+    }
+
+    public function label(): string
+    {
+        return <<<TEXT
+        plain {$this->value}
+        TEXT;
+    }
+}
+"""
+
+    def install_comment_only_fixtures(self, files: dict[str, str]) -> None:
+        autoloader = self.root / "vendor/autoload.php"
+        autoloader.parent.mkdir(parents=True, exist_ok=True)
+        autoloader.write_text(self.COMMENT_ONLY_AUTOLOADER, encoding="utf-8")
+        for relative, source in {
+            "src/V2/Workflow.php": "<?php\nnamespace Workflow\\V2;\nabstract class Workflow {}\n",
+            "src/Workflow.php": "<?php\nnamespace Workflow;\nabstract class Workflow {}\n",
+            **files,
+        }.items():
+            target = self.root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(source, encoding="utf-8")
+        self.commit_current_as_base()
+
+    def assert_requires_replay_growth(self, result: subprocess.CompletedProcess[str]) -> None:
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertIn("replay implementation changed but its corpus did not grow", result.stderr)
+
+    def test_comment_only_change_in_a_plain_value_class_is_exempt(self) -> None:
+        path = "src/V2/Compensation/Definition/PlainValue.php"
+        self.install_comment_only_fixtures({path: self.PLAIN_VALUE})
+        source = self.root / path
+        for changed in (
+            self.PLAIN_VALUE.replace("/** A plain value. */", "/**\n * A plain value.\n *\n * @api Stable.\n */"),
+            self.PLAIN_VALUE.replace("    public const LABEL", "    // Shown to operators.\n    public const LABEL"),
+            self.PLAIN_VALUE.replace("    public function label", "\n\n    public function label"),
+        ):
+            with self.subTest(changed=changed):
+                source.write_text(changed, encoding="utf-8")
+                result = self.validate()
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertIn(
+                    f"regression corpus: {path} is exempt: comment-only change in "
+                    "Workflow\\V2\\Compensation\\Definition\\PlainValue",
+                    result.stderr,
+                )
+
+    def test_code_token_changes_in_a_plain_value_class_are_not_exempt(self) -> None:
+        path = "src/V2/Compensation/Definition/PlainValue.php"
+        self.install_comment_only_fixtures({path: self.PLAIN_VALUE})
+        source = self.root / path
+        for changed in (
+            self.PLAIN_VALUE.replace("'plain'", "'changed'"),
+            self.PLAIN_VALUE.replace("final readonly class", "#[\\Deprecated]\nfinal readonly class"),
+            self.PLAIN_VALUE.replace("<?php\n", "<?php\n\ndeclare(strict_types=1);\n"),
+            self.PLAIN_VALUE.replace("plain {$this->value}", "changed {$this->value}"),
+            self.PLAIN_VALUE.replace("/** A plain value. */", "/** A changed value. */").replace(
+                "public string $value", "public string $value = ''"
+            ),
+        ):
+            with self.subTest(changed=changed):
+                source.write_text(changed, encoding="utf-8")
+                result = self.validate()
+                self.assert_requires_replay_growth(result)
+                self.assertNotIn("is exempt", result.stderr)
+
+    def test_comment_only_change_is_not_exempt_where_fingerprints_read_comments(self) -> None:
+        cases = {
+            "src/V2/Compensation/Recovery/RecoveryWorkflow.php": (
+                "<?php\nnamespace Workflow\\V2\\Compensation\\Recovery;\n"
+                "/** Recovery. */\nfinal class RecoveryWorkflow extends \\Workflow\\V2\\Workflow {}\n",
+                "is a Workflow\\V2\\Workflow subclass",
+            ),
+            "src/V2/Compensation/Definition/LegacyFlow.php": (
+                "<?php\nnamespace Workflow\\V2\\Compensation\\Definition;\n"
+                "/** Legacy. */\nfinal class LegacyFlow extends \\Workflow\\Workflow {}\n",
+                "is a Workflow\\Workflow subclass",
+            ),
+            "src/V2/Compensation/Definition/ScopeHelpers.php": (
+                "<?php\nnamespace Workflow\\V2\\Compensation\\Definition;\n"
+                "/** Helpers. */\ntrait ScopeHelpers { public function help(): int { return 1; } }\n",
+                "it declares a trait",
+            ),
+            "src/V2/Compensation/Definition/WithClosure.php": (
+                "<?php\nnamespace Workflow\\V2\\Compensation\\Definition;\n"
+                "/** Closure. */\nfinal class WithClosure { public function check(): \\Closure "
+                "{ return static function (): bool { return true; }; } }\n",
+                "it contains a closure",
+            ),
+            "src/V2/Compensation/Definition/WithReferenceClosure.php": (
+                "<?php\nnamespace Workflow\\V2\\Compensation\\Definition;\n"
+                "/** Closure. */\nfinal class WithReferenceClosure { public function check(): \\Closure "
+                "{ return function &() { static $value = 1; return $value; }; } }\n",
+                "it contains a closure",
+            ),
+            "src/V2/Compensation/Definition/WithArrow.php": (
+                "<?php\nnamespace Workflow\\V2\\Compensation\\Definition;\n"
+                "/** Arrow. */\nfinal class WithArrow { public function check(): \\Closure "
+                "{ return fn (): bool => true; } }\n",
+                "it contains an arrow function",
+            ),
+            "src/V2/Compensation/Definition/WithAnonymousClass.php": (
+                "<?php\nnamespace Workflow\\V2\\Compensation\\Definition;\n"
+                "/** Anonymous. */\nfinal class WithAnonymousClass { public function make(): object "
+                "{ return new class () {}; } }\n",
+                "it contains an anonymous class",
+            ),
+            "src/V2/Compensation/Definition/Misplaced.php": (
+                "<?php\nnamespace Workflow\\V2\\Compensation\\Definition;\n"
+                "/** Misplaced. */\nfinal class Elsewhere {}\n",
+                "Workflow\\V2\\Compensation\\Definition\\Elsewhere could not be loaded",
+            ),
+            "src/V2/Support/WorkflowFiberRunner.php": (
+                "<?php\n/** Runner. */\nreturn 'base';\n",
+                "the file declares no class, interface or enum",
+            ),
+        }
+        self.install_comment_only_fixtures({path: source for path, (source, _) in cases.items()})
+        for path, (source, reason) in cases.items():
+            with self.subTest(path=path):
+                target = self.root / path
+                target.write_text(source.replace("/** ", "/**\n * Edited comment.\n * "), encoding="utf-8")
+                result = self.validate()
+                self.assert_requires_replay_growth(result)
+                self.assertIn(f"regression corpus: {path} is not exempt: comment-only change, but", result.stderr)
+                self.assertIn(reason, result.stderr)
+                target.write_text(source, encoding="utf-8")
+
+    def test_comment_only_change_is_not_exempt_without_the_repository_autoloader(self) -> None:
+        path = "src/V2/Compensation/Definition/PlainValue.php"
+        self.install_comment_only_fixtures({path: self.PLAIN_VALUE})
+        (self.root / "vendor/autoload.php").unlink()
+        self.commit_current_as_base()
+        (self.root / path).write_text(
+            self.PLAIN_VALUE.replace("/** A plain value. */", "/** An edited value. */"),
+            encoding="utf-8",
+        )
+        result = self.validate()
+        self.assert_requires_replay_growth(result)
+        self.assertIn("the repository autoloader is unavailable", result.stderr)
+
+    def test_added_or_deleted_guarded_files_are_not_exempt(self) -> None:
+        path = "src/V2/Compensation/Definition/PlainValue.php"
+        self.install_comment_only_fixtures({path: self.PLAIN_VALUE})
+        (self.root / path).unlink()
+        self.assert_requires_replay_growth(self.validate())
+
+        (self.root / path).write_text(self.PLAIN_VALUE, encoding="utf-8")
+        added = self.root / "src/V2/Compensation/Definition/AddedValue.php"
+        added.write_text(self.PLAIN_VALUE.replace("PlainValue", "AddedValue"), encoding="utf-8")
+        result = self.validate()
+        self.assert_requires_replay_growth(result)
+        self.assertNotIn("is exempt", result.stderr)
+
     def test_workflow_step_history_guard_cannot_be_weakened(self) -> None:
         policy = self.read_policy()
         policy["categories"]["replay"]["guards"] = [
