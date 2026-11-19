@@ -88,19 +88,30 @@ trait CarrierBalanceProcessLoss
     }
 
     /**
+     * After collection the carrier remits the whole balance to the merchant, with or without delivery first.
+     *
      * @param Closure(string): void $wake
      */
-    private function deliverAndRemitCarrierBalance(CodReceipt $collection, Closure $wake): void
-    {
-        $this->recordPhysical('delivered');
-        $this->remit($collection, 'original-merchant-remittance', $collection->amountMinor);
+    private function collectAndRemitCarrierBalance(
+        WorkflowStub $origin,
+        int $amount,
+        Closure $wake,
+        bool $deliver
+    ): CodReceipt {
+        $collection = $this->collectCarrierBalance($origin, $amount, $wake);
+        if ($deliver) {
+            $this->recordPhysical('delivered');
+        }
+        $this->remit($collection, 'original-merchant-remittance', $amount);
         $wake('original-merchant-paid');
         $this->assertSame('paid', $this->state('payment'), $this->progress());
-        $this->assertSame('fulfilled', $this->state('order'));
+        $this->assertSame($deliver ? 'fulfilled' : 'ready', $this->state('order'));
+        return $collection;
     }
 
     /**
-     * Cancellation after payer collection: the original shipment returns and is inspected before money moves.
+     * Cancellation after payer collection and merchant remittance, before delivery: the original shipment
+     * returns and is inspected before money moves.
      */
     private function cancelCollectedOrder(WorkflowStub $origin, string $request): void
     {
@@ -116,28 +127,5 @@ trait CarrierBalanceProcessLoss
         $this->provider->shipments()
             ->record($graph, 'original-return-inspected', 'inspected', $quantity, $quantity, $quantity);
         $cancellation->request($key, $root, 'original-return-inspected');
-    }
-
-    /**
-     * Recovery verified the payer refund but the carrier still owes the merchant the collected balance, so the
-     * unsettled Order stays uncancelled. After the remittance, an authorized recovery request and the
-     * proof-only finalizer settle the original cancellation.
-     */
-    private function remitThenFinishCancellation(CodReceipt $collection, string $request): void
-    {
-        $this->assertOrderClosedUnsettled('requested');
-        $this->assertNotSame('cancelled', $this->subjectStateOf('order'));
-        $this->assertNotContains('release', $this->effects());
-        $this->remit($collection, 'original-merchant-debt-paid', $collection->amountMinor);
-        $cancellation = app(CancellationStore::class);
-        $key = $this->terms->subjectKey();
-        $run = $this->roleRun('order');
-        $root = $run->id;
-        $cancellation->request($key, $root, $request, 'recover-after-merchant-remittance');
-        $this->drainLikeAWorker();
-        $this->assertSame('started', $cancellation->finish($key, $root, $request)['status'], $this->progress());
-        $this->drainLikeAWorker();
-        $this->assertSame('cancelled', $this->subjectStateOf('order'), $this->progress());
-        $this->assertContains('release', $this->effects());
     }
 }

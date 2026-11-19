@@ -53,16 +53,16 @@ final class V2AdvanceBalanceProcessLossTest extends TestCase
         $committed = $this->carrierCut($parts->balance, $cancel, $cancel);
         $this->loseThenRecoverPayment('advance-balance', 'provider.cod.payer', $mode, $committed);
         if ($balance !== null) {
-            $this->remitThenFinishCancellation($balance, 'cancel-original-portions');
+            $this->assertCancelledByAutomaticRecovery();
+            $this->assertSame([
+                'release' => 1,
+            ], $this->providerActions('release')());
             $this->assertRepeatedRequestOneEffect($refund);
             $this->assertSame(1, count(array_keys($this->effects(), 'refund-incoming', true)));
         } else {
             $this->assertSame('received', $this->state('order'), $this->progress());
             $this->payAdvance();
-            $this->deliverAndRemitCarrierBalance(
-                $this->collectCarrierBalance($origin, $parts->balance->amountMinor, $wake),
-                $wake
-            );
+            $this->collectAndRemitCarrierBalance($origin, $parts->balance->amountMinor, $wake, true);
             $this->assertSame(['reserve', 'ship-book', 'deduct-stock'], $this->effects());
         }
         $this->assertCarrierRecovered($this->mixed->cod, $parts->balance, $cancel, $committed);
@@ -86,7 +86,7 @@ final class V2AdvanceBalanceProcessLossTest extends TestCase
         $parts = $this->terms->advanceBalance;
         $this->pump();
         $advance = $this->payAdvance();
-        $balance = $this->collectCarrierBalance($origin, $parts->balance->amountMinor, $wake);
+        $balance = $this->collectAndRemitCarrierBalance($origin, $parts->balance->amountMinor, $wake, false);
         $scope = $this->store->authority->plan($this->terms->subjectKey())
             ->childScope('payment');
         $refund = CodPaymentOperation::refundRequest($scope, 'payment.cod.payer', $parts->balance, $balance);

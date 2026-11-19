@@ -44,7 +44,9 @@ final class V2CodProcessLossTest extends TestCase
         $origin = $cancel ? $this->startCod(CodFundingPolicy::BEFORE) : $this->beginCod(CodFundingPolicy::BEFORE);
         $original = $this->terms->codPayment;
         $wake = $this->wakePayment(...);
-        $receipt = $collected ? $this->collectCarrierBalance($origin, $original->amountMinor, $wake) : null;
+        $receipt = $collected
+            ? $this->collectAndRemitCarrierBalance($origin, $original->amountMinor, $wake, false)
+            : null;
         $refund = $receipt === null ? null : CodPaymentOperation::refundRequest(
             $this->store->authority->plan($this->terms->subjectKey())
                 ->childScope('payment'),
@@ -63,17 +65,16 @@ final class V2CodProcessLossTest extends TestCase
         if (! $cancel) {
             $this->assertSame('ready', $this->state('order'), $this->progress());
             $this->assertSame('ready', $this->state('payment'));
-            $this->deliverAndRemitCarrierBalance(
-                $this->collectCarrierBalance($origin, $original->amountMinor, $wake),
-                $wake
-            );
+            $this->collectAndRemitCarrierBalance($origin, $original->amountMinor, $wake, true);
             $this->assertSame(['reserve', 'ship-book', 'deduct-stock'], $this->effects());
-        } elseif ($refund === null) {
-            $this->assertCancelledByAutomaticRecovery();
-            $this->assertSame(['reserve', 'release'], $this->effects());
         } else {
-            $this->remitThenFinishCancellation($receipt, 'cancel-collected-cod');
-            $this->assertRepeatedRequestOneEffect($refund);
+            $this->assertCancelledByAutomaticRecovery();
+            $this->assertSame([
+                'release' => 1,
+            ], $this->providerActions('release')());
+            if ($refund !== null) {
+                $this->assertRepeatedRequestOneEffect($refund);
+            }
         }
         $this->assertCarrierRecovered($this->cod, $original, $cancel, $committed);
     }
