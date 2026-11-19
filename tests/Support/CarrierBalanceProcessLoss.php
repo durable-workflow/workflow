@@ -119,13 +119,25 @@ trait CarrierBalanceProcessLoss
     }
 
     /**
-     * The carrier still owes the merchant the collected balance; only its remittance lets cancellation settle.
+     * Recovery verified the payer refund but the carrier still owes the merchant the collected balance, so the
+     * unsettled Order stays uncancelled. After the remittance, an authorized recovery request and the
+     * proof-only finalizer settle the original cancellation.
      */
     private function remitThenFinishCancellation(CodReceipt $collection, string $request): void
     {
+        $this->assertOrderClosedUnsettled('requested');
+        $this->assertNotSame('cancelled', $this->subjectStateOf('order'));
         $this->assertNotContains('release', $this->effects());
         $this->remit($collection, 'original-merchant-debt-paid', $collection->amountMinor);
-        $this->finishCancellationAfterWorkerLoss($request);
+        $cancellation = app(CancellationStore::class);
+        $key = $this->terms->subjectKey();
+        $run = $this->roleRun('order');
+        $root = $run->id;
+        $cancellation->request($key, $root, $request, 'recover-after-merchant-remittance');
+        $this->drainLikeAWorker();
+        $this->assertSame('started', $cancellation->finish($key, $root, $request)['status'], $this->progress());
+        $this->drainLikeAWorker();
+        $this->assertSame('cancelled', $this->subjectStateOf('order'), $this->progress());
         $this->assertContains('release', $this->effects());
     }
 }

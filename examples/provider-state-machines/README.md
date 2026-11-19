@@ -882,11 +882,13 @@ keeps its original identity, and payment waits keep their fixed original
 deadlines. Forward cuts reach `captured`/`ready` or `fulfilled`, or the full
 collection and remittance with `paid` and `fulfilled`. Cancellation cuts follow
 the closed-child pattern [described above](#worker-loss-on-the-common-payment-first-checkout).
-The Order's finite compensation attempts expire while the payment worker is
-lost, so it closes unsettled without a false cancellation. A fresh authorized
-recovery request and the proof-only finalizer then settle it. Collected cases
-settle only after the carrier remits the merchant debt. Replay performs no
-provider I/O. Like the other process-loss controls, these need a shared
+The Order's in-origin compensation attempts expire while the payment worker is
+lost, so it closes unsettled without a false cancellation. The replacement
+worker's watchdog routes the accepted request to recovery, and the worker's
+`CancellationFinalizer` commits the cancellation. A collected payer's refund
+also recovers, but the carrier's outstanding merchant debt keeps the Order
+unsettled until it is remitted; an authorized recovery request and the
+proof-only finalizer then settle it. Replay performs no provider I/O. Like the other process-loss controls, these need a shared
 application database and POSIX signals, and skip otherwise.
 
 ### Subscription periods

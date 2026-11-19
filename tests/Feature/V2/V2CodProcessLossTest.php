@@ -69,7 +69,7 @@ final class V2CodProcessLossTest extends TestCase
             );
             $this->assertSame(['reserve', 'ship-book', 'deduct-stock'], $this->effects());
         } elseif ($refund === null) {
-            $this->finishCancellationAfterWorkerLoss('cancel-open-cod');
+            $this->assertCancelledByAutomaticRecovery();
             $this->assertSame(['reserve', 'release'], $this->effects());
         } else {
             $this->remitThenFinishCancellation($receipt, 'cancel-collected-cod');

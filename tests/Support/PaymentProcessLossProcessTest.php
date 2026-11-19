@@ -8,6 +8,8 @@ use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\AdvanceBalancePro
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\CodPaymentProvider;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Journal;
 use DurableWorkflow\Examples\ProviderStateMachines\Authority;
+use DurableWorkflow\Examples\ProviderStateMachines\CancellationFinalizer;
+use DurableWorkflow\Examples\ProviderStateMachines\CancellationStore;
 use DurableWorkflow\Examples\ProviderStateMachines\Catalogue;
 use DurableWorkflow\Examples\ProviderStateMachines\MachineStore;
 use Illuminate\Support\Carbon;
@@ -73,15 +75,17 @@ final class PaymentProcessLossProcessTest extends TestCase
         ]);
         if ($input['profile'] === 'authorized') {
             MachineStore::configure($this->app, $authority, new Journal($db, 'shop-a', $clock));
-            return;
+        } else {
+            $mixed = match ($input['profile']) {
+                'cod' => null,
+                'advance-balance' => new AdvanceBalanceProvider($db, 'shop-a', $clock),
+                default => throw new LogicException('The original payment worker profile is unavailable.'),
+            };
+            $cod = $mixed?->cod ?? new CodPaymentProvider($db, 'shop-a', $clock, true);
+            MachineStore::configure($this->app, $authority, $cod->commands, $mixed?->incoming, $cod);
         }
-        $mixed = match ($input['profile']) {
-            'cod' => null,
-            'advance-balance' => new AdvanceBalanceProvider($db, 'shop-a', $clock),
-            default => throw new LogicException('The original payment worker profile is unavailable.'),
-        };
-        $cod = $mixed?->cod ?? new CodPaymentProvider($db, 'shop-a', $clock, true);
-        MachineStore::configure($this->app, $authority, $cod->commands, $mixed?->incoming, $cod);
+        // The worker application finalizes verified cancellations itself (recommended pattern).
+        CancellationFinalizer::register(app('events'), $authority, app(CancellationStore::class));
     }
 
     private function input(): array

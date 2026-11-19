@@ -63,7 +63,7 @@ final class V2AuthorizedPaymentProcessLossTest extends TestCase
         );
         $this->assertRepeatedRequestOneEffect($lost);
         if ($mode === 'compensate') {
-            $this->finishCancellationAfterWorkerLoss('cancel-authorized-before-capture');
+            $this->assertCancelledByAutomaticRecovery();
             $this->assertSame(['authorize', 'void-authorization'], $this->effects());
         } else {
             $this->assertSame($delivery ? 'fulfilled' : 'ready', $this->subjectState('order'), $this->progress());

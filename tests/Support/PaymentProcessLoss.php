@@ -7,7 +7,6 @@ namespace Tests\Support;
 use Closure;
 use DurableWorkflow\Examples\ConfiguredStateMachines\Providers\Request;
 use DurableWorkflow\Examples\ProviderStateMachines\Authority;
-use DurableWorkflow\Examples\ProviderStateMachines\CancellationStore;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
@@ -119,26 +118,29 @@ trait PaymentProcessLoss
     }
 
     /**
-     * The payment child's compensation outlived the Order's finite compensation attempts while its worker was
-     * lost: the Order closes unsettled without a false cancellation. A fresh authorized recovery request and
-     * the proof-only finalizer settle the original cancellation.
+     * The payment child's compensation outlived the Order's in-origin attempts while its worker was lost, so
+     * the Order closed unsettled. The replacement worker's watchdog routed the accepted request to recovery
+     * (#1205), and the worker application's finalizer committed the business cancellation.
      */
-    private function finishCancellationAfterWorkerLoss(string $request): void
+    private function assertCancelledByAutomaticRecovery(): void
     {
-        $key = $this->terms->subjectKey();
-        $root = $this->roleRun('order');
-        $this->assertSame('failed', $root->status->value, $this->progress());
-        $this->assertSame('requested', (new ScopeRepository())->metadata(
-            $this->store->authority->plan($key)
+        $this->assertOrderClosedUnsettled('verified');
+        $this->assertSame('cancelled', $this->subjectStateOf('order'), $this->progress());
+    }
+
+    private function assertOrderClosedUnsettled(string $scopeStatus): void
+    {
+        $this->assertSame('failed', $this->roleRun('order')->status->value, $this->progress());
+        $this->assertSame($scopeStatus, (new ScopeRepository())->metadata(
+            $this->store->authority->plan($this->terms->subjectKey())
                 ->rootScope()
-        )['status']);
-        $this->assertNotSame('cancelled', $this->store->authority->subject($key, 'order')->state);
-        $cancellation = app(CancellationStore::class);
-        $cancellation->request($key, $root->id, $request, 'recover-after-worker-loss');
-        $this->drainLikeAWorker();
-        $this->assertSame('started', $cancellation->finish($key, $root->id, $request)['status'], $this->progress());
-        $this->drainLikeAWorker();
-        $this->assertSame('cancelled', $this->store->authority->subject($key, 'order')->state, $this->progress());
+        )['status'], $this->progress());
+    }
+
+    private function subjectStateOf(string $role): string
+    {
+        $subject = $this->store->authority->subject($this->terms->subjectKey(), $role);
+        return $subject->state;
     }
 
     /**
