@@ -27,8 +27,12 @@ final class WorkerTimeoutAdvisory
      * The warning, or null when workflow tasks on this worker are not killed
      * before their lease ends.
      */
-    public static function message(bool $pcntlLoaded, int $effectiveTimeout, bool $jobTimeout, int $leaseSeconds): ?string
-    {
+    public static function message(
+        bool $pcntlLoaded,
+        int $effectiveTimeout,
+        bool $jobTimeout,
+        int $leaseSeconds
+    ): ?string {
         if (! $pcntlLoaded || $effectiveTimeout <= 0 || $effectiveTimeout >= $leaseSeconds) {
             return null;
         }
@@ -79,7 +83,12 @@ final class WorkerTimeoutAdvisory
 
         $jobTimeout = WorkflowTaskJobTimeout::seconds($connection);
         $effective = $jobTimeout ?? (int) ($workerTimeout ?? 0);
-        $message = self::message(extension_loaded('pcntl'), $effective, $jobTimeout !== null, WorkflowTaskLease::seconds());
+        $message = self::message(
+            extension_loaded('pcntl'),
+            $effective,
+            $jobTimeout !== null,
+            WorkflowTaskLease::seconds()
+        );
 
         if ($message === null) {
             return;

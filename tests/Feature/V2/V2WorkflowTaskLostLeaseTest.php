@@ -249,7 +249,10 @@ final class V2WorkflowTaskLostLeaseTest extends TestCase
         $this->assertNull(WorkerTimeoutAdvisory::message(false, 60, false, 300));
         $this->assertNull(WorkerTimeoutAdvisory::message(true, 0, false, 300));
         $this->assertNull(WorkerTimeoutAdvisory::message(true, 300, false, 300));
-        $this->assertStringContainsString('the worker --timeout', (string) WorkerTimeoutAdvisory::message(true, 60, false, 300));
+        $this->assertStringContainsString(
+            'the worker --timeout',
+            (string) WorkerTimeoutAdvisory::message(true, 60, false, 300)
+        );
         $this->assertStringContainsString(
             'after 80 s (DW_V2_WORKFLOW_TASK_JOB_TIMEOUT_SECONDS)',
             (string) WorkerTimeoutAdvisory::message(true, 80, true, 300),

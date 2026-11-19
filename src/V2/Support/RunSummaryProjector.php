@@ -778,7 +778,7 @@ final class RunSummaryProjector
                         /** @var WorkflowRunSummary $summary */
                         $summary = IdempotentProjectionUpsert::upsert($summaryModel, [
                             'id' => $run->id,
-                        ], $values,);
+                        ], $values, );
 
                         ChildProjectionRepairStore::markFailedChildrenCounted($run, $exceptionCount['event_ids']);
 
