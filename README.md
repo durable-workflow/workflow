@@ -65,38 +65,47 @@ php artisan queue:work
 ```
 
 With the `pcntl` extension, a queue worker kills any job that runs longer than
-its timeout. A workflow task that is killed loses its lease, and it is retried
-only after the lease expires (`workflows.v2.workflow_task_lease_seconds`, 300
-seconds by default). Workflow task jobs therefore carry their own timeout in
-place of the worker's `--timeout`: the lease less 30 seconds, or
-`DW_V2_WORKFLOW_TASK_JOB_TIMEOUT_SECONDS` if that is lower. Activity jobs keep
-the worker's bounded `--timeout`, so a hung activity cannot hold a worker
-forever.
+its timeout: the worker's `--timeout`, 60 seconds by default. A workflow task
+killed this way is retried only after its lease expires
+(`workflows.v2.workflow_task_lease_seconds`, 300 seconds by default) and is
+counted as a lost lease. A worker that serves the workflow queue logs a warning
+when it starts if its timeout is below the lease. Wide `all()` fan-outs can need
+longer than 60 seconds for one workflow task.
 
-Laravel requires a queue connection's `retry_after` to exceed every job's
-timeout, so a workflow task's timeout is also kept 10 seconds below its
-connection's `retry_after`. With Laravel's default `retry_after` of 90 seconds,
-workflow tasks are limited to 80 seconds, and a worker on that queue logs a
-warning when it starts. Wide `all()` fan-outs need longer. Give workflow tasks
-a queue connection whose `retry_after` exceeds the lease, and run dedicated
-workers for it. Activities run on their workflow's queue unless the activity
-class sets its own `$connection` or `$queue`:
+Raise `--timeout` on the workers that serve workflow tasks to cover your
+longest workflow task, keeping the queue connection's `retry_after` above it;
+Laravel requires `retry_after` to exceed every job's timeout. To keep a
+bounded timeout for activities, give them their own queue and workers.
+Activities run on their workflow's connection and queue unless the activity
+class sets `$connection` or `$queue`, or the workflow passes `ActivityOptions`:
 
 ```php
-// config/queue.php: a connection for workflow tasks
-'workflows' => [
+// config/queue.php
+'redis' => [
     'driver' => 'redis',
     'connection' => 'default',
-    'queue' => 'workflows',
-    'retry_after' => 330, // above the 300-second workflow task lease
+    'queue' => 'default',
+    'retry_after' => 330, // above the workflow task worker's --timeout
 ],
 ```
 
-```bash
-# DW_V2_CONNECTION=workflows DW_V2_QUEUE=workflows
-php artisan queue:work workflows --queue=workflows
-php artisan queue:work --queue=default --timeout=60   # activities, bounded
+```php
+final class ChargeCard extends Activity
+{
+    public ?string $queue = 'activities';
+}
 ```
+
+```bash
+php artisan queue:work redis --queue=default --timeout=300     # workflow tasks
+php artisan queue:work redis --queue=activities --timeout=60   # activities, bounded
+```
+
+From Workflow 2.34.0, `DW_V2_WORKFLOW_TASK_JOB_TIMEOUT_SECONDS` can instead give
+workflow task jobs their own timeout, which Laravel's worker uses in place of
+its `--timeout` for those jobs, while activities on the same workers keep the
+worker's `--timeout`. It is kept 10 seconds below the connection's
+`retry_after`, so raise `retry_after` above it. It is unset by default.
 
 If a workflow task loses its lease three times in a row
 (`DW_V2_WORKFLOW_TASK_LOST_LEASE_ATTENTION_THRESHOLD`), the run summary and

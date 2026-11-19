@@ -5,28 +5,23 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 /**
- * The queue job timeout a workflow task carries.
+ * An optional queue job timeout for workflow tasks.
  *
  * With pcntl, Laravel's worker kills a job that runs longer than its timeout,
- * and a job's own timeout replaces the worker's `--timeout`. A workflow task
- * killed that way loses its lease and is retried, so a short worker timeout
- * (60 seconds by default) used to make long workflow tasks impossible.
+ * and a job's own timeout replaces the worker's `--timeout` for that job. By
+ * default workflow task jobs carry no timeout, so the worker's `--timeout`
+ * applies to them as it does to every other job.
  *
- * A workflow task's job therefore carries its own timeout: the configured
- * `workflows.v2.workflow_task_job_timeout_seconds`, or by default the
- * workflow task lease less a margin, because work past the lease cannot
- * complete. It is also kept below the queue connection's `retry_after`, so
- * the queue never hands a still-running job to another worker. Activity jobs
- * keep the worker's own bounded `--timeout`.
+ * When `workflows.v2.workflow_task_job_timeout_seconds` is configured, every
+ * workflow task job carries that timeout instead, so workflow tasks can run
+ * longer (or shorter) than the activities on the same workers. It is kept
+ * 10 seconds below the queue connection's `retry_after`, which Laravel
+ * requires to exceed a job's timeout so the queue never hands a running job
+ * to another worker.
  */
 final class WorkflowTaskJobTimeout
 {
     public const CONFIG_KEY = 'workflows.v2.workflow_task_job_timeout_seconds';
-
-    /**
-     * Seconds kept between the job timeout and the task lease.
-     */
-    public const LEASE_MARGIN_SECONDS = 30;
 
     /**
      * Seconds kept between `retry_after` and the job timeout.
@@ -35,34 +30,32 @@ final class WorkflowTaskJobTimeout
 
     /**
      * The job timeout, in seconds, for a workflow task on $connection, or
-     * null to leave the worker's `--timeout` in force.
+     * null (the default) to leave the worker's `--timeout` in force.
      */
     public static function seconds(?string $connection = null): ?int
     {
-        $timeout = self::uncappedSeconds();
-        $retryAfter = self::retryAfter($connection);
+        $configured = self::configuredSeconds();
 
-        if ($retryAfter !== null) {
-            $timeout = min($timeout, $retryAfter - self::RETRY_AFTER_MARGIN_SECONDS);
+        if ($configured === null) {
+            return null;
         }
+
+        $retryAfter = self::retryAfter($connection);
+        $timeout = $retryAfter === null
+            ? $configured
+            : min($configured, $retryAfter - self::RETRY_AFTER_MARGIN_SECONDS);
 
         return $timeout >= 1 ? $timeout : null;
     }
 
     /**
-     * The timeout before any `retry_after` cap: the configured value, or the
-     * lease less its margin.
+     * The explicitly configured timeout, or null when none is configured.
      */
-    public static function uncappedSeconds(): int
+    public static function configuredSeconds(): ?int
     {
         $configured = config(self::CONFIG_KEY);
-        $ceiling = max(1, WorkflowTaskLease::seconds() - self::LEASE_MARGIN_SECONDS);
 
-        if (is_numeric($configured) && (int) $configured >= 1) {
-            return min((int) $configured, $ceiling);
-        }
-
-        return $ceiling;
+        return is_numeric($configured) && (int) $configured >= 1 ? (int) $configured : null;
     }
 
     /**

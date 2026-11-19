@@ -241,14 +241,17 @@ final class WorkflowServiceProvider extends ServiceProvider
         $this->validateCacheBackend();
 
         if (class_exists(\Illuminate\Queue\Events\WorkerStarting::class)) {
-            // A low retry_after caps how long a workflow task may run on the
-            // workflow queue; warn that queue's workers once.
+            // A timeout below the workflow task lease kills workflow tasks that
+            // are then retried only after the lease; warn workflow-queue
+            // workers once.
             Event::listen(
                 \Illuminate\Queue\Events\WorkerStarting::class,
                 static function (object $event): void {
+                    $options = $event->workerOptions ?? null;
                     WorkerTimeoutAdvisory::workerStarting(
                         is_string($event->connectionName ?? null) ? $event->connectionName : null,
                         is_string($event->queue ?? null) ? $event->queue : null,
+                        is_object($options) && is_numeric($options->timeout ?? null) ? (int) $options->timeout : null,
                     );
                 },
             );

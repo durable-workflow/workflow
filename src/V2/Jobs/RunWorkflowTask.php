@@ -48,8 +48,10 @@ final class RunWorkflowTask implements ShouldQueue
     public int $tries = 1;
 
     /**
-     * The job's own queue timeout ({@see WorkflowTaskJobTimeout}), set when
-     * the task is dispatched; null leaves the worker's --timeout in force.
+     * The job's own queue timeout, set at dispatch only when
+     * workflows.v2.workflow_task_job_timeout_seconds is configured
+     * ({@see WorkflowTaskJobTimeout}); null leaves the worker's --timeout in
+     * force. Workers of earlier releases ignore the serialized value.
      */
     public ?int $timeout = null;
 

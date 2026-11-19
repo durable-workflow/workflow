@@ -15,12 +15,13 @@
 - A workflow task that keeps losing its lease without completing no longer
   retries silently forever (#1231). A lease is lost when the worker running
   the task is killed, times out, or loses its connection.
-  - Workflow task jobs carry their own queue timeout: the workflow task lease
-    less 30 s (`workflows.v2.workflow_task_job_timeout_seconds` can lower it),
-    kept 10 s below the connection's `retry_after`. A short worker `--timeout`
-    no longer kills workflow tasks, and activity jobs keep the worker's
-    bounded `--timeout`. A worker on the workflow queue logs one warning at
-    start when `retry_after` caps workflow tasks below that.
+  - Opt-in `workflows.v2.workflow_task_job_timeout_seconds`
+    (`DW_V2_WORKFLOW_TASK_JOB_TIMEOUT_SECONDS`, unset by default) gives workflow
+    task jobs their own queue timeout, kept 10 s below the connection's
+    `retry_after`, in place of the worker's `--timeout`. Unset, the worker's
+    `--timeout` applies as before. A worker on the workflow queue logs one
+    warning at start when the timeout its workflow tasks run under is below
+    the workflow task lease.
   - Task repair counts each lost lease on the task (`lost_lease_count`,
     `last_lease_lost_at`). The next claim logs a typed
     `workflow_task_lease_lost` diagnostic. No history is written, and run

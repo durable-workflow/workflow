@@ -30,6 +30,7 @@ use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\OperatorMetrics;
 use Workflow\V2\Support\RunDetailView;
+use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\WorkerTimeoutAdvisory;
 use Workflow\V2\Support\WorkflowTaskJobTimeout;
 use Workflow\V2\Support\WorkflowTaskLeaseLoss;
@@ -38,7 +39,7 @@ use Workflow\V2\WorkflowStub;
 
 /**
  * A workflow task that keeps losing its lease, as when the queue worker kills
- * it at its job timeout, is counted, diagnosed and surfaced instead of being
+ * it at its timeout, is counted, diagnosed and surfaced instead of being
  * retried forever without a signal (#1231).
  */
 final class V2WorkflowTaskLostLeaseTest extends TestCase
@@ -162,13 +163,26 @@ final class V2WorkflowTaskLostLeaseTest extends TestCase
         $this->assertContains(HistoryEventType::ActivityScheduled->value, $this->historyTypes($runId));
     }
 
-    public function testWorkflowTaskJobsCarryTheirOwnTimeoutBelowLeaseAndRetryAfter(): void
+    public function testWorkflowTaskJobsCarryAJobTimeoutOnlyWhenConfigured(): void
     {
         config([
             'workflows.v2.workflow_task_lease_seconds' => 300,
-            'queue.connections.redis.retry_after' => 600,
+            'queue.connections.redis.retry_after' => 90,
+            'workflows.v2.workflow_task_job_timeout_seconds' => null,
         ]);
-        $this->assertSame(270, WorkflowTaskJobTimeout::seconds('redis'));
+
+        // Unset, the worker's --timeout applies to workflow tasks unchanged.
+        $this->assertNull(WorkflowTaskJobTimeout::seconds('redis'));
+        Queue::fake();
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'lost-lease-job-timeout-unset');
+        $workflow->start('Taylor');
+        Queue::assertPushed(RunWorkflowTask::class, static fn (RunWorkflowTask $job): bool => $job->timeout === null);
+
+        config([
+            'queue.connections.redis.retry_after' => 600,
+            'workflows.v2.workflow_task_job_timeout_seconds' => 120,
+        ]);
+        $this->assertSame(120, WorkflowTaskJobTimeout::seconds('redis'));
 
         // Never at or past retry_after, so the queue never hands a running
         // job to another worker.
@@ -179,26 +193,22 @@ final class V2WorkflowTaskLostLeaseTest extends TestCase
 
         config([
             'queue.connections.redis.retry_after' => 600,
-            'workflows.v2.workflow_task_job_timeout_seconds' => 120,
-        ]);
-        $this->assertSame(120, WorkflowTaskJobTimeout::seconds('redis'));
-        config([
             'workflows.v2.workflow_task_job_timeout_seconds' => 900,
         ]);
-        $this->assertSame(270, WorkflowTaskJobTimeout::seconds('redis'));
+        $this->assertSame(590, WorkflowTaskJobTimeout::seconds('redis'));
 
-        // The dispatched job carries it; Laravel's worker uses it in place of
-        // the worker's --timeout.
+        // Set, the dispatched job carries it; Laravel's worker uses it in
+        // place of the worker's --timeout.
         config([
-            'workflows.v2.workflow_task_job_timeout_seconds' => null,
+            'workflows.v2.workflow_task_job_timeout_seconds' => 120,
         ]);
         Queue::fake();
-        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'lost-lease-job-timeout');
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'lost-lease-job-timeout-set');
         $workflow->start('Taylor');
-        Queue::assertPushed(RunWorkflowTask::class, static fn (RunWorkflowTask $job): bool => $job->timeout === 270);
+        Queue::assertPushed(RunWorkflowTask::class, static fn (RunWorkflowTask $job): bool => $job->timeout === 120);
     }
 
-    public function testWorkerStartWarnsOnlyWorkflowQueueWorkersCappedByRetryAfter(): void
+    public function testWorkerStartWarnsWorkflowQueueWorkersWhoseTimeoutIsBelowTheLease(): void
     {
         config([
             'queue.default' => 'redis',
@@ -207,6 +217,7 @@ final class V2WorkflowTaskLostLeaseTest extends TestCase
             'queue.connections.redis.queue' => 'default',
             'queue.connections.redis.retry_after' => 90,
             'workflows.v2.workflow_task_lease_seconds' => 300,
+            'workflows.v2.workflow_task_job_timeout_seconds' => null,
         ]);
         WorkerTimeoutAdvisory::reset();
         Log::spy();
@@ -222,18 +233,27 @@ final class V2WorkflowTaskLostLeaseTest extends TestCase
         if (extension_loaded('pcntl')) {
             Log::shouldHaveReceived('warning')
                 ->withArgs(static fn (string $message, array $context): bool =>
-                    $context['code'] === 'workflow_task_timeout_capped_by_retry_after'
-                    && $context['retry_after_seconds'] === 90
-                    && $context['workflow_task_timeout_seconds'] === 80
-                    && str_contains($message, 'retry_after above 280 s'))
+                    $context['code'] === 'workflow_task_timeout_below_lease'
+                    && $context['workflow_task_timeout_source'] === 'worker_timeout'
+                    && $context['workflow_task_timeout_seconds'] === 60
+                    && $context['workflow_task_lease_seconds'] === 300
+                    && str_contains($message, 'retried only after its lease expires')
+                    && str_contains($message, 'counted as a lost lease')
+                    && str_contains($message, 'DW_V2_WORKFLOW_TASK_JOB_TIMEOUT_SECONDS'))
                 ->once();
         } else {
             Log::shouldNotHaveReceived('warning');
         }
 
-        $this->assertNull(WorkerTimeoutAdvisory::message(true, 270, 270, 600, 'redis'));
-        $this->assertNull(WorkerTimeoutAdvisory::message(false, 80, 270, 90, 'redis'));
-        $this->assertNotNull(WorkerTimeoutAdvisory::message(true, 80, 270, 90, 'redis'));
+        // No warning without pcntl, for --timeout=0, or at or above the lease.
+        $this->assertNull(WorkerTimeoutAdvisory::message(false, 60, false, 300));
+        $this->assertNull(WorkerTimeoutAdvisory::message(true, 0, false, 300));
+        $this->assertNull(WorkerTimeoutAdvisory::message(true, 300, false, 300));
+        $this->assertStringContainsString('the worker --timeout', (string) WorkerTimeoutAdvisory::message(true, 60, false, 300));
+        $this->assertStringContainsString(
+            'after 80 s (DW_V2_WORKFLOW_TASK_JOB_TIMEOUT_SECONDS)',
+            (string) WorkerTimeoutAdvisory::message(true, 80, true, 300),
+        );
         WorkerTimeoutAdvisory::reset();
     }
 
@@ -289,6 +309,33 @@ final class V2WorkflowTaskLostLeaseTest extends TestCase
                 $table->unsignedInteger('lost_lease_count')
                     ->default(0);
                 $table->timestamp('last_lease_lost_at', 6)
+                    ->nullable();
+            });
+        }
+    }
+
+    public function testASummaryColumnRollbackDegradesSummaryWrites(): void
+    {
+        Queue::fake();
+        $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'lost-lease-summary-rollback');
+        $workflow->start('Taylor');
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $this->assertTrue(WorkflowTaskLeaseLoss::summaryTracked());
+
+        // The process still believes the summary column exists.
+        Schema::table('workflow_run_summaries', static function (Blueprint $table): void {
+            $table->dropColumn('task_attention');
+        });
+
+        try {
+            $summary = RunSummaryProjector::project($run->refresh());
+            $this->assertSame($run->id, $summary->id);
+            $this->assertFalse(array_key_exists('task_attention', $summary->getAttributes()));
+            $this->assertFalse(WorkflowTaskLeaseLoss::summaryTracked());
+            $this->assertNull(RunDetailView::forRun($run->refresh())['task_attention']);
+        } finally {
+            Schema::table('workflow_run_summaries', static function (Blueprint $table): void {
+                $table->json('task_attention')
                     ->nullable();
             });
         }

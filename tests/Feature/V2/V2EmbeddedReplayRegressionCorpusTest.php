@@ -502,7 +502,7 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
     /**
      * A workflow task that lost its lease three times, as when a pcntl worker
-     * kills it at the job timeout, fails its run with the typed lease-lost
+     * kills it at its timeout, fails its run with the typed lease-lost
      * failure on the next claim when fail_run is enabled (#1231). The run's
      * history is exactly the evidence: no lost lease writes history.
      */

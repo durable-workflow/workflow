@@ -375,18 +375,18 @@ return [
             Workflow\V2\Support\WorkflowTaskLease::DEFAULT_SECONDS,
         ),
 
+        // Opt-in queue job timeout for workflow task jobs. Unset (the default),
+        // the worker's --timeout applies to workflow tasks like any other job.
+        // Set, every workflow task job carries this timeout instead, kept 10 s
+        // below its queue connection's retry_after.
+        'workflow_task_job_timeout_seconds' => env('DW_V2_WORKFLOW_TASK_JOB_TIMEOUT_SECONDS'),
+
         // A workflow task whose lease expires without completing (its worker
         // was killed, timed out, or lost its connection) is retried after task
         // repair. After this many consecutive lost leases the run summary and
         // describe carry task_attention. With fail_run enabled (off by
         // default; requires a threshold of at least 2), the next claim fails
         // the run with a typed task failure instead.
-        // The queue job timeout every workflow task job carries, replacing
-        // the worker's --timeout for workflow tasks only. Unset, it is the
-        // workflow task lease less 30 s. It is always kept below the lease
-        // and 10 s below the queue connection's retry_after.
-        'workflow_task_job_timeout_seconds' => env('DW_V2_WORKFLOW_TASK_JOB_TIMEOUT_SECONDS'),
-
         'workflow_task_lost_leases' => [
             'attention_threshold' => (int) env('DW_V2_WORKFLOW_TASK_LOST_LEASE_ATTENTION_THRESHOLD', 3),
             'fail_run' => (bool) env('DW_V2_WORKFLOW_TASK_LOST_LEASE_FAIL_RUN', false),

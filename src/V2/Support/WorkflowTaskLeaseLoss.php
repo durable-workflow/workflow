@@ -315,6 +315,46 @@ final class WorkflowTaskLeaseLoss
         }
     }
 
+    /**
+     * Write a run summary whose values may carry task_attention.
+     *
+     * A schema rollback can drop the column while the cached check still
+     * reports it. On that error the cache is forgotten and $write runs again
+     * without task_attention. A failed statement aborts a caller's open
+     * PostgreSQL transaction, so there the error is rethrown instead and the
+     * caller's retry sees the current schema.
+     *
+     * @template T
+     * @param array<string, mixed> $values
+     * @param callable(array<string, mixed>): T $write
+     * @return T
+     */
+    public static function writeSummary(array $values, callable $write): mixed
+    {
+        if (! array_key_exists('task_attention', $values)) {
+            return $write($values);
+        }
+
+        try {
+            return $write($values);
+        } catch (QueryException $exception) {
+            if (! self::missingColumn($exception)) {
+                throw $exception;
+            }
+
+            self::$schemas = [];
+            $connection = self::summaryModel()->getConnection();
+
+            if ($connection->transactionLevel() > 0 && $connection->getDriverName() === 'pgsql') {
+                throw $exception;
+            }
+
+            unset($values['task_attention']);
+
+            return $write($values);
+        }
+    }
+
     private static function hasColumn(Model $model, string $column, bool $fresh = false): bool
     {
         $key = $model->getConnectionName() . '|' . $model->getTable() . '|' . $column;
@@ -342,6 +382,7 @@ final class WorkflowTaskLeaseLoss
 
         return in_array((string) $exception->getCode(), ['42S22', '42703'], true)
             || str_contains($message, 'no such column')
+            || str_contains($message, 'has no column named')
             || str_contains($message, 'Unknown column')
             || str_contains($message, 'does not exist');
     }

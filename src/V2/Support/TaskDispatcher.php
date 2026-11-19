@@ -189,7 +189,7 @@ final class TaskDispatcher
         }
 
         if ($job instanceof RunWorkflowTask) {
-            // A short worker --timeout must not kill workflow tasks.
+            // Opt-in: workflow tasks get their own timeout only when configured.
             $job->timeout = WorkflowTaskJobTimeout::seconds($task->connection);
         }
 

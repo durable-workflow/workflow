@@ -573,25 +573,30 @@ final class RunSummaryProjector
         array $values,
         array $failureIds,
     ): WorkflowRunSummary {
-        return SqliteTransaction::run(
-            static function () use ($summaryModel, $run, $values, $failureIds): WorkflowRunSummary {
-                /** @var WorkflowRunSummary $summary */
-                $summary = IdempotentProjectionUpsert::upsert($summaryModel, [
-                    'id' => $run->id,
-                ], $values,);
+        // The write sits outside the transaction so a dropped task_attention
+        // column can be retried in a fresh transaction.
+        return WorkflowTaskLeaseLoss::writeSummary(
+            $values,
+            static fn (array $values): WorkflowRunSummary => SqliteTransaction::run(
+                static function () use ($summaryModel, $run, $values, $failureIds): WorkflowRunSummary {
+                    /** @var WorkflowRunSummary $summary */
+                    $summary = IdempotentProjectionUpsert::upsert($summaryModel, [
+                        'id' => $run->id,
+                    ], $values,);
 
-                ChildProjectionRepairStore::markSnapshotFailuresCounted($run, $failureIds);
+                    ChildProjectionRepairStore::markSnapshotFailuresCounted($run, $failureIds);
 
-                return $summary;
-            },
-            admission: static function () use ($summaryModel, $run): void {
-                // Acquire SQLite's writer before updateOrCreate reads or model hooks run.
-                // A rejected admission may retry; the projection body must execute once.
-                $summaryModel::query()->where('id', $run->id)->toBase()->update([
-                    'id' => $run->id,
-                ]);
-            },
-            connection: $run->getConnection(),
+                    return $summary;
+                },
+                admission: static function () use ($summaryModel, $run): void {
+                    // Acquire SQLite's writer before updateOrCreate reads or model hooks run.
+                    // A rejected admission may retry; the projection body must execute once.
+                    $summaryModel::query()->where('id', $run->id)->toBase()->update([
+                        'id' => $run->id,
+                    ]);
+                },
+                connection: $run->getConnection(),
+            ),
         );
     }
 
@@ -745,30 +750,40 @@ final class RunSummaryProjector
 
         if ($exceptionCount['event_ids'] === []) {
             /** @var WorkflowRunSummary $summary */
-            $summary = IdempotentProjectionUpsert::upsert($summaryModel, [
-                'id' => $run->id,
-            ], $values,);
+            $summary = WorkflowTaskLeaseLoss::writeSummary(
+                $values,
+                static fn (array $values): WorkflowRunSummary => IdempotentProjectionUpsert::upsert(
+                    $summaryModel,
+                    [
+                        'id' => $run->id,
+                    ],
+                    $values,
+                ),
+            );
         } else {
             // Best-effort child projection may catch a later projection error.
             // Keep the count and its event marker in one transaction so neither
             // half can survive alone before the repair is retried.
             /** @var WorkflowRunSummary $summary */
-            $summary = $run->getConnection()
-                ->transaction(static function () use (
-                    $summaryModel,
-                    $run,
-                    $values,
-                    $exceptionCount
-                ): WorkflowRunSummary {
-                    /** @var WorkflowRunSummary $summary */
-                    $summary = IdempotentProjectionUpsert::upsert($summaryModel, [
-                        'id' => $run->id,
-                    ], $values,);
+            $summary = WorkflowTaskLeaseLoss::writeSummary(
+                $values,
+                static fn (array $values): WorkflowRunSummary => $run->getConnection()
+                    ->transaction(static function () use (
+                        $summaryModel,
+                        $run,
+                        $values,
+                        $exceptionCount
+                    ): WorkflowRunSummary {
+                        /** @var WorkflowRunSummary $summary */
+                        $summary = IdempotentProjectionUpsert::upsert($summaryModel, [
+                            'id' => $run->id,
+                        ], $values,);
 
-                    ChildProjectionRepairStore::markFailedChildrenCounted($run, $exceptionCount['event_ids']);
+                        ChildProjectionRepairStore::markFailedChildrenCounted($run, $exceptionCount['event_ids']);
 
-                    return $summary;
-                });
+                        return $summary;
+                    }),
+            );
         }
 
         foreach ($childResolutionEvents as $childResolutionEvent) {
@@ -1207,11 +1222,7 @@ final class RunSummaryProjector
         $summaryModel = self::summaryModel();
 
         /** @var WorkflowRunSummary $summary */
-        $summary = IdempotentProjectionUpsert::upsert(
-            $summaryModel,
-            [
-                'id' => $run->id,
-            ],
+        $summary = WorkflowTaskLeaseLoss::writeSummary(
             [
                 'workflow_instance_id' => $run->workflow_instance_id,
                 'run_number' => $run->run_number,
@@ -1271,6 +1282,13 @@ final class RunSummaryProjector
                 'created_at' => $run->created_at,
                 'updated_at' => $run->closed_at ?? $run->last_progress_at ?? $run->updated_at,
             ],
+            static fn (array $values): WorkflowRunSummary => IdempotentProjectionUpsert::upsert(
+                $summaryModel,
+                [
+                    'id' => $run->id,
+                ],
+                $values,
+            ),
         );
 
         return $summary;
