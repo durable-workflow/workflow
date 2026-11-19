@@ -40,6 +40,39 @@
     example adds `CancellationFinalizer` as the recommended pattern: it calls
     `finish()` when the Order's recovery verifies.
 
+- The experimental compensation-scope API was prepared for promotion after an
+  independent review (#1063). These are breaking changes to an experimental API:
+  - **Outcomes.**
+    - `Resolution::verified()` takes only evidence. Return `unknown()` while a late
+      forward effect is possible; the new `Resolution::failed()` stops retries for a
+      definite failure.
+    - `ForwardResult::rejected()` reports a definite no-effect outcome. The workflow
+      receives non-retryable `scope_forward_rejected`, and compensation verifies
+      without a provider call.
+    - Ledger rows from earlier releases decode unchanged. Only `rejected` and
+      `failed` outcomes use a version-2 envelope.
+  - **Context.** `OperationContext::$uncertainForward` is split into
+    `reconcileBeforeForward` (when executing) and `forwardOutcomeUnconfirmed` (when
+    compensating).
+  - **Authorization.** Only `ScopeAuthorizationRefused` refuses permanently. Any other
+    exception from `ScopeAuthorization` is transient and retried, and automatic
+    recovery stays on.
+  - **Results.** `ScopeRecovery::request()` and `describe()` return exactly
+    documented keys with enum value sets (`ScopeStatus`, `RecoveryRoute`,
+    `NextAction`, `AutomaticRecovery`, `ObligationStatus`). `describe()` reports a
+    refusal as a stable code plus a non-machine-stable message.
+  - **Registration checks.** New registrations reserve the `dw.` handler prefix and
+    enforce the caller input limit (15,360 bytes, 500 values, depth 7). They are gated
+    by a patch marker, so recorded histories replay unchanged.
+  - **Internal members.** Engine-facing members are `@internal`: the `ScopeRecovery`
+    and `ScopeRetention` constructors (resolve them from the container),
+    `Obligation::fromStored()`, `HandlerRegistry::resolve()`,
+    `ScopeIdentity::recoveryInstanceId()` and the envelope codecs.
+  - **Options.** `ActivityOptions` and `StartOptions` are marked `@api`.
+  - **Surface test.** A test pins the planned public surface.
+  - **New example.** A new example, `examples/compensation-scopes`, uses only that
+    surface, with `participate()` instead of `reserveChild()`.
+
 ## 2.30.0 - 2026-11-18
 
 - **Security fix:** webhook `token` authentication with no token configured

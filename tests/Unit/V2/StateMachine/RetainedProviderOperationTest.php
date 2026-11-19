@@ -71,7 +71,7 @@ final class RetainedProviderOperationTest extends TestCase
         $result = $this->operation()
             ->compensate($this->context(uncertain: true));
         $this->assertTrue($result->verified);
-        $this->assertTrue($result->forwardSettled);
+        $this->assertSame('verified', $result->outcome);
         $this->assertSame(['provider-fenced:' . $this->forward()->identity->key()], $result->evidence);
         $late = $this->provider->attempt($this->forward());
         $this->assertSame(Status::NotExecuted, $late->status);
@@ -97,14 +97,14 @@ final class RetainedProviderOperationTest extends TestCase
         $this->assertSame($status !== Status::Unknown, $forward->observed);
         $blocked = $operation->compensate($this->context());
         $this->assertFalse($blocked->verified);
-        $this->assertFalse($blocked->forwardSettled);
+        $this->assertNotSame('verified', $blocked->outcome);
         $this->assertSame('provider-forward-' . $status->value, $blocked->reason);
         $this->assertSame(1, $this->rowCount('provider_requests'));
         $this->assertSame(0, $this->rowCount('provider_effects'));
         $this->provider->resolve($this->forward(), Status::Confirmed);
         $settled = $operation->compensate($this->context(uncertain: true, attempt: 'later-compensation'));
         $this->assertTrue($settled->verified);
-        $this->assertTrue($settled->forwardSettled);
+        $this->assertSame('verified', $settled->outcome);
         $this->assertSame(2, $this->rowCount('provider_effects'));
         $this->assertSame(Status::Confirmed, $this->provider->lookup($this->forward())->status);
     }
@@ -129,7 +129,7 @@ final class RetainedProviderOperationTest extends TestCase
         $result = $this->operation()
             ->compensate($this->context());
         $this->assertFalse($result->verified);
-        $this->assertFalse($result->forwardSettled);
+        $this->assertNotSame('verified', $result->outcome);
         $this->assertSame('provider-compensation-' . $status->value, $result->reason);
         $this->assertSame([], $result->evidence);
         $this->assertSame(1, $this->rowCount('provider_effects'));

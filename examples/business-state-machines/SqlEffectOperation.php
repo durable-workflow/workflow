@@ -53,7 +53,7 @@ final readonly class SqlEffectOperation implements ScopedOperation
                 $status = (bool) $subject->cancellation_requested ? 'absent' : 'active';
                 $this->insert($context, $subject->id, $status);
             } else {
-                // Reconcile an earlier committed effect before considering a reissue, including uncertainForward.
+                // Reconcile an earlier committed effect before considering a reissue, including reconcileBeforeForward.
                 $status = $receipt->status;
             }
             return ForwardResult::observed([
@@ -103,7 +103,7 @@ final readonly class SqlEffectOperation implements ScopedOperation
                     ]);
             }
             // All service writes are synchronous SQL under this same fence. No external callback stop is inferred.
-            return Resolution::verified([$this->evidence($context, $status)], true);
+            return Resolution::verified([$this->evidence($context, $status)]);
         });
     }
 

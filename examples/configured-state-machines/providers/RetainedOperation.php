@@ -33,7 +33,9 @@ final readonly class RetainedOperation implements ScopedOperation
     {
         [$forward] = $this->requests($context->obligation->input);
         ($this->authorize)($context, 'forward');
-        $result = $context->uncertainForward ? $this->provider->lookup($forward) : $this->provider->attempt($forward);
+        $result = $context->reconcileBeforeForward ? $this->provider->lookup($forward) : $this->provider->attempt(
+            $forward
+        );
         if ($result->status === Status::Unknown || (($result->status === Status::Confirmed) !== ($result->effectId !== null))) {
             return ForwardResult::unknown('provider-forward-unknown');
         }
@@ -53,7 +55,7 @@ final readonly class RetainedOperation implements ScopedOperation
         // Closing admission is an authoritative provider fence, not an inference from a missing lookup.
         $original = $this->provider->closeAdmission($forward);
         if (in_array($original->status, [Status::NotExecuted, Status::Refused], true) && $original->effectId === null) {
-            return Resolution::verified(['provider-fenced:' . $forward->identity->key()], true);
+            return Resolution::verified(['provider-fenced:' . $forward->identity->key()]);
         }
         if ($original->status !== Status::Confirmed || $original->effectId === null) {
             return Resolution::unknown('provider-forward-' . $original->status->value);
@@ -63,7 +65,7 @@ final readonly class RetainedOperation implements ScopedOperation
         if ($result->status !== Status::Confirmed || $result->effectId === null) {
             return Resolution::unknown('provider-compensation-' . $result->status->value);
         }
-        return Resolution::verified([$original->effectId, $result->effectId], true);
+        return Resolution::verified([$original->effectId, $result->effectId]);
     }
 
     /**

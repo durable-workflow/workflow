@@ -341,7 +341,7 @@ final class V2NestedCompensationExampleTest extends TestCase
         $this->assertContains([
             'role' => 'child',
             'key' => 'deliver',
-            'status' => 'unknown',
+            'status' => 'unresolved',
             'reason' => 'effect_dispatched',
         ], $outcome['unresolved']);
         // Earlier Order work waits behind the unresolved Shipment.
@@ -430,7 +430,9 @@ final class V2NestedCompensationExampleTest extends TestCase
                     string $operation
                 ): string {
                     if ($operation === 'request') {
-                        throw new LogicException('The cancellation principal was revoked.');
+                        throw new \Workflow\V2\Compensation\Security\ScopeAuthorizationRefused(
+                            'The cancellation principal was revoked.'
+                        );
                     }
                     return $this->policy->assertAllowed($scope, $principal, $operation);
                 }
@@ -450,7 +452,10 @@ final class V2NestedCompensationExampleTest extends TestCase
             ExampleOwnershipPolicy::scope(self::SUBJECT, $parentRun, 'parent'),
             NestedCompensationExample::PRINCIPAL,
         );
-        $this->assertSame('The cancellation principal was revoked.', $described['refusal']['reason']);
+        $this->assertSame([
+            'code' => 'recovery_authorization_failed',
+            'message' => 'The cancellation principal was revoked.',
+        ], $described['refusal']);
         $this->assertSame(1, collect((new ScopeRepository())->journal(
             ExampleOwnershipPolicy::scope(self::SUBJECT, $parentRun, 'parent')
         ))->where('kind', 'recovery_authorization_failed')
@@ -463,6 +468,52 @@ final class V2NestedCompensationExampleTest extends TestCase
         $this->assertVerified($parentRun);
         $this->assertSame(['deliver', 'prepare', 'reserve'], $this->compensationLog());
         $this->assertSame(1, $this->parentRecoveryRuns($parentRun));
+    }
+
+    public function testTransientAuthorizationFailureKeepsAutomaticRecoveryOn(): void
+    {
+        [, $parentRun] = $this->closeOrderWithDispatchedDelivery();
+        app(NestedCompensationExample::class)->recordCarrierReturn(self::SUBJECT);
+        $policy = app(\Workflow\V2\Compensation\Security\ScopeAuthorization::class);
+        $this->app->instance(
+            \Workflow\V2\Compensation\Security\ScopeAuthorization::class,
+            new class($policy) implements \Workflow\V2\Compensation\Security\ScopeAuthorization {
+                public function __construct(
+                    private readonly \Workflow\V2\Compensation\Security\ScopeAuthorization $policy
+                ) {
+                }
+
+                public function assertAllowed(
+                    \Workflow\V2\Compensation\Definition\ScopeIdentity $scope,
+                    string $principal,
+                    string $operation
+                ): string {
+                    if ($operation === 'request') {
+                        throw new \RuntimeException('The policy store is unavailable.');
+                    }
+                    return $this->policy->assertAllowed($scope, $principal, $operation);
+                }
+            },
+        );
+
+        // Any exception other than ScopeAuthorizationRefused is transient: nothing is recorded.
+        $report = TaskWatchdog::runPass(respectThrottle: false);
+        $this->assertSame(0, $report['compensation_recoveries_started']);
+        $this->assertSame(0, $report['compensation_recovery_refusals']);
+        $this->assertCount(1, $report['compensation_recovery_failures']);
+        $this->assertSame(0, $this->parentRecoveryRuns($parentRun));
+        $this->assertSame('pending', $this->outcome($parentRun)['automaticRecovery']);
+        $this->assertSame(0, collect((new ScopeRepository())->journal(
+            ExampleOwnershipPolicy::scope(self::SUBJECT, $parentRun, 'parent')
+        ))->where('kind', 'recovery_authorization_failed')
+            ->count());
+
+        // A later pass, after the policy store recovers, starts recovery.
+        $this->app->instance(\Workflow\V2\Compensation\Security\ScopeAuthorization::class, $policy);
+        $this->assertSame(1, TaskWatchdog::runPass(respectThrottle: false)['compensation_recoveries_started']);
+        $this->drain();
+        $this->assertVerified($parentRun);
+        $this->assertSame(['deliver', 'prepare', 'reserve'], $this->compensationLog());
     }
 
     public function testAutomaticRecoveryRacingAManualRequestStartsOneRecoveryRun(): void

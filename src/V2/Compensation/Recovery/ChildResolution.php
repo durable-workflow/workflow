@@ -57,7 +57,7 @@ final readonly class ChildResolution
             return Resolution::unknown('child-unresolved');
         }
         return $snapshot['status'] === 'verified'
-            ? Resolution::verified(['scope-verified:' . $child->id()], true)
+            ? Resolution::verified(['scope-verified:' . $child->id()])
             : Resolution::unknown('child-unresolved');
     }
 }

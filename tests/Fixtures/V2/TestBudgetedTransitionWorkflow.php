@@ -154,7 +154,7 @@ final class BudgetRetainedOperation implements ScopedOperation
                 'status' => 'compensated',
             ]);
         });
-        return Resolution::verified(['sql-compensated:' . $context->operationId], true);
+        return Resolution::verified(['sql-compensated:' . $context->operationId]);
     }
 }
 

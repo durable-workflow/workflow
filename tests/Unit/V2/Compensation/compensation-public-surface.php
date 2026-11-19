@@ -1,0 +1,179 @@
+<?php
+
+declare(strict_types=1);
+
+// Pinned public surface of the compensation-scope API (#1063). Regenerate only for an intended API change.
+
+return [
+    \Workflow\V2\Compensation\DurableScope::class => [
+        '__construct(Workflow\\V2\\Workflow $workflow, Workflow\\V2\\Compensation\\Definition\\ScopeIdentity $identity, string $principal)',
+        'execute(Workflow\\V2\\Compensation\\Definition\\Obligation $obligation, ?Workflow\\V2\\Support\\ActivityOptions $options = NULL): array',
+        'register(Workflow\\V2\\Compensation\\Definition\\Obligation $obligation): Workflow\\V2\\Compensation\\RegisteredObligation',
+        'participate(string $key, Workflow\\V2\\Compensation\\Definition\\ScopeIdentity $child): void',
+        'verifyCompensation(): array',
+    ],
+    \Workflow\V2\Compensation\RegisteredObligation::class => [
+        'execute(?Workflow\\V2\\Support\\ActivityOptions $options = NULL): array',
+        'compensate(?Workflow\\V2\\Support\\ActivityOptions $options = NULL): void',
+    ],
+    \Workflow\V2\Compensation\Definition\Obligation::class => [
+        'property string $key',
+        'property string $handlerType',
+        'property string $handlerVersion',
+        'property array $input',
+        '__construct(string $key, string $handlerType, string $handlerVersion, array $input)',
+    ],
+    \Workflow\V2\Compensation\Definition\ScopeIdentity::class => [
+        'property string $application',
+        'property ?string $namespace',
+        'property string $key',
+        'property string $generation',
+        '__construct(string $application, ?string $namespace, string $key, string $generation)',
+        'id(): string',
+        'toArray(): array',
+        'static fromArray(array $value): self',
+    ],
+    \Workflow\V2\Compensation\Execution\ScopedOperation::class => [
+        'assertInput(array $input): void',
+        'execute(Workflow\\V2\\Compensation\\Execution\\OperationContext $context): Workflow\\V2\\Compensation\\Execution\\ForwardResult',
+        'compensate(Workflow\\V2\\Compensation\\Execution\\OperationContext $context): Workflow\\V2\\Compensation\\Execution\\Resolution',
+    ],
+    \Workflow\V2\Compensation\Execution\OperationContext::class => [
+        'property Workflow\\V2\\Compensation\\Definition\\ScopeIdentity $scope',
+        'property Workflow\\V2\\Compensation\\Definition\\Obligation $obligation',
+        'property string $operationId',
+        'property string $originalRunId',
+        'property string $activityId',
+        'property string $attemptId',
+        'property bool $reconcileBeforeForward',
+        'property ?string $forwardActivityId',
+        'property ?string $forwardAttemptId',
+        'property bool $forwardOutcomeUnconfirmed',
+    ],
+    \Workflow\V2\Compensation\Execution\ForwardResult::class => [
+        'const OBSERVED = \'observed\'',
+        'const UNKNOWN = \'unknown\'',
+        'const REJECTED = \'rejected\'',
+        'property bool $observed',
+        'property string $outcome',
+        'property array $value',
+        'property array $evidence',
+        'property string $reason',
+        'static observed(array $value, array $evidence): self',
+        'static unknown(string $reason): self',
+        'static rejected(string $reason, array $evidence = array (
+)): self',
+    ],
+    \Workflow\V2\Compensation\Execution\Resolution::class => [
+        'const VERIFIED = \'verified\'',
+        'const UNKNOWN = \'unknown\'',
+        'const FAILED = \'failed\'',
+        'property bool $verified',
+        'property string $outcome',
+        'property string $reason',
+        'property array $evidence',
+        'static verified(array $evidence): self',
+        'static unknown(string $reason): self',
+        'static failed(string $reason, array $evidence = array (
+)): self',
+    ],
+    \Workflow\V2\Compensation\Execution\HandlerRegistry::class => [
+        'const RESERVED_PREFIX = \'dw.\'',
+        '__construct(array $handlers = array (
+))',
+    ],
+    \Workflow\V2\Compensation\Security\ScopeAuthorization::class => [
+        'assertAllowed(Workflow\\V2\\Compensation\\Definition\\ScopeIdentity $scope, string $principal, string $operation): string',
+    ],
+    \Workflow\V2\Compensation\Security\ScopeAuthorizationRefused::class => [
+        '__construct(string $message = \'The compensation scope operation was refused.\', ?Throwable $previous = NULL)',
+    ],
+    \Workflow\V2\Compensation\Recovery\ScopeRecovery::class => [
+        'request(Workflow\\V2\\Compensation\\Definition\\ScopeIdentity $scope, string $requestKey, string $principal, string $reason, ?Workflow\\V2\\StartOptions $profile = NULL): array',
+        'describe(Workflow\\V2\\Compensation\\Definition\\ScopeIdentity $scope, string $principal): array',
+    ],
+    \Workflow\V2\Compensation\Recovery\ScopeRetention::class => [
+        'release(Workflow\\V2\\Compensation\\Definition\\ScopeIdentity $scope, string $principal): void',
+    ],
+    \Workflow\V2\Compensation\Recovery\ScopeStatus::class => [
+        'case Open = \'open\'',
+        'case Requested = \'requested\'',
+        'case Verified = \'verified\'',
+        'case Released = \'released\'',
+    ],
+    \Workflow\V2\Compensation\Recovery\RecoveryRoute::class => [
+        'case Origin = \'origin\'',
+        'case Recovery = \'recovery\'',
+        'case Verified = \'verified\'',
+    ],
+    \Workflow\V2\Compensation\Recovery\NextAction::class => [
+        'case None = \'none\'',
+        'case ObserveOrigin = \'observe_origin\'',
+        'case ObserveRecovery = \'observe_recovery\'',
+        'case AwaitAutomaticRecovery = \'await_automatic_recovery\'',
+        'case SubmitFreshAuthorizedRequest = \'submit_fresh_authorized_request\'',
+        'case InspectUnresolvedObligations = \'inspect_unresolved_obligations\'',
+    ],
+    \Workflow\V2\Compensation\Recovery\AutomaticRecovery::class => [
+        'case NotNeeded = \'not_needed\'',
+        'case Pending = \'pending\'',
+        'case Routed = \'routed\'',
+        'case RecoveryAuthorizationFailed = \'recovery_authorization_failed\'',
+    ],
+    \Workflow\V2\Compensation\Recovery\ObligationStatus::class => [
+        'case Pending = \'pending\'',
+        'case Unresolved = \'unresolved\'',
+        'case Failed = \'failed\'',
+        'case Verified = \'verified\'',
+    ],
+    \Workflow\V2\Support\ActivityOptions::class => [
+        'property ?int $priority',
+        'property ?string $fairnessKey',
+        'property ?int $fairnessWeight',
+        'property ?string $connection',
+        'property ?string $queue',
+        'property ?int $maxAttempts',
+        'property array|int|null $backoff',
+        'property ?int $startToCloseTimeout',
+        'property ?int $scheduleToStartTimeout',
+        'property ?int $scheduleToCloseTimeout',
+        'property ?int $heartbeatTimeout',
+        'property array $nonRetryableErrorTypes',
+        'property ?Workflow\\V2\\Support\\WorkerSessionOptions $workerSession',
+        '__construct(?string $connection = NULL, ?string $queue = NULL, ?int $maxAttempts = NULL, array|int|null $backoff = NULL, ?int $startToCloseTimeout = NULL, ?int $scheduleToStartTimeout = NULL, ?int $scheduleToCloseTimeout = NULL, ?int $heartbeatTimeout = NULL, array $nonRetryableErrorTypes = array (
+), ?Workflow\\V2\\Support\\WorkerSessionOptions $workerSession = NULL, ?int $priority = NULL, ?string $fairnessKey = NULL, ?int $fairnessWeight = NULL)',
+        'withWorkerSession(Workflow\\V2\\Support\\WorkerSessionOptions $workerSession): self',
+        'withPriority(?int $priority): self',
+        'withFairness(?string $fairnessKey, ?int $fairnessWeight = NULL): self',
+    ],
+    \Workflow\V2\StartOptions::class => [
+        'property Workflow\\V2\\Enums\\DuplicateStartPolicy $duplicateStartPolicy',
+        'property ?string $businessKey',
+        'property array $labels',
+        'property array $memo',
+        'property array $searchAttributes',
+        'property ?int $executionTimeoutSeconds',
+        'property ?int $runTimeoutSeconds',
+        'property ?int $timeoutCleanupSeconds',
+        'property int $priority',
+        'property ?string $fairnessKey',
+        'property int $fairnessWeight',
+        '__construct(Workflow\\V2\\Enums\\DuplicateStartPolicy $duplicateStartPolicy = \\Workflow\\V2\\Enums\\DuplicateStartPolicy::RejectDuplicate, ?string $businessKey = NULL, array $labels = array (
+), array $memo = array (
+), array $searchAttributes = array (
+), ?int $executionTimeoutSeconds = NULL, ?int $runTimeoutSeconds = NULL, ?int $priority = NULL, ?string $fairnessKey = NULL, ?int $fairnessWeight = NULL, ?int $timeoutCleanupSeconds = NULL)',
+        'static rejectDuplicate(): self',
+        'static returnExistingActive(): self',
+        'static withVisibility(?string $businessKey = NULL, array $labels = array (
+), Workflow\\V2\\Enums\\DuplicateStartPolicy $duplicateStartPolicy = \\Workflow\\V2\\Enums\\DuplicateStartPolicy::RejectDuplicate): self',
+        'withBusinessKey(?string $businessKey): self',
+        'withLabels(array $labels): self',
+        'withMemo(array $memo): self',
+        'withSearchAttributes(array $searchAttributes): self',
+        'withExecutionTimeout(?int $seconds): self',
+        'withRunTimeout(?int $seconds): self',
+        'withTimeoutCleanup(?int $seconds): self',
+        'withPriority(?int $priority): self',
+        'withFairness(?string $fairnessKey, ?int $fairnessWeight = NULL): self',
+    ],
+];

@@ -33,7 +33,9 @@ final readonly class ShipmentOperation implements ScopedOperation
         $descriptor = ShipmentDescriptor::fromArray($context->obligation->input);
         ($this->authorize)($context, 'forward');
         $booking = $descriptor->booking;
-        $value = $context->uncertainForward ? $this->provider->lookup($booking) : $this->provider->attempt($booking);
+        $value = $context->reconcileBeforeForward ? $this->provider->lookup($booking) : $this->provider->attempt(
+            $booking
+        );
         if ($value->status === Status::Unknown || (($value->status === Status::Confirmed) !== ($value->effectId !== null))) {
             return ForwardResult::unknown('shipment-booking-unknown');
         }
@@ -57,7 +59,7 @@ final readonly class ShipmentOperation implements ScopedOperation
         if ($booking->admissionClosed && $booking->effectId === null
             && in_array($booking->status, [Status::NotExecuted, Status::Refused], true)) {
             return $deduction === null || $this->absent($deduction)
-                ? Resolution::verified(['provider-fenced:' . $descriptor->booking->identity->key()], true)
+                ? Resolution::verified(['provider-fenced:' . $descriptor->booking->identity->key()])
                 : Resolution::unknown('shipment-inventory-without-booking');
         }
         if ($booking->status !== Status::Confirmed || $booking->effectId === null) {
@@ -79,7 +81,7 @@ final readonly class ShipmentOperation implements ScopedOperation
             }
             // The provider serializes actual handover against this cancellation's admission.
             $cancel = $this->provider->attempt($descriptor->cancel);
-            return $this->settled($cancel) ? Resolution::verified([$booking->effectId, $cancel->effectId], true)
+            return $this->settled($cancel) ? Resolution::verified([$booking->effectId, $cancel->effectId])
                 : Resolution::unknown('shipment-cancellation-' . $cancel->status->value);
         }
         return $this->settleReturn($descriptor, $booking, $deduction);
@@ -116,7 +118,7 @@ final readonly class ShipmentOperation implements ScopedOperation
             return Resolution::verified([$booking->effectId, $return->effectId,
                 'provider-fenced:' . $descriptor->deduction->identity->key(),
                 'original-receipt:' . $snapshot['events']['received']['id'],
-                'original-inspection:' . $snapshot['events']['inspected']['id']], true);
+                'original-inspection:' . $snapshot['events']['inspected']['id']]);
         }
         if ($deduction !== null && ! $this->settled($deduction)) {
             return Resolution::unknown('shipment-deduction-evidence-unsettled');
@@ -141,7 +143,7 @@ final readonly class ShipmentOperation implements ScopedOperation
         if ($deduction !== null) {
             $evidence[] = $deduction->effectId;
         }
-        return Resolution::verified($evidence, true);
+        return Resolution::verified($evidence);
     }
 
     private function settled(Observation $value): bool

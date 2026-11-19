@@ -66,7 +66,7 @@ final readonly class StockOperation implements ScopedOperation
         return Resolution::verified([
             ...$resolution->evidence,
             'warehouse-release:' . $original->identity->key() . ':' . $receipt['revision'],
-        ], true);
+        ]);
     }
 
     /**

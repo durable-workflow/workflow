@@ -49,7 +49,7 @@ final readonly class ReservedChildResolution
             $principal = $this->repository->primaryRequest($parent)['principal'];
             $outcome = $this->reservations->close($reservation, $principal);
             if ($outcome instanceof NeverAdmittedChild) {
-                return Resolution::verified(['native-child-never-admitted:' . $outcome->closureId], true);
+                return Resolution::verified(['native-child-never-admitted:' . $outcome->closureId]);
             }
             PortableDescriptor::identifier(
                 $this->authorization->assertAllowed($participation->child, $principal, 'compensate'),
@@ -69,7 +69,7 @@ final readonly class ReservedChildResolution
                 $snapshot = $this->repository->inspect($participation->child);
             }
             return $snapshot['original_run_id'] === $outcome->admission->childRunId && $snapshot['status'] === 'verified'
-                ? Resolution::verified(['scope-verified:' . $participation->child->id()], true)
+                ? Resolution::verified(['scope-verified:' . $participation->child->id()])
                 : Resolution::unknown('reserved-child-unresolved');
         } catch (Throwable) {
             return Resolution::unknown('reserved-child-unresolved');
