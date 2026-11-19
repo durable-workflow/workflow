@@ -1,0 +1,128 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "transit-recorded-wake-bound-ends-replacement-unresolved",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestTransitSettlementReplayWorkflow",
+    "arguments": [
+      true,
+      2
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 2,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 1,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 3,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 2,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-2"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 4,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-2",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-2",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 5,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 2,
+        "signal_id": "hint-2",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-2",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 6,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 3,
+        "activity_type": "example.provider.incident.boundary.v1",
+        "result": "wwHioz3/VYAiNw4IDGFjdGlvbgoId2FpdBRoYW5kZWRPdmVyAgESZGVsaXZlcmVkAgAMZmFpbGVkDAAA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 7,
+      "event_type": "SignalWaitOpened",
+      "payload": {
+        "sequence": 4,
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-4"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 8,
+      "event_type": "SignalReceived",
+      "payload": {
+        "signal_id": "hint-4",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-4",
+        "arguments": "wwHioz3/VYAiNwwA",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    },
+    {
+      "sequence": 9,
+      "event_type": "SignalApplied",
+      "payload": {
+        "sequence": 4,
+        "signal_id": "hint-4",
+        "signal_name": "incident-milestone",
+        "signal_wait_id": "incident-wait-4",
+        "value": "wwHioz3/VYAiNwA="
+      },
+      "recorded_at": "2026-11-19T12:00:00+00:00"
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "action": "unresolved"
+    },
+    "commands": [
+      {
+        "type": "complete_workflow",
+        "result": "wwHioz3/VYAiNw4CDGFjdGlvbgoUdW5yZXNvbHZlZAA=",
+        "payload_codec": "avro"
+      }
+    ]
+  }
+}

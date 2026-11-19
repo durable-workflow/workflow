@@ -113,6 +113,7 @@ final class V2TransitIncidentProcessLossTest extends TestCase
             'key' => $this->terms->subjectKey(),
             'unitAmounts' => $this->unitAmounts(),
             'policy' => $this->transitPolicy(),
+            'wakes' => $this->transitWakes(),
             'provider' => $this->providerPath,
         ];
         return $commands;

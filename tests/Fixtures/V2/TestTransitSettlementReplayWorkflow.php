@@ -15,14 +15,14 @@ require_once $examples . '/provider-state-machines/IncidentWait.php';
 
 /**
  * Replays the provider example's explicit incident remedy decision wait and the bounded replacement delivery
- * wait that ends as unresolved instead of failing.
+ * wait; both end explicitly instead of failing once the recorded wake bound is exhausted.
  */
 #[Type('test-transit-settlement-replay-workflow')]
 #[Signal('incident-milestone')]
 final class TestTransitSettlementReplayWorkflow extends Workflow
 {
-    public function handle(bool $delivery): array
+    public function handle(bool $delivery, int $wakes = IncidentWait::WAKES): array
     {
-        return $delivery ? IncidentWait::delivery() : IncidentWait::settlement();
+        return $delivery ? IncidentWait::delivery($wakes) : IncidentWait::settlement($wakes);
     }
 }
