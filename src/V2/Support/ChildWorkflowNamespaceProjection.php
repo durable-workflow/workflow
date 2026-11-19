@@ -118,11 +118,22 @@ final class ChildWorkflowNamespaceProjection
         $runModel = ConfiguredV2Models::resolve('run_model', WorkflowRun::class);
 
         if ($parentRunId !== null) {
-            $namespace = $runModel::query()
-                ->whereKey($parentRunId)
-                ->value('namespace');
+            // Every child of a fan-out binds to the same parent. On PostgreSQL
+            // each read of the parent row, which the open task updates once
+            // per child, checks every version that task wrote (#1203).
+            $namespace = TaskScopeMemo::remember(
+                'child-namespace-parent-run:' . $parentRunId,
+                static function () use ($runModel, $parentRunId): ?string {
+                    $namespace = $runModel::query()
+                        ->whereKey($parentRunId)
+                        ->value('namespace');
 
-            if (is_string($namespace) && $namespace !== '') {
+                    // An empty string remembers "no run namespace" too.
+                    return is_string($namespace) ? $namespace : '';
+                },
+            );
+
+            if ($namespace !== '') {
                 return $namespace;
             }
         }

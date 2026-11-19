@@ -28,6 +28,7 @@ use Workflow\V2\Support\TaskBackendCapabilities;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskOutcomeCarrier;
+use Workflow\V2\Support\TaskScopeMemo;
 use Workflow\V2\Support\TaskTraceTimings;
 use Workflow\V2\Support\TraceCarrier;
 use Workflow\V2\Support\WorkerCompatibilityFleet;
@@ -57,8 +58,11 @@ final class RunWorkflowTask implements ShouldQueue
     public function handle(WorkflowExecutor $executor): void
     {
         // A fan-out publishes one task per member after commit. Refresh each
-        // affected run summary once for the whole task (#1231).
-        TaskDispatcher::coalescingRunSummaries(fn () => $this->handleTask($executor));
+        // affected run summary once for the whole task, and repeat a member's
+        // immutable lookups at most once per task (#1203, #1231).
+        TaskScopeMemo::scope(
+            fn () => TaskDispatcher::coalescingRunSummaries(fn () => $this->handleTask($executor)),
+        );
     }
 
     private function handleTask(WorkflowExecutor $executor): void
