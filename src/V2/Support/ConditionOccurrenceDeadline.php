@@ -104,7 +104,10 @@ final class ConditionOccurrenceDeadline
             if ($wait['deadline_policy'] !== 'occurrence'
                 || $wait['condition_wait_timeout_budget_seconds'] !== $budget
                 || $wait['condition_key'] !== ($command['condition_key'] ?? null)
-                || $wait['condition_definition_fingerprint'] !== ($command['condition_definition_fingerprint'] ?? null)) {
+                || ! self::sameDefinition(
+                    $wait['condition_definition_fingerprint'],
+                    $command['condition_definition_fingerprint'] ?? null,
+                )) {
                 throw new ConditionOccurrenceDeadlineConflict('condition_wait_occurrence_mismatch');
             }
             if ($wait['timeout_fired_at'] !== null) {
@@ -129,5 +132,19 @@ final class ConditionOccurrenceDeadline
             'deadline_at' => $first['deadline_at'],
             'keep_open' => $keepOpen,
         ];
+    }
+
+    /**
+     * A reopen must name its chain's definition in the chain's own fingerprint
+     * version. Fingerprints of different versions come from different
+     * algorithms and cannot be compared without the predicate source, which
+     * this check does not have, so a chain that mixes versions is refused.
+     * Workers fingerprint every condition of a run with one version, so a
+     * mixed chain means the worker changed versions mid-run.
+     */
+    private static function sameDefinition(?string $recorded, mixed $current): bool
+    {
+        return ($current === null || is_string($current))
+            && SourceFingerprint::sameDefinition($recorded, $current) === true;
     }
 }

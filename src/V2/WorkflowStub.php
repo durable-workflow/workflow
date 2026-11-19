@@ -82,6 +82,7 @@ use Workflow\V2\Support\ServiceCallCancellationOrigin;
 use Workflow\V2\Support\ServiceCallEffectIdentity;
 use Workflow\V2\Support\ServiceOperationCancellation;
 use Workflow\V2\Support\SignalWaits;
+use Workflow\V2\Support\SourceFingerprint;
 use Workflow\V2\Support\SqliteSavepointRelease;
 use Workflow\V2\Support\SqliteTransaction;
 use Workflow\V2\Support\StructuralLimits;
@@ -2266,7 +2267,6 @@ final class WorkflowStub
     }
 
     /**
-     * @param array<string, mixed> $commandContract
      * @param array{
      *     memo: array|null,
      *     search_attributes: array|null,
@@ -2276,6 +2276,21 @@ final class WorkflowStub
      *     run_deadline_at: CarbonInterface|null
      * } $startMetadata
      */
+    /**
+     * A compensation recovery run records the definition version its admission
+     * receipt bound, which stays version 1 like other compensation descriptors.
+     * Other starts record the configured version.
+     *
+     * @param array<string, mixed> $startMetadata
+     */
+    private static function recoveryDefinitionFingerprintVersion(array $startMetadata): ?int
+    {
+        $receipt = $startMetadata['compensation_recovery'] ?? null;
+        $definition = is_array($receipt) ? ($receipt['intent']['binding']['definition'] ?? null) : null;
+
+        return is_string($definition) ? SourceFingerprint::versionOf($definition) : null;
+    }
+
     private function recordWorkflowStartedHistory(
         WorkflowInstance $instance,
         WorkflowRun $run,
@@ -2312,7 +2327,10 @@ final class WorkflowStub
             ...(isset($startMetadata[TimeoutCleanup::STARTED_KEY]) ? [
                 TimeoutCleanup::STARTED_KEY => $startMetadata[TimeoutCleanup::STARTED_KEY],
             ] : []),
-            'workflow_definition_fingerprint' => WorkflowDefinition::fingerprint($workflowClass),
+            'workflow_definition_fingerprint' => WorkflowDefinition::fingerprint(
+                $workflowClass,
+                self::recoveryDefinitionFingerprintVersion($startMetadata),
+            ),
             'declared_queries' => $commandContract['queries'],
             'declared_query_contracts' => $commandContract['query_contracts'],
             'declared_signals' => $commandContract['signals'],

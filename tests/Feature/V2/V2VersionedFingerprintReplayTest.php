@@ -24,9 +24,10 @@ use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\WorkflowStub;
 
 /**
- * Mixed fleets during the move to versioned fingerprints (#1227): runs that
- * recorded version 1 keep their exact version 1 comparisons on the new code,
- * and new runs record version 2.
+ * Mixed fleets during the move to versioned fingerprints (#1227): new runs
+ * record version 1 unless version 2 is configured, every run keeps the
+ * version it recorded, and runs that recorded version 1 keep their exact
+ * version 1 comparisons on the new code.
  */
 final class V2VersionedFingerprintReplayTest extends TestCase
 {
@@ -39,12 +40,32 @@ final class V2VersionedFingerprintReplayTest extends TestCase
         Queue::fake();
     }
 
-    public function testNewRunsRecordVersionTwoAndKeepIt(): void
+    public function testNewRunsRecordVersionOneByDefault(): void
     {
+        $workflow = $this->waitingRun('versioned-fingerprint-default');
+
+        // What a worker before versioned fingerprints records and compares.
+        $this->assertSame(
+            WorkflowDefinition::fingerprint(TestCommentOnlyFingerprintWorkflow::class, SourceFingerprint::V1),
+            $this->started($workflow)['workflow_definition_fingerprint'] ?? null,
+        );
+        $this->assertSame(
+            [ConditionWaitDefinition::fingerprint($this->condition($workflow), SourceFingerprint::V1)],
+            $this->conditionFingerprints($workflow),
+        );
+
+        $this->assertTrue($workflow->attemptUpdate('approve', true)->completed());
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertTrue($workflow->output()['patched']);
+    }
+
+    public function testOptedInRunsRecordVersionTwoAndKeepItAfterSwitchingBack(): void
+    {
+        $this->recordVersion('v2');
         $workflow = $this->waitingRun('versioned-fingerprint-new');
 
         $this->assertSame(
-            WorkflowDefinition::fingerprint(TestCommentOnlyFingerprintWorkflow::class),
+            WorkflowDefinition::fingerprint(TestCommentOnlyFingerprintWorkflow::class, SourceFingerprint::V2),
             $this->started($workflow)['workflow_definition_fingerprint'] ?? null,
         );
         $this->assertStringStartsWith(
@@ -56,6 +77,8 @@ final class V2VersionedFingerprintReplayTest extends TestCase
             $this->conditionFingerprints($workflow)[0],
         );
 
+        // Switching back to v1 only changes what new runs record.
+        $this->recordVersion('v1');
         $this->assertTrue($workflow->attemptUpdate('approve', true)->completed());
 
         $this->assertTrue($workflow->refresh()->completed());
@@ -68,6 +91,10 @@ final class V2VersionedFingerprintReplayTest extends TestCase
             $this->conditionFingerprints($workflow)[0],
             $this->conditionFingerprints($workflow)[0],
         ], $this->conditionFingerprints($workflow));
+        $this->assertStringStartsWith(
+            SourceFingerprint::V2_PREFIX,
+            (string) $this->conditionFingerprints($workflow)[1]
+        );
 
         $detail = RunDetailView::forRun(WorkflowRun::query()->findOrFail($workflow->runId()));
         $this->assertTrue($detail['workflow_definition_matches_current']);
@@ -149,6 +176,7 @@ final class V2VersionedFingerprintReplayTest extends TestCase
 
     public function testVersionTwoRunRejectsARealConditionChange(): void
     {
+        $this->recordVersion('v2');
         $workflow = $this->waitingRun('versioned-fingerprint-v2-condition-drift');
         $opened = $this->conditionEvents($workflow)[0];
         $payload = $opened->payload;
@@ -165,6 +193,12 @@ final class V2VersionedFingerprintReplayTest extends TestCase
 
         $workflow->refresh()
             ->currentState();
+    }
+
+    private function recordVersion(string $version): void
+    {
+        config()
+            ->set(SourceFingerprint::CONFIG_KEY, $version);
     }
 
     private function waitingRun(string $instanceId): WorkflowStub

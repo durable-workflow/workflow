@@ -1486,12 +1486,12 @@ final class WorkflowFiberRunner
     /**
      * A replayed run keeps the fingerprint algorithm of its recorded workflow
      * fingerprint (version 1 when it recorded none); a run with no history
-     * yet is new and uses the current version.
+     * yet is new and uses the version new runs record.
      */
     private function definitionFingerprintVersion(): int
     {
         if (! $this->hasReplayHistory) {
-            return SourceFingerprint::CURRENT;
+            return SourceFingerprint::recordingVersion();
         }
 
         return SourceFingerprint::versionOf(

@@ -42,7 +42,8 @@ final class WorkflowDefinitionFingerprint
     /**
      * The current definition's fingerprint, computed with the algorithm of
      * the run's recorded fingerprint so the two are comparable. A run with no
-     * recorded fingerprint gets the version new runs record.
+     * recorded fingerprint compares by version 1, as {@see versionForRun()}
+     * says.
      */
     public static function currentForRun(WorkflowRun $run): ?string
     {
@@ -136,10 +137,7 @@ final class WorkflowDefinitionFingerprint
             return null;
         }
 
-        return WorkflowDefinition::fingerprint(
-            $workflowClass,
-            $recorded === null ? SourceFingerprint::CURRENT : SourceFingerprint::versionOf($recorded),
-        );
+        return WorkflowDefinition::fingerprint($workflowClass, SourceFingerprint::versionOf($recorded));
     }
 
     private static function pinningEnabled(): bool

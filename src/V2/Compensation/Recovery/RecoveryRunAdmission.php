@@ -20,6 +20,7 @@ use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\SourceFingerprint;
 use Workflow\V2\Support\TaskSchedulingFields;
 use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\Support\WorkerCompatibility;
@@ -76,7 +77,9 @@ final readonly class RecoveryRunAdmission
         if (! $origin instanceof WorkflowRun || $origin->namespace !== $instance->namespace || ! $origin->status->isTerminal()) {
             throw new LogicException('Recovery admission requires a terminal original run in the exact namespace.');
         }
-        $definition = WorkflowDefinition::fingerprint($workflowClass);
+        // Admission receipts are immutable descriptors; like reservation
+        // descriptors they bind the version 1 definition fingerprint.
+        $definition = WorkflowDefinition::fingerprint($workflowClass, SourceFingerprint::V1);
         if ($definition === null) {
             throw new LogicException('Recovery admission requires a registered definition fingerprint.');
         }

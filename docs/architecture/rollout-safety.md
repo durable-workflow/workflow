@@ -277,18 +277,28 @@ Guarantees:
   MUST refuse a claim whose worker fingerprint does not match the
   run's `workflow_definition_fingerprint` when
   `DW_V2_PIN_TO_RECORDED_FINGERPRINT=1`.
-- Definition fingerprints are versioned by their prefix. New runs
-  record version 2 (`sha256-tokens:`) for the workflow definition
-  and for every `await()` condition: a hash of the PHP code tokens of
-  the workflow class, its traits and parent workflow classes, or of the
-  condition's lines, without comments and whitespace. Editing only
-  comments, docblocks or formatting in those places therefore no longer
-  changes how in-flight version 2 runs replay. A run recorded with
-  version 1 (`sha256:`, raw source lines) or with no fingerprint keeps
-  being compared by version 1 exactly as before, including the
-  condition waits it opens later, so for those runs a comment edit
-  still counts as a definition change. `Workflow\V2\Support\SourceFingerprint`
-  defines both versions.
+- Definition fingerprints are versioned by their prefix, and
+  `Workflow\V2\Support\SourceFingerprint` defines both versions.
+  Version 1 (`sha256:`) hashes the raw source lines of the workflow
+  class, its traits and parent workflow classes, or of an `await()`
+  condition. Version 2 (`sha256-tokens:`) hashes their PHP code tokens
+  without comments and whitespace, so comment, docblock and formatting
+  edits do not change it.
+  - Every worker on this release or later compares a recorded value by
+    the version its prefix names, so a run keeps its version, including
+    for condition waits it opens later. A value with no recognised prefix
+    compares by version 1.
+  - `workflows.definition_fingerprint_version`
+    (`DW_DEFINITION_FINGERPRINT_VERSION`, `v1` or `v2`, default `v1`)
+    chooses what new runs record. An older worker compares only version
+    1, so it treats a version 2 run as changed and takes the legacy
+    default for a missing version marker, while a newer worker takes the
+    current branch. That is non-deterministic replay. Set `v2` only after
+    every worker that can claim those runs is on this release or later.
+    Setting `v1` again is safe. Rolling a worker back below this release
+    requires draining version 2 runs first.
+  - Compensation reservation descriptors and recovery admission receipts
+    always record version 1, so comment edits still invalidate them.
 - Worker-contract admission is a fleet property, not a per-request
   property. A single worker advertising a new marker cannot change
   the fleet-wide required marker; the required marker is still
@@ -816,6 +826,7 @@ change only in a major version bump.
 | `DW_V2_COMPATIBILITY_NAMESPACE` | Isolated compatibility namespace for multi-tenant deployments. |
 | `DW_V2_COMPATIBILITY_HEARTBEAT_TTL` | TTL for compatibility heartbeat entries; controls how long a missing worker counts as live. |
 | `DW_V2_PIN_TO_RECORDED_FINGERPRINT` | Pin runs to the workflow definition fingerprint recorded at start; forces matching-role refusal on fingerprint drift. |
+| `DW_DEFINITION_FINGERPRINT_VERSION` | Definition fingerprint version new runs record: `v1` (default) or `v2`. Set `v2` only after every worker is on a release that compares both. |
 | `DW_V2_GUARDRAILS_BOOT` | Boot-time workflow determinism guardrail mode (`silent`, `warn`, `throw`). |
 | `DW_V2_MULTI_NODE` | Declares multi-node intent; enables cache validation gates and cross-node compatibility signal collection. |
 | `DW_V2_VALIDATE_CACHE_BACKEND` | Enables the Phase 5 cache validation gate at boot. |

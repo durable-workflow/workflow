@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use InvalidArgumentException;
 use PhpToken;
 use Throwable;
 
@@ -19,6 +20,11 @@ use Throwable;
  *
  * The prefix is the version marker: a recorded value names the algorithm that
  * produced it, and comparison recomputes the current value with that algorithm.
+ * Every release that has this class compares both versions. Which version new
+ * runs record is `workflows.definition_fingerprint_version`
+ * (`DW_DEFINITION_FINGERPRINT_VERSION`), `v1` by default: a worker from an
+ * older release compares only version 1, so a fleet switches to `v2` only once
+ * every worker runs a release that understands it.
  *
  * @internal
  */
@@ -28,10 +34,7 @@ final class SourceFingerprint
 
     public const V2 = 2;
 
-    /**
-     * The version recorded for new runs.
-     */
-    public const CURRENT = self::V2;
+    public const CONFIG_KEY = 'workflows.definition_fingerprint_version';
 
     public const V1_PREFIX = 'sha256:';
 
@@ -66,11 +69,47 @@ final class SourceFingerprint
     }
 
     /**
-     * Whether a value is a well-formed version 1 or version 2 fingerprint.
+     * The version new runs record, from `workflows.definition_fingerprint_version`
+     * (`v1` or `v2`; `v1` when unset). Anything else is a configuration error.
      */
-    public static function isWellFormed(string $fingerprint): bool
+    public static function recordingVersion(): int
     {
-        return preg_match('/\A(?:sha256|sha256-tokens):[0-9a-f]{64}\z/D', $fingerprint) === 1;
+        $configured = self::configuredVersion();
+
+        if ($configured === null) {
+            return self::V1;
+        }
+
+        $normalized = is_string($configured) ? strtolower(trim($configured)) : $configured;
+
+        return match ($normalized) {
+            '', 'v1' => self::V1,
+            'v2' => self::V2,
+            default => throw new InvalidArgumentException(sprintf(
+                'Unsupported %s [%s]; use "v1" or "v2".',
+                self::CONFIG_KEY,
+                is_scalar($configured) ? (string) $configured : get_debug_type($configured),
+            )),
+        };
+    }
+
+    /**
+     * Whether two recorded fingerprints name the same definition, judged from
+     * the values alone. Values of the same version compare exactly. Values of
+     * different versions were produced by different algorithms and cannot be
+     * compared without the source, so the answer is null and callers decide.
+     */
+    public static function sameDefinition(?string $recorded, ?string $current): ?bool
+    {
+        if ($recorded === $current) {
+            return true;
+        }
+
+        if ($recorded === null || $current === null || self::versionOf($recorded) === self::versionOf($current)) {
+            return false;
+        }
+
+        return null;
     }
 
     /**
@@ -115,6 +154,19 @@ final class SourceFingerprint
         }
 
         return $framed === '' ? null : $framed;
+    }
+
+    private static function configuredVersion(): mixed
+    {
+        if (! function_exists('config')) {
+            return null;
+        }
+
+        try {
+            return config(self::CONFIG_KEY);
+        } catch (Throwable) {
+            return null;
+        }
     }
 
     /**

@@ -318,19 +318,20 @@ final class WorkflowDefinition
     /**
      * The definition fingerprint of a workflow class.
      *
-     * New runs record {@see SourceFingerprint::CURRENT}. Pass the version of a
+     * Without a version this is the version new runs record
+     * ({@see SourceFingerprint::recordingVersion()}). Pass the version of a
      * recorded fingerprint to recompute the current class with the same
      * algorithm, or use {@see matchesFingerprint()}.
      *
      * @param class-string $class
      */
-    public static function fingerprint(string $class, int $version = SourceFingerprint::CURRENT): ?string
+    public static function fingerprint(string $class, ?int $version = null): ?string
     {
         if (! self::isWorkflowClass($class)) {
             return null;
         }
 
-        $version = SourceFingerprint::normalizeVersion($version);
+        $version = SourceFingerprint::normalizeVersion($version ?? SourceFingerprint::recordingVersion());
 
         if (! array_key_exists($class, self::$fingerprints)) {
             $sources = [];

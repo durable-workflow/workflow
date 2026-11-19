@@ -103,7 +103,7 @@ final class WorkflowFiberContext
             return self::$definitionFingerprintVersions[spl_object_id($fiber)];
         }
 
-        return SourceFingerprint::CURRENT;
+        return SourceFingerprint::recordingVersion();
     }
 
     public static function active(): bool

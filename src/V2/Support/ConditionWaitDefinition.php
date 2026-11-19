@@ -13,11 +13,12 @@ final class ConditionWaitDefinition
     /**
      * The condition's definition fingerprint. Version 1 hashes the closure's
      * raw source lines; version 2 hashes their code tokens without comments
-     * and whitespace (see {@see SourceFingerprint}).
+     * and whitespace (see {@see SourceFingerprint}). Without a version this is
+     * the version new runs record.
      */
-    public static function fingerprint(Closure $condition, int $version = SourceFingerprint::CURRENT): ?string
+    public static function fingerprint(Closure $condition, ?int $version = null): ?string
     {
-        $version = SourceFingerprint::normalizeVersion($version);
+        $version = SourceFingerprint::normalizeVersion($version ?? SourceFingerprint::recordingVersion());
         $source = $version === SourceFingerprint::V2
             ? self::codeTokens($condition)
             : self::source($condition);

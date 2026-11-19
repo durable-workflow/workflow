@@ -53,6 +53,10 @@ final class CompiledWorkflowDefinition
         }
 
         $type = self::nonEmptyString($workflowType) ?? TypeRegistry::for($workflowClass);
+        // The configured recording version: `sha256:` by default. Under v2 the
+        // value (and the default definition_version) is `sha256-tokens:`, so a
+        // comment-only edit compiles to the same version, and switching the
+        // setting gives the same code a new version string.
         $sourceFingerprint = WorkflowDefinition::fingerprint($workflowClass);
 
         if ($sourceFingerprint === null) {

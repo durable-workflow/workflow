@@ -159,14 +159,10 @@ PHP;
     public function testVersionsAreNamedByTheirPrefix(): void
     {
         $v1 = WorkflowDefinition::fingerprint(TestCommandTargetWorkflow::class, SourceFingerprint::V1);
-        $v2 = WorkflowDefinition::fingerprint(TestCommandTargetWorkflow::class);
+        $v2 = WorkflowDefinition::fingerprint(TestCommandTargetWorkflow::class, SourceFingerprint::V2);
 
         $this->assertMatchesRegularExpression('/\Asha256:[0-9a-f]{64}\z/', (string) $v1);
         $this->assertMatchesRegularExpression('/\Asha256-tokens:[0-9a-f]{64}\z/', (string) $v2);
-        $this->assertSame(
-            $v2,
-            WorkflowDefinition::fingerprint(TestCommandTargetWorkflow::class, SourceFingerprint::V2)
-        );
         $this->assertSame(SourceFingerprint::V1, SourceFingerprint::versionOf($v1));
         $this->assertSame(SourceFingerprint::V2, SourceFingerprint::versionOf($v2));
 
@@ -174,6 +170,92 @@ PHP;
         foreach ([null, '', 'opaque-worker-fingerprint', 'tokens:abc'] as $value) {
             $this->assertSame(SourceFingerprint::V1, SourceFingerprint::versionOf($value));
         }
+    }
+
+    public function testNewRunsRecordTheConfiguredVersionAndVersionOneByDefault(): void
+    {
+        $class = TestCommentOnlyFingerprintWorkflow::class;
+        $ready = false;
+        $condition = static fn (): bool => $ready === true;
+
+        foreach ([
+            'unset' => [null, SourceFingerprint::V1],
+            'v1' => ['v1', SourceFingerprint::V1],
+            'v2' => ['v2', SourceFingerprint::V2],
+            'spaced upper case' => [' V2 ', SourceFingerprint::V2],
+        ] as $case => [$configured, $version]) {
+            config([
+                SourceFingerprint::CONFIG_KEY => $configured,
+            ]);
+
+            $this->assertSame($version, SourceFingerprint::recordingVersion(), $case);
+            $this->assertSame(
+                WorkflowDefinition::fingerprint($class, $version),
+                WorkflowDefinition::fingerprint($class),
+                $case,
+            );
+            $this->assertSame(
+                ConditionWaitDefinition::fingerprint($condition, $version),
+                ConditionWaitDefinition::fingerprint($condition),
+                $case,
+            );
+        }
+
+        foreach (['v3', '2', true] as $invalid) {
+            config([
+                SourceFingerprint::CONFIG_KEY => $invalid,
+            ]);
+
+            try {
+                SourceFingerprint::recordingVersion();
+                $this->fail('An unsupported fingerprint version must be refused.');
+            } catch (\InvalidArgumentException $exception) {
+                $this->assertStringContainsString(SourceFingerprint::CONFIG_KEY, $exception->getMessage());
+            }
+        }
+    }
+
+    public function testAnOlderWorkerOnlyAgreesWithVersionOneRecordings(): void
+    {
+        $class = TestCommentOnlyFingerprintWorkflow::class;
+        // A worker from before versioned fingerprints computes only version 1
+        // and compares it with hash_equals. That is why recording version 2
+        // waits until every worker is on a release that compares both.
+        $olderWorkerMatches = static fn (string $recorded): bool => hash_equals(
+            (string) WorkflowDefinition::fingerprint($class, SourceFingerprint::V1),
+            $recorded,
+        );
+
+        config([
+            SourceFingerprint::CONFIG_KEY => null,
+        ]);
+        $this->assertTrue($olderWorkerMatches((string) WorkflowDefinition::fingerprint($class)));
+
+        config([
+            SourceFingerprint::CONFIG_KEY => 'v2',
+        ]);
+        $recordedV2 = (string) WorkflowDefinition::fingerprint($class);
+        $this->assertFalse($olderWorkerMatches($recordedV2));
+
+        // Workers on this release agree with it, also after the setting
+        // returns to v1.
+        config([
+            SourceFingerprint::CONFIG_KEY => 'v1',
+        ]);
+        $this->assertTrue(WorkflowDefinition::matchesFingerprint($class, $recordedV2));
+    }
+
+    public function testSameDefinitionOnlyComparesWithinOneVersion(): void
+    {
+        $v1 = 'sha256:' . str_repeat('a', 64);
+        $v2 = 'sha256-tokens:' . str_repeat('b', 64);
+
+        $this->assertTrue(SourceFingerprint::sameDefinition($v1, $v1));
+        $this->assertTrue(SourceFingerprint::sameDefinition(null, null));
+        $this->assertFalse(SourceFingerprint::sameDefinition($v1, 'sha256:' . str_repeat('c', 64)));
+        $this->assertFalse(SourceFingerprint::sameDefinition($v2, null));
+        $this->assertNull(SourceFingerprint::sameDefinition($v1, $v2));
+        $this->assertNull(SourceFingerprint::sameDefinition($v2, $v1));
     }
 
     public function testVersionOneIsTheUnchangedRawLineAlgorithm(): void
@@ -202,7 +284,7 @@ PHP;
     {
         $class = TestCommentOnlyFingerprintWorkflow::class;
         $v1 = (string) WorkflowDefinition::fingerprint($class, SourceFingerprint::V1);
-        $v2 = (string) WorkflowDefinition::fingerprint($class);
+        $v2 = (string) WorkflowDefinition::fingerprint($class, SourceFingerprint::V2);
         $earlierV1 = 'sha256:' . hash('sha256', 'a build of this class with other comments');
 
         $this->assertTrue(WorkflowDefinition::matchesFingerprint($class, $v1));
@@ -216,7 +298,8 @@ PHP;
             'v1' => [$v1, $v1, true, SourceFingerprint::V1],
             'v2' => [$v2, $v2, true, SourceFingerprint::V2],
             'earlier v1' => [$earlierV1, $v1, false, SourceFingerprint::V1],
-            'none' => [null, $v2, null, SourceFingerprint::V1],
+            // No recorded fingerprint: compared, and reported, by version 1.
+            'none' => [null, $v1, null, SourceFingerprint::V1],
         ] as $case => [$recorded, $current, $matches, $version]) {
             $run = $this->runWithRecordedFingerprint($class, $recorded);
 
@@ -233,7 +316,7 @@ PHP;
         $ready = false;
         $condition = static fn (): bool => $ready === true;
         $v1 = (string) ConditionWaitDefinition::fingerprint($condition, SourceFingerprint::V1);
-        $v2 = (string) ConditionWaitDefinition::fingerprint($condition);
+        $v2 = (string) ConditionWaitDefinition::fingerprint($condition, SourceFingerprint::V2);
         $earlierV1 = 'sha256:' . hash('sha256', 'static fn (): bool => $ready === true; // other comment');
 
         $this->assertStringStartsWith('sha256:', $v1);
