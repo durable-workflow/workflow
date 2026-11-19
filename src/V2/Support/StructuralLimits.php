@@ -392,14 +392,19 @@ final class StructuralLimits
             return;
         }
 
-        $count = WorkflowTimer::query()
-            ->where('workflow_run_id', $run->id)
-            ->where('status', TimerStatus::Pending->value)
-            ->count();
+        $count = self::pendingTimerCount($run);
 
         if ($count >= $limit) {
             throw StructuralLimitExceededException::pendingTimerCount($count, $limit);
         }
+    }
+
+    public static function pendingTimerCount(WorkflowRun $run): int
+    {
+        return WorkflowTimer::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('status', TimerStatus::Pending->value)
+            ->count();
     }
 
     public static function guardPendingSignals(WorkflowRun $run): void

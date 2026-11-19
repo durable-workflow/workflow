@@ -25,15 +25,25 @@ use Workflow\WorkflowMetadata;
  * Admission covers activities and children. It never refuses a group the
  * per-member guards admit: it checks only members the dispatch would newly
  * schedule, and stops at a reserved child, whose own dispatch refuses it.
- * Timers are not admitted. A pending-timer refusal escapes the workflow task,
- * whose transaction rolls back every member already written, and leaves the
- * task failed and recoverable, as a sequential timer's does.
+ *
+ * Timers are never refused here. A pending-timer refusal escapes the workflow
+ * task, whose transaction rolls back every member already written, and leaves
+ * the task failed and recoverable, as a sequential timer's does. So admission
+ * stops at a timer the pending-timer limit may refuse and leaves it, and every
+ * member after it, to their own dispatch: the timer refusal keeps precedence
+ * over any later member's refusal. A signal or condition wait with a timeout
+ * is counted as opening its timeout timer, which it does unless the wait is
+ * already satisfied, so admission stops whenever the timer could be refused.
  */
 final class ParallelGroupAdmission
 {
     private ?int $pendingActivities = null;
 
     private ?int $pendingChildren = null;
+
+    private ?int $pendingTimers = null;
+
+    private int $timersOpened = 0;
 
     public function __construct(
         private readonly WorkflowRun $run,
@@ -78,6 +88,30 @@ final class ParallelGroupAdmission
 
         [, $serialized] = self::childArguments($this->run, $metadata);
         $this->admitPayload($serialized);
+    }
+
+    /**
+     * Whether the pending-timer guard may refuse a timer dispatched now,
+     * counting every timer the members before it may open.
+     */
+    public function timerMayBeRefused(): bool
+    {
+        $limit = StructuralLimits::pendingTimerLimit();
+        if ($limit <= 0) {
+            return false;
+        }
+
+        $this->pendingTimers ??= StructuralLimits::pendingTimerCount($this->run);
+
+        return $this->pendingTimers + $this->timersOpened >= $limit;
+    }
+
+    /**
+     * A member that opens, or may open, a pending timer.
+     */
+    public function timerOpened(): void
+    {
+        ++$this->timersOpened;
     }
 
     /**

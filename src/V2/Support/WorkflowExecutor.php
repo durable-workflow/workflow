@@ -2151,9 +2151,9 @@ final class WorkflowExecutor
      * newly schedule, in dispatch order. A member with any recorded event or
      * row at its sequence is left to its own dispatch, so admission never
      * checks a member the dispatch would not schedule. A reserved child is
-     * refused by its own dispatch, so admission stops there. Timers are not
-     * admitted: a pending-timer refusal escapes the task and rolls it back,
-     * as a sequential timer's does.
+     * refused by its own dispatch, so admission stops there. Admission also
+     * stops at a timer the pending-timer limit may refuse, so that refusal
+     * escapes the task and rolls it back, as a sequential timer's does.
      */
     private function admitParallelGroup(WorkflowRun $run, int $sequence, array $descriptors): void
     {
@@ -2170,6 +2170,7 @@ final class WorkflowExecutor
             ->flip()
             ->all();
         $activityRows = $rowSequences($run->activityExecutions);
+        $timerRows = $rowSequences($run->timers);
 
         $admission = new ParallelGroupAdmission($run);
         foreach ($descriptors as $descriptor) {
@@ -2179,6 +2180,18 @@ final class WorkflowExecutor
             if ($call instanceof ActivityCall) {
                 if ($isNew && ! isset($activityRows[$itemSequence])) {
                     $admission->admitActivity($call);
+                }
+            } elseif ($call instanceof TimerCall) {
+                if ($isNew && $call->seconds !== 0 && ! isset($timerRows[$itemSequence])) {
+                    if ($admission->timerMayBeRefused()) {
+                        return;
+                    }
+                    $admission->timerOpened();
+                }
+            } elseif ($call instanceof AwaitWithTimeoutCall || $call instanceof SignalCall) {
+                $timeout = $call instanceof SignalCall ? $call->timeoutSeconds : $call->seconds;
+                if ($isNew && $timeout !== null && $timeout > 0 && ! isset($timerRows[$itemSequence])) {
+                    $admission->timerOpened();
                 }
             } elseif ($call instanceof ChildWorkflowCall) {
                 if ($call->reservation !== null) {

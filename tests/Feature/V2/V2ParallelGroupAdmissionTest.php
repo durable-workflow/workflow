@@ -81,29 +81,45 @@ final class V2ParallelGroupAdmissionTest extends TestCase
     }
 
     /**
-     * @return iterable<string, array{0: string}>
+     * @return iterable<string, array{0: string, 1: int, 2: int, 3: int}>
      */
     public static function timerRefusalGroups(): iterable
     {
-        // The fourth of eight timers; the eighth member of a mixed group,
-        // after an activity, a child, a signal wait and a condition wait.
-        yield 'timers' => ['timer'];
-        yield 'mixed' => ['mixed'];
+        // kind, members, pending-timer limit, index of an oversized activity.
+        // Timers: the fourth of eight is refused. Mixed: the timer at index
+        // 7 is refused after an activity, a child, a signal wait and a
+        // condition wait were written. Each shape also runs with a later
+        // oversized activity, and nested in inner groups of three.
+        yield 'timers' => ['timer', 8, 3, -1];
+        yield 'timers then oversized activity' => ['timer', 8, 3, 6];
+        yield 'mixed' => ['mixed', 30, 2, -1];
+        yield 'mixed then oversized activity' => ['mixed', 30, 2, 27];
+        yield 'nested timers then oversized activity' => ['nested-timer', 9, 3, 7];
+        yield 'nested mixed then oversized activity' => ['nested-mixed', 30, 2, 27];
     }
 
     #[DataProvider('timerRefusalGroups')]
-    public function testPendingTimerRefusalInsideTheGroupStillRollsTheTaskBack(string $kind): void
-    {
-        // Timers are not admitted. The pending-timer refusal escapes the
-        // task, as a sequential timer's does, and the task's transaction
-        // rolls back every member written before it; the task is left failed
-        // and recoverable, and the run open.
+    public function testPendingTimerRefusalInsideTheGroupIsUnchanged(
+        string $kind,
+        int $count,
+        int $timerLimit,
+        int $oversizedIndex,
+    ): void {
+        // A pending-timer refusal escapes the task, as a sequential timer's
+        // does, and the task's transaction rolls back every member written
+        // before it; the task is left failed and recoverable, and the run
+        // open. It keeps precedence over a later oversized member: admission
+        // stops at the timer and leaves the rest to their own dispatch.
         config([
-            'workflows.v2.structural_limits.pending_timer_count' => $kind === 'timer' ? 3 : 2,
+            'workflows.v2.structural_limits.pending_timer_count' => $timerLimit,
+            'workflows.v2.structural_limits.payload_size_bytes' => 4096,
         ]);
 
-        $stub = WorkflowStub::make(TestOversizedFanOutMemberWorkflow::class, "admission-timer-count-{$kind}");
-        $stub->start($kind === 'timer' ? 8 : 30, -1, 0, $kind);
+        $stub = WorkflowStub::make(
+            TestOversizedFanOutMemberWorkflow::class,
+            'admission-timer-count-' . md5($kind . $oversizedIndex),
+        );
+        $stub->start($count, $oversizedIndex, 8192, $kind);
         $task = $this->readyWorkflowTask($stub->runId());
 
         try {
@@ -126,17 +142,17 @@ final class V2ParallelGroupAdmissionTest extends TestCase
         $this->assertSame(0, WorkflowRun::query()->where('id', '!=', $run->id)->count());
     }
 
-    public function testLaterOversizedMemberTakesPrecedenceOverAnEarlierTimerRefusal(): void
+    public function testOversizedMemberAfterTimersWithinTheLimitWritesNoMember(): void
     {
-        // The member at index 7 would hit the pending-timer limit, which
-        // admission does not check; the activity at index 27 is over the
-        // payload limit, which it does. The group is refused for the payload.
+        // Every timer, condition timeout and signal wait before the oversized
+        // activity fits the pending-timer limit, so admission continues past
+        // them and refuses the group before its first write.
         config([
-            'workflows.v2.structural_limits.pending_timer_count' => 2,
+            'workflows.v2.structural_limits.pending_timer_count' => 10,
             'workflows.v2.structural_limits.payload_size_bytes' => 4096,
         ]);
 
-        $run = $this->runFirstTask('admission-precedence', 30, 27, 8192, 'mixed');
+        $run = $this->runFirstTask('admission-timers-within-limit', 30, 27, 8192, 'mixed');
 
         $this->assertRefusedBeforeFirstWrite($run, 'payload_size');
     }
