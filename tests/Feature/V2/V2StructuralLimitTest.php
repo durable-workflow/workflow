@@ -5,8 +5,12 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Queue;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\V2\TestAwaitWithTimeoutWorkflow;
 use Tests\Fixtures\V2\TestContinueAsNewLargePayloadWorkflow;
+use Tests\Fixtures\V2\TestFanOutPayloadActivityWorkflow;
+use Tests\Fixtures\V2\TestFanOutPayloadChildWorkflow;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestLargeMemoWorkflow;
 use Tests\Fixtures\V2\TestLargePayloadChildWorkflow;
@@ -25,14 +29,18 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\SignalStatus;
 use Workflow\V2\Enums\StructuralLimitKind;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\UpdateStatus;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
+use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSignal;
+use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\FailureFactory;
@@ -1088,5 +1096,48 @@ final class V2StructuralLimitTest extends TestCase
         $result = $workflow->submitUpdate('approve', true);
 
         $this->assertTrue($result->accepted(), 'Update should have been accepted with limit disabled.');
+    }
+
+    /**
+     * A fan-out wider than the pending-member limit fails at the same member
+     * with the same counted value, now that a workflow task keeps a running
+     * bound instead of recounting before every member (#1231, #1203).
+     *
+     * @return iterable<string, array{class-string, string}>
+     */
+    public static function pendingMemberLimits(): iterable
+    {
+        yield 'activities' => [TestFanOutPayloadActivityWorkflow::class, 'pending_activity_count'];
+        yield 'children' => [TestFanOutPayloadChildWorkflow::class, 'pending_child_count'];
+    }
+
+    /**
+     * @param class-string $workflowClass
+     */
+    #[DataProvider('pendingMemberLimits')]
+    public function testFanOutWiderThanPendingLimitFailsAtTheLimit(string $workflowClass, string $limitKind): void
+    {
+        Queue::fake();
+        config([
+            "workflows.v2.structural_limits.{$limitKind}" => 3,
+        ]);
+
+        $workflow = WorkflowStub::make($workflowClass, "pending-limit-{$limitKind}");
+        $workflow->start(5, 16);
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->firstOrFail();
+        $this->app->call([new RunWorkflowTask($task->id), 'handle']);
+
+        $this->assertTrue($workflow->refresh()->failed());
+        $failedEvent = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $workflow->runId())
+            ->where('event_type', HistoryEventType::WorkflowFailed->value)
+            ->firstOrFail();
+        $this->assertSame($limitKind, $failedEvent->payload['structural_limit_kind'] ?? null);
+        $this->assertSame(3, $failedEvent->payload['structural_limit_value'] ?? null);
+        $this->assertSame(3, $failedEvent->payload['structural_limit_configured'] ?? null);
     }
 }

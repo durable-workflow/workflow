@@ -46,6 +46,25 @@ final class TaskScopeMemo
     }
 
     /**
+     * The value remembered under $key in the active task scope, or null.
+     */
+    public static function get(string $key): mixed
+    {
+        return self::$values[$key] ?? null;
+    }
+
+    /**
+     * Remember $value under $key while a task scope is active.
+     */
+    public static function put(string $key, mixed $value): void
+    {
+        if (self::$values !== null
+            && (array_key_exists($key, self::$values) || count(self::$values) < self::MAX_VALUES)) {
+            self::$values[$key] = $value;
+        }
+    }
+
+    /**
      * Remember a non-null value for the active task scope.
      *
      * @template T
