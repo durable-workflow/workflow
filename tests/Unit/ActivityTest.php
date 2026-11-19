@@ -6,6 +6,9 @@ namespace Tests\Unit;
 
 use BadMethodCallException;
 use Exception;
+use Illuminate\Contracts\Queue\Job as JobContract;
+use Illuminate\Support\Facades\Cache;
+use Mockery;
 use Tests\Fixtures\TestExceptionActivity;
 use Tests\Fixtures\TestInvalidActivity;
 use Tests\Fixtures\TestNonRetryableExceptionActivity;
@@ -13,6 +16,7 @@ use Tests\Fixtures\TestNullableArgumentsActivity;
 use Tests\Fixtures\TestOtherActivity;
 use Tests\Fixtures\TestWorkflow;
 use Tests\TestCase;
+use Workflow\Activity;
 use Workflow\Exceptions\NonRetryableException;
 use Workflow\Models\StoredWorkflow;
 use Workflow\Serializers\Serializer;
@@ -120,6 +124,52 @@ final class ActivityTest extends TestCase
         $this->assertSame(WorkflowCreatedStatus::class, $workflow->status());
     }
 
+    public function testFailedJobMarksItsActivityBeforeReleasingIt(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $activity = new TestExceptionActivity(0, now()->toDateTimeString(), StoredWorkflow::findOrFail(
+            $workflow->id()
+        ));
+        $activity->setJob($this->queueJob('failed-job'));
+
+        try {
+            $activity->handle();
+            $this->fail('The activity should fail.');
+        } catch (Exception $exception) {
+            $this->assertSame('failed', $exception->getMessage());
+        }
+
+        $this->assertSame('failed-job', Cache::get(Activity::failureKey($workflow->id(), 0)));
+    }
+
+    public function testCopyDoesNotRunWhileAnotherJobsFailureIsUnrecorded(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        Cache::forever(Activity::failureKey($workflow->id(), 0), 'failed-job');
+        $activity = new TestExceptionActivity(0, now()->toDateTimeString(), StoredWorkflow::findOrFail(
+            $workflow->id()
+        ));
+        $activity->setJob($this->queueJob('copy-job'));
+
+        $this->assertNull($activity->handle());
+        $this->assertTrue($activity->awaitingRecordedFailure);
+        $this->assertSame(0, $workflow->exceptions()->count());
+        $this->assertSame('failed-job', Cache::get(Activity::failureKey($workflow->id(), 0)));
+    }
+
+    public function testRetriedJobRunsAndClearsItsOwnMark(): void
+    {
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        Cache::forever(Activity::failureKey($workflow->id(), 0), 'retried-job');
+        $activity = new TestOtherActivity(0, now()->toDateTimeString(), StoredWorkflow::findOrFail($workflow->id()), [
+            'other',
+        ]);
+        $activity->setJob($this->queueJob('retried-job'));
+
+        $this->assertSame(['other'], $activity->handle());
+        $this->assertNull(Cache::get(Activity::failureKey($workflow->id(), 0)));
+    }
+
     public function testActivityAlreadyComplete(): void
     {
         $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
@@ -178,5 +228,16 @@ final class ActivityTest extends TestCase
             'max' => 4,
             'comparing' => 'hours',
         ], $result);
+    }
+
+    private function queueJob(string $uuid): JobContract
+    {
+        $job = Mockery::mock(JobContract::class);
+        $job->shouldReceive('uuid')
+            ->andReturn($uuid);
+        $job->shouldReceive('attempts')
+            ->andReturn(1);
+
+        return $job;
     }
 }

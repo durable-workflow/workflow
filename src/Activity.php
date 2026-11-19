@@ -44,10 +44,13 @@ class Activity implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
 
     public $key = '';
 
-    private Container $container;
+    /**
+     * @internal Set while handling, when another job of this activity failed
+     * and its outcome is not yet recorded. Unset, it is not serialized.
+     */
+    public bool $awaitingRecordedFailure;
 
-    // Set while handling only; an unset typed property is not serialized.
-    private bool $awaitingRecordedFailure;
+    private Container $container;
 
     public function __construct(
         public int $index,
@@ -174,14 +177,6 @@ class Activity implements ShouldBeEncrypted, ShouldBeUnique, ShouldQueue
     public static function failureKey(int|string $workflowId, int $index): string
     {
         return 'laravel-workflow-activity-failure:' . $workflowId . ':' . $index;
-    }
-
-    /**
-     * @internal True when another job of this activity failed and its outcome is not yet recorded.
-     */
-    public function awaitsRecordedFailure(): bool
-    {
-        return $this->awaitingRecordedFailure ?? false;
     }
 
     public function middleware()

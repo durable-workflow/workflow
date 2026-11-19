@@ -39,7 +39,7 @@ final class ActivityMiddleware
             $this->result = $next($job);
 
             // A copy skipped for another job's unrecorded failure has no result.
-            if (! method_exists($job, 'awaitsRecordedFailure') || ! $job->awaitsRecordedFailure()) {
+            if (($job->awaitingRecordedFailure ?? false) !== true) {
                 $job->onUnlock = fn (bool $shouldSignal) => $this->onUnlock($shouldSignal);
             }
         } catch (\Throwable $throwable) {

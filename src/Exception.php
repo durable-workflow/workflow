@@ -71,6 +71,8 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
             return;
         }
 
+        $released = false;
+
         try {
             $workflow = $this->storedWorkflow->toWorkflow();
 
@@ -84,17 +86,19 @@ final class Exception implements ShouldBeEncrypted, ShouldQueue
                         $workflow->next($this->index, $this->now, self::class, $this->exceptionPayload());
                     } elseif ($probeDecision === self::PROBE_RETRY) {
                         $this->release(self::LOCK_RETRY_DELAY);
+                        $released = true;
                     }
                 }
             } catch (TransitionNotFound) {
                 if ($workflow->running()) {
                     $this->release();
+                    $released = true;
                 }
             }
 
             // Until here a redispatched copy of the failed activity waits for
             // this outcome instead of running again (Activity::handle).
-            if ($this->job === null || ! $this->job->isReleased()) {
+            if (! $released) {
                 Cache::forget(Activity::failureKey($this->storedWorkflow->id, $this->index));
             }
         } finally {

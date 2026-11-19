@@ -7,6 +7,7 @@ namespace Tests\Unit;
 use Exception as BaseException;
 use Illuminate\Contracts\Queue\Job as JobContract;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Queue;
 use InvalidArgumentException;
 use Mockery;
 use ReflectionMethod;
@@ -22,6 +23,7 @@ use Tests\Fixtures\TestSagaActivity;
 use Tests\Fixtures\TestSagaParallelActivityWorkflow;
 use Tests\Fixtures\TestWorkflow;
 use Tests\TestCase;
+use Workflow\Activity;
 use Workflow\Exception;
 use Workflow\Middleware\WithoutOverlappingMiddleware;
 use Workflow\Models\StoredWorkflow;
@@ -76,6 +78,9 @@ final class ExceptionTest extends TestCase
             ->once()
             ->with('laravel-workflow-exception:123', 15)
             ->andReturn($lock);
+        Cache::shouldReceive('forget')
+            ->once()
+            ->with(Activity::failureKey(123, 0));
 
         $workflow = Mockery::mock();
         $workflow->shouldReceive('resume')
@@ -102,6 +107,32 @@ final class ExceptionTest extends TestCase
         $this->assertSame(123, $storedWorkflow->id);
 
         Mockery::close();
+    }
+
+    public function testRecordedFailureRemovesTheActivityMark(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::load(WorkflowStub::make(TestWorkflow::class)->id());
+        $storedWorkflow = StoredWorkflow::findOrFail($workflow->id());
+        $storedWorkflow->logs()
+            ->create([
+                'index' => 0,
+                'now' => now()
+                    ->toDateTimeString(),
+                'class' => Exception::class,
+                'result' => Serializer::serialize([
+                    'class' => BaseException::class,
+                    'message' => 'recorded',
+                    'code' => 0,
+                ]),
+            ]);
+        Cache::forever(Activity::failureKey($storedWorkflow->id, 0), 'failed-job');
+
+        $exception = new Exception(0, now()->toDateTimeString(), $storedWorkflow, new BaseException('recorded'));
+        $exception->handle();
+
+        $this->assertNull(Cache::get(Activity::failureKey($storedWorkflow->id, 0)));
     }
 
     public function testHandleReleasesWhenExceptionLockUnavailable(): void
@@ -341,10 +372,13 @@ final class ExceptionTest extends TestCase
             'message' => 'child failed: child-2',
             'code' => 0,
         ], sourceClass: TestProbeChildFailureWorkflow::class);
+        Cache::forever(Activity::failureKey($storedWorkflow->id, 1), 'failed-job');
+
         $exception->setJob($job);
         $exception->handle();
 
         $this->assertFalse($storedWorkflow->fresh()->hasLogByIndex(1));
+        $this->assertSame('failed-job', Cache::get(Activity::failureKey($storedWorkflow->id, 1)));
     }
 
     public function testPersistsWriteWhenProbeReachesCandidateException(): void
