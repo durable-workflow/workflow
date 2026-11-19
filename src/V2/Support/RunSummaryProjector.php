@@ -227,9 +227,14 @@ final class RunSummaryProjector
             ? null
             : self::diagnosticTimer($timers, self::nonEmptyString($openConditionWait['timer_id'] ?? null));
 
+        $signalWaits = null;
+        $signalWaitChildScope = $isTerminal || $openActivity !== null || $openUpdateWait !== null || $openSignalApplicationWait !== null || $openConditionWait !== null || $openTimer !== null
+            ? null
+            : self::signalWaitChildScope($run, $signalWaits ??= SignalWaits::forRun($run));
+
         $openChildWait = $isTerminal || $openActivity !== null || $openUpdateWait !== null || $openSignalApplicationWait !== null || $openConditionWait !== null || $openTimer !== null || $nextTask !== null
             ? null
-            : self::openChildWait($run);
+            : self::openChildWait($run, $signalWaitChildScope);
         $diagnosticChildWait = (
             $isTerminal
             || $openActivity !== null
@@ -252,7 +257,7 @@ final class RunSummaryProjector
             || $diagnosticChildWait !== null
         )
             ? null
-            : self::pendingChildResolutionWait($run, $openChildWait !== null);
+            : self::pendingChildResolutionWait($run, $openChildWait !== null, $signalWaitChildScope);
 
         $unsupportedChildWait = (
             $isTerminal
@@ -281,7 +286,7 @@ final class RunSummaryProjector
             || $unsupportedChildWait !== null
         )
             ? null
-            : self::openSignalWait($run);
+            : self::openSignalWait($signalWaits ??= SignalWaits::forRun($run));
 
         $waitKind = null;
         $waitReason = null;
@@ -1955,6 +1960,7 @@ final class RunSummaryProjector
     }
 
     /**
+     * @param list<array<string, mixed>> $signalWaits
      * @return array{
      *     id: string,
      *     name: string,
@@ -1967,10 +1973,10 @@ final class RunSummaryProjector
      *     resume_source_id: string|null
      * }|null
      */
-    private static function openSignalWait(WorkflowRun $run): ?array
+    private static function openSignalWait(array $signalWaits): ?array
     {
         $openSignals = array_values(array_filter(
-            SignalWaits::forRun($run),
+            $signalWaits,
             static fn (array $wait): bool => $wait['status'] === 'open'
                 || $wait['source_status'] === 'timed_out',
         ));
@@ -2157,7 +2163,7 @@ final class RunSummaryProjector
      *     resume_source_id: string|null
      * }|null
      */
-    private static function openChildWait(WorkflowRun $run): ?array
+    private static function openChildWait(WorkflowRun $run, ?array $signalWaitChildScope): ?array
     {
         foreach (ChildRunHistory::knownSequences($run) as $sequence) {
             $snapshot = ChildRunHistory::waitSnapshotForSequence($run, $sequence);
@@ -2166,6 +2172,7 @@ final class RunSummaryProjector
                 $snapshot === null
                 || $snapshot['status'] !== 'open'
                 || ($snapshot['history_authority'] ?? null) === ChildRunHistory::HISTORY_AUTHORITY_MUTABLE_OPEN_FALLBACK
+                || ! self::childCanResumeSignalWait($run, $snapshot, $signalWaitChildScope)
             ) {
                 continue;
             }
@@ -2180,6 +2187,256 @@ final class RunSummaryProjector
         }
 
         return null;
+    }
+
+    /**
+     * The plain signal waits a run is suspended on now, and the first workflow sequence they span.
+     *
+     * An open signal wait counts only while it can still resume the run. A losing member of a decided
+     * `select()`, or a member of an `all()` that another member failed, stays open after the workflow
+     * moved on. A wait inside a selection with a recorded winner or another resolved member, or inside
+     * a group with another failed member, is therefore ignored. Workflow code reached each wait it
+     * counts, so every call sequenced before the outermost group of those waits was replayed past.
+     *
+     * @param list<array<string, mixed>> $signalWaits
+     * @return array{floor: int, paths: list<list<array<string, mixed>>>}|null
+     */
+    private static function signalWaitChildScope(WorkflowRun $run, array $signalWaits): ?array
+    {
+        $floor = null;
+        $paths = [];
+        $resolvedSequences = null;
+
+        foreach ($signalWaits as $wait) {
+            $sequence = self::intValue($wait['sequence'] ?? null);
+
+            if ($wait['status'] !== 'open' || $sequence === null) {
+                continue;
+            }
+
+            $path = ParallelChildGroup::metadataPathForSequence($run, $sequence);
+
+            if ($path !== []) {
+                $resolvedSequences ??= self::resolvedOperationSequences($run, $signalWaits);
+
+                if (self::insideDecidedGroup($run, $path, $sequence, $resolvedSequences)) {
+                    continue;
+                }
+            }
+
+            $start = $path === [] ? $sequence : min($sequence, $path[0]['parallel_group_base_sequence']);
+            $floor = $floor === null ? $start : min($floor, $start);
+            $paths[] = $path;
+        }
+
+        return $floor === null
+            ? null
+            : [
+                'floor' => $floor,
+                'paths' => $paths,
+            ];
+    }
+
+    /**
+     * Whether this child's closure can still resume a run suspended on a plain signal wait.
+     *
+     * A child whose call and every recorded await (`ChildWorkflowAwaited`) come before the signal wait
+     * was consumed or never awaited (`startChild()`). A child that completed inside an `all()` group whose
+     * completion also needs the open signal wait cannot complete that group either. Any other child, such
+     * as a member of the same `select()` or a child awaited later through its handle, still can.
+     *
+     * @param array<string, mixed> $snapshot
+     * @param array{floor: int, paths: list<list<array<string, mixed>>>}|null $signalWaitChildScope
+     */
+    private static function childCanResumeSignalWait(
+        WorkflowRun $run,
+        array $snapshot,
+        ?array $signalWaitChildScope,
+    ): bool {
+        if ($signalWaitChildScope === null) {
+            return true;
+        }
+
+        $lastAwait = max($snapshot['sequence'], self::lastChildAwaitSequence($run, $snapshot));
+
+        if ($lastAwait < $signalWaitChildScope['floor']) {
+            return false;
+        }
+
+        if ($snapshot['resolution_event']?->event_type !== HistoryEventType::ChildRunCompleted) {
+            return true;
+        }
+
+        foreach ($signalWaitChildScope['paths'] as $waitPath) {
+            if (self::allGroupNeedsSignalWait($snapshot['parallel_group_path'], $waitPath)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @param array<string, mixed> $snapshot
+     */
+    private static function lastChildAwaitSequence(WorkflowRun $run, array $snapshot): int
+    {
+        $last = $snapshot['sequence'];
+        $childCallId = self::nonEmptyString($snapshot['child_call_id'] ?? null);
+
+        foreach ($run->historyEvents as $event) {
+            if ($event->event_type !== HistoryEventType::ChildWorkflowAwaited) {
+                continue;
+            }
+
+            $payload = is_array($event->payload) ? $event->payload : [];
+            $receipt = is_array($payload['receipt'] ?? null) ? $payload['receipt'] : [];
+            $awaitSequence = self::intValue($payload['sequence'] ?? null);
+
+            if (
+                $awaitSequence !== null
+                && (
+                    ($receipt['startSequence'] ?? null) === $snapshot['sequence']
+                    || ($childCallId !== null && self::nonEmptyString(
+                        $payload['child_call_id'] ?? null
+                    ) === $childCallId)
+                )
+            ) {
+                $last = max($last, $awaitSequence);
+            }
+        }
+
+        return $last;
+    }
+
+    /**
+     * Whether the innermost group shared by a child and an open signal wait is an `all()` group that
+     * needs that wait through `all()` groups only, so the child's success cannot complete it.
+     *
+     * @param list<array<string, mixed>> $childPath
+     * @param list<array<string, mixed>> $waitPath
+     */
+    private static function allGroupNeedsSignalWait(array $childPath, array $waitPath): bool
+    {
+        $shared = 0;
+
+        while (
+            isset($childPath[$shared], $waitPath[$shared])
+            && ($childPath[$shared]['parallel_group_id'] ?? null) === ($waitPath[$shared]['parallel_group_id'] ?? null)
+        ) {
+            ++$shared;
+        }
+
+        if ($shared === 0) {
+            return false;
+        }
+
+        for ($level = $shared - 1; $level < count($waitPath); ++$level) {
+            if (self::isSelectionGroup($waitPath[$level])) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $path
+     * @param array<int, bool> $resolvedSequences resolved sequence => whether it failed
+     */
+    private static function insideDecidedGroup(
+        WorkflowRun $run,
+        array $path,
+        int $sequence,
+        array $resolvedSequences,
+    ): bool {
+        foreach ($path as $group) {
+            $selection = self::isSelectionGroup($group);
+            $groupId = $group['parallel_group_id'] ?? null;
+
+            if ($selection && $run->historyEvents->contains(
+                static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::SelectionResolved
+                    && ($event->payload['selection_group_id'] ?? null) === $groupId
+            )) {
+                return true;
+            }
+
+            $base = $group['parallel_group_base_sequence'];
+
+            for ($member = $base; $member < $base + $group['parallel_group_size']; ++$member) {
+                if ($member !== $sequence && isset($resolvedSequences[$member]) && ($selection || $resolvedSequences[$member])) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Workflow sequences whose operation has resolved, timed out or been cancelled, mapped to whether
+     * the operation failed.
+     *
+     * @param list<array<string, mixed>> $signalWaits
+     * @return array<int, bool>
+     */
+    private static function resolvedOperationSequences(WorkflowRun $run, array $signalWaits): array
+    {
+        $resolved = [];
+
+        foreach ($signalWaits as $wait) {
+            $sequence = self::intValue($wait['sequence'] ?? null);
+
+            if ($sequence !== null && $wait['status'] !== 'open') {
+                $resolved[$sequence] ??= false;
+            }
+        }
+
+        $succeeded = [
+            HistoryEventType::ChildRunCompleted,
+            HistoryEventType::ActivityCompleted,
+            HistoryEventType::TimerFired,
+            HistoryEventType::TimerCancelled,
+            HistoryEventType::ConditionWaitSatisfied,
+            HistoryEventType::ConditionWaitTimedOut,
+            HistoryEventType::ConditionWaitCancelled,
+            HistoryEventType::SignalReceived,
+            HistoryEventType::SignalApplied,
+            HistoryEventType::SignalWaitCancelled,
+        ];
+        $failed = [
+            HistoryEventType::ChildRunFailed,
+            HistoryEventType::ChildRunCancelled,
+            HistoryEventType::ChildRunTerminated,
+            HistoryEventType::ActivityFailed,
+            HistoryEventType::ActivityCancelled,
+            HistoryEventType::ActivityTimedOut,
+        ];
+
+        foreach ($run->historyEvents as $event) {
+            $sequence = is_array($event->payload) ? self::intValue($event->payload['sequence'] ?? null) : null;
+
+            if ($sequence === null) {
+                continue;
+            }
+
+            if (in_array($event->event_type, $failed, true)) {
+                $resolved[$sequence] = true;
+            } elseif (in_array($event->event_type, $succeeded, true)) {
+                $resolved[$sequence] ??= false;
+            }
+        }
+
+        return $resolved;
+    }
+
+    /**
+     * @param array<string, mixed> $group
+     */
+    private static function isSelectionGroup(array $group): bool
+    {
+        return ($group['parallel_group_mode'] ?? null) === 'select'
+            || str_starts_with((string) ($group['parallel_group_id'] ?? ''), 'select-calls:');
     }
 
     private static function isAuthoritativeOpenActivity(array $activity): bool
@@ -2214,12 +2471,20 @@ final class RunSummaryProjector
      *     resume_source_id: string|null
      * }|null
      */
-    private static function pendingChildResolutionWait(WorkflowRun $run, bool $hasOpenChildWait): ?array
-    {
+    private static function pendingChildResolutionWait(
+        WorkflowRun $run,
+        bool $hasOpenChildWait,
+        ?array $signalWaitChildScope,
+    ): ?array {
         foreach (ChildRunHistory::knownSequences($run) as $sequence) {
             $snapshot = ChildRunHistory::waitSnapshotForSequence($run, $sequence);
 
-            if ($snapshot === null || $snapshot['status'] === 'open' || $snapshot['resolution_event'] === null) {
+            if (
+                $snapshot === null
+                || $snapshot['status'] === 'open'
+                || $snapshot['resolution_event'] === null
+                || ! self::childCanResumeSignalWait($run, $snapshot, $signalWaitChildScope)
+            ) {
                 continue;
             }
 

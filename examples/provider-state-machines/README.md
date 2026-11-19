@@ -303,7 +303,7 @@ the cancellation stays unsettled rather than reporting `cancelled`. Settling the
 remaining units of such an Order, return expiry/windows, carrier return labels
 and a real warehouse remain outside this synthetic source example; a replacement for another size is the separate
 [same-price exchange](#same-price-exchange-for-another-size).
-`V2PartialReturnMachineTest` covers the delivered three-unit return,
+`V2PartialReturnMachineTest` and `V2PartialReturnCancellationTest` cover the delivered three-unit return,
 discrepancies, early and substituted requests, later returns and cancellation;
 `V2PartialReturnProcessLossTest` kills a real worker after the return request,
 restock and refund commit. They are synthetic recorded-task fixtures, not
@@ -311,6 +311,7 @@ installed-package or real-provider qualification.
 
 ```shell
 vendor/bin/phpunit tests/Feature/V2/V2PartialReturnMachineTest.php
+vendor/bin/phpunit tests/Feature/V2/V2PartialReturnCancellationTest.php
 ```
 
 ## Same-price exchange for another size
@@ -376,7 +377,7 @@ restock or refund the replacement. The provider also refuses an original-owner
 cancellation that names the replacement booking, and the exchanged unit cannot
 enter a customer return.
 
-`V2ExchangeMachineTest` covers each branch, the old-compensation boundary,
+`V2ExchangeMachineTest` and `V2ExchangeCompensationTest` cover each branch, the old-compensation boundary,
 substitution and idempotent requests. `V2ExchangeProcessLossTest` kills a real
 worker after the exchange return request, replacement reservation, replacement
 booking and fallback refund commit; a fresh process recovers each effect
@@ -389,6 +390,7 @@ admission deadline, so no deadline can restart.
 
 ```shell
 vendor/bin/phpunit tests/Feature/V2/V2ExchangeMachineTest.php
+vendor/bin/phpunit tests/Feature/V2/V2ExchangeCompensationTest.php
 ```
 
 ## Carrier loss or transport damage before handover
@@ -478,7 +480,8 @@ cancellation would either leave compensation unknown or pay a second remedy.
 The refusal keeps every payout single. A customer who no longer wants a
 delivered replacement needs a separate return policy.
 
-`V2TransitIncidentMachineTest` covers:
+`V2TransitIncidentMachineTest`, `V2TransitIncidentCancellationTest` and
+`V2TransitIncidentFallbackTest` cover (split so each fits one CI shard):
 - both loss policies, unavailable replacement, and damage with recovery;
 - a tracking delay and a refused claim;
 - cancellation refused during a pending replacement, during a processing
@@ -502,6 +505,8 @@ real-carrier or real-warehouse qualification. Open policy:
 
 ```shell
 vendor/bin/phpunit tests/Feature/V2/V2TransitIncidentMachineTest.php
+vendor/bin/phpunit tests/Feature/V2/V2TransitIncidentCancellationTest.php
+vendor/bin/phpunit tests/Feature/V2/V2TransitIncidentFallbackTest.php
 ```
 
 ## Disposable application assembly
@@ -1161,7 +1166,7 @@ invent the missing root scope; it stays unresolved until the recorded owner
 actually initializes. Recovery for an older period preserves the next period's
 separate charge, native owner and access.
 
-Run `vendor/bin/phpunit tests/Feature/V2/V2ServiceBillingPeriodTest.php tests/Feature/V2/V2OrderBillingPeriodTest.php`
+Run `vendor/bin/phpunit tests/Feature/V2/V2ServiceBillingPeriodTest.php tests/Feature/V2/V2OrderBillingPeriodTest.php tests/Feature/V2/V2OrderBillingPeriodLateTest.php`
 for the native service-only and Order source scenarios, and
 `vendor/bin/phpunit tests/Unit/V2/StateMachine/BillingPeriodTest.php tests/Unit/V2/StateMachine/BillingPeriodReceiptTest.php`
 for contract and provider-receipt controls. These are synthetic source tests.

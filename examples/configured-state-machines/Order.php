@@ -37,10 +37,8 @@ final class Order extends Workflow
                 ->toArray();
         } catch (WorkflowCancellationRequestedException|BusinessCancellationRequested $error) {
             self::cancellationShield(fn () => $this->compensate());
+            // verifyCompensation() returns only once every obligation is verified; otherwise its activity fails.
             $resolution = self::cancellationShield(static fn () => $machine->scope->verifyCompensation());
-            if (($resolution['status'] ?? null) !== 'verified') {
-                throw $error;
-            }
             // A separate proof-only transition commits business cancellation after this retained verification.
             return [
                 'businessOutcome' => 'compensated',
