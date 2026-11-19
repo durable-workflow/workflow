@@ -329,3 +329,61 @@ jobs:
             exit 0
           fi
           WORKFLOW_CANDIDATE_VERSION="$RELEASE_TAG" scripts/ci/compensation-scope-upgrade-smoke.sh
+
+  state-machine-upgrade:
+    name: Laravel ${{ matrix.laravel }} / PHP ${{ matrix.php }} published state machine upgrade
+    needs: published-package
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.published-package.outputs.laravel_published_matrix) }}
+
+    services:
+      mysql:
+        image: mysql
+        env:
+          MYSQL_ROOT_PASSWORD: password
+        options: >-
+          --tmpfs /var/lib/mysql:rw,noexec,nosuid,size=1024m
+        ports:
+          - 3306
+
+      redis:
+        image: redis
+        ports:
+          - 6379
+
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+        with:
+          persist-credentials: false
+
+      - name: Disable APT download retries (CVE-2026-109518)
+        run: echo 'Acquire::Retries "0";' | sudo tee /etc/apt/apt.conf.d/99-no-retries >/dev/null
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240  # v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: pdo_mysql, pdo_sqlite, redis
+          tools: composer
+
+      - name: Run the published 2.32.0 to release state machine journey
+        env:
+          LARAVEL_VERSION: ${{ matrix.laravel }}
+          RELEASE_TAG: ${{ needs.published-package.outputs.release_tag }}
+          DB_CONNECTION: mysql
+          DB_HOST: 127.0.0.1
+          DB_PORT: ${{ job.services.mysql.ports['3306'] }}
+          DB_USERNAME: root
+          DB_PASSWORD: password
+          REDIS_HOST: 127.0.0.1
+          REDIS_PORT: ${{ job.services.redis.ports['6379'] }}
+        run: |
+          # The journey starts from the 2.32.0 example sources, which use the
+          # compensation API as revised in 2.32.0 (#1069).
+          if php -r 'exit(version_compare(getenv("RELEASE_TAG"), "2.32.0", "<=") ? 0 : 1);'; then
+            echo "Release ${RELEASE_TAG} is not newer than the 2.32.0 baseline; nothing to qualify."
+            exit 0
+          fi
+          WORKFLOW_CANDIDATE_VERSION="$RELEASE_TAG" scripts/ci/state-machine-upgrade-smoke.sh
