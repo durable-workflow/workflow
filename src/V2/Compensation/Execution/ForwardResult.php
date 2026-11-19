@@ -65,7 +65,6 @@ final readonly class ForwardResult
         return self::make(self::OBSERVED, $value, $evidence, 'observed');
     }
 
-
     public static function unknown(string $reason): self
     {
         return self::make(self::UNKNOWN, [], [], $reason);
