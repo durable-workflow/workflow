@@ -50,7 +50,7 @@ final class AdvanceBalancePayment extends Workflow
             $step = new FundingStep($machine->initialization['recipe'], $duties, $terms);
             return $this->finishFunding($machine, $step);
         } catch (WorkflowCancellationRequestedException|BusinessCancellationRequested $error) {
-            return $this->compensateFunding($machine, $error);
+            return $this->compensateFunding($machine);
         }
     }
 }

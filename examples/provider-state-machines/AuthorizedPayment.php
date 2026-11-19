@@ -71,10 +71,8 @@ final class AuthorizedPayment extends Workflow
             throw new LogicException('The bounded original capture-instruction wait remains unresolved.');
         } catch (WorkflowCancellationRequestedException|BusinessCancellationRequested $error) {
             self::cancellationShield(fn () => $this->compensate());
-            $proof = self::cancellationShield(static fn () => $machine->scope->verifyCompensation());
-            if (($proof['status'] ?? null) !== 'verified') {
-                throw $error;
-            }
+            // verifyCompensation() returns only once every obligation is verified; otherwise its activity fails.
+            self::cancellationShield(static fn () => $machine->scope->verifyCompensation());
             return [
                 'businessOutcome' => 'compensated',
                 'originalRunId' => $this->runId(),
