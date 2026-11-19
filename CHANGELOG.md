@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- Experimental durable signal-external (.github#223): embedded workflow code
+  can signal another workflow in its namespace with
+  `signalExternalWorkflow($workflowId, $signalName, $arguments, $runId)` (also
+  `Workflow::signalExternalWorkflow()`), or its child with
+  `ChildWorkflowHandle::signalDurably()`. The request and its outcome are
+  recorded once in the sender's history (`ExternalSignalRequested`, then
+  `ExternalSignalDelivered` or `ExternalSignalFailed`, at one sequence) in the
+  same transaction that admits an ordinary signal on the target, keyed
+  `workflow-signal:<sender run>:<sequence>` and attributed to the sender through
+  `CommandContext::workflow()`. Replay returns the recorded
+  `ExternalSignalResult` and never sends again. A missing, closed or refusing
+  target is a returned outcome (`target_not_found`, `target_closed` or
+  `rejected`, with Server's reasons, including `self_target` and
+  `runtime_reserved_signal`), not an exception. Signal names follow Server's
+  rules and are refused in workflow code with
+  `InvalidExternalSignalException` before anything is recorded. Callers can no
+  longer use the `workflow-signal:` request-id prefix for signals or
+  signal-with-start (`request_id_reserved`). The existing child-handle
+  `signal()` still sends directly. External PHP workers replay recorded
+  outcomes but refuse new commands. No database migration.
+  `docs/api-stability.md#durable-signal-external` explains why the API is
+  experimental and how embedded differs from Server.
+
 - The business state-machine API is explicitly experimental (#1069). Every
   public class, interface and enum in `Workflow\V2\StateMachine`, native child
   start (`Workflow::startChild()`, `startChild()` and `StartedChildWorkflow`) and

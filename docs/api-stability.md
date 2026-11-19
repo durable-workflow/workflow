@@ -264,6 +264,53 @@ execution to a new definition, profile, rule or handler version. It also defines
 no recursive or shared child machines. See
 [business state machines](business-state-machines.md).
 
+## Durable signal-external
+
+Durable signal-external lets embedded workflow code signal another workflow in
+its namespace (.github#223). It is **experimental**: the
+`Workflow\V2\signalExternalWorkflow()` function, the
+`Workflow::signalExternalWorkflow()` facade method,
+`ChildWorkflowHandle::signalDurably()`, `ExternalSignalResult`,
+`Enums\ExternalSignalOutcome` and `Exceptions\InvalidExternalSignalException`
+are marked `@experimental` and may change incompatibly in a minor release, never
+in a patch release. They are not part of the stable facade list above.
+
+They are experimental, not stable, because the embedded surface is new while
+the contract it implements is not. The command, its history events, the
+`workflow-signal:` key and its outcomes follow the shipped Server 3.15.0
+contract (`docs/contracts/signal-external-workflow.md` in the server
+repository) and the published Python, PHP SDK and Rust SDKs. The PHP authoring
+names and result type have not shipped in any release. The embedded runtime
+also differs from Server in ways a later minor release may still align:
+
+- Delivery is synchronous in the sending workflow task, so the sender needs no
+  extra workflow task (Server's `external_signal` turn) and continues at once.
+- The worker-protocol runner (`WorkflowFiberRunner`, used by external PHP
+  workers) replays recorded outcomes but refuses a new command with
+  `UnsupportedWorkflowYieldException`. It does not advertise
+  `signal_external_workflow`.
+- Embedded does not refuse the command while a run is cleaning up after a
+  cancellation request. Server refuses it then
+  (`signal_external_not_at_checkpoint`).
+
+The history events are frozen like every other event (see the table below):
+once a run records them, every later release must replay them. The command
+takes one workflow sequence. `ExternalSignalRequested` and exactly one of
+`ExternalSignalDelivered` or `ExternalSignalFailed` are recorded at that
+sequence in the same transaction that admits the signal on the target, keyed
+on the target as `workflow-signal:<sender run id>:<sequence>`. Replay, query
+replay and cold replay read the recorded outcome and never send again. A
+changed target, run, signal name or arguments at a recorded sequence, or
+malformed resolution history, is a `HistoryEventShapeMismatchException`. A
+failed outcome (`target_not_found`, `target_closed` or `rejected`, with the
+Server's reasons) is a returned value, not an exception.
+
+Callers cannot use the `workflow-signal:` request-id prefix for a signal or
+signal-with-start. Embedded calls throw `InvalidCommandRequestIdException` with
+`reason()` `request_id_reserved`; control-plane signals and embedded signal
+webhooks return 422 with `reason: "request_id_reserved"`. Nothing is read or
+written for the refused request.
+
 ## What is covered
 
 A class, interface, method, constant, or property is part of the public API
@@ -943,6 +990,9 @@ class, source file path, or stack trace to replay or handle a failure.
 | `ConditionWaitTimedOut` | `condition_wait_id`, `condition_key`, `condition_definition_fingerprint`, `sequence`, `timer_id`, `timeout_seconds` | `WorkflowStepHistory`, `ConditionWaits`, `QueryStateReplayer`, `HistoryTimeline` |
 | `ConditionWaitCancelled` (candidate 1.20) | `condition_wait_id`, `condition_wait_occurrence_id`, `condition_key`, `condition_definition_fingerprint`, `sequence`, `timer_id`, `timeout_seconds`, `cancelled_at`, `cancellation_scope` | `ScopedWaitCancellation`, `ConditionWaits`, `HistoryTimeline`, scope delivery and worker history consumers |
 | `SideEffectRecorded` | `sequence`, `result`, `reused_from_run_id`, `reused_recorded_at` | `WorkflowStepHistory`, `WorkflowExecutor`, `QueryStateReplayer`, `WorkflowFiberRunner`, `RedriveReplayClock` |
+| `ExternalSignalRequested` | `sequence`, `target_workflow_instance_id`, `target_workflow_run_id`, `signal_name`, `arguments`, `payload_codec`, `request_id` | `ExternalSignalHistory`, `WorkflowStepHistory`, `WorkflowExecutor`, `QueryStateReplayer`, `WorkflowFiberRunner`, `HistoryTimeline` |
+| `ExternalSignalDelivered` | `sequence`, `target_workflow_instance_id`, `target_workflow_run_id`, `signal_name`, `request_id`, `outcome`, `target_command_id`, `target_signal_id`, `retained` | `ExternalSignalHistory`, `WorkflowStepHistory`, `WorkflowExecutor`, `QueryStateReplayer`, `WorkflowFiberRunner`, `HistoryTimeline` |
+| `ExternalSignalFailed` | `sequence`, `target_workflow_instance_id`, `target_workflow_run_id`, `signal_name`, `request_id`, `outcome`, `reason`, `message`, `target_command_id` | `ExternalSignalHistory`, `WorkflowStepHistory`, `WorkflowExecutor`, `QueryStateReplayer`, `WorkflowFiberRunner`, `HistoryTimeline` |
 | `VersionMarkerRecorded` | `sequence`, `change_id`, `version`, `min_supported`, `max_supported`, `reused_from_run_id`, `reused_recorded_at` | `WorkflowStepHistory`, `WorkflowExecutor`, `QueryStateReplayer`, `WorkflowFiberRunner`, `RedriveReplayClock` |
 | `ChildWorkflowScheduled` | `sequence`, `workflow_link_id`, `child_call_id`, `child_workflow_instance_id`, `child_workflow_run_id`, `child_workflow_class`, `child_workflow_type`, `child_run_number`, `parent_close_policy`, `retry_policy`, `timeout_policy`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path`, `reused_from_run_id`, `reused_recorded_at` | `WorkflowStepHistory`, `WorkflowExecutor`, `QueryStateReplayer`, `ChildRunHistory`, `ParallelChildGroup`, `RunLineageView`, `FailedRunRedrivePlan` |
 | `ChildRunStarted` | `sequence`, `workflow_link_id`, `child_call_id`, `child_workflow_instance_id`, `child_workflow_run_id`, `child_workflow_class`, `child_workflow_type`, `child_run_number`, `child_status`, `parent_close_policy`, `retry_policy`, `timeout_policy`, `execution_timeout_seconds`, `run_timeout_seconds`, `execution_deadline_at`, `run_deadline_at`, `retry_attempt`, `retry_of_child_workflow_run_id`, `retry_backoff_seconds`, `parallel_group_id`, `parallel_group_kind`, `parallel_group_base_sequence`, `parallel_group_size`, `parallel_group_index`, `parallel_group_path`, `reused_from_run_id`, `reused_recorded_at` | `ChildRunHistory`, `ParallelChildGroup`, `RunLineageView`, worker history payload consumers, `FailedRunRedrivePlan` |

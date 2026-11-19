@@ -26,6 +26,7 @@ use Workflow\V2\Support\ServiceOperationCall;
 use Workflow\V2\Support\ServiceOperationOptions;
 use Workflow\V2\Support\SideEffectCall;
 use Workflow\V2\Support\SignalCall;
+use Workflow\V2\Support\SignalExternalWorkflowCall;
 use Workflow\V2\Support\StartChildWorkflowCall;
 use Workflow\V2\Support\TimerCall;
 use Workflow\V2\Support\UpsertMemoCall;
@@ -133,6 +134,37 @@ if (! function_exists(__NAMESPACE__ . '\\startChild')) {
         }
         return WorkflowFiberContext::suspend(new StartChildWorkflowCall(
             new ChildWorkflowCall($workflow, $arguments, $options)
+        ));
+    }
+}
+
+if (! function_exists(__NAMESPACE__ . '\\signalExternalWorkflow')) {
+    /**
+     * Durably signal another workflow in this workflow's namespace.
+     *
+     * The signal is a workflow command: its request and outcome are recorded
+     * once in this workflow's history, in the same transaction that admits
+     * the signal on the target, and replay returns the recorded outcome
+     * without sending again. A missing or closed target, or a refusal by the
+     * target, is a returned {@see ExternalSignalResult}, not an exception.
+     * Pass `$runId` to signal only that run of the target.
+     *
+     * @param array<int|string, mixed> $arguments
+     *
+     * @experimental Durable signal-external may change in a minor release.
+     * See docs/api-stability.md#durable-signal-external.
+     */
+    function signalExternalWorkflow(
+        string $workflowId,
+        string $signalName,
+        array $arguments = [],
+        ?string $runId = null,
+    ): ExternalSignalResult|SignalExternalWorkflowCall {
+        return WorkflowFiberContext::suspend(new SignalExternalWorkflowCall(
+            $workflowId,
+            $signalName,
+            $arguments,
+            $runId,
         ));
     }
 }

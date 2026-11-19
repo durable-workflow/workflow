@@ -35,6 +35,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Enums\UpdateStatus;
+use Workflow\V2\Exceptions\InvalidCommandRequestIdException;
 use Workflow\V2\Exceptions\InvalidQueryArgumentsException;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Exceptions\WorkflowExecutionUnavailableException;
@@ -65,6 +66,7 @@ use Workflow\V2\Support\CooperativeCancellationDelivery;
 use Workflow\V2\Support\CurrentRunResolver;
 use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\ExternalPayloads;
+use Workflow\V2\Support\ExternalSignalHistory;
 use Workflow\V2\Support\LifecycleEventDispatcher;
 use Workflow\V2\Support\MemoUpsertService;
 use Workflow\V2\Support\NamespaceScope;
@@ -164,6 +166,12 @@ final class WorkflowStub
     private ?CommandContext $commandContext = null;
 
     private ?int $updateWaitTimeoutSeconds = null;
+
+    /**
+     * The one reserved `workflow-signal:` key this stub may admit: set only by
+     * the runtime's durable signal-external delivery (.github#223).
+     */
+    private ?string $externalSignalRequestId = null;
 
     private function __construct(
         private WorkflowInstance $instance,
@@ -1343,6 +1351,29 @@ final class WorkflowStub
         }
 
         return $result;
+    }
+
+    /**
+     * Admit one durable signal-external delivery from workflow code.
+     *
+     * The runtime calls this inside the sending workflow task's transaction,
+     * keyed on the target as `workflow-signal:<sender run>:<sequence>`, so the
+     * sender's history and the target's admission commit or roll back
+     * together. Applications cannot use that key prefix themselves.
+     *
+     * @internal
+     * @param array<int|string, mixed> $arguments
+     */
+    public function attemptExternalWorkflowSignal(string $requestId, string $name, array $arguments): CommandResult
+    {
+        if (! ExternalSignalHistory::isReservedRequestId($requestId)) {
+            throw new LogicException('A durable signal-external delivery requires its reserved command key.');
+        }
+
+        $clone = $this->withRequestId($requestId);
+        $clone->externalSignalRequestId = $requestId;
+
+        return $clone->attemptSignalWithArguments($name, $arguments);
     }
 
     public function attemptSignal(string $name, ...$arguments): CommandResult
@@ -4850,6 +4881,15 @@ final class WorkflowStub
             return;
         }
         CommandRequestIdentity::validateContext($context, $type);
+
+        // A durable signal-external delivery owns `workflow-signal:` keys on its
+        // target. No caller may occupy or answer for one (request_id_reserved).
+        $requestId = CommandRequestIdentity::fromContext($context, $type);
+        if ($type === CommandType::Signal
+            && ExternalSignalHistory::isReservedRequestId($requestId)
+            && $requestId !== $this->externalSignalRequestId) {
+            throw InvalidCommandRequestIdException::reserved(ExternalSignalHistory::REQUEST_ID_PREFIX);
+        }
     }
 
     /**

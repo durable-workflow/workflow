@@ -1,0 +1,197 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "signal-external-failed-outcomes-cold-replay",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestSignalExternalSenderWorkflow",
+    "arguments": [
+      [
+        {
+          "workflow_id": "order-missing",
+          "signal": "approve"
+        },
+        {
+          "workflow_id": "order-closed",
+          "signal": "approve",
+          "arguments": [
+            "late"
+          ]
+        },
+        {
+          "workflow_id": "order-open",
+          "signal": "undeclared"
+        }
+      ]
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-19T12:00:00Z"
+    },
+    {
+      "sequence": 2,
+      "event_type": "ExternalSignalRequested",
+      "payload": {
+        "sequence": 1,
+        "target_workflow_instance_id": "order-missing",
+        "target_workflow_run_id": null,
+        "signal_name": "approve",
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwA"
+        },
+        "payload_codec": "avro",
+        "request_id": "workflow-signal:01j00000000000000000000s01:1"
+      },
+      "recorded_at": "2026-11-19T12:00:01Z"
+    },
+    {
+      "sequence": 3,
+      "event_type": "ExternalSignalFailed",
+      "payload": {
+        "sequence": 1,
+        "target_workflow_instance_id": "order-missing",
+        "target_workflow_run_id": null,
+        "signal_name": "approve",
+        "request_id": "workflow-signal:01j00000000000000000000s01:1",
+        "outcome": "target_not_found",
+        "reason": "instance_not_found",
+        "message": "No workflow instance [order-missing] exists in this namespace.",
+        "target_command_id": null
+      },
+      "recorded_at": "2026-11-19T12:00:01Z"
+    },
+    {
+      "sequence": 4,
+      "event_type": "ExternalSignalRequested",
+      "payload": {
+        "sequence": 2,
+        "target_workflow_instance_id": "order-closed",
+        "target_workflow_run_id": null,
+        "signal_name": "approve",
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCCghsYXRlAA=="
+        },
+        "payload_codec": "avro",
+        "request_id": "workflow-signal:01j00000000000000000000s01:2"
+      },
+      "recorded_at": "2026-11-19T12:00:02Z"
+    },
+    {
+      "sequence": 5,
+      "event_type": "ExternalSignalFailed",
+      "payload": {
+        "sequence": 2,
+        "target_workflow_instance_id": "order-closed",
+        "target_workflow_run_id": "01j00000000000000000000t02",
+        "signal_name": "approve",
+        "request_id": "workflow-signal:01j00000000000000000000s01:2",
+        "outcome": "target_closed",
+        "reason": "run_not_active",
+        "message": "The target run is closed.",
+        "target_command_id": "01j00000000000000000000c02"
+      },
+      "recorded_at": "2026-11-19T12:00:02Z"
+    },
+    {
+      "sequence": 6,
+      "event_type": "ExternalSignalRequested",
+      "payload": {
+        "sequence": 3,
+        "target_workflow_instance_id": "order-open",
+        "target_workflow_run_id": null,
+        "signal_name": "undeclared",
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwA"
+        },
+        "payload_codec": "avro",
+        "request_id": "workflow-signal:01j00000000000000000000s01:3"
+      },
+      "recorded_at": "2026-11-19T12:00:03Z"
+    },
+    {
+      "sequence": 7,
+      "event_type": "ExternalSignalFailed",
+      "payload": {
+        "sequence": 3,
+        "target_workflow_instance_id": "order-open",
+        "target_workflow_run_id": "01j00000000000000000000t03",
+        "signal_name": "undeclared",
+        "request_id": "workflow-signal:01j00000000000000000000s01:3",
+        "outcome": "rejected",
+        "reason": "unknown_signal",
+        "message": "Signal [undeclared] is not declared.",
+        "target_command_id": "01j00000000000000000000c03"
+      },
+      "recorded_at": "2026-11-19T12:00:03Z"
+    },
+    {
+      "sequence": 8,
+      "event_type": "SideEffectRecorded",
+      "payload": {
+        "sequence": 4,
+        "result": "wwHioz3/VYAiNwoKYWZ0ZXI="
+      },
+      "recorded_at": "2026-11-19T12:00:04Z"
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "results": [
+        {
+          "outcome": "target_not_found",
+          "reason": "instance_not_found",
+          "message": "No workflow instance [order-missing] exists in this namespace.",
+          "target_workflow_id": "order-missing",
+          "target_run_id": null,
+          "signal_name": "approve",
+          "request_id": "workflow-signal:01j00000000000000000000s01:1",
+          "target_command_id": null,
+          "target_signal_id": null,
+          "retained": false
+        },
+        {
+          "outcome": "target_closed",
+          "reason": "run_not_active",
+          "message": "The target run is closed.",
+          "target_workflow_id": "order-closed",
+          "target_run_id": "01j00000000000000000000t02",
+          "signal_name": "approve",
+          "request_id": "workflow-signal:01j00000000000000000000s01:2",
+          "target_command_id": "01j00000000000000000000c02",
+          "target_signal_id": null,
+          "retained": false
+        },
+        {
+          "outcome": "rejected",
+          "reason": "unknown_signal",
+          "message": "Signal [undeclared] is not declared.",
+          "target_workflow_id": "order-open",
+          "target_run_id": "01j00000000000000000000t03",
+          "signal_name": "undeclared",
+          "request_id": "workflow-signal:01j00000000000000000000s01:3",
+          "target_command_id": "01j00000000000000000000c03",
+          "target_signal_id": null,
+          "retained": false
+        }
+      ],
+      "after": "after"
+    },
+    "commands": [
+      {
+        "type": "complete_workflow"
+      }
+    ]
+  }
+}

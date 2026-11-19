@@ -435,7 +435,10 @@ final class HistoryTimeline
             HistoryEventType::SignalWaitOpened,
             HistoryEventType::SignalWaitCancelled,
             HistoryEventType::SignalRejected,
-            HistoryEventType::SignalApplied => 'signal',
+            HistoryEventType::SignalApplied,
+            HistoryEventType::ExternalSignalRequested,
+            HistoryEventType::ExternalSignalDelivered,
+            HistoryEventType::ExternalSignalFailed => 'signal',
             HistoryEventType::UpdateApplied,
             HistoryEventType::UpdateCompleted => 'update',
             HistoryEventType::ChildWorkflowScheduled,
@@ -675,6 +678,22 @@ final class HistoryTimeline
                 ? 'Failure handled.'
                 : sprintf('Handled failure: %s.', $message),
             HistoryEventType::SideEffectRecorded => 'Recorded side effect.',
+            HistoryEventType::ExternalSignalRequested => sprintf(
+                'Requested signal %s to workflow %s.',
+                $signalName ?? 'signal',
+                self::stringValue($payload['target_workflow_instance_id'] ?? null) ?? 'workflow',
+            ),
+            HistoryEventType::ExternalSignalDelivered => sprintf(
+                'Delivered signal %s to workflow %s.',
+                $signalName ?? 'signal',
+                self::stringValue($payload['target_workflow_instance_id'] ?? null) ?? 'workflow',
+            ),
+            HistoryEventType::ExternalSignalFailed => sprintf(
+                'Signal %s to workflow %s was not delivered: %s.',
+                $signalName ?? 'signal',
+                self::stringValue($payload['target_workflow_instance_id'] ?? null) ?? 'workflow',
+                self::stringValue($payload['reason'] ?? null) ?? 'failed',
+            ),
             HistoryEventType::SearchAttributesUpserted => 'Search attributes upserted.',
             HistoryEventType::MemoUpserted => 'Memo upserted.',
             HistoryEventType::VersionMarkerRecorded => match (true) {

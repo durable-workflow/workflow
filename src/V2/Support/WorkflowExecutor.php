@@ -681,6 +681,11 @@ final class WorkflowExecutor
                 $state->frame
             ),
             $current instanceof UpsertMemoCall => $this->executeMemo($state->run, $state->task, $state->frame),
+            $current instanceof SignalExternalWorkflowCall => $this->executeExternalSignal(
+                $state->run,
+                $state->task,
+                $state->frame
+            ),
             $current instanceof TimerCall => $this->executeTimer($state->run, $state->task, $state->frame),
             $current instanceof SignalCall => $this->executeSignal($state->run, $state->task, $state->frame),
             $current instanceof ServiceOperationCall => $this->executeServiceOperation(
@@ -1465,6 +1470,84 @@ final class WorkflowExecutor
         }
         ++$sequence;
         return WorkflowTaskStep::ContinueExecution;
+    }
+
+    /**
+     * Durable signal-external (.github#223): record the request, admit the
+     * signal on the target and record its outcome at one sequence, all in
+     * this task's transaction. Replay returns the recorded outcome and never
+     * sends again. A failed delivery is a value for workflow code, not a
+     * task failure.
+     */
+    private function executeExternalSignal(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowContinuation $frame,
+    ): WorkflowTask|WorkflowTaskStep|null {
+        $workflow = $frame->workflow;
+        $workflowExecution = $frame->execution;
+        /** @var SignalExternalWorkflowCall $current */
+        $current = &$frame->current;
+        $sequence = &$frame->sequence;
+
+        $this->syncWorkflowCursorForCurrent($workflow, $run, $current, $sequence);
+        if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
+            return $this->restartAfterPendingUpdateFailure($run, $task);
+        }
+        if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::EXTERNAL_SIGNAL)) {
+            return null;
+        }
+        try {
+            $result = ExternalSignalHistory::recordedResult($run, $sequence, $current);
+            if ($result === null) {
+                $this->recordExternalSignal($run, $task, $sequence, $current);
+                $result = ExternalSignalHistory::recordedResult($run, $sequence, $current);
+            }
+            $resolutionEvent = ExternalSignalHistory::resolutionEvent($run, $sequence);
+            $this->syncWorkflowCursor($workflow, $sequence + 1);
+            $current = $workflowExecution->send(
+                $result,
+                RedriveReplayClock::recordedAt($resolutionEvent),
+                advanceCancellationTime: false,
+            );
+        } catch (Throwable $throwable) {
+            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+            return null;
+        }
+        ++$sequence;
+        return WorkflowTaskStep::ContinueExecution;
+    }
+
+    private function recordExternalSignal(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        SignalExternalWorkflowCall $call,
+    ): void {
+        $arguments = ExternalSignalHistory::argumentsEnvelope(
+            $call,
+            is_string($run->payload_codec) && $run->payload_codec !== '' ? $run->payload_codec : null,
+        );
+        $requested = WorkflowHistoryEvent::record(
+            $run,
+            HistoryEventType::ExternalSignalRequested,
+            [
+                'sequence' => $sequence,
+                'target_workflow_instance_id' => $call->workflowId,
+                'target_workflow_run_id' => $call->runId,
+                'signal_name' => $call->signalName,
+                'arguments' => $arguments,
+                'payload_codec' => $arguments['codec'],
+                'request_id' => ExternalSignalHistory::requestId($run->id, $sequence),
+            ],
+            $task,
+        );
+        $run->historyEvents->push($requested);
+
+        $resolution = ExternalSignalDelivery::deliver($run, $sequence, $call);
+        $run->historyEvents->push(
+            WorkflowHistoryEvent::record($run, $resolution['event_type'], $resolution['payload'], $task),
+        );
     }
 
     private function executeTimer(

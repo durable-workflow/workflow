@@ -30,6 +30,8 @@ final class WorkflowStepHistory
 
     public const CONTINUE_AS_NEW = 'continue as new';
 
+    public const EXTERNAL_SIGNAL = ExternalSignalHistory::SHAPE;
+
     public const NO_TYPED_HISTORY = 'no typed history';
 
     public const PARALLEL_GROUP = 'parallel all barrier matching current topology';
@@ -82,6 +84,9 @@ final class WorkflowStepHistory
         HistoryEventType::MemoUpserted,
         HistoryEventType::SearchAttributesUpserted,
         HistoryEventType::SideEffectRecorded,
+        HistoryEventType::ExternalSignalRequested,
+        HistoryEventType::ExternalSignalDelivered,
+        HistoryEventType::ExternalSignalFailed,
         HistoryEventType::VersionMarkerRecorded,
         HistoryEventType::TimerScheduled,
         HistoryEventType::TimerFired,
@@ -462,6 +467,11 @@ final class WorkflowStepHistory
             self::MEMO_UPSERT => $event->event_type === HistoryEventType::MemoUpserted,
             self::SEARCH_ATTRIBUTES_UPSERT => $event->event_type === HistoryEventType::SearchAttributesUpserted,
             self::SIDE_EFFECT => $event->event_type === HistoryEventType::SideEffectRecorded,
+            self::EXTERNAL_SIGNAL => in_array($event->event_type, [
+                HistoryEventType::ExternalSignalRequested,
+                HistoryEventType::ExternalSignalDelivered,
+                HistoryEventType::ExternalSignalFailed,
+            ], true),
             self::TIMER => self::isPureTimerEvent($event),
             self::VERSION_MARKER => $event->event_type === HistoryEventType::VersionMarkerRecorded,
             default => false,

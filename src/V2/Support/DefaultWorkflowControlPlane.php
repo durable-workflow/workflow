@@ -1410,7 +1410,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
             'workflow_command_id' => null,
             'command_id' => null,
             'update_id' => null,
-            'reason' => 'invalid_request_id',
+            'reason' => $exception->reason(),
             'message' => $exception->getMessage(),
             'validation_errors' => $exception->validationErrors(),
             'status' => 422,

@@ -632,6 +632,18 @@ final class HistoryEventPayloadContract
             'parallel_group_path',
         ],
         'SideEffectRecorded' => ['sequence', 'result', 'reused_from_run_id', 'reused_recorded_at'],
+        'ExternalSignalRequested' => [
+            'sequence', 'target_workflow_instance_id', 'target_workflow_run_id', 'signal_name',
+            'arguments', 'payload_codec', 'request_id',
+        ],
+        'ExternalSignalDelivered' => [
+            'sequence', 'target_workflow_instance_id', 'target_workflow_run_id', 'signal_name',
+            'request_id', 'outcome', 'target_command_id', 'target_signal_id', 'retained',
+        ],
+        'ExternalSignalFailed' => [
+            'sequence', 'target_workflow_instance_id', 'target_workflow_run_id', 'signal_name',
+            'request_id', 'outcome', 'reason', 'message', 'target_command_id',
+        ],
         'VersionMarkerRecorded' => [
             'sequence',
             'change_id',

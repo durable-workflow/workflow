@@ -21,6 +21,7 @@ use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\DuplicateStartPolicy;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\InvalidCommandRequestIdException;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\CommandResponse;
 use Workflow\V2\Support\ConfiguredV2Models;
@@ -88,7 +89,15 @@ final class Webhooks
                 }
 
                 $stub = WorkflowStub::make($workflow, $instanceId)->withCommandContext($commandContext);
-                $result = $stub->attemptSignalWithStart($signal, $signalArguments, ...[...$arguments, $startOptions]);
+                try {
+                    $result = $stub->attemptSignalWithStart(
+                        $signal,
+                        $signalArguments,
+                        ...[...$arguments, $startOptions],
+                    );
+                } catch (InvalidCommandRequestIdException $exception) {
+                    return self::reservedRequestIdResponse($exception);
+                }
 
                 return self::commandResponse($result, match ($result->outcome()) {
                     CommandOutcome::RejectedUnknownSignal->value => 404,
@@ -271,9 +280,13 @@ final class Webhooks
         ) {
             $request = self::validateAuth($request);
 
-            $result = self::selectionStub($workflowId, $runId)
-                ->withCommandContext(self::commandContext($request))
-                ->attemptSignalWithArguments($signal, self::resolveSignalArguments($request->all()));
+            try {
+                $result = self::selectionStub($workflowId, $runId)
+                    ->withCommandContext(self::commandContext($request))
+                    ->attemptSignalWithArguments($signal, self::resolveSignalArguments($request->all()));
+            } catch (InvalidCommandRequestIdException $exception) {
+                return self::reservedRequestIdResponse($exception);
+            }
 
             return self::commandResponse($result, match ($result->outcome()) {
                 CommandOutcome::RejectedUnknownSignal->value => 404,
@@ -289,9 +302,13 @@ final class Webhooks
         ) {
             $request = self::validateAuth($request);
 
-            $result = self::selectionStub($workflowId)
-                ->withCommandContext(self::commandContext($request))
-                ->attemptSignalWithArguments($signal, self::resolveSignalArguments($request->all()));
+            try {
+                $result = self::selectionStub($workflowId)
+                    ->withCommandContext(self::commandContext($request))
+                    ->attemptSignalWithArguments($signal, self::resolveSignalArguments($request->all()));
+            } catch (InvalidCommandRequestIdException $exception) {
+                return self::reservedRequestIdResponse($exception);
+            }
 
             return self::commandResponse($result, match ($result->outcome()) {
                 CommandOutcome::RejectedUnknownSignal->value => 404,
@@ -905,6 +922,24 @@ final class Webhooks
         return $runId === null
             ? WorkflowStub::load($workflowId)
             : WorkflowStub::loadSelection($workflowId, $runId);
+    }
+
+    /**
+     * A signal keyed under the runtime's reserved `workflow-signal:` prefix is
+     * refused with 422 before anything is read or written. Other invalid keys
+     * keep their existing behavior.
+     */
+    private static function reservedRequestIdResponse(InvalidCommandRequestIdException $exception)
+    {
+        if ($exception->reason() !== InvalidCommandRequestIdException::REASON_RESERVED) {
+            throw $exception;
+        }
+
+        return response()->json([
+            'reason' => $exception->reason(),
+            'message' => $exception->getMessage(),
+            'errors' => $exception->validationErrors(),
+        ], 422);
     }
 
     private static function commandResponse(CommandResult $result, int $status, ?string $workflowType = null)

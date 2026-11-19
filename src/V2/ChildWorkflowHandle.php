@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Workflow\V2;
 
+use Workflow\V2\Support\SignalExternalWorkflowCall;
+
 final class ChildWorkflowHandle
 {
     public function __construct(
@@ -59,6 +61,22 @@ final class ChildWorkflowHandle
     public function signal(string $name, ...$arguments): ?CommandResult
     {
         return $this->signalWithArguments($name, $arguments);
+    }
+
+    /**
+     * Durably signal this child from the parent's workflow code.
+     *
+     * Unlike {@see signal()}, which sends directly, this is the durable
+     * signal-external command: it is recorded once in the parent's history and
+     * replay returns the recorded {@see ExternalSignalResult} without sending
+     * again. It targets the child's current run.
+     *
+     * @experimental Durable signal-external may change in a minor release.
+     * See docs/api-stability.md#durable-signal-external.
+     */
+    public function signalDurably(string $name, mixed ...$arguments): ExternalSignalResult|SignalExternalWorkflowCall
+    {
+        return signalExternalWorkflow($this->workflowInstanceId, $name, $arguments);
     }
 
     /**

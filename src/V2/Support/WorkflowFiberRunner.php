@@ -579,6 +579,38 @@ final class WorkflowFiberRunner
                 continue;
             }
 
+            if ($current instanceof SignalExternalWorkflowCall) {
+                // Replay returns the recorded outcome. A new delivery needs the
+                // embedded executor's transaction; this runner never sends one.
+                $historySequence = $this->historySequenceForCurrentPosition();
+                $result = null;
+                if ($historySequence !== null) {
+                    WorkflowStepHistory::assertCompatible(
+                        $this->workflow->run,
+                        $historySequence,
+                        WorkflowStepHistory::EXTERNAL_SIGNAL,
+                    );
+                    $result = ExternalSignalHistory::recordedResult($this->workflow->run, $historySequence, $current);
+                }
+
+                if ($result === null) {
+                    throw new UnsupportedWorkflowYieldException(
+                        'Durable signal-external currently requires embedded native execution.'
+                    );
+                }
+
+                ++$this->sequence;
+                $this->sendToWorkflow(
+                    $result,
+                    RedriveReplayClock::recordedAt(
+                        ExternalSignalHistory::resolutionEvent($this->workflow->run, $historySequence),
+                    ),
+                    advanceCancellationTime: false,
+                );
+
+                continue;
+            }
+
             if ($current instanceof UpsertMemoCall) {
                 $historySequence = $this->historySequenceForCurrentPosition();
                 $recorded = $historySequence === null
@@ -1671,6 +1703,9 @@ final class WorkflowFiberRunner
             'ServiceCallFailed',
             'ServiceCallCancelled',
             'SideEffectRecorded',
+            'ExternalSignalRequested',
+            'ExternalSignalDelivered',
+            'ExternalSignalFailed',
             'VersionMarkerRecorded',
             'MemoUpserted',
             'SearchAttributesUpserted',

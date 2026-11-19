@@ -1,0 +1,58 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "signal-external-request-without-outcome",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner",
+    "query-state-replayer",
+    "workflow-executor"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestSignalExternalSenderWorkflow",
+    "arguments": [
+      [
+        {
+          "workflow_id": "order-42",
+          "signal": "approve",
+          "arguments": [
+            "Ada"
+          ]
+        }
+      ]
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-19T12:00:00Z"
+    },
+    {
+      "sequence": 2,
+      "event_type": "ExternalSignalRequested",
+      "payload": {
+        "sequence": 1,
+        "target_workflow_instance_id": "order-42",
+        "target_workflow_run_id": null,
+        "signal_name": "approve",
+        "arguments": {
+          "codec": "avro",
+          "blob": "wwHioz3/VYAiNwwCCgZBZGEA"
+        },
+        "payload_codec": "avro",
+        "request_id": "workflow-signal:01j00000000000000000000s01:1"
+      },
+      "recorded_at": "2026-11-19T12:00:01Z"
+    }
+  ],
+  "expected_failure": {
+    "type": "workflow_history_shape_mismatch",
+    "exception": "Workflow\\V2\\Exceptions\\HistoryEventShapeMismatchException"
+  }
+}
