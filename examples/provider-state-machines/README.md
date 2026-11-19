@@ -200,6 +200,43 @@ remain pinned. Provider operation keys do not depend on task/attempt IDs.
 retained scope pair together; a trusted live ownership callback is still
 mandatory before native storage. Portable descriptors alone grant no authority.
 
+### Cancellation after handover
+
+Business cancellation after the original carrier handover cannot settle until
+the parcel is back in the warehouse and inspected. This is the intended outcome
+of the full-parcel policy, both while the parcel is in transit and after
+delivery. The original runs do not wait for the return; retained recovery
+settles it afterwards.
+
+1. While the Order and FullShipment runs are open, `CancellationStore::request()`
+   returns `requested` with the `origin` route. FullShipment requests the
+   full-parcel return (`request-return`). Its `shipment.fulfillment` obligation
+   stays `unknown` with reason `shipment-physical-return-unsettled`, and the
+   Order's shipment obligation stays `unknown` with `reserved-child-unresolved`.
+   The captured Payment is not refunded and the reservation is not released.
+   Both native runs fail with `scope_compensation_unknown`. The Order keeps its
+   business state (`ready` in transit) and never reports `cancelled`. For a
+   delivered Order whose runs have closed, the request routes directly to
+   recovery, which stays unsettled in the same way.
+2. The task watchdog routes the accepted request to retained recovery (#1205).
+   That recovery retries for one bounded window, then fails while the parcel is
+   still out. A warehouse receipt alone is not settlement: nothing is restocked
+   or refunded.
+3. `ScopeRecovery::describe()` for the Order's root scope then reports
+   `submit_fresh_authorized_request`. The Shipment's child scope lists
+   `shipment.fulfillment` with `shipment-physical-return-unsettled`. Once the
+   warehouse has recorded the receipt and an inspection that accepts the full
+   quantity as saleable, submit one fresh authorized cancellation request key.
+   Recovery confirms the return, restocks the inspected units once, refunds the
+   original capture and releases the original reservation, in that order.
+4. With `CancellationFinalizer` registered, the Order commits `cancelled` when
+   that recovery completes. Without it, call `CancellationStore::finish()`.
+
+A partial, damaged or missing return keeps the scope unresolved and needs its
+own settlement decision. Recovery does not change the original Order or
+Shipment histories. `V2PhysicalInTransitCancellationTest` covers the in-transit
+case end to end. `V2PhysicalShipmentMachineTest` covers the delivered parcel.
+
 ## Partial customer return after delivery
 
 The `authorization-after-stock` recipe can opt into the same explicit unit
@@ -397,14 +434,28 @@ the incident waits for it with recorded observations:
 
 | Situation | Decision |
 | --- | --- |
-| Refund processing | The incident keeps waiting for the gateway outcome. The claim is filed only after the decision. |
+| Refund processing | The incident keeps waiting for the gateway outcome, within the bounded recorded wait. The claim is filed only after the decision. |
+| Refund still processing when the bounded wait ends | A final check reads the same refund: confirmed by then, `settled`, `refunded`. Otherwise `owed`, `refund-unresolved`, and nothing more is paid automatically. |
 | Refund refused or not executed | `owed`, `refund-refused`. Nothing is paid, and the customer is explicitly owed an operator decision. |
 | Replacement booking refused | `provider.incident.release` releases the unused reservation (`transit.<incident>.release`). Then every original unit is refunded: `settled`, `refunded-replacement-failed`, `replacementFailure` `booking-refused`. |
 | Replacement confirmed lost, damaged or not collected by the carrier | Every original unit is refunded: `settled`, `refunded-replacement-failed`, `replacementFailure` names the carrier event. The reservation is not released, because the stock left with the replacement parcel. |
-| Replacement neither delivered nor failed within the bounded recorded wait (32 carrier-progress wakes) | `owed`, `replacement-unresolved`. Nothing is refunded automatically, because the parcel may still arrive. |
+| Replacement neither delivered nor failed within the bounded recorded wait | `owed`, `replacement-unresolved`. Nothing is refunded automatically, because the parcel may still arrive. |
 
 A fallback refund uses the same refund identity. The gateway's repayment
-accounting pays each unit at most once.
+accounting pays each unit at most once. A provider confirmation that arrives
+after `refund-unresolved` pays that same refund once. `IncidentStore::refund()`
+shows it to an operator: the request key, provider status, confirmed units and
+payout. A retry of the same identity pays nothing more, and the decided
+incident outcome does not change.
+
+The replacement delivery wait and the remedy decision wait are bounded by
+recorded wakes, not by time. Each wake is one `incident-milestone` signal from
+the host, followed by one recorded boundary check. The host signals when
+provider or carrier state changes. `Authority` takes `transitWakes:` (default
+and maximum 32). Each incident records the bound once at initialization, so a
+later configuration change never alters a running incident. Histories recorded
+before the setting keep 32. An exhausted wait never fails the incident or the
+Order; it ends with one of the explicit `owed` decisions above.
 
 After the customer remedy is decided, the incident files `provider.incident.claim`:
 a carrier claim with its own identity (`shipment.full.carrier-claim.<incident>`).
@@ -451,6 +502,9 @@ delivered replacement needs a separate return policy.
   refund and after settlement;
 - a refused replacement booking and a failed replacement delivery;
 - the unresolved-replacement and refused-refund owed outcomes;
+- a refund still processing when the bounded wait ends (`refund-unresolved`),
+  its later provider confirmation paying once, and a confirmation at the bound
+  settling the same refund;
 - replay and substitution.
 
 `V2TransitIncidentProcessLossTest` kills real workers after each of these

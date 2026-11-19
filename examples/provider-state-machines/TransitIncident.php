@@ -33,11 +33,13 @@ final class TransitIncident extends Workflow
         $execute = static fn (array $obligation): array => $scope->register(Obligation::fromArray($obligation))
             ->execute();
         $obligations = $initial['obligations'];
+        // The recorded wake bound of the trusted grant; histories recorded without one keep the original bound.
+        $wakes = $initial['wakes'] ?? IncidentWait::WAKES;
         if ($initial['policy'] === TransitPolicy::REPLACE) {
             // An unknown reservation outcome is reconciled by the same operation; only refusal is unavailability.
             $reserved = $execute($obligations['reserve']);
             if ($reserved['status'] === 'confirmed') {
-                $this->replace($execute, $obligations);
+                $this->replace($execute, $obligations, $wakes);
             } elseif ($reserved['status'] === 'refused') {
                 // Selected policy: a definitively unavailable replacement refunds every original unit instead.
                 $execute($obligations['refund']);
@@ -45,8 +47,9 @@ final class TransitIncident extends Workflow
         } else {
             $execute($obligations['refund']);
         }
-        // Every remedy ends explicitly: settled, or owed after a refused refund or an unresolved replacement.
-        IncidentWait::settlement();
+        // Every remedy ends explicitly: settled, or owed after a refused refund, an unresolved replacement or a
+        // refund still processing when the bounded wait ends.
+        IncidentWait::settlement($wakes);
         // The carrier claim and damaged-goods recovery follow the customer remedy and never gate it.
         $execute($obligations['claim']);
         if (isset($obligations['recover']) && $execute($obligations['recover'])['status'] === 'confirmed') {
@@ -62,7 +65,7 @@ final class TransitIncident extends Workflow
      * Books the reserved replacement and waits for its carrier outcome. A refused booking releases the unused
      * reservation, and a carrier-confirmed replacement failure keeps the shipped stock; both refund instead.
      */
-    private function replace(callable $execute, array $obligations): void
+    private function replace(callable $execute, array $obligations, int $wakes): void
     {
         $booked = $execute($obligations['book']);
         if ($booked['status'] === 'refused') {
@@ -73,7 +76,7 @@ final class TransitIncident extends Workflow
         if ($booked['status'] !== 'confirmed') {
             return;
         }
-        $delivery = IncidentWait::delivery();
+        $delivery = IncidentWait::delivery($wakes);
         if ($delivery['action'] === 'failed') {
             $execute($obligations['refund']);
         } elseif ($delivery['action'] === 'unresolved') {
