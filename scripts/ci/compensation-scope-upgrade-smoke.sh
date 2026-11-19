@@ -11,19 +11,10 @@
 set -euo pipefail
 
 laravel_version="${LARAVEL_VERSION:?Set LARAVEL_VERSION to a supported Laravel constraint such as 12.*}"
-baseline_version="${WORKFLOW_BASELINE_VERSION:-2.28.1}"
-candidate_version="${WORKFLOW_CANDIDATE_VERSION:-}"
-candidate_path="${WORKFLOW_CANDIDATE_PATH:-}"
 
-if [ -n "$candidate_version" ] && [ -n "$candidate_path" ]; then
-  echo "Set only one of WORKFLOW_CANDIDATE_VERSION or WORKFLOW_CANDIDATE_PATH." >&2
-  exit 1
-fi
-
-if [ -z "$candidate_version" ] && [ -z "$candidate_path" ]; then
-  echo "Set WORKFLOW_CANDIDATE_VERSION for a published release or WORKFLOW_CANDIDATE_PATH for source qualification." >&2
-  exit 1
-fi
+# shellcheck source=scripts/ci/upgrade-journey-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/upgrade-journey-lib.sh"
+upgrade_journey_init 2.28.1
 
 temporary_root="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 if [ -d /dev/shm ] && [ -w /dev/shm ]; then
@@ -50,25 +41,8 @@ trap 'echo "Compensation scope upgrade journey failed at line ${LINENO}: ${BASH_
 
 ledger_tables='workflow_compensation_scopes,workflow_compensation_obligations,workflow_compensation_requests,workflow_compensation_children,workflow_compensation_journal'
 
-composer create-project "laravel/laravel:${laravel_version}" "$app_path" \
-  --no-interaction --no-progress --prefer-dist --no-blocking --quiet
+create_upgrade_app "$laravel_version" "$app_path"
 cd "$app_path"
-
-set_env() {
-  php -r '
-    $contents = file_get_contents(".env");
-    if (!is_string($contents)) {
-        fwrite(STDERR, "Unable to read .env\n");
-        exit(1);
-    }
-    $line = $argv[1] . "=" . $argv[2];
-    $pattern = "/^" . preg_quote($argv[1], "/") . "=.*$/m";
-    $contents = preg_match($pattern, $contents) === 1
-        ? preg_replace($pattern, $line, $contents)
-        : rtrim($contents) . PHP_EOL . $line . PHP_EOL;
-    file_put_contents(".env", $contents);
-  ' "$1" "$2"
-}
 
 set_env APP_NAME '"Compensation Upgrade Host"'
 set_env APP_ENV testing
@@ -79,56 +53,6 @@ set_env CACHE_DRIVER file
 set_env CACHE_STORE file
 set_env DW_V2_QUEUE workflow-v2
 php artisan key:generate --force --no-interaction
-
-resolved_workflow() {
-  composer show durable-workflow/workflow --format=json | php -r '
-    $package = json_decode(stream_get_contents(STDIN), true, 512, JSON_THROW_ON_ERROR);
-    echo ltrim((string) $package["versions"][0], "v");
-  '
-}
-
-require_baseline() {
-  composer require "durable-workflow/workflow:=${baseline_version}" \
-    --with-all-dependencies --no-interaction --no-progress --no-blocking --quiet
-  local resolved
-  resolved=$(resolved_workflow)
-  if [ "$resolved" != "$baseline_version" ]; then
-    echo "Expected baseline ${baseline_version}, resolved ${resolved}." >&2
-    exit 1
-  fi
-}
-
-require_candidate() {
-  if [ -n "$candidate_path" ]; then
-    composer config repositories.workflow "$(php -r '
-      echo json_encode([
-          "type" => "path",
-          "url" => $argv[1],
-          "options" => [
-              "symlink" => false,
-              "versions" => ["durable-workflow/workflow" => "2.0.x-dev"],
-          ],
-      ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
-    ' "$candidate_path")"
-    composer require durable-workflow/workflow:2.0.x-dev \
-      --with-all-dependencies --no-interaction --no-progress --no-blocking --quiet
-    expected_candidate='2.0.x-dev'
-  else
-    composer require "durable-workflow/workflow:=${candidate_version}" \
-      --with-all-dependencies --no-interaction --no-progress --no-blocking --quiet
-    expected_candidate="$candidate_version"
-  fi
-  local resolved
-  resolved=$(resolved_workflow)
-  if [ "$resolved" != "$expected_candidate" ]; then
-    echo "Expected candidate ${expected_candidate}, resolved ${resolved}." >&2
-    exit 1
-  fi
-}
-
-if [ -n "$candidate_path" ]; then
-  candidate_path=$(cd "$candidate_path" && pwd)
-fi
 
 write_sources() {
   mkdir -p app/CompensationUpgrade
@@ -276,15 +200,7 @@ final class CompensationUpgradeServiceProvider extends ServiceProvider
 }
 PHP
 
-  php -r '
-    $path = "bootstrap/providers.php";
-    $providers = require $path;
-    $provider = "App\\Providers\\CompensationUpgradeServiceProvider";
-    if (!in_array($provider, $providers, true)) {
-        $providers[] = $provider;
-    }
-    file_put_contents($path, "<?php\n\nreturn " . var_export($providers, true) . ";\n");
-  '
+  register_provider "App\\Providers\\CompensationUpgradeServiceProvider"
 
   cat > routes/console.php <<'PHP'
 <?php
@@ -412,38 +328,6 @@ schema_snapshot() {
   '
 }
 
-json_assert() {
-  local json="$1"
-  local expression="$2"
-  local message="$3"
-
-  printf '%s' "$json" | EXPRESSION="$expression" MESSAGE="$message" php -r '
-    $r = json_decode(stream_get_contents(STDIN), true, 512, JSON_THROW_ON_ERROR);
-    if (eval("return " . getenv("EXPRESSION") . ";") !== true) {
-        fwrite(STDERR, getenv("MESSAGE") . "\n" . json_encode($r, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
-        exit(1);
-    }
-  '
-}
-
-json_field() {
-  php -r '
-    $data = json_decode(stream_get_contents(STDIN), true, 512, JSON_THROW_ON_ERROR);
-    echo $data[$argv[1]];
-  ' "$1"
-}
-
-artisan_output() {
-  local output
-
-  if ! output=$(php artisan "$@" 2>&1); then
-    printf '%s\n' "$output" >&2
-    return 1
-  fi
-
-  printf '%s' "$output"
-}
-
 queue_depth() {
   DATABASE_PATH="$database_path" php -r '
     $database = new PDO("sqlite:" . getenv("DATABASE_PATH"));
@@ -537,17 +421,7 @@ origin_history=$(hash_origin_history "$origin_run_id")
 # batch runs down(), so the schema and migration records stay intact.
 ledger_before=$(hash_tables "$ledger_tables")
 schema_before=$(schema_snapshot)
-if rollback_output=$(COLUMNS=1000 php artisan migrate:rollback --force --no-interaction 2>&1 | tr -s ' \n' ' '; exit "${PIPESTATUS[0]}"); then
-  printf '%s\n' "$rollback_output" >&2
-  echo 'Schema rollback discarded retained compensation scopes.' >&2
-  exit 1
-fi
-if ! grep -q 'Retained compensation scopes cannot be discarded by a schema rollback' <<<"$rollback_output" \
-  || ! grep -q 'refused before any migration ran' <<<"$rollback_output"; then
-  printf '%s\n' "$rollback_output" >&2
-  echo 'Schema rollback failed for an unexpected reason.' >&2
-  exit 1
-fi
+expect_rollback_refused 'Schema rollback discarded retained compensation scopes.'
 if [ "$(hash_tables "$ledger_tables")" != "$ledger_before" ]; then
   echo 'A refused schema rollback changed retained compensation rows.' >&2
   exit 1
@@ -558,9 +432,6 @@ if [ "$(schema_snapshot)" != "$schema_before" ]; then
 fi
 
 # 6. Code downgrade to the baseline keeps the ledger but cannot recover it.
-if [ -n "$candidate_path" ]; then
-  composer config --unset repositories.workflow
-fi
 require_baseline
 php artisan queue:restart --no-interaction
 engine=$(artisan_output upgrade:engine)
@@ -617,12 +488,7 @@ artisan_output upgrade:scope-release >/dev/null
 scope_state=$(artisan_output upgrade:scope-inspect)
 json_assert "$scope_state" '$r["scope_status"] === "released"' "Explicit release did not retire the scope."
 schema_before=$(schema_snapshot)
-if rollback_output=$(COLUMNS=1000 php artisan migrate:rollback --force --no-interaction 2>&1 | tr -s ' \n' ' '; exit "${PIPESTATUS[0]}"); then
-  printf '%s\n' "$rollback_output" >&2
-  echo 'Schema rollback discarded a released scope tombstone.' >&2
-  exit 1
-fi
-grep -q 'Retained compensation scopes cannot be discarded by a schema rollback' <<<"$rollback_output"
+expect_rollback_refused 'Schema rollback discarded a released scope tombstone.'
 if [ "$(ledger_rows)" -ne 2 ] || [ "$(schema_snapshot)" != "$schema_before" ]; then
   echo 'A refused rollback removed released tombstone rows or part of its batch.' >&2
   exit 1

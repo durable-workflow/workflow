@@ -491,6 +491,10 @@ class BuildWorkflowTrustTest(unittest.TestCase):
             {"published-package"},
             workflow_job_ancestors(self.release_verification, "compensation-upgrade"),
         )
+        self.assertEqual(
+            {"published-package"},
+            workflow_job_ancestors(self.release_verification, "state-machine-upgrade"),
+        )
 
     def test_target_branch_jobs_skip_pull_requests(self) -> None:
         for job in (
