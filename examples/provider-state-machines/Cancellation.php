@@ -13,7 +13,9 @@ final class Cancellation extends Workflow
 {
     public function handle(string $key, string $rootRun, string $requestKey): array
     {
-        $machine = new Machine($this, self::activity(BoundaryActivity::class, 'initialize-finalizer', ['arguments' => [$key, $rootRun, $requestKey]]));
+        $machine = new Machine($this, self::activity(BoundaryActivity::class, 'initialize-finalizer', [
+            'arguments' => [$key, $rootRun, $requestKey],
+        ]));
         return $machine->transition('cancel')
             ->toArray();
     }

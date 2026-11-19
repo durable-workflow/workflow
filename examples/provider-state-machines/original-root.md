@@ -86,6 +86,9 @@ $result = app(RootCancellationStore::class)->request(
 The old failed execution remains retained. The recovery successor binds its exact
 predecessor and original scope; the host does not choose a new root generation.
 The API does not generate fresh recovery keys or repeat failed work automatically.
+When the original root closes with an accepted request still unverified, the task
+watchdog routes that same request to canonical recovery (#1205). That is not a
+fresh key, and it does not repeat a failed recovery run.
 
 These are host or recorded-activity boundaries. Calling them during workflow
 replay or from a caller-owned transaction is refused before business storage.

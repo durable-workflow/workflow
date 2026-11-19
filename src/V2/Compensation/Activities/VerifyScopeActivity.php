@@ -8,6 +8,7 @@ use Workflow\V2\Activity;
 use Workflow\V2\Attributes\Type;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
 use Workflow\V2\Compensation\Persistence\ScopeProgress;
+use Workflow\V2\Compensation\Recovery\CompensationWake;
 use Workflow\V2\Compensation\Security\ScopeBoundary;
 
 /**
@@ -23,12 +24,15 @@ final class VerifyScopeActivity extends Activity
     public function handle(array $identity): array
     {
         $scope = ScopeIdentity::fromArray($identity);
-        return app(ScopeBoundary::class)->run(
+        $result = app(ScopeBoundary::class)->run(
             $this,
             $scope,
             'compensate',
             null,
             static fn () => app(ScopeProgress::class)->finish($scope)
         );
+        // A parent waiting to retry this child participant can now verify it.
+        CompensationWake::parentOf($scope);
+        return $result;
     }
 }

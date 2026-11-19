@@ -8,6 +8,7 @@ use Workflow\V2\Attributes\Type;
 use Workflow\V2\Compensation\Activities\CompensateObligationActivity;
 use Workflow\V2\Compensation\Activities\PrepareRecoveryActivity;
 use Workflow\V2\Compensation\Activities\VerifyScopeActivity;
+use Workflow\V2\Support\ActivityOptions;
 use Workflow\V2\Workflow;
 
 /**
@@ -20,12 +21,22 @@ use Workflow\V2\Workflow;
 #[Type('dw.compensation.recovery.v1')]
 final class RecoveryWorkflow extends Workflow
 {
+    public const LEASE_REPAIR_RETRY = 'dw.compensation.recovery-lease-repair-retry';
+
     public function handle(array $scope): array
     {
         self::getVersion('dw.compensation.recovery-activities', 1, 1);
         $obligations = self::activity(PrepareRecoveryActivity::class, $scope);
+        // Runs recorded before #1205 keep the class-default three attempts and replay unchanged.
+        $options = null;
+        if (self::patched(self::LEASE_REPAIR_RETRY)) {
+            $backoff = self::sideEffect(static fn (): array => CompensationRetrySchedule::backoff());
+            $options = new ActivityOptions(maxAttempts: CompensationRetrySchedule::ATTEMPTS, backoff: $backoff);
+        }
         foreach ($obligations as $id) {
-            $this->addCompensation(static fn () => self::activity(CompensateObligationActivity::class, $scope, $id));
+            $this->addCompensation(static fn () => $options === null
+                ? self::activity(CompensateObligationActivity::class, $scope, $id)
+                : self::activity(CompensateObligationActivity::class, $options, $scope, $id));
         }
         $this->compensate();
         return self::activity(VerifyScopeActivity::class, $scope);

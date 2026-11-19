@@ -108,6 +108,10 @@ final class V2RepairPassCommandTest extends TestCase
             'service_call_linked_candidates' => 0,
             'service_call_links_reconciled' => 0,
             'service_call_linked_failures' => [],
+            'compensation_recovery_candidates' => 0,
+            'compensation_recoveries_started' => 0,
+            'compensation_recovery_refusals' => 0,
+            'compensation_recovery_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -183,6 +187,10 @@ final class V2RepairPassCommandTest extends TestCase
             'service_call_linked_candidates' => 0,
             'service_call_links_reconciled' => 0,
             'service_call_linked_failures' => [],
+            'compensation_recovery_candidates' => 0,
+            'compensation_recoveries_started' => 0,
+            'compensation_recovery_refusals' => 0,
+            'compensation_recovery_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -390,6 +398,10 @@ final class V2RepairPassCommandTest extends TestCase
             'service_call_linked_candidates' => 0,
             'service_call_links_reconciled' => 0,
             'service_call_linked_failures' => [],
+            'compensation_recovery_candidates' => 0,
+            'compensation_recoveries_started' => 0,
+            'compensation_recovery_refusals' => 0,
+            'compensation_recovery_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -455,6 +467,10 @@ final class V2RepairPassCommandTest extends TestCase
             'service_call_linked_candidates' => 0,
             'service_call_links_reconciled' => 0,
             'service_call_linked_failures' => [],
+            'compensation_recovery_candidates' => 0,
+            'compensation_recoveries_started' => 0,
+            'compensation_recovery_refusals' => 0,
+            'compensation_recovery_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -537,6 +553,10 @@ final class V2RepairPassCommandTest extends TestCase
             'service_call_linked_candidates' => 0,
             'service_call_links_reconciled' => 0,
             'service_call_linked_failures' => [],
+            'compensation_recovery_candidates' => 0,
+            'compensation_recoveries_started' => 0,
+            'compensation_recovery_refusals' => 0,
+            'compensation_recovery_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -645,6 +665,10 @@ final class V2RepairPassCommandTest extends TestCase
             'service_call_linked_candidates' => 0,
             'service_call_links_reconciled' => 0,
             'service_call_linked_failures' => [],
+            'compensation_recovery_candidates' => 0,
+            'compensation_recoveries_started' => 0,
+            'compensation_recovery_refusals' => 0,
+            'compensation_recovery_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -728,6 +752,10 @@ final class V2RepairPassCommandTest extends TestCase
             'service_call_linked_candidates' => 0,
             'service_call_links_reconciled' => 0,
             'service_call_linked_failures' => [],
+            'compensation_recovery_candidates' => 0,
+            'compensation_recoveries_started' => 0,
+            'compensation_recovery_refusals' => 0,
+            'compensation_recovery_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -844,6 +872,10 @@ final class V2RepairPassCommandTest extends TestCase
             'service_call_linked_candidates' => 0,
             'service_call_links_reconciled' => 0,
             'service_call_linked_failures' => [],
+            'compensation_recovery_candidates' => 0,
+            'compensation_recoveries_started' => 0,
+            'compensation_recovery_refusals' => 0,
+            'compensation_recovery_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [
@@ -913,6 +945,10 @@ final class V2RepairPassCommandTest extends TestCase
             'service_call_linked_candidates' => 0,
             'service_call_links_reconciled' => 0,
             'service_call_linked_failures' => [],
+            'compensation_recovery_candidates' => 0,
+            'compensation_recoveries_started' => 0,
+            'compensation_recovery_refusals' => 0,
+            'compensation_recovery_failures' => [],
         ];
 
         $secondIteration = [
@@ -946,6 +982,10 @@ final class V2RepairPassCommandTest extends TestCase
             'service_call_linked_candidates' => 0,
             'service_call_links_reconciled' => 0,
             'service_call_linked_failures' => [],
+            'compensation_recovery_candidates' => 0,
+            'compensation_recoveries_started' => 0,
+            'compensation_recovery_refusals' => 0,
+            'compensation_recovery_failures' => [],
         ];
 
         $this->artisan('workflow:v2:repair-pass', [

@@ -476,13 +476,30 @@ provider operation keys remain unchanged.
 
 Child recovery executes independently of its parent's compensation activity.
 If the child's ledger is still unresolved when that activity exhausts its
-finite attempts, the original native run can fail before the child finishes.
-The parent scope stays requested and earlier compensation remains blocked.
-After inspecting the child's verified ledger or a confirmed late provider
-result, submit a fresh authorized cancellation request key to resume the
-original retained scope. Reusing the failed request key does not select a new
-recovery route. The finalizer still requires the original parent scope to be
-verified; a completed child recovery alone cannot settle the Order.
+finite in-origin attempts, the original native run can fail before the child
+finishes. The parent scope stays requested and earlier compensation remains
+blocked. On its next pass the task watchdog routes the accepted request to the
+parent's canonical recovery run (#1205), re-authorizing the original principal.
+That run waits long enough for one crashed child attempt to be repaired, and
+the child's verification wakes it. No operator request is needed. Submit a
+fresh authorized cancellation request key only when `ScopeRecovery::describe()`
+reports `recovery_authorization_failed`, or when a recovery run itself failed:
+for example, a refund that stayed unknown through all its attempts. Reusing a
+failed request key does not select a new recovery route. The finalizer still
+requires the original parent scope to be verified; a completed child recovery
+alone cannot settle the Order. `CancellationStore::finish()` remains the
+application's step after verification.
+
+**Recommended: finalize automatically.** DW settles compensation. The business
+`cancelled` commit is the application's decision. Register
+`CancellationFinalizer::register($events, $authority, $cancellations)` in the
+worker application. When a canonical recovery run completes for an Order's root
+scope, it calls `CancellationStore::finish()` with the earliest original request,
+so the Order reaches `cancelled` with no operator step. `finish()` refuses an
+unverified scope and is idempotent, so a repeated or early call changes nothing.
+`V2CheckoutProcessLossTest` runs its replacement worker with the finalizer
+registered. The cuts that lose a closed child's compensation worker end
+`cancelled` without any operator request.
 
 If the native root closes before genuine recorded owner registration, a missing
 scope stays unresolved. A host lookup, cancellation flag or terminal technical
@@ -621,8 +638,9 @@ financially unsettled until the original captured payment is verifiably
 refunded. It creates neither a booking nor a fictitious reservation release.
 The protected cancellation publication carries that stock-refusal receipt;
 a technical cancellation result alone is insufficient. A later confirmed
-refund can resume the original retained scope through a fresh authorized
-request and the existing proof-only finalizer.
+refund resumes the original retained scope: either a recovery run still
+waiting retries it, or a fresh authorized request routes recovery after an
+earlier run failed. The existing proof-only finalizer then settles the Order.
 
 The focused source cases are `V2PaymentFirstProviderMachineTest.php` and
 `V2CommonReserveFirstProviderMachineTest.php`; the original seven cases remain
@@ -1017,13 +1035,14 @@ invent the missing root scope; it stays unresolved until the recorded owner
 actually initializes. Recovery for an older period preserves the next period's
 separate charge, native owner and access.
 
-Run `vendor/bin/phpunit tests/Feature/V2/V2ServiceBillingPeriodTest.php` for the
-native service-only source scenarios, and
+Run `vendor/bin/phpunit tests/Feature/V2/V2ServiceBillingPeriodTest.php tests/Feature/V2/V2OrderBillingPeriodTest.php`
+for the native service-only and Order source scenarios, and
 `vendor/bin/phpunit tests/Unit/V2/StateMachine/BillingPeriodTest.php tests/Unit/V2/StateMachine/BillingPeriodReceiptTest.php`
 for contract and provider-receipt controls. These are synthetic source tests.
-The Order variants, complete crash/race/process-loss matrix, installed recovery,
-upgrade/rollback and publication acceptance remain unfinished. This source
-increment does not complete PAY-06, SUB-01 through SUB-04 or the full matrix.
+Worker loss during a period charge or refund is covered below. The remaining
+race matrix, installed recovery, upgrade/rollback and publication acceptance
+remain unfinished. This source increment does not complete PAY-06, SUB-01
+through SUB-04 or the full matrix.
 
 For period adapters, a fresh synthetic `Journal` can explicitly select
 `captureEffectTimes: true` before `install()`. The optional capability stores
@@ -1041,3 +1060,28 @@ retroactively migrate old provider databases. The simulator's independent
 provider clock is a business-fixture input; it is not installed elapsed-time
 or SDK/Server timer qualification. The native service adapter consumes these receipts only through its recorded,
 authorized host boundary described above.
+
+#### Subscription worker loss
+
+`V2ServiceBillingProcessLossTest` and `V2OrderBillingProcessLossTest` apply
+TECH-01 to both period associations. A real worker process stops with `SIGKILL`
+inside the native period operation, after the provider commits and before DW
+records the outcome. A new process recovers the same obligation through the
+production `TaskWatchdog`, using the same immutable period grants. Cuts:
+
+- service period, payment-first: the charge committed;
+- service period, ten-day grace: the charge committed on time, and the
+  replacement worker starts only after the fixed payment deadline;
+- service period: the refund committed after cancelling a paid period;
+- genuine period Order, grace: the Order's capture committed on time, and the
+  replacement starts only after the deadline.
+
+Each effect commits once, and the period keeps its original native run,
+obligation, deadline and provider commit time. While no worker is alive, live
+access still applies the fixed deadline. Recovery of an on-time charge then
+grants paid access, and its Order reserves stock without a second charge.
+Recovery neither charges nor admits the next period. Replay performs no provider I/O.
+
+These are source process-loss controls on synthetic providers. They need a
+shared application database and POSIX signals, and skip otherwise. Installed
+queue workers, host loss and real providers still need their own qualification.

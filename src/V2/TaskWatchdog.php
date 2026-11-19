@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Schema;
 use Throwable;
 use Workflow\Queue\DatabaseTaskDelivery;
 use Workflow\Support\CacheThrottle;
+use Workflow\V2\Compensation\Recovery\CompensationAutoRecovery;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Contracts\WorkflowTaskRepairProjectionRole;
 use Workflow\V2\Enums\RunStatus;
@@ -100,7 +101,11 @@ final class TaskWatchdog
      *     service_call_dispatch_failures: list<array{call_id: string, message: string}>,
      *     service_call_linked_candidates: int,
      *     service_call_links_reconciled: int,
-     *     service_call_linked_failures: list<array{call_id: string, message: string}>
+     *     service_call_linked_failures: list<array{call_id: string, message: string}>,
+     *     compensation_recovery_candidates: int,
+     *     compensation_recoveries_started: int,
+     *     compensation_recovery_refusals: int,
+     *     compensation_recovery_failures: list<array{scope_id: string, message: string}>
      * }
      */
     public static function runPass(
@@ -319,6 +324,13 @@ final class TaskWatchdog
             }
             SqliteMaintenanceYield::pause((new ActivityExecution())->getConnection());
         }
+
+        // A closed origin with an accepted, unverified compensation request routes to recovery (#1205).
+        $compensation = CompensationAutoRecovery::pass(TaskRepairPolicy::scanLimit(), $runIds, $namespaces);
+        $report['compensation_recovery_candidates'] = $compensation['candidates'];
+        $report['compensation_recoveries_started'] = $compensation['started'];
+        $report['compensation_recovery_refusals'] = $compensation['refused'];
+        $report['compensation_recovery_failures'] = $compensation['failures'];
 
         return $report;
     }
@@ -575,6 +587,10 @@ final class TaskWatchdog
             'service_call_linked_candidates' => 0,
             'service_call_links_reconciled' => 0,
             'service_call_linked_failures' => [],
+            'compensation_recovery_candidates' => 0,
+            'compensation_recoveries_started' => 0,
+            'compensation_recovery_refusals' => 0,
+            'compensation_recovery_failures' => [],
         ];
     }
 

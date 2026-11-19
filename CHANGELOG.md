@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+- A refused schema rollback no longer leaves part of its batch rolled back
+  (#1063). Before the migrator runs any `down()`, the package now checks every
+  guarded migration in the rollback or reset: the compensation ledger, the
+  child and root reservation fences, and the schedule occurrence receipts.
+  Previously, newer migrations in the same batch, such as the reservation
+  columns, were already dropped when the guard refused.
+- The Order/Shipment compensation example covers a compensation worker killed
+  after its SQL void commits, and a dispatched delivery whose compensation
+  fails after native retries. The operator sees the failure through
+  `cancellationOutcome()` and resolves it with `resubmitCancellation()`. Three
+  replay fixtures recorded from these runs pin the recovery histories.
+
+- A single worker crash during compensation now settles without operator
+  action (#1205):
+  - **Automatic recovery after closure.** When an origin closes with an
+    accepted but unverified compensation request, the task watchdog routes
+    that request to canonical recovery. It re-authorizes the original
+    principal and starts one recovery run per request, including under
+    concurrent passes or a racing manual request. A refused re-authorization
+    starts nothing and records `recovery_authorization_failed`.
+    `ScopeRecovery::describe()` reports it, and a fresh authorized request
+    still works.
+  - **Longer retries in recovery runs.** New recovery runs compensate with
+    six attempts. They wait 1, 2, 5 and 10 seconds, then one activity lease
+    plus one task-repair pass, so a crashed child attempt is reclaimed first.
+    The schedule is gated by `patched()` and recorded with `sideEffect()`.
+    Recovery runs recorded earlier replay with three attempts. In-origin
+    compensation keeps three attempts.
+  - **Prompt retries.** A waiting retry runs immediately when a child scope
+    verifies or an authorized request arrives. It keeps its attempt number
+    and recorded maximum.
+  - **Unchanged.** A persistent failure still fails the recovery run
+    explicitly.
+  - **Example finalizer.** The business `cancelled` commit stays the
+    application's `CancellationStore::finish()`. The provider state-machine
+    example adds `CancellationFinalizer` as the recommended pattern: it calls
+    `finish()` when the Order's recovery verifies.
+
 ## 2.30.0 - 2026-11-18
 
 - **Security fix:** webhook `token` authentication with no token configured
@@ -55,18 +93,6 @@
   change it. The example's unit refund no longer records a confirmed refund as
   unknown because of an over-long evidence reference. See
   `examples/provider-state-machines/README.md`.
-
-- A refused schema rollback no longer leaves part of its batch rolled back
-  (#1063). Before the migrator runs any `down()`, the package now checks every
-  guarded migration in the rollback or reset: the compensation ledger, the
-  child and root reservation fences, and the schedule occurrence receipts.
-  Previously, newer migrations in the same batch, such as the reservation
-  columns, were already dropped when the guard refused.
-- The Order/Shipment compensation example covers a compensation worker killed
-  after its SQL void commits, and a dispatched delivery whose compensation
-  fails after native retries. The operator sees the failure through
-  `cancellationOutcome()` and resolves it with `resubmitCancellation()`. Three
-  replay fixtures recorded from these runs pin the recovery histories.
 
 ## 2.29.1 - 2026-11-18
 

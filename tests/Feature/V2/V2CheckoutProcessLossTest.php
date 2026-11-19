@@ -19,9 +19,8 @@ use DurableWorkflow\Examples\ProviderStateMachines\StockWarehouse;
 use Illuminate\Support\Facades\DB;
 use PDO;
 use PHPUnit\Framework\Attributes\DataProvider;
-use Symfony\Component\Process\Exception\ProcessSignaledException;
-use Symfony\Component\Process\Process;
 use Tests\Support\ProviderMachineFixture;
+use Tests\Support\WorkerLossControl;
 use Tests\TestCase;
 use Workflow\V2\Compensation\Definition\ScopeIdentity;
 use Workflow\V2\Compensation\Persistence\ScopeRepository;
@@ -39,6 +38,7 @@ require_once __DIR__ . '/../../../examples/provider-state-machines/bootstrap.php
 final class V2CheckoutProcessLossTest extends TestCase
 {
     use ProviderMachineFixture;
+    use WorkerLossControl;
 
     private OrderTerms $order;
 
@@ -56,8 +56,8 @@ final class V2CheckoutProcessLossTest extends TestCase
             'cancellation races a lost capture' => ['provider.unit-payment', 'forward', true, false],
             'cancellation races a lost booking' => ['provider.effect', 'forward', true, false],
             // Closed child scopes compensate in a native recovery run, which retries after the watchdog repairs
-            // the lost lease. The parent's finite compensation attempts expire first: the Order closes unsettled
-            // and a fresh authorized recovery request plus the proof-only finalizer settle it.
+            // the lost lease. The Order's in-origin attempts expire first and the Order closes unsettled; the
+            // watchdog routes its accepted request to recovery, and the worker's finalizer commits cancellation.
             'booking cancellation committed' => ['provider.effect', 'compensate', false, true],
             'remaining repayment committed' => ['provider.unit-payment', 'compensate', false, true],
             'reservation release committed' => ['provider.stock', 'compensate', false, false],
@@ -69,14 +69,9 @@ final class V2CheckoutProcessLossTest extends TestCase
         string $handler,
         string $mode,
         bool $cancelWhileLost,
-        bool $freshRecovery
+        bool $originClosesUnsettled
     ): void {
-        if (! function_exists('posix_kill')) {
-            $this->markTestSkipped('The worker-loss control requires POSIX signals.');
-        }
-        if (DB::connection()->getConfig('database') === ':memory:') {
-            $this->markTestSkipped('A replacement worker process needs the shared application database.');
-        }
+        $this->requireWorkerLossSupport();
         $stub = $this->begin();
         $key = $this->order->subjectKey();
         $cancellation = app(CancellationStore::class);
@@ -85,14 +80,12 @@ final class V2CheckoutProcessLossTest extends TestCase
             $this->assertSame('booked', $this->authority->subject($key, 'order')->state, $this->progress());
             $cancellation->request($key, $stub->runId(), 'cancel-before-worker-loss');
         }
-        $input = tempnam(sys_get_temp_dir(), 'checkout-loss-input-');
-        $report = tempnam(sys_get_temp_dir(), 'checkout-loss-report-');
-        chmod($input, 0600);
-        chmod($report, 0600);
-        $process = null;
-        try {
-            $data = [
-                'phase' => 'crash',
+        $row = null;
+        $until = $mode === 'forward' && ! $cancelWhileLost ? 'booked' : 'cancelled';
+        [$cut, $resumed] = $this->loseWorkerThenRecover(
+            'tests/Support/CheckoutProcessLossProcessTest.php',
+            'DWF_CHECKOUT_PROCESS_INPUT',
+            [
                 'key' => $key,
                 'policy' => StockAllocation::PARTIAL,
                 'unitAmounts' => $this->unitAmounts(),
@@ -102,90 +95,49 @@ final class V2CheckoutProcessLossTest extends TestCase
                 'provider' => $this->providerPath,
                 'clock' => now()
                     ->toISOString(),
-                'database' => DB::connection()->getConfig(),
-                'redis' => config('database.redis'),
-                'cache' => config('cache'),
-                'report' => $report,
-            ];
-            $command = [PHP_BINARY, 'vendor/bin/phpunit', 'tests/Support/CheckoutProcessLossProcessTest.php'];
-            file_put_contents($input, json_encode($data, JSON_THROW_ON_ERROR));
-            $process = new Process($command, dirname(__DIR__, 3), [
-                'DWF_CHECKOUT_PROCESS_INPUT' => $input,
-            ], timeout: 300);
-            $process->start();
-            $crashed = $process->getPid();
-            try {
-                $process->wait();
-                $this->fail('The first worker must die at its selected provider cut. ' . $process->getOutput());
-            } catch (ProcessSignaledException $error) {
-                $this->assertSame(SIGKILL, $error->getProcess()->getTermSignal());
-            }
-            $cut = json_decode(file_get_contents($report), true, flags: JSON_THROW_ON_ERROR);
-            $this->assertSame($crashed, $cut['pid']);
-            $this->assertNotSame(getmypid(), $crashed);
-            $row = $this->obligation($cut);
-            // The provider effect exists; DW has not recorded its outcome.
-            if ($mode === 'forward') {
-                $this->assertSame('in_flight', $row['forward_status']);
-                $this->assertNull($row['forward_result']);
-            } else {
-                $this->assertNotSame('verified', $row['compensation_status']);
-            }
-            if ($cancelWhileLost) {
-                $cancellation->request($key, $stub->runId(), 'cancel-while-worker-lost');
-            }
-
-            $data['phase'] = 'resume';
-            $data['clock'] = $cut['clock'];
-            $data['until'] = $mode === 'forward' && ! $cancelWhileLost ? 'booked' : 'cancelled';
-            file_put_contents($input, json_encode($data, JSON_THROW_ON_ERROR));
-            file_put_contents($report, '');
-            $process = new Process($command, dirname(__DIR__, 3), [
-                'DWF_CHECKOUT_PROCESS_INPUT' => $input,
-            ], timeout: 300);
-            $process->run();
-            $this->assertTrue($process->isSuccessful(), $process->getOutput() . $process->getErrorOutput());
-            $resumed = json_decode(file_get_contents($report), true, flags: JSON_THROW_ON_ERROR);
-            $this->assertNotSame($crashed, $resumed['pid']);
-            $this->assertSame($freshRecovery, $resumed['idle']);
-            \Illuminate\Support\Carbon::setTestNow($resumed['clock']);
-            if ($freshRecovery) {
-                // No false business cancellation: the Order stays booked and its root scope unsettled.
-                $this->assertSame('booked', $resumed['state']);
-                $root = $this->authority->plan($key)
-                    ->rootScope();
-                $this->assertSame('requested', (new ScopeRepository())->metadata($root)['status'], $this->progress());
-                $this->assertSame('failed', WorkflowRun::query()->findOrFail($stub->runId())->status->value);
-                // Settled child work happened exactly once; the root release still waits behind its refund.
-                $this->assertSame(['capture', 'reserve', 'book', 'cancel-booking'], $this->effects());
-                $this->assertSame($handler === 'provider.unit-payment' ? [499, 1000] : [499], $this->payouts());
-                $this->assertSame(0, $this->warehouse->inventory('shop-a', 'sku-1')['available']);
-                $cancellation->request(
-                    $key,
-                    $stub->runId(),
-                    'cancel-before-worker-loss',
-                    'recover-after-worker-loss'
-                );
-                $this->drainLikeAWorker();
-                $this->assertSame(
-                    'started',
-                    $cancellation->finish($key, $stub->runId(), 'cancel-before-worker-loss')['status'],
-                    $this->progress()
-                );
-                $this->drainLikeAWorker();
-            } else {
-                $this->assertSame($data['until'], $resumed['state']);
-            }
-            if ($data['until'] === 'booked') {
-                $cancellation->request($key, $stub->runId(), 'cancel-after-worker-recovery');
-                $this->drain();
-            }
-        } finally {
-            if ($process !== null && $process->isRunning()) {
-                $process->stop(0, SIGKILL);
-            }
-            unlink($input);
-            unlink($report);
+            ],
+            function (array $cut, array $data) use (
+                $mode,
+                $until,
+                $cancelWhileLost,
+                $cancellation,
+                $key,
+                $stub,
+                &$row
+            ): array {
+                $row = $this->obligation($cut);
+                // The provider effect exists; DW has not recorded its outcome.
+                if ($mode === 'forward') {
+                    $this->assertSame('in_flight', $row['forward_status']);
+                    $this->assertNull($row['forward_result']);
+                } else {
+                    $this->assertNotSame('verified', $row['compensation_status']);
+                }
+                if ($cancelWhileLost) {
+                    $cancellation->request($key, $stub->runId(), 'cancel-while-worker-lost');
+                }
+                return [
+                    ...$data,
+                    'clock' => $cut['clock'],
+                    'until' => $until,
+                ];
+            },
+        );
+        $this->assertFalse($resumed['idle'], $this->progress());
+        $this->assertSame($until, $resumed['state']);
+        \Illuminate\Support\Carbon::setTestNow($resumed['clock']);
+        if ($originClosesUnsettled) {
+            // The Order's in-origin compensation failed fast and the Order closed unsettled. The fresh
+            // worker's watchdog routed its accepted request to recovery, which outlasted the child's lease
+            // repair (#1205). The worker application's finalizer then committed the business cancellation.
+            $this->assertSame('failed', WorkflowRun::query()->findOrFail($stub->runId())->status->value);
+            $root = $this->authority->plan($key)
+                ->rootScope();
+            $this->assertSame('verified', (new ScopeRepository())->metadata($root)['status'], $this->progress());
+        }
+        if ($until === 'booked') {
+            $cancellation->request($key, $stub->runId(), 'cancel-after-worker-recovery');
+            $this->drain();
         }
 
         $this->assertSame('cancelled', $this->authority->subject($key, 'order')->state, $this->progress());
@@ -205,12 +157,12 @@ final class V2CheckoutProcessLossTest extends TestCase
         $this->assertGreaterThanOrEqual(count($this->effects()), $this->providerRequests());
         $requests = $this->providerRequests();
         // Replay reproduces the original root outcome without provider I/O. A root that closed unsettled
-        // before the fresh recovery replays its same recorded compensation failure.
+        // before automatic recovery replays its same recorded compensation failure.
         try {
             app(WorkflowReplayer::class)->replay(WorkflowRun::query()->findOrFail($stub->runId()));
-            $this->assertFalse($freshRecovery, 'The unsettled original root must replay its recorded failure.');
+            $this->assertFalse($originClosesUnsettled, 'The unsettled original root must replay its recorded failure.');
         } catch (\RuntimeException $error) {
-            $this->assertTrue($freshRecovery, $error->getMessage());
+            $this->assertTrue($originClosesUnsettled, $error->getMessage());
             $this->assertSame('scope_compensation_unknown', $error->getMessage());
         }
         $this->assertSame($requests, $this->providerRequests());
