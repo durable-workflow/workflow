@@ -96,15 +96,24 @@ function nextSignificant(array $tokens, int $index): array|string|null
 /**
  * @param list<array|string> $tokens
  */
-function previousSignificant(array $tokens, int $index): array|string|null
+function previousSignificantIndex(array $tokens, int $index): ?int
 {
     for ($previous = $index - 1; $previous >= 0; --$previous) {
         $token = $tokens[$previous];
         if (! is_array($token) || ! in_array($token[0], [T_COMMENT, T_DOC_COMMENT, T_WHITESPACE], true)) {
-            return $token;
+            return $previous;
         }
     }
     return null;
+}
+
+/**
+ * @param list<array|string> $tokens
+ */
+function previousSignificant(array $tokens, int $index): array|string|null
+{
+    $previous = previousSignificantIndex($tokens, $index);
+    return $previous === null ? null : $tokens[$previous];
 }
 
 /** PHP 8.1 tokenizes `&` as T_AMPERSAND_(NOT_)FOLLOWED_BY_VAR_OR_VARARG, earlier versions as '&'. */
@@ -204,48 +213,111 @@ function groupEnd(array $tokens, int $open): ?int
 }
 
 /**
- * Index of the last token of the closure or arrow function at $index, or null when unknown.
+ * Index of the first token after $from that matches, or null.
  *
  * @param list<array|string> $tokens
+ * @param callable(array|string): bool $matches
  */
-function closureEnd(array $tokens, int $index): ?int
+function firstIndexAfter(array $tokens, int $from, callable $matches): ?int
 {
-    $open = $index;
-    while (isset($tokens[++$open]) && $tokens[$open] !== '(') {
-    }
-    $parameters = isset($tokens[$open]) ? groupEnd($tokens, $open) : null;
-    if ($parameters === null) {
-        return null;
-    }
-    if (isToken($tokens[$index], T_FUNCTION)) {
-        // Neither parameter defaults, `use` lists nor return types contain `{`: the first one opens the body.
-        $body = $parameters;
-        while (isset($tokens[++$body]) && $tokens[$body] !== '{') {
-        }
-        return isset($tokens[$body]) ? groupEnd($tokens, $body) : null;
-    }
-    $arrow = $parameters;
-    while (isset($tokens[++$arrow]) && ! isToken($tokens[$arrow], T_DOUBLE_ARROW)) {
-    }
-    // The arrow function's expression ends before the first `;`, `,` or closing bracket at its own depth.
-    $depth = 0;
-    for ($end = $arrow + 1; isset($tokens[$end]); ++$end) {
-        $token = $tokens[$end];
-        if (opensGroup($token)) {
-            ++$depth;
-        } elseif (in_array($token, [')', ']', '}'], true) && $depth-- === 0) {
-            return $end;
-        } elseif ($depth === 0 && (in_array($token, [';', ','], true) || isToken($token, T_CLOSE_TAG))) {
-            return $end;
+    for ($index = $from + 1; isset($tokens[$index]); ++$index) {
+        if ($matches($tokens[$index])) {
+            return $index;
         }
     }
     return null;
 }
 
 /**
+ * Index of the token that opens the group closed at $close, or null.
+ *
+ * @param list<array|string> $tokens
+ */
+function groupStart(array $tokens, int $close): ?int
+{
+    $depth = 0;
+    for ($index = $close; $index >= 0; --$index) {
+        if (in_array($tokens[$index], [')', ']', '}'], true)) {
+            ++$depth;
+        } elseif (opensGroup($tokens[$index]) && --$depth === 0) {
+            return $index;
+        }
+    }
+    return null;
+}
+
+/**
+ * Index of the token ending an arrow function's expression: the first `;`, `,`, closing tag or closing
+ * bracket at the expression's own depth.
+ *
+ * @param list<array|string> $tokens
+ */
+function arrowExpressionEnd(array $tokens, int $arrow): ?int
+{
+    $depth = 0;
+    for ($end = $arrow + 1; isset($tokens[$end]); ++$end) {
+        $token = $tokens[$end];
+        $closes = in_array($token, [')', ']', '}'], true);
+        if ($depth === 0 && ($closes || in_array($token, [';', ','], true) || isToken($token, T_CLOSE_TAG))) {
+            return $end;
+        }
+        $depth += opensGroup($token) ? 1 : ($closes ? -1 : 0);
+    }
+    return null;
+}
+
+/**
+ * Index of the last token of the closure or arrow function at $index, or null when unknown.
+ *
+ * @param list<array|string> $tokens
+ */
+function closureEnd(array $tokens, int $index): ?int
+{
+    $open = firstIndexAfter($tokens, $index, static fn (array|string $token): bool => $token === '(');
+    $parameters = $open === null ? null : groupEnd($tokens, $open);
+    if ($parameters === null) {
+        return null;
+    }
+    if (isToken($tokens[$index], T_FUNCTION)) {
+        // Neither parameter defaults, `use` lists nor return types contain `{`: the first one opens the body.
+        $body = firstIndexAfter($tokens, $parameters, static fn (array|string $token): bool => $token === '{');
+        return $body === null ? null : groupEnd($tokens, $body);
+    }
+    $arrow = firstIndexAfter(
+        $tokens,
+        $parameters,
+        static fn (array|string $token): bool => isToken($token, T_DOUBLE_ARROW),
+    );
+    return $arrow === null ? null : arrowExpressionEnd($tokens, $arrow);
+}
+
+/**
+ * Index of the code token before the closure at $index, stepping back over its `static` keyword and
+ * attribute groups, so a span starting there covers the line ReflectionFunction reports as its start.
+ *
+ * @param list<array|string> $tokens
+ */
+function closureStart(array $tokens, int $index): int
+{
+    $first = $index;
+    while (($previous = previousSignificantIndex($tokens, $first)) !== null) {
+        $token = $tokens[$previous];
+        $group = $token === ']' ? groupStart($tokens, $previous) : null;
+        if (isToken($token, T_STATIC)) {
+            $first = $previous;
+        } elseif ($group !== null && isToken($tokens[$group], T_ATTRIBUTE)) {
+            $first = $group;
+        } else {
+            return $previous;
+        }
+    }
+    return $first;
+}
+
+/**
  * Line spans covering every closure and arrow function, in token order, or null when a bound is unknown.
- * Each span starts at the code token before the closure (and its `static` keyword and attributes) and
- * ends at the code token after it, so it covers every line ReflectionFunction reports for the closure.
+ * Each span runs from the code token before the closure to the code token after it, so it covers every
+ * line ReflectionFunction reports for the closure.
  *
  * @param list<array|string> $tokens
  *
@@ -263,34 +335,7 @@ function closureSpans(array $tokens): ?array
         if ($end === null) {
             return null;
         }
-        $first = $index;
-        for ($previous = $index - 1; $previous >= 0; --$previous) {
-            $token = $tokens[$previous];
-            if (is_array($token) && in_array($token[0], [T_COMMENT, T_DOC_COMMENT, T_WHITESPACE], true)) {
-                continue;
-            }
-            $first = $previous;
-            if (! isToken($token, T_STATIC) && $token !== ']') {
-                break;
-            }
-            if ($token === ']') {
-                // Step back over an attribute group: its T_ATTRIBUTE `#[` opens the matching `]`.
-                $depth = 0;
-                for (; $previous >= 0; --$previous) {
-                    if (in_array($tokens[$previous], [')', ']', '}'], true)) {
-                        ++$depth;
-                    } elseif (opensGroup($tokens[$previous]) && --$depth === 0) {
-                        break;
-                    }
-                }
-                if ($previous < 0 || ! isToken($tokens[$previous], T_ATTRIBUTE)) {
-                    break;
-                }
-                $first = $previous;
-            }
-        }
-        $after = nextSignificantIndex($tokens, $end) ?? $end;
-        $spans[] = [$lines[$first], $lines[$after]];
+        $spans[] = [$lines[closureStart($tokens, $index)], $lines[nextSignificantIndex($tokens, $end) ?? $end]];
     }
     return $spans;
 }
