@@ -362,7 +362,7 @@ a caller may observe:
   a row (3 by default), usually because the queue worker kills it at its
   job timeout. The operator must raise the worker's `--timeout` (or use
   `--timeout=0`). With `workflow_task_lost_leases.fail_run` enabled, the
-  next claim fails the run with a typed task failure instead (#1231).
+  next claim fails the run with a typed task failure instead.
 - `waiting_for_compatible_worker` — a task exists, but no live
   worker advertises the required compatibility marker.
 - `selected_run_not_current` — the caller selected a historical
