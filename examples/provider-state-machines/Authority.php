@@ -47,6 +47,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
         array $unitAmounts = [],
         array $stockPolicies = [],
         array $transitPolicies = [],
+        int $transitWakes = IncidentWait::WAKES,
     ) {
         PortableDescriptor::identifier($principal, 'authenticated principal');
         if (! array_is_list($subjects)) {
@@ -78,7 +79,7 @@ final readonly class Authority implements ChildScopeBindingAuthorization
         $this->roots = new RootPolicy($this, $reservedRoots);
         $this->unitMoney = new UnitMoneyPolicy($this, $unitAmounts, $subjects);
         $this->stock = new StockPolicy($this, $stockPolicies);
-        $this->transit = new TransitPolicy($this, $transitPolicies);
+        $this->transit = new TransitPolicy($this, $transitPolicies, $transitWakes);
     }
 
     public function recipe(string $key): string

@@ -19,10 +19,18 @@ final readonly class TransitPolicy
      */
     public const REPLACE = 'replace';
 
+    /**
+     * @param int $wakes Recorded incident wakes before an undelivered replacement or an undecided remedy ends
+     *                   explicitly owed; each new incident records it once at initialization.
+     */
     public function __construct(
         private Authority $authority,
         private array $policies,
+        private int $wakes = IncidentWait::WAKES,
     ) {
+        if ($wakes < 1 || $wakes > IncidentWait::WAKES) {
+            throw new LogicException('A transit remedy wait needs a positive wake bound of at most 32.');
+        }
         foreach ($policies as $key => $policy) {
             if (! is_string($key) || ! $authority->unitMoney->authorized($key)
                 || $authority->recipe($key) !== FinancialCatalogue::AFTER_STOCK
@@ -50,6 +58,11 @@ final readonly class TransitPolicy
             throw new LogicException('The original business generation has no trusted transit remedy policy.');
         }
         return $this->policies[$key];
+    }
+
+    public function wakes(): int
+    {
+        return $this->wakes;
     }
 
     public function version(string $key): string

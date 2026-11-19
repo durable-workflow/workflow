@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 2.33.0 - 2026-11-19
+
+Compensation scopes are **stable** from 2.33.0 (#1063). The classes and members
+listed in `docs/api-stability.md#compensation-scopes` are now `@api` and follow
+the 2.x compatibility policy. So do recorded compensation histories, which
+replay on every later 2.x release, the ledger storage, and the documented
+minimum limits, which never shrink. These stay **experimental** and may change
+in a minor release: `DurableScope::reserveChild()`, original root admission
+(`Admission\*`), parallel compensation and deeper nesting.
+
 - Compensation scopes are stable `@api` (#1063). Exactly the members listed in
   `docs/api-stability.md#compensation-scopes` are covered:
   - authoring: `DurableScope`, `RegisteredObligation`, `Obligation`, `ScopeIdentity`;
@@ -12,8 +22,33 @@
     the result enums, which may gain cases in a minor release.
 
   They now follow the 2.x compatibility policy, as do their recorded replay
-  identities, ledger storage and minimum limits. `DurableScope::reserveChild()` and
-  original root admission remain experimental.
+  identities, ledger storage and minimum limits. `DurableScope::reserveChild()`,
+  original root admission, parallel compensation and deeper nesting remain
+  experimental.
+
+  - **Upgrading from 2.29, 2.30 or 2.31.** Workflow 2.32.0 changed the
+    then-experimental API after its independent review (#1216); the 2.32.0
+    section lists every change. Code written against 2.29 to 2.31 needs these
+    upgrade notes:
+    - `Resolution::verified($evidence, true)` still works and raises an
+      `E_USER_DEPRECATED` notice; the flag is ignored. `verified($evidence, false)`
+      returns `unknown('late-forward-possible')`. Drop the second argument.
+    - `OperationContext::$uncertainForward` is replaced by `reconcileBeforeForward`
+      (when executing) and `forwardOutcomeUnconfirmed` (when compensating).
+    - An outcome that breaks the handler contract throws `HandlerContractViolation`.
+      The activity fails with non-retryable `scope_handler_contract_violation`
+      instead of being reported as `provider-outcome-unknown` and retried.
+    - The forward value limit (11,264 bytes, 400 values, depth 7) applies only to
+      runs that record the `dw.compensation.registration-checks` patch. Runs
+      recorded before it keep the earlier envelope limit.
+    - The five result enums (`ScopeStatus`, `RecoveryRoute`, `NextAction`,
+      `AutomaticRecovery`, `ObligationStatus`) may gain cases in a minor release.
+      Handle unknown values with a default branch.
+    - Only `ScopeAuthorizationRefused` refuses permanently. Any other exception
+      from `ScopeAuthorization` is transient and retried, and automatic recovery
+      stays on.
+    - The `ScopeRecovery` and `ScopeRetention` constructors are `@internal`;
+      resolve both from the container.
 
 - A run waiting for a signal is no longer given a no-op workflow task on every
   watchdog pass after a child closed that cannot resume it (#1219). This
@@ -28,6 +63,41 @@
   summaries are corrected the next time the run is projected, which the
   watchdog does before it would create a task. Recorded history is
   unchanged.
+- An embedded `all()` that a structural limit refuses is now refused before its
+  first member is written (#1232). Before, a member over `payload_size_bytes`, or
+  past the pending activity or child count, was refused only when its turn came, so
+  every member before it was already written: activities were recorded
+  `ActivityScheduled` and then cancelled by the run's failure, and children were
+  started and left to the parent-close policy. Now the group's pending activity and
+  child counts and each new activity's and child's stored argument size are checked,
+  in member order, before any member is written. The run fails with the same typed
+  `structural_limit` failure, and its history is `WorkflowStarted` then
+  `WorkflowFailed`. A continue-as-new refused for its payload size no longer changes
+  the instance's workflow class first. Recorded histories are unchanged: the
+  partial-group shape that 2.32.0 recorded replays as before
+  (`legacy-all-oversized-member-scheduled-then-cancelled`), and the new shape is
+  `all-oversized-member-refused-before-first-write`.
+- A pending-timer refusal inside `all()` is unchanged in every group shape (#1232).
+  As for a sequential `timer()`, it escapes the workflow task, whose transaction
+  rolls back every member written before it, and leaves the task failed and
+  recoverable. It keeps precedence over a later member's refusal: the check stops at
+  a timer the pending-timer limit may refuse and leaves that timer and every member
+  after it to their own dispatch, as before. A signal or condition wait with a
+  timeout is counted as opening its timeout timer, so the check also stops when such
+  a wait would leave the timer within the limit by not opening one; the members
+  after it are then guarded one at a time, as before.
+- Error precedence inside one `all()` (#1232): when an earlier member would fail a
+  check that the pre-write check does not repeat (a condition that throws, or an
+  error while writing that member) and a later activity or child is over a
+  structural limit, the run now fails with the later member's structural-limit error
+  before anything is written. Before, the earlier member's error came first. Checks
+  that are repeated keep their order: an earlier invalid activity class or attempt
+  count, or an earlier timer over the pending-timer limit, still wins.
+- The state-machine examples no longer check the result of
+  `verifyCompensation()` for a status other than `verified` (#1221). That branch
+  could never run: the call returns `verified` or fails its recorded activity.
+  The activity calls and their order are unchanged, so recorded commands are the
+  same. Examples only.
 
 - A wide `all()` no longer makes its workflow tasks grow with the square of the
   fan-out width (#1231, #1203). A 300-member fan-out of 10 KB activities took
