@@ -3,10 +3,17 @@
 declare(strict_types=1);
 
 const FEATURE_SHARDS = [
-    'mysql' => 22,
-    'postgresql' => 14,
+    'mysql' => 30,
+    'postgresql' => 17,
 ];
 const PULL_REQUEST_CONDITION = "github.event_name == 'pull_request'";
+
+// Shard budgets in predicted seconds. Each shard runs under a 20-minute
+// timeout, and hosted run times vary by about 30% between runs: a shard
+// predicted over 15 minutes is warned about, one predicted at the timeout
+// cannot pass and fails verification.
+const SHARD_WARNING_SECONDS = 900;
+const SHARD_TIMEOUT_SECONDS = 1200;
 
 $root = dirname(__DIR__, 2);
 $workflow = $root . '/.github/workflows/php.yml';
@@ -242,9 +249,20 @@ function verify_weight_profile(array $weights, string $profile, array $expectedF
     $weightedFiles = array_keys($weights[$profile]);
     sort($weightedFiles, SORT_STRING);
     $unexpected = array_values(array_diff($weightedFiles, $expectedFiles));
+    $unweighted = array_values(array_diff($expectedFiles, $weightedFiles));
 
-    // Timing rows are optional balancing hints. Newly discovered tests use the
-    // splitter's deterministic default and are verified in the shard inventory.
+    // Every feature file needs its measured run time, so a slow new suite
+    // rebalances the shards in its own pull request instead of timing out a
+    // shard on main later.
+    if ($unweighted !== []) {
+        fail(sprintf(
+            'Feature timing profile [%s] has no timing weight for: [%s]. Add each file\'s measured run time '
+            . '(seconds, from its JUnit report on that database) to .github/feature-test-timings.json.',
+            $profile,
+            implode(', ', $unweighted),
+        ));
+    }
+
     if ($unexpected !== []) {
         fail(sprintf(
             'Feature timing profile [%s] contains tests outside the discovered feature inventory: [%s].',
@@ -257,6 +275,60 @@ function verify_weight_profile(array $weights, string $profile, array $expectedF
 /**
  * @param list<string> $expectedFiles
  */
+/**
+ * Warn about any shard predicted over the warning budget, and fail one
+ * predicted at the timeout.
+ */
+function verify_shard_budget(
+    string $splitter,
+    string $featureDirectory,
+    string $weightsFile,
+    string $profile,
+    string $root,
+): void {
+    $summary = tempnam(sys_get_temp_dir(), 'feature-shard-summary-');
+    [$status, , $stderr] = run([
+        PHP_BINARY,
+        $splitter,
+        '--dir=' . relative_path($featureDirectory, $root),
+        '--shard=0',
+        '--shards=' . FEATURE_SHARDS[$profile],
+        '--weights=' . $weightsFile,
+        '--weight-profile=' . $profile,
+        '--summary=' . $summary,
+    ], $root);
+    $rows = $status === 0 ? (string) file_get_contents($summary) : '';
+    @unlink($summary);
+    if ($status !== 0) {
+        fail("Unable to summarize {$profile} shards: " . trim($stderr));
+    }
+
+    preg_match_all('/^shard=(\d+) files=\d+ estimated_weight=([0-9.]+)$/m', $rows, $matches, PREG_SET_ORDER);
+    foreach ($matches as [, $shard, $seconds]) {
+        $seconds = (float) $seconds;
+        if ($seconds >= SHARD_TIMEOUT_SECONDS) {
+            fail(sprintf(
+                'Feature shard %s/%s is predicted at %.0f s, at or over the %d s shard timeout. Add shards to '
+                . 'FEATURE_SHARDS and the workflow matrix, or split its slowest test file.',
+                $profile,
+                $shard,
+                $seconds,
+                SHARD_TIMEOUT_SECONDS,
+            ));
+        }
+        if ($seconds > SHARD_WARNING_SECONDS) {
+            printf(
+                "::warning title=Feature shard budget::Feature shard %s/%s is predicted at %.0f s, over the %d s "
+                . "budget that leaves room for run-to-run variance. Add shards or split its slowest test file.\n",
+                $profile,
+                $shard,
+                $seconds,
+                SHARD_WARNING_SECONDS,
+            );
+        }
+    }
+}
+
 function verify_split_inventory(
     string $splitter,
     string $featureDirectory,
@@ -293,6 +365,8 @@ function verify_split_inventory(
             $represented[] = relative_path($file, $root);
         }
     }
+
+    verify_shard_budget($splitter, $featureDirectory, $weightsFile, $profile, $root);
 
     $counts = array_count_values($represented);
     $duplicates = array_keys(array_filter($counts, static fn (int $count): bool => $count !== 1));
