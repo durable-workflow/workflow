@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 2.35.0 - 2026-11-20
+
+2.35.0 has no database migration. It adds **experimental** durable
+signal-external for embedded workflow code (.github#223); the API may change
+incompatibly in a minor release, never in a patch release, as
+`docs/api-stability.md#durable-signal-external` explains. **Upgrade note:**
+request IDs starting with `workflow-signal:` are now reserved, and a signal or
+signal-with-start that uses one is refused (422 `request_id_reserved` from the
+control plane and signal webhooks). Callers that already use that prefix must
+choose another before upgrading; see the first entry below.
+
 - Experimental durable signal-external (.github#223): embedded workflow code
   can signal another workflow in its namespace with
   `signalExternalWorkflow($workflowId, $signalName, $arguments, $runId)` (also
