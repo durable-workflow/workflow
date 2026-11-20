@@ -281,7 +281,7 @@ the contract it implements is not. The command, its history events, the
 `workflow-signal:` key and its outcomes follow the shipped Server 3.15.0
 contract (`docs/contracts/signal-external-workflow.md` in the server
 repository) and the published Python, PHP SDK and Rust SDKs. The PHP authoring
-names and result type have not shipped in any release.
+names and result type first shipped in Workflow 2.35.0.
 
 Only embedded workers deliver. The worker-protocol runner
 (`WorkflowFiberRunner`, used by external PHP workers) replays recorded
