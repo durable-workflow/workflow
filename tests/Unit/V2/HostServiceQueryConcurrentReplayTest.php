@@ -25,8 +25,10 @@ use Workflow\V2\Support\ServiceCallScheduler;
 final class HostServiceQueryConcurrentReplayTest extends TestCase
 {
     #[DataProvider('preparationRaces')]
-    public function testIndependentReplayCannotDispatchWhileTheClaimedQueryWaits(bool $simultaneous): void
-    {
+    public function testIndependentReplayCannotDispatchWhileTheClaimedQueryWaits(
+        bool $simultaneous,
+        string $firstWriter = 'first'
+    ): void {
         $connection = DB::connection();
         if (! in_array($connection->getDriverName(), ['sqlite', 'pgsql'], true)
             || $connection->getDatabaseName() === ':memory:'
@@ -109,17 +111,17 @@ final class HostServiceQueryConcurrentReplayTest extends TestCase
             $queryName = 'first';
             $pendingName = 'second';
             if ($simultaneous) {
-                foreach ($sockets as $socket) {
-                    fwrite($socket, "prepare\n");
-                }
-                $events = [];
-                foreach ($sockets as $name => $socket) {
-                    $events[$name] = $this->message($socket);
-                }
-                $queryName = ($events['first']['event'] ?? null) === 'query-started' ? 'first' : 'second';
+                // Both original transactions already hold the admission read above.
+                // Let one writer commit and claim before the stale reader upgrades.
+                // Otherwise three short retries race a scheduler-dependent chain of
+                // preparation/enqueue/claim writes rather than one stale snapshot.
+                $queryName = $firstWriter;
                 $pendingName = $queryName === 'first' ? 'second' : 'first';
-                $this->assertSame('query-started', $events[$queryName]['event'] ?? null, json_encode($events));
-                $second = $events[$pendingName];
+                fwrite($sockets[$queryName], "prepare\n");
+                $first = $this->message($sockets[$queryName]);
+                $this->assertSame('query-started', $first['event'] ?? null, json_encode($first));
+                fwrite($sockets[$pendingName], "prepare\n");
+                $second = $this->message($sockets[$pendingName]);
             } else {
                 $second = $this->message($sockets['second']);
             }
@@ -163,6 +165,7 @@ final class HostServiceQueryConcurrentReplayTest extends TestCase
     {
         yield 'replay during worker wait' => [false];
         yield 'simultaneous stale-read preparation' => [true];
+        yield 'reverse stale-read preparation' => [true, 'second'];
     }
 
     /**

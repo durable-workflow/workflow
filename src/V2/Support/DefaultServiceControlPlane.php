@@ -80,7 +80,7 @@ final class DefaultServiceControlPlane implements ServiceControlPlane
             $prepare = fn (): array => $this->execute($endpointName, $serviceName, $operationName, $options);
 
             return $hostQuery
-                ? SqliteTransaction::run($prepare, attempts: 3, connection: $connection)
+                ? $connection->transaction($prepare)
                 : $connection->transaction($prepare);
         }
 
