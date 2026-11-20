@@ -421,6 +421,54 @@ final class V2WatchdogNoopTaskTest extends TestCase
             ->child_workflow_run_id;
     }
 
+    public function testRvStaleSelectLoserHidesHandleAwaitedChild(): void
+    {
+        $workflow = WorkflowStub::make(\Tests\Fixtures\V2\RvStaleSignalHandleWorkflow::class, 'rv-stale', self::NAMESPACE);
+        $workflow->start();
+        $runId = $workflow->runId();
+        $this->drain($runId);
+        $workflow->signal('other', 'x');
+        $this->drain($runId);
+        $s = WorkflowRunSummary::query()->findOrFail($runId);
+        fwrite(STDERR, "\nSTALE before child close: {$s->liveness_state} | {$s->wait_kind} | {$s->wait_reason}\n");
+        $childId = WorkflowLink::query()->where('parent_workflow_run_id', $runId)->sole()->child_workflow_run_id;
+        $this->drain($childId);
+        $this->loseParentTask($runId);
+        $s = WorkflowRunSummary::query()->findOrFail($runId);
+        fwrite(STDERR, "STALE after child close+lost task: {$s->liveness_state} | {$s->wait_kind} | {$s->wait_reason}\n");
+        $report = TaskWatchdog::runPass(respectThrottle: false);
+        fwrite(STDERR, "STALE watchdog repaired={$report['repaired_missing_tasks']} selected={$report['selected_missing_task_candidates']}\n");
+        $this->drain($runId);
+        fwrite(STDERR, "STALE final status: ".WorkflowRun::query()->findOrFail($runId)->status->value."\n");
+        $this->assertTrue($workflow->refresh()->completed(), 'run stuck');
+    }
+
+    public function testRvAllChildSignalChildDone(): void
+    {
+        $workflow = WorkflowStub::make(\Tests\Fixtures\V2\RvAllChildSignalWorkflow::class, 'rv-all', self::NAMESPACE);
+        $workflow->start();
+        $runId = $workflow->runId();
+        $this->drain($runId);
+        $childId = WorkflowLink::query()->where('parent_workflow_run_id', $runId)->sole()->child_workflow_run_id;
+        $this->drain($childId);
+        $this->drain($runId);
+        $s = WorkflowRunSummary::query()->findOrFail($runId);
+        fwrite(STDERR, "\nALL after child done: {$s->liveness_state} | {$s->wait_kind} | {$s->wait_reason}\n");
+        $tasks = WorkflowTask::query()->where('workflow_run_id', $runId)->count();
+        for ($i = 0; $i < 3; ++$i) {
+            $r = TaskWatchdog::runPass(respectThrottle: false);
+            fwrite(STDERR, "ALL pass {$i} repaired={$r['repaired_missing_tasks']}\n");
+            $this->drain($runId);
+        }
+        $created = WorkflowTask::query()->where('workflow_run_id', $runId)->count() - $tasks;
+        fwrite(STDERR, "ALL tasks created by watchdog: {$created}\n");
+        $workflow->signal('proceed', 'go');
+        $this->drain($runId);
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame(0, $created, 'no-op tasks');
+    }
+
+
     /**
      * @param class-string $workflowClass
      * @return array{0: WorkflowStub, 1: string}
