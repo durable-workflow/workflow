@@ -344,6 +344,37 @@ final class V2WorkflowTaskLostLeaseTest extends TestCase
         }
     }
 
+    public function testTheSchemaCheckWindowFollowsTheFrameworkClock(): void
+    {
+        $this->travelTo(now()->startOfSecond());
+        $this->assertTrue(WorkflowTaskLeaseLoss::summaryTracked(true));
+        $queries = 0;
+        DB::listen(static function () use (&$queries): void {
+            $queries++;
+        });
+
+        // A frozen clock holds the cached check however long the test runs.
+        $this->travel(59)
+            ->seconds();
+        $this->assertTrue(WorkflowTaskLeaseLoss::summaryTracked());
+        $this->assertSame(0, $queries);
+
+        $this->travel(1)
+            ->seconds();
+        $this->assertTrue(WorkflowTaskLeaseLoss::summaryTracked());
+        $this->assertGreaterThan(0, $queries);
+
+        // A clock moved backwards re-checks once, then holds again.
+        $queries = 0;
+        $this->travel(-120)
+            ->seconds();
+        $this->assertTrue(WorkflowTaskLeaseLoss::summaryTracked());
+        $this->assertGreaterThan(0, $queries);
+        $queries = 0;
+        $this->assertTrue(WorkflowTaskLeaseLoss::summaryTracked());
+        $this->assertSame(0, $queries);
+    }
+
     protected function startQueueWorkersAutomatically(): bool
     {
         return false;
