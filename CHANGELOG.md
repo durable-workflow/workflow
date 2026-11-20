@@ -47,6 +47,10 @@
   Callers that already use that prefix must choose another before upgrading.
   Commands admitted earlier under such a key are unchanged.
 
+- The lost-lease schema check caches its result for 60 seconds by the framework
+  clock instead of PHP's `time()`, so a frozen test clock holds the window and
+  query-count tests no longer see an extra schema query on slow runs.
+
 ## 2.34.0 - 2026-11-19
 
 2.34.0 adds one migration (#1231): workflow tasks gain `lost_lease_count` and

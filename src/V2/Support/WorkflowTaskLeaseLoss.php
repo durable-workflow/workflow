@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
 use Workflow\V2\Enums\TaskStatus;
@@ -359,10 +360,15 @@ final class WorkflowTaskLeaseLoss
     {
         $key = $model->getConnectionName() . '|' . $model->getTable() . '|' . $column;
         $cached = self::$schemas[$key] ?? null;
-        $now = time();
+        // The framework clock, so a frozen test clock holds the window.
+        $now = Date::now()->getTimestamp();
 
-        if (! $fresh && $cached !== null && $now - $cached['checked_at'] < self::SCHEMA_RECHECK_SECONDS) {
-            return $cached['tracked'];
+        if (! $fresh && $cached !== null) {
+            $elapsed = $now - $cached['checked_at'];
+
+            if ($elapsed >= 0 && $elapsed < self::SCHEMA_RECHECK_SECONDS) {
+                return $cached['tracked'];
+            }
         }
 
         $tracked = $model->getConnection()
