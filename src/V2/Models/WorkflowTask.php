@@ -39,6 +39,7 @@ class WorkflowTask extends Model
         'payload' => 'array',
         'queue_delivery_reference' => 'array',
         'repair_count' => 'integer',
+        'lost_lease_count' => 'integer',
         'priority' => 'integer',
         'fairness_weight' => 'integer',
         'sticky_until' => 'datetime',
@@ -50,6 +51,7 @@ class WorkflowTask extends Model
         'last_dispatched_at' => 'datetime',
         'last_claim_failed_at' => 'datetime',
         'repair_available_at' => 'datetime',
+        'last_lease_lost_at' => 'datetime',
     ];
 
     public function run(): BelongsTo

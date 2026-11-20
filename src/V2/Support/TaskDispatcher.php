@@ -582,6 +582,11 @@ final class TaskDispatcher
             $job->onQueue($task->queue);
         }
 
+        if ($job instanceof RunWorkflowTask) {
+            // Opt-in: workflow tasks get their own timeout only when configured.
+            $job->timeout = WorkflowTaskJobTimeout::seconds($task->connection);
+        }
+
         if ($task->available_at !== null && $task->available_at->isFuture()) {
             // Queue backends store second-resolution deadlines. Never round a wakeup down.
             $availableAt = $task->available_at->copy()

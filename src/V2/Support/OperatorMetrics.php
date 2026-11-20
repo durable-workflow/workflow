@@ -132,6 +132,8 @@ final class OperatorMetrics
                 ? 0
                 : (int) $oldestReplayBlockedAt->diffInMilliseconds($now),
             'claim_failed' => self::claimFailedRuns($namespace),
+            // Additive: open runs whose workflow task keeps losing its lease.
+            'task_attention' => self::taskAttentionRuns($namespace),
             'compatibility_blocked' => self::compatibilityBlockedRuns($namespace),
             'waiting' => self::waitingRuns($namespace),
             'oldest_wait_started_at' => $oldestWaitStartedAt?->toJSON(),
@@ -190,6 +192,9 @@ final class OperatorMetrics
                 : (int) $oldestDispatchFailedAt->diffInMilliseconds($now),
             'max_attempt_count' => self::maxOpenTaskAttemptCount($namespace),
             'max_repair_count' => self::maxOpenTaskRepairCount($namespace),
+            // Additive: open workflow tasks at or over the lost-lease threshold.
+            'lease_lost_repeatedly' => self::repeatedlyLostLeaseTasks($namespace),
+            'max_lost_lease_count' => self::maxOpenTaskLostLeaseCount($namespace),
             'unhealthy' => self::dispatchFailedTasks($namespace)
                 + self::claimFailedTasks($namespace)
                 + self::dispatchOverdueTasks($now, $namespace)
@@ -1557,6 +1562,54 @@ final class OperatorMetrics
      * active repair burn rather than accumulating against historical
      * rows.
      */
+    private static function taskAttentionRuns(?string $namespace): int
+    {
+        if (! WorkflowTaskLeaseLoss::summaryTracked(fresh: true)) {
+            return 0;
+        }
+
+        $query = self::summaryQuery($namespace);
+
+        return (int) WorkflowTaskLeaseLoss::untrackedOnMissingColumn(
+            $query->getModel(),
+            static fn (): int => $query->whereNotNull('task_attention')
+                ->count(),
+        );
+    }
+
+    private static function repeatedlyLostLeaseTasks(?string $namespace): int
+    {
+        if (! WorkflowTaskLeaseLoss::tracked(fresh: true)) {
+            return 0;
+        }
+
+        $query = self::scopedRunModelQuery(self::taskModel(), $namespace);
+
+        return (int) WorkflowTaskLeaseLoss::untrackedOnMissingColumn(
+            $query->getModel(),
+            static fn (): int => $query->where('task_type', TaskType::Workflow->value)
+                ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+                ->where('lost_lease_count', '>=', WorkflowTaskLeaseLoss::attentionThreshold())
+                ->count(),
+        );
+    }
+
+    private static function maxOpenTaskLostLeaseCount(?string $namespace): int
+    {
+        if (! WorkflowTaskLeaseLoss::tracked(fresh: true)) {
+            return 0;
+        }
+
+        $query = self::scopedRunModelQuery(self::taskModel(), $namespace);
+
+        return (int) WorkflowTaskLeaseLoss::untrackedOnMissingColumn(
+            $query->getModel(),
+            static fn (): int => (int) $query->where('task_type', TaskType::Workflow->value)
+                ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+                ->max('lost_lease_count'),
+        );
+    }
+
     private static function maxOpenTaskRepairCount(?string $namespace): int
     {
         return (int) self::scopedRunModelQuery(self::taskModel(), $namespace)

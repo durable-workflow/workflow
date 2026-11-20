@@ -75,6 +75,10 @@ final class RunListItemView
             'repair_blocked' => RepairBlockedReason::metadata(
                 is_string($summary->repair_blocked_reason) ? $summary->repair_blocked_reason : null,
             ),
+            // Additive: a workflow task that keeps losing its lease.
+            'task_attention' => array_key_exists('task_attention', $summary->getAttributes())
+                ? $summary->task_attention
+                : null,
             'task_problem' => (bool) $summary->task_problem,
             'task_problem_badge' => WorkflowTaskProblem::metadata(
                 (bool) $summary->task_problem,
@@ -144,6 +148,7 @@ final class RunListItemView
             'repair_attention',
             'repair_blocked_reason',
             'repair_blocked',
+            'task_attention',
             'task_problem',
             'task_problem_badge',
             'declared_entry_mode',

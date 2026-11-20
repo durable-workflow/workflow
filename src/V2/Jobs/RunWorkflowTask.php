@@ -35,7 +35,9 @@ use Workflow\V2\Support\WorkerCompatibilityFleet;
 use Workflow\V2\Support\WorkflowContinuationCache;
 use Workflow\V2\Support\WorkflowExecutor;
 use Workflow\V2\Support\WorkflowSignalReadScope;
+use Workflow\V2\Support\WorkflowTaskJobTimeout;
 use Workflow\V2\Support\WorkflowTaskLease;
+use Workflow\V2\Support\WorkflowTaskLeaseLoss;
 
 final class RunWorkflowTask implements ShouldQueue
 {
@@ -45,6 +47,14 @@ final class RunWorkflowTask implements ShouldQueue
     use SerializesModels;
 
     public int $tries = 1;
+
+    /**
+     * The job's own queue timeout, set at dispatch only when
+     * workflows.v2.workflow_task_job_timeout_seconds is configured
+     * ({@see WorkflowTaskJobTimeout}); null leaves the worker's --timeout in
+     * force. Workers of earlier releases ignore the serialized value.
+     */
+    public ?int $timeout = null;
 
     // Mixed so malformed telemetry cannot prevent an older job from loading.
     public mixed $dispatchObservabilityContext = null;
@@ -160,6 +170,15 @@ final class RunWorkflowTask implements ShouldQueue
 
                 if (in_array($run->status->value, ['completed', 'failed', 'cancelled', 'terminated'], true)) {
                     $this->settleTerminalTask($task, $run);
+
+                    return null;
+                }
+
+                if (WorkflowTaskLeaseLoss::failsRunAt($task)) {
+                    // Opt-in: a task that keeps losing its lease fails its
+                    // run with a typed task failure instead of retrying (#1231).
+                    $continuation?->disable('workflow_task_lease_lost');
+                    $executor->failAfterLostLeases($run, $task);
 
                     return null;
                 }
@@ -285,6 +304,12 @@ final class RunWorkflowTask implements ShouldQueue
 
             ServiceCallWorkflowDelivery::recordForClaim($task, $run);
             $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+
+            // A retry after lost leases records its typed diagnostic (#1231).
+            $leaseLoss = WorkflowTaskLeaseLoss::claimDiagnostic($task);
+            if ($leaseLoss !== null) {
+                WorkflowTaskLeaseLoss::reportClaim($leaseLoss);
+            }
 
             return [$task->setRelation('run', $run), null, $claimedAttempt];
         });
