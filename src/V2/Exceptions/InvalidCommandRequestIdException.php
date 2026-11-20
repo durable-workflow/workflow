@@ -8,9 +8,43 @@ use InvalidArgumentException;
 
 final class InvalidCommandRequestIdException extends InvalidArgumentException
 {
-    public function __construct()
+    public const REASON_INVALID = 'invalid_request_id';
+
+    public const REASON_RESERVED = 'request_id_reserved';
+
+    public function __construct(
+        string $message = 'The request ID must be a valid UTF-8 string containing 1 to 255 Unicode characters.',
+        private readonly string $reason = self::REASON_INVALID,
+    ) {
+        parent::__construct($message);
+    }
+
+    /**
+     * A key under a prefix the runtime reserves for its own deliveries.
+     */
+    public static function reserved(string $prefix): self
     {
-        parent::__construct('The request ID must be a valid UTF-8 string containing 1 to 255 Unicode characters.');
+        return new self(
+            sprintf('The request_id prefix [%s] is reserved for signals sent by workflow code.', $prefix),
+            self::REASON_RESERVED,
+        );
+    }
+
+    /**
+     * `invalid_request_id`, or `request_id_reserved` for a reserved prefix.
+     */
+    public function reason(): string
+    {
+        return $this->reason;
+    }
+
+    /**
+     * The command outcome the Server reports for a reserved key
+     * (`rejected_request_id_reserved`); null for an invalid key.
+     */
+    public function outcome(): ?string
+    {
+        return $this->reason === self::REASON_RESERVED ? 'rejected_request_id_reserved' : null;
     }
 
     /**

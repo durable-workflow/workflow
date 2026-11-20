@@ -579,6 +579,48 @@ final class WorkflowFiberRunner
                 continue;
             }
 
+            if ($current instanceof SignalExternalWorkflowCall) {
+                // Replay returns the recorded outcome. A new or pending request
+                // needs the embedded executor's outbox; this runner never sends.
+                $historySequence = $this->historySequenceForCurrentPosition();
+                $recorded = null;
+                if ($historySequence !== null) {
+                    WorkflowStepHistory::assertCompatible(
+                        $this->workflow->run,
+                        $historySequence,
+                        WorkflowStepHistory::EXTERNAL_SIGNAL,
+                    );
+                    $recorded = ExternalSignalHistory::lookup($this->workflow->run, $historySequence, $current);
+                }
+
+                if ($recorded === null || $recorded['status'] === ExternalSignalHistory::NONE) {
+                    throw new UnsupportedWorkflowYieldException(
+                        'Durable signal-external currently requires embedded native execution.'
+                    );
+                }
+
+                if ($recorded['status'] === ExternalSignalHistory::PENDING) {
+                    // Only the embedded executor delivers a pending request.
+                    // Refuse rather than wait, so a mixed fleet never stalls on
+                    // a delivery this worker cannot make.
+                    throw new UnsupportedWorkflowYieldException(
+                        'A pending durable signal-external delivery needs an embedded worker; '
+                        . 'external PHP workers replay recorded outcomes but do not deliver.'
+                    );
+                }
+
+                ++$this->sequence;
+                $this->sendToWorkflow(
+                    $recorded['result'],
+                    RedriveReplayClock::recordedAt(
+                        ExternalSignalHistory::resolutionEvent($this->workflow->run, $historySequence),
+                    ),
+                    advanceCancellationTime: false,
+                );
+
+                continue;
+            }
+
             if ($current instanceof UpsertMemoCall) {
                 $historySequence = $this->historySequenceForCurrentPosition();
                 $recorded = $historySequence === null
@@ -1671,6 +1713,9 @@ final class WorkflowFiberRunner
             'ServiceCallFailed',
             'ServiceCallCancelled',
             'SideEffectRecorded',
+            'ExternalSignalRequested',
+            'ExternalSignalDelivered',
+            'ExternalSignalFailed',
             'VersionMarkerRecorded',
             'MemoUpserted',
             'SearchAttributesUpserted',

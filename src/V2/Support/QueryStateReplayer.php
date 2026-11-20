@@ -439,6 +439,31 @@ final class QueryStateReplayer
                 continue;
             }
 
+            if ($current instanceof SignalExternalWorkflowCall) {
+                $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
+
+                $this->applyRecordedUpdates($run, $workflow, $historySequence);
+                WorkflowStepHistory::assertCompatible($run, $historySequence, WorkflowStepHistory::EXTERNAL_SIGNAL);
+
+                // Query replay reads a recorded outcome and never delivers;
+                // a pending request stops replay like a pending activity.
+                $result = ExternalSignalHistory::recordedResult($run, $historySequence, $current);
+
+                if ($result === null) {
+                    $this->syncWorkflowCursor($workflow, $sequence + 1);
+                    return new ReplayState($workflow, $sequence, $current);
+                }
+
+                $this->syncWorkflowCursor($workflow, $sequence + 1);
+                $current = $workflowExecution->send($result, RedriveReplayClock::recordedAt(
+                    ExternalSignalHistory::resolutionEvent($run, $historySequence),
+                ));
+
+                ++$sequence;
+
+                continue;
+            }
+
             if ($current instanceof UpsertMemoCall) {
                 $historySequence = $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence);
 
@@ -2204,6 +2229,9 @@ final class QueryStateReplayer
             HistoryEventType::ChildRunCancelled->value,
             HistoryEventType::ChildRunTerminated->value,
             HistoryEventType::SideEffectRecorded->value,
+            HistoryEventType::ExternalSignalRequested->value,
+            HistoryEventType::ExternalSignalDelivered->value,
+            HistoryEventType::ExternalSignalFailed->value,
             HistoryEventType::VersionMarkerRecorded->value,
             HistoryEventType::MemoUpserted->value,
             HistoryEventType::SearchAttributesUpserted->value,

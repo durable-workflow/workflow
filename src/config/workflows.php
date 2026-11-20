@@ -453,6 +453,18 @@ return [
             ),
         ],
 
+        'external_signal' => [
+            // Durable signal-external delivery retries deadlocks, lock waits
+            // and lost connections without limit. After this many other
+            // (non-transient) failures, the request is recorded as
+            // ExternalSignalFailed with reason delivery_failed and the sender
+            // resumes, so a permanent error never retries forever.
+            'max_delivery_failures' => (int) env(
+                'DW_V2_EXTERNAL_SIGNAL_MAX_DELIVERY_FAILURES',
+                Workflow\V2\Support\ExternalSignalDelivery::DEFAULT_MAX_DELIVERY_FAILURES,
+            ),
+        ],
+
         'schedules' => [
             // Keep the first audit event and the newest remaining events.
             // Explicit null disables compaction during a rolling upgrade;

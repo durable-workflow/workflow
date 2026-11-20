@@ -16,6 +16,7 @@ use Workflow\V2\Support\MessageReplayLedger;
 use Workflow\V2\Support\MessageService;
 use Workflow\V2\Support\ScheduleOrigin;
 use Workflow\V2\Support\ServiceOperationOptions;
+use Workflow\V2\Support\SignalExternalWorkflowCall;
 use Workflow\V2\Support\UpdateMessageReceives;
 use Workflow\V2\Support\WorkerSession;
 use Workflow\V2\Support\WorkerSessionOptions;
@@ -512,6 +513,25 @@ abstract class Workflow
     public static function executeChildWorkflow(string $workflow, mixed ...$arguments): mixed
     {
         return child($workflow, ...$arguments);
+    }
+
+    /**
+     * Durably signal another workflow in this workflow's namespace.
+     *
+     * @param array<int|string, mixed> $arguments
+     *
+     * @see signalExternalWorkflow()
+     *
+     * @experimental Durable signal-external may change in a minor release.
+     * See docs/api-stability.md#durable-signal-external.
+     */
+    public static function signalExternalWorkflow(
+        string $workflowId,
+        string $signalName,
+        array $arguments = [],
+        ?string $runId = null,
+    ): ExternalSignalResult|SignalExternalWorkflowCall {
+        return signalExternalWorkflow($workflowId, $signalName, $arguments, $runId);
     }
 
     /**

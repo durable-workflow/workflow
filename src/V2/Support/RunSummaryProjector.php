@@ -289,6 +289,7 @@ final class RunSummaryProjector
             ? null
             : self::openSignalWait($signalWaits ??= SignalWaits::forRun($run));
 
+        $delivery = self::externalSignalDelivery($nextTask);
         $waitKind = null;
         $waitReason = null;
         $waitStartedAt = null;
@@ -361,6 +362,14 @@ final class RunSummaryProjector
             $openWaitId = $openSignalWait['id'];
             $resumeSourceKind = $openSignalWait['resume_source_kind'];
             $resumeSourceId = $openSignalWait['resume_source_id'];
+        } elseif ($delivery !== null && $nextTask !== null) {
+            $waitKind = 'external_signal';
+            $waitReason = $delivery['reason'];
+            $waitStartedAt = $nextTask->created_at;
+            $waitDeadlineAt = $nextTask->available_at;
+            $openWaitId = $delivery['open_wait_id'];
+            $resumeSourceKind = 'workflow_task';
+            $resumeSourceId = $nextTask->id;
         } elseif ($nextTask !== null && $nextTask->task_type === TaskType::Workflow) {
             $waitKind = 'workflow-task';
             $waitReason = match (true) {
@@ -1721,6 +1730,11 @@ final class RunSummaryProjector
             ];
         }
 
+        $delivery = self::externalSignalDelivery($nextTask);
+        if ($delivery !== null) {
+            return [$delivery['liveness_state'], $delivery['reason']];
+        }
+
         if ($nextTask !== null) {
             return self::taskLiveness($nextTask, $run, 'Workflow');
         }
@@ -2596,6 +2610,62 @@ final class RunSummaryProjector
     /**
      * @return array{0: string, 1: string}
      */
+    /**
+     * A pending durable signal-external delivery waiting on its delayed task
+     * (.github#223): waiting for delivery, or retrying with an attempt count
+     * and the last error. A task needing ordinary repair keeps task liveness.
+     *
+     * @return array{liveness_state: string, reason: string, open_wait_id: string|null}|null
+     */
+    private static function externalSignalDelivery(?WorkflowTask $task): ?array
+    {
+        if (! $task instanceof WorkflowTask
+            || $task->task_type !== TaskType::Workflow
+            || $task->status !== TaskStatus::Ready) {
+            return null;
+        }
+
+        $payload = is_array($task->payload) ? $task->payload : [];
+        if (($payload['workflow_wait_kind'] ?? null) !== 'external_signal'
+            || ($payload['external_signal_delivery'] ?? false) !== true
+            || TaskRepairPolicy::readyTaskNeedsRedispatch($task)
+            || TaskRepairPolicy::dispatchFailed($task)
+            || TaskRepairPolicy::claimFailed($task)) {
+            return null;
+        }
+
+        $signal = self::nonEmptyString($payload['signal_name'] ?? null) ?? 'signal';
+        $target = self::nonEmptyString($payload['target_workflow_instance_id'] ?? null) ?? 'workflow';
+        $attempts = is_int($payload['external_signal_delivery_attempt'] ?? null)
+            ? $payload['external_signal_delivery_attempt']
+            : 0;
+        $openWaitId = self::nonEmptyString($payload['open_wait_id'] ?? null);
+
+        if ($attempts === 0) {
+            return [
+                'liveness_state' => 'waiting_for_external_signal_delivery',
+                'reason' => sprintf('Waiting to deliver signal %s to workflow %s.', $signal, $target),
+                'open_wait_id' => $openWaitId,
+            ];
+        }
+
+        $error = self::nonEmptyString($payload['external_signal_delivery_last_error'] ?? null);
+
+        return [
+            'liveness_state' => 'external_signal_delivery_retrying',
+            'reason' => sprintf(
+                'Retrying delivery of signal %s to workflow %s after %d failed attempt%s%s; next attempt at %s.',
+                $signal,
+                $target,
+                $attempts,
+                $attempts === 1 ? '' : 's',
+                $error === null ? '' : sprintf(' (last error: %s)', $error),
+                $task->available_at?->toJSON() ?? 'an unknown time',
+            ),
+            'open_wait_id' => $openWaitId,
+        ];
+    }
+
     private static function taskLiveness(WorkflowTask $task, WorkflowRun $run, string $label): array
     {
         if (self::taskWaitingForCompatibleWorker($task, $run)) {

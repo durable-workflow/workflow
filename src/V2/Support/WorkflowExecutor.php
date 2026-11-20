@@ -37,6 +37,7 @@ use Workflow\V2\Enums\UpdateStatus;
 use Workflow\V2\Exceptions\ActivityRetryPolicyMismatchException;
 use Workflow\V2\Exceptions\ConditionWaitDefinitionMismatchException;
 use Workflow\V2\Exceptions\DurableOperationCancelledException;
+use Workflow\V2\Exceptions\ExternalSignalRefusedException;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Exceptions\UnresolvedWorkflowFailureException;
@@ -691,6 +692,11 @@ final class WorkflowExecutor
                 $state->frame
             ),
             $current instanceof UpsertMemoCall => $this->executeMemo($state->run, $state->task, $state->frame),
+            $current instanceof SignalExternalWorkflowCall => $this->executeExternalSignal(
+                $state->run,
+                $state->task,
+                $state->frame
+            ),
             $current instanceof TimerCall => $this->executeTimer($state->run, $state->task, $state->frame),
             $current instanceof SignalCall => $this->executeSignal($state->run, $state->task, $state->frame),
             $current instanceof ServiceOperationCall => $this->executeServiceOperation(
@@ -1475,6 +1481,146 @@ final class WorkflowExecutor
         }
         ++$sequence;
         return WorkflowTaskStep::ContinueExecution;
+    }
+
+    /**
+     * Durable signal-external (.github#223), as an outbox. This task records
+     * `ExternalSignalRequested` and commits, locking only this run. Delivery
+     * runs after the commit in its own transactions
+     * ({@see ExternalSignalDelivery}), appends the outcome and wakes this run.
+     * Workflow code waits for the outcome as it waits for an activity result;
+     * replay reads the recorded outcome and never sends again. A failed
+     * delivery is a value for workflow code, not a task failure.
+     */
+    private function executeExternalSignal(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        WorkflowContinuation $frame,
+    ): WorkflowTask|WorkflowTaskStep|null {
+        $workflow = $frame->workflow;
+        $workflowExecution = $frame->execution;
+        /** @var SignalExternalWorkflowCall $current */
+        $current = &$frame->current;
+        $sequence = &$frame->sequence;
+
+        $this->syncWorkflowCursorForCurrent($workflow, $run, $current, $sequence);
+        if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
+            return $this->restartAfterPendingUpdateFailure($run, $task);
+        }
+        if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::EXTERNAL_SIGNAL)) {
+            return null;
+        }
+        try {
+            $recorded = ExternalSignalHistory::lookup($run, $sequence, $current);
+            if ($recorded['status'] === ExternalSignalHistory::RESOLVED) {
+                $this->syncWorkflowCursor($workflow, $sequence + 1);
+                $current = $workflowExecution->send(
+                    $recorded['result'],
+                    RedriveReplayClock::recordedAt(ExternalSignalHistory::resolutionEvent($run, $sequence)),
+                    advanceCancellationTime: false,
+                );
+                ++$sequence;
+
+                return WorkflowTaskStep::ContinueExecution;
+            }
+
+            if ($recorded['status'] === ExternalSignalHistory::NONE) {
+                // As on the Server, cleanup after a cancellation request may
+                // only schedule activities, timers and side effects.
+                if (is_string($run->cancellation_request_command_id)) {
+                    $this->syncWorkflowCursor($workflow, $sequence);
+                    $current = $workflowExecution->throw(ExternalSignalRefusedException::duringCancellationCleanup());
+
+                    return WorkflowTaskStep::ContinueExecution;
+                }
+
+                $this->recordExternalSignalRequest($run, $task, $sequence, $current);
+            }
+        } catch (Throwable $throwable) {
+            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+            return null;
+        }
+
+        // Pending: deliver after this task commits, and keep a delayed turn
+        // that re-attempts the delivery if this process never finishes it.
+        ExternalSignalDelivery::afterCommit($run, $sequence);
+        $this->syncWorkflowCursor($workflow, $sequence + 1);
+        $this->waitForNextResumeSource($run, $task);
+        $this->scheduleExternalSignalDeliveryRetry($run, $task, $sequence);
+
+        return null;
+    }
+
+    private function recordExternalSignalRequest(
+        WorkflowRun $run,
+        WorkflowTask $task,
+        int $sequence,
+        SignalExternalWorkflowCall $call,
+    ): void {
+        $arguments = ExternalSignalHistory::argumentsEnvelope(
+            $call,
+            is_string($run->payload_codec) && $run->payload_codec !== '' ? $run->payload_codec : null,
+        );
+        $requested = WorkflowHistoryEvent::record(
+            $run,
+            HistoryEventType::ExternalSignalRequested,
+            [
+                'sequence' => $sequence,
+                'target_workflow_instance_id' => $call->workflowId,
+                'target_workflow_run_id' => $call->runId,
+                'signal_name' => $call->signalName,
+                'arguments' => $arguments,
+                'payload_codec' => $arguments['codec'],
+                'request_id' => ExternalSignalHistory::requestId($run->id, $sequence),
+            ],
+            $task,
+        );
+        $run->historyEvents->push($requested);
+    }
+
+    /**
+     * The recovery path for a request whose delivery did not finish: one
+     * delayed workflow task per pending request that replays to it and
+     * delivers again (delivery is idempotent). The same row is reused for
+     * every re-attempt, keeping its attempt and failure counts; its delay
+     * doubles per failed attempt up to a minute. An outcome makes it due now.
+     */
+    private function scheduleExternalSignalDeliveryRetry(WorkflowRun $run, WorkflowTask $task, int $sequence): void
+    {
+        if (ExternalSignalDelivery::deliveryTask($run, $sequence) instanceof WorkflowTask) {
+            return;
+        }
+
+        if (ExternalSignalDelivery::isDeliveryTask($task, $sequence)) {
+            $attempts = (int) ($task->payload['external_signal_delivery_attempt'] ?? 0);
+            $task->forceFill([
+                'status' => TaskStatus::Ready,
+                'available_at' => now()
+                    ->addSeconds(ExternalSignalDelivery::retryDelaySeconds($attempts)),
+                'leased_at' => null,
+                'lease_owner' => null,
+                'lease_expires_at' => null,
+                'last_error' => null,
+            ])->save();
+            $retry = $task;
+        } else {
+            $request = ExternalSignalHistory::pendingRequests($run)[$sequence] ?? null;
+            if (! $request instanceof WorkflowHistoryEvent) {
+                return;
+            }
+
+            $retry = ExternalSignalDelivery::createDeliveryTask(
+                $run,
+                $request,
+                now()
+                    ->addSeconds(ExternalSignalDelivery::retryDelaySeconds(0)),
+            );
+        }
+
+        TaskDispatcher::dispatch($retry);
+        $this->projectRun(
+            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        );
     }
 
     private function executeTimer(
