@@ -281,11 +281,14 @@ the contract it implements is not. The command, its history events, the
 `workflow-signal:` key and its outcomes follow the shipped Server 3.15.0
 contract (`docs/contracts/signal-external-workflow.md` in the server
 repository) and the published Python, PHP SDK and Rust SDKs. The PHP authoring
-names and result type have not shipped in any release, and the
-worker-protocol runner (`WorkflowFiberRunner`, used by external PHP workers)
-replays recorded requests and outcomes but refuses a new command with
-`UnsupportedWorkflowYieldException`; embedded does not advertise
-`signal_external_workflow`.
+names and result type have not shipped in any release.
+
+Only embedded workers deliver. The worker-protocol runner
+(`WorkflowFiberRunner`, used by external PHP workers) replays recorded
+outcomes, but it refuses a new command, and a request still waiting for its
+outcome, with `UnsupportedWorkflowYieldException`, so a mixed fleet fails that
+workflow task visibly instead of waiting on a delivery it cannot make. Embedded
+does not advertise `signal_external_workflow`.
 
 Delivery is an outbox, as on the Server and in Temporal:
 
@@ -300,12 +303,26 @@ Delivery is an outbox, as on the Server and in Temporal:
   sequence, and gives the sender a workflow task. A repeated delivery returns
   the target's retained receipt (`retained: true`) instead of signalling
   twice.
-- A deadlock, lock wait timeout or lost connection is retried, and never fails
-  the sender. While a request is pending, the sender keeps a delayed workflow
-  task that replays to the request and delivers it again, so a process that
-  dies between the sender's commit and the delivery is recovered by the
-  ordinary task repair. Only definitive answers (not found, closed, rejected)
-  are recorded as failures.
+- While a request is pending, the sender keeps one delayed workflow task that
+  replays to the request and delivers it again, so a process that dies
+  between the sender's commit and the delivery is recovered by the ordinary
+  task repair. The same row carries every re-attempt; its delay doubles per
+  failed attempt, up to a minute.
+- A deadlock, lock wait timeout or lost connection is transient: it is
+  retried without limit and never fails the sender. Any other delivery error
+  counts toward `workflows.v2.external_signal.max_delivery_failures`
+  (`DW_V2_EXTERNAL_SIGNAL_MAX_DELIVERY_FAILURES`, default 10). At that limit
+  the request is recorded as `ExternalSignalFailed` with outcome `rejected`
+  and the embedded-only reason `delivery_failed`, and the sender resumes.
+- While delivery waits or retries, the run summary reports `wait_kind:
+  external_signal` with liveness `waiting_for_external_signal_delivery`, or
+  `external_signal_delivery_retrying` with the attempt count, the last error
+  and the next attempt time.
+- A sender that is terminated or cancelled while its request is pending gains
+  no outcome event; its history ends with the request, like an activity
+  scheduled before termination. A delivery already admitting the signal at
+  that moment can still reach the target, as an HTTP signal sent at that
+  moment can: delivery to the target is at least once in that race.
 - While a run cleans up after a cancellation request, the command throws
   `ExternalSignalRefusedException` (`cancellation_cleanup_command_not_available`)
   in workflow code and records nothing, as the Server refuses every command

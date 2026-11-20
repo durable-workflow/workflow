@@ -21,6 +21,7 @@ use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Exceptions\InvalidCommandRequestIdException;
+use Workflow\V2\Exceptions\UnsupportedWorkflowYieldException;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
@@ -28,10 +29,12 @@ use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\StartOptions;
 use Workflow\V2\Support\QueryStateReplayer;
+use Workflow\V2\Support\WorkflowFiberRunner;
 use Workflow\V2\Support\WorkflowReplayer;
 use Workflow\V2\Webhooks;
 use Workflow\V2\WorkflowStub;
@@ -400,6 +403,199 @@ final class V2SignalExternalWorkflowTest extends TestCase
             ->where('workflow_instance_id', 'sx-body-target')
             ->where('command_type', CommandType::Signal->value)
             ->count());
+    }
+
+    public function testPermanentDeliveryErrorIsRecordedAsDeliveryFailedAfterTheConfiguredAttempts(): void
+    {
+        config([
+            'workflows.v2.external_signal.max_delivery_failures' => 3,
+        ]);
+        $target = $this->startTarget('sx-poison-target');
+        $this->failSignalInserts(transient: false);
+
+        try {
+            $sender = WorkflowStub::make(TestSignalExternalSenderWorkflow::class, 'sx-poison-sender');
+            $sender->start([[
+                'workflow_id' => 'sx-poison-target',
+                'signal' => 'approve',
+            ]]);
+            $this->drainReadyTasks();
+            $runId = $sender->runId();
+
+            // The first failure is surfaced on the run, not only in logs.
+            $summary = WorkflowRunSummary::query()->findOrFail($runId);
+            $this->assertSame('external_signal_delivery_retrying', $summary->liveness_state);
+            $this->assertSame('external_signal', $summary->wait_kind);
+            $this->assertStringContainsString('after 1 failed attempt', (string) $summary->liveness_reason);
+            $this->assertStringContainsString('sx-poison', (string) $summary->liveness_reason);
+
+            for ($retry = 0; $retry < 5 && $sender->refresh()->running(); $retry++) {
+                $this->travel(61)
+                    ->seconds();
+                $this->drainReadyTasks();
+            }
+        } finally {
+            $this->restoreSignalInserts();
+        }
+
+        $this->assertTrue($sender->refresh()->completed());
+        $result = $sender->output()['results'][0];
+        $this->assertSame('rejected', $result['outcome']);
+        $this->assertSame('delivery_failed', $result['reason']);
+        $this->assertStringContainsString('Delivery failed 3 times', (string) $result['message']);
+        $this->assertSame(1, $this->eventCount($runId, HistoryEventType::ExternalSignalFailed));
+        $this->assertSame(0, WorkflowSignal::query()->where('workflow_run_id', $target->runId())->count());
+        // One delayed task carried every re-attempt.
+        $this->assertSame(1, $this->deliveryTaskCount($runId));
+    }
+
+    public function testTransientDeliveryErrorsRetryWithoutLimitAndThenDeliverOnce(): void
+    {
+        if (! in_array(DB::connection()->getDriverName(), ['mysql', 'pgsql'], true)) {
+            $this->markTestSkipped('A transient-error trigger needs MySQL or PostgreSQL.');
+        }
+
+        config([
+            'workflows.v2.external_signal.max_delivery_failures' => 2,
+        ]);
+        $target = $this->startTarget('sx-transient-target');
+        $this->failSignalInserts(transient: true);
+
+        try {
+            $sender = WorkflowStub::make(TestSignalExternalSenderWorkflow::class, 'sx-transient-sender');
+            $sender->start([[
+                'workflow_id' => 'sx-transient-target',
+                'signal' => 'approve',
+                'arguments' => ['eventually'],
+            ]]);
+            $this->drainReadyTasks();
+            $runId = $sender->runId();
+
+            for ($retry = 0; $retry < 4; $retry++) {
+                $this->travel(61)
+                    ->seconds();
+                $this->drainReadyTasks();
+            }
+
+            // Past the non-transient limit, still pending: transient errors never give up.
+            $this->assertFalse($sender->refresh()->completed());
+            $this->assertSame(0, $this->eventCount($runId, HistoryEventType::ExternalSignalFailed));
+            $summary = WorkflowRunSummary::query()->findOrFail($runId);
+            $this->assertSame('external_signal_delivery_retrying', $summary->liveness_state);
+            $this->assertStringContainsString('after 5 failed attempts', (string) $summary->liveness_reason);
+        } finally {
+            $this->restoreSignalInserts();
+        }
+
+        $this->travel(61)
+            ->seconds();
+        $this->drainReadyTasks();
+
+        $this->assertSame('delivered', $sender->refresh()->output()['results'][0]['outcome']);
+        $this->assertSame('eventually', $target->refresh()->output()['approved']);
+        $this->assertSame(1, WorkflowSignal::query()->where('workflow_run_id', $target->runId())->count());
+        $this->assertSame(1, $this->deliveryTaskCount($runId));
+    }
+
+    public function testSenderTerminatedAfterTheTargetAdmittedTheSignalRecordsNothingMore(): void
+    {
+        $target = $this->startTarget('sx-terminate-target');
+        $sender = WorkflowStub::make(TestSignalExternalSenderWorkflow::class, 'sx-terminate-sender');
+        $sender->start([[
+            'workflow_id' => 'sx-terminate-target',
+            'signal' => 'approve',
+            'arguments' => ['raced'],
+        ]]);
+
+        // Termination lands between the target's admission and the outcome append.
+        $signals = (new WorkflowSignal())->getTable();
+        $terminated = false;
+        DB::listen(static function ($query) use ($signals, &$terminated): void {
+            if (! $terminated && str_starts_with(strtolower($query->sql), 'insert into')
+                && str_contains($query->sql, $signals)) {
+                $terminated = true;
+                DB::afterCommit(static fn () => WorkflowStub::load('sx-terminate-sender')->attemptTerminate('race'));
+            }
+        });
+        $this->drainReadyTasks();
+
+        $this->assertTrue($terminated);
+        $this->assertTrue($sender->refresh()->terminated());
+        $this->assertSame(1, $this->eventCount($sender->runId(), HistoryEventType::ExternalSignalRequested));
+        $this->assertSame(0, $this->eventCount($sender->runId(), HistoryEventType::ExternalSignalDelivered));
+        $this->assertSame(0, $this->eventCount($sender->runId(), HistoryEventType::ExternalSignalFailed));
+        $this->assertSame(0, WorkflowTask::query()
+            ->where('workflow_run_id', $sender->runId())
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])
+            ->count());
+        // At least once to the target, as for an HTTP signal sent at that moment.
+        $this->assertSame('raced', $target->refresh()->output()['approved']);
+    }
+
+    public function testExternalWorkersRefuseAPendingDeliveryInsteadOfWaiting(): void
+    {
+        $history = json_decode((string) file_get_contents(
+            __DIR__ . '/../../Fixtures/V2/ReplayRegression/signal-external-delivered-cold-replay.json'
+        ), true, flags: JSON_THROW_ON_ERROR);
+        $requestOnly = array_slice($history['history'], 0, 2);
+        $this->assertSame('ExternalSignalRequested', $requestOnly[1]['event_type']);
+
+        $this->expectException(UnsupportedWorkflowYieldException::class);
+        $this->expectExceptionMessage('needs an embedded worker');
+
+        WorkflowFiberRunner::forClass(
+            TestSignalExternalSenderWorkflow::class,
+            'sx-external-worker',
+            'sx-external-worker-run',
+            $history['workflow']['arguments'],
+            'avro',
+            $requestOnly,
+        )->step();
+    }
+
+    private function deliveryTaskCount(string $runId): int
+    {
+        return WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->get()
+            ->filter(
+                static fn (WorkflowTask $task): bool => ($task->payload['external_signal_delivery'] ?? false) === true
+            )
+            ->count();
+    }
+
+    private function failSignalInserts(bool $transient): void
+    {
+        $table = (new WorkflowSignal())->getTable();
+
+        match (DB::connection()->getDriverName()) {
+            'mysql', 'mariadb' => DB::unprepared(sprintf(
+                "CREATE TRIGGER sx_fail_signal BEFORE INSERT ON %s FOR EACH ROW SIGNAL SQLSTATE '%s' SET MESSAGE_TEXT = 'sx injected failure'",
+                $table,
+                $transient ? '40001' : '45000',
+            )),
+            'pgsql' => DB::unprepared(sprintf(
+                "CREATE FUNCTION sx_fail_signal() RETURNS trigger AS \$\$ BEGIN RAISE EXCEPTION 'sx injected failure' USING ERRCODE = '%s'; END; \$\$ LANGUAGE plpgsql; CREATE TRIGGER sx_fail_signal BEFORE INSERT ON %s FOR EACH ROW EXECUTE FUNCTION sx_fail_signal();",
+                $transient ? '40001' : 'P0001',
+                $table,
+            )),
+            default => DB::unprepared(sprintf(
+                "CREATE TRIGGER sx_fail_signal BEFORE INSERT ON %s BEGIN SELECT RAISE(ABORT, 'sx injected failure'); END;",
+                $table,
+            )),
+        };
+    }
+
+    private function restoreSignalInserts(): void
+    {
+        $table = (new WorkflowSignal())->getTable();
+
+        match (DB::connection()->getDriverName()) {
+            'pgsql' => DB::unprepared(
+                "DROP TRIGGER IF EXISTS sx_fail_signal ON {$table}; DROP FUNCTION IF EXISTS sx_fail_signal();"
+            ),
+            default => DB::unprepared('DROP TRIGGER IF EXISTS sx_fail_signal'),
+        };
     }
 
     private function startTarget(string $id): WorkflowStub

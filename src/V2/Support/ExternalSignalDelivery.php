@@ -47,6 +47,14 @@ use Workflow\V2\WorkflowStub;
  */
 final class ExternalSignalDelivery
 {
+    /**
+     * The embedded-only reason for a request whose delivery kept failing with
+     * a non-transient error.
+     */
+    public const DELIVERY_FAILED = 'delivery_failed';
+
+    public const DEFAULT_MAX_DELIVERY_FAILURES = 10;
+
     private const INLINE_ATTEMPTS = 3;
 
     /**
@@ -71,17 +79,186 @@ final class ExternalSignalDelivery
             try {
                 return self::attempt($senderRunId, $sequence);
             } catch (Throwable $throwable) {
-                if (! self::transient($throwable) || $attempt >= self::INLINE_ATTEMPTS) {
-                    if (! self::transient($throwable)) {
-                        report($throwable);
-                    }
+                $transient = self::transient($throwable);
+                if ($transient && $attempt < self::INLINE_ATTEMPTS) {
+                    usleep($attempt * 50_000);
+
+                    continue;
+                }
+
+                if (! $transient) {
+                    report($throwable);
+                }
+
+                try {
+                    return self::recordFailedAttempt($senderRunId, $sequence, $throwable, $transient);
+                } catch (Throwable $recording) {
+                    // The pending request and its delayed task stay as they were.
+                    report($recording);
 
                     return false;
                 }
-
-                usleep($attempt * 50_000);
             }
         }
+    }
+
+    /**
+     * The most non-transient delivery failures before the request is
+     * recorded as `ExternalSignalFailed` with reason `delivery_failed`.
+     */
+    public static function maxDeliveryFailures(): int
+    {
+        $configured = config('workflows.v2.external_signal.max_delivery_failures', self::DEFAULT_MAX_DELIVERY_FAILURES);
+
+        return is_numeric($configured) ? max(1, (int) $configured) : self::DEFAULT_MAX_DELIVERY_FAILURES;
+    }
+
+    /**
+     * The delay before the delayed task re-attempts a pending delivery after
+     * this many failed attempts: the repair interval, doubling, at most a minute.
+     */
+    public static function retryDelaySeconds(int $failedAttempts): int
+    {
+        return min(60, TaskRepairPolicy::redispatchAfterSeconds() * (2 ** min(max(0, $failedAttempts), 6)));
+    }
+
+    /**
+     * The request's delayed delivery task, if one is open.
+     */
+    public static function deliveryTask(WorkflowRun $sender, int $sequence, bool $lock = false): ?WorkflowTask
+    {
+        $query = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+            ->where('workflow_run_id', $sender->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->orderBy('created_at');
+
+        if ($lock) {
+            $query->lockForUpdate();
+        }
+
+        /** @var WorkflowTask|null $task */
+        $task = $query->get()
+            ->first(static fn (WorkflowTask $task): bool => self::isDeliveryTask($task, $sequence));
+
+        return $task;
+    }
+
+    public static function isDeliveryTask(WorkflowTask $task, int $sequence): bool
+    {
+        $payload = is_array($task->payload) ? $task->payload : [];
+
+        return ($payload['workflow_wait_kind'] ?? null) === 'external_signal'
+            && ($payload['external_signal_delivery'] ?? false) === true
+            && ($payload['workflow_sequence'] ?? null) === $sequence;
+    }
+
+    /**
+     * The one delayed task that re-attempts this pending delivery.
+     */
+    public static function createDeliveryTask(
+        WorkflowRun $sender,
+        WorkflowHistoryEvent $request,
+        \Carbon\CarbonInterface $availableAt,
+    ): WorkflowTask {
+        /** @var WorkflowTask $task */
+        $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)->create([
+            'workflow_run_id' => $sender->id,
+            'namespace' => $sender->namespace,
+            'task_type' => TaskType::Workflow->value,
+            'status' => TaskStatus::Ready->value,
+            'available_at' => $availableAt,
+            'payload' => WorkflowTaskPayload::forExternalSignalDelivery($request),
+            'connection' => $sender->connection,
+            'queue' => $sender->queue,
+            'compatibility' => $sender->compatibility,
+        ]);
+
+        return $task;
+    }
+
+    /**
+     * Count one failed delivery attempt on the request's delayed task. A
+     * transient failure (deadlock, lock wait, lost connection) is retried
+     * without limit; after the configured number of other failures the
+     * request is recorded as failed with reason `delivery_failed` and the
+     * sender is woken, so a permanent error never retries forever.
+     */
+    private static function recordFailedAttempt(
+        string $senderRunId,
+        int $sequence,
+        Throwable $failure,
+        bool $transient,
+    ): bool {
+        $wake = null;
+
+        $resolved = SqliteTransaction::run(static function () use (
+            $senderRunId,
+            $sequence,
+            $failure,
+            $transient,
+            &$wake,
+        ): bool {
+            /** @var WorkflowRun $locked */
+            $locked = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->lockForUpdate()
+                ->findOrFail($senderRunId);
+            $locked->setRelation('historyEvents', $locked->historyEvents()->get());
+            $request = ExternalSignalHistory::pendingRequests($locked)[$sequence] ?? null;
+
+            if ($locked->status->isTerminal() || ! $request instanceof WorkflowHistoryEvent) {
+                return false;
+            }
+
+            $task = self::deliveryTask($locked, $sequence, lock: true)
+                ?? self::createDeliveryTask($locked, $request, now());
+            $payload = is_array($task->payload) ? $task->payload : [];
+            $attempts = (int) ($payload['external_signal_delivery_attempt'] ?? 0) + 1;
+            $failures = (int) ($payload['external_signal_delivery_failures'] ?? 0) + ($transient ? 0 : 1);
+            $error = substr($failure::class . ': ' . $failure->getMessage(), 0, 500);
+            $task->forceFill([
+                'payload' => [
+                    ...$payload,
+                    'external_signal_delivery_attempt' => $attempts,
+                    'external_signal_delivery_failures' => $failures,
+                    'external_signal_delivery_last_error' => $error,
+                    'external_signal_delivery_last_error_transient' => $transient,
+                ],
+                'available_at' => now()
+                    ->addSeconds(self::retryDelaySeconds($attempts)),
+            ])->save();
+
+            if ($failures >= self::maxDeliveryFailures()) {
+                $requested = is_array($request->payload) ? $request->payload : [];
+                $event = WorkflowHistoryEvent::record($locked, HistoryEventType::ExternalSignalFailed, [
+                    'sequence' => $sequence,
+                    'target_workflow_instance_id' => $requested['target_workflow_instance_id'] ?? null,
+                    'target_workflow_run_id' => null,
+                    'signal_name' => $requested['signal_name'] ?? null,
+                    'request_id' => $requested['request_id'] ?? null,
+                    'outcome' => ExternalSignalOutcome::Rejected->value,
+                    'reason' => self::DELIVERY_FAILED,
+                    'message' => sprintf('Delivery failed %d times; the last error was: %s', $failures, $error),
+                    'target_command_id' => null,
+                ]);
+                $wake = self::wakeSender($locked, $event);
+            }
+
+            /** @var HistoryProjectionRole $projection */
+            $projection = app(HistoryProjectionRole::class);
+            $projection->projectRun(
+                $locked->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+                    ?? $locked
+            );
+
+            return $wake instanceof WorkflowTask;
+        });
+
+        if ($wake instanceof WorkflowTask) {
+            TaskDispatcher::dispatch($wake);
+        }
+
+        return $resolved;
     }
 
     private static function attempt(string $senderRunId, int $sequence): bool
@@ -116,6 +293,11 @@ final class ExternalSignalDelivery
                 ->findOrFail($senderRunId);
             $locked->setRelation('historyEvents', $locked->historyEvents()->get());
 
+            // Termination may have closed the sender after the target admitted
+            // the signal. A closed history gains no events, so the request stays
+            // without an outcome, like an activity scheduled before termination;
+            // the target keeps the signal, as with an HTTP signal sent at that
+            // moment (at least once to the target).
             if ($locked->status->isTerminal()) {
                 return false;
             }

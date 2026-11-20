@@ -14,8 +14,13 @@
   through `CommandContext::workflow()`, and appends one
   `ExternalSignalDelivered` or `ExternalSignalFailed` to the sender, which
   resumes in a new workflow task. Deadlocks, lock timeouts and lost
-  connections are retried and never fail the sender; a delayed sender task
-  re-attempts a pending delivery after a crash. Replay returns the recorded
+  connections are retried without limit and never fail the sender; one
+  delayed sender task re-attempts a pending delivery after a crash. Other
+  delivery errors stop after
+  `workflows.v2.external_signal.max_delivery_failures` (default 10) with
+  `ExternalSignalFailed` reason `delivery_failed`, and the run summary shows
+  `external_signal_delivery_retrying` with the attempt count and last error
+  meanwhile. Replay returns the recorded
   outcome and never sends again. A missing, closed or refusing target is a
   returned outcome (`target_not_found`, `target_closed` or `rejected`, with
   Server's reasons, including `self_target` and `runtime_reserved_signal`),
@@ -24,7 +29,10 @@
   recorded. During cleanup after a cancellation request the command throws
   `ExternalSignalRefusedException` (`cancellation_cleanup_command_not_available`),
   as on Server. The existing child-handle `signal()` still sends directly.
-  External PHP workers replay recorded outcomes but refuse new commands. No
+  External PHP workers replay recorded outcomes but refuse new and pending
+  requests, so only embedded workers deliver. A sender terminated while a
+  delivery is admitting its signal records no outcome; the target may still
+  receive that signal, as with an HTTP signal at that moment. No
   database migration. `docs/api-stability.md#durable-signal-external` explains
   why the API is experimental.
 

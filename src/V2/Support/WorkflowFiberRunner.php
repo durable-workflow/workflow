@@ -580,9 +580,8 @@ final class WorkflowFiberRunner
             }
 
             if ($current instanceof SignalExternalWorkflowCall) {
-                // Replay returns the recorded outcome and waits on a pending
-                // request. A new request needs the embedded executor's outbox;
-                // this runner never sends one.
+                // Replay returns the recorded outcome. A new or pending request
+                // needs the embedded executor's outbox; this runner never sends.
                 $historySequence = $this->historySequenceForCurrentPosition();
                 $recorded = null;
                 if ($historySequence !== null) {
@@ -601,10 +600,13 @@ final class WorkflowFiberRunner
                 }
 
                 if ($recorded['status'] === ExternalSignalHistory::PENDING) {
-                    $this->waitingForHistory = true;
-
-                    return WorkflowStep::waiting($current)
-                        ->withPrependedCommands($immediateCommands);
+                    // Only the embedded executor delivers a pending request.
+                    // Refuse rather than wait, so a mixed fleet never stalls on
+                    // a delivery this worker cannot make.
+                    throw new UnsupportedWorkflowYieldException(
+                        'A pending durable signal-external delivery needs an embedded worker; '
+                        . 'external PHP workers replay recorded outcomes but do not deliver.'
+                    );
                 }
 
                 ++$this->sequence;

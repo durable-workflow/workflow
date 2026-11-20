@@ -1579,37 +1579,43 @@ final class WorkflowExecutor
     }
 
     /**
-     * The recovery path for a request whose delivery did not finish: a
-     * delayed workflow task that replays to this request and delivers it
-     * again (delivery is idempotent). Its delay doubles per attempt, up to a
-     * minute. A delivered outcome makes the task due at once.
+     * The recovery path for a request whose delivery did not finish: one
+     * delayed workflow task per pending request that replays to it and
+     * delivers again (delivery is idempotent). The same row is reused for
+     * every re-attempt, keeping its attempt and failure counts; its delay
+     * doubles per failed attempt up to a minute. An outcome makes it due now.
      */
     private function scheduleExternalSignalDeliveryRetry(WorkflowRun $run, WorkflowTask $task, int $sequence): void
     {
-        if (self::hasOpenWorkflowTask($run->id)) {
+        if (ExternalSignalDelivery::deliveryTask($run, $sequence) instanceof WorkflowTask) {
             return;
         }
 
-        $previous = ($task->payload['workflow_wait_kind'] ?? null) === 'external_signal'
-            && ($task->payload['workflow_sequence'] ?? null) === $sequence
-                ? (int) ($task->payload['external_signal_delivery_attempt'] ?? 0)
-                : 0;
-        $attempt = $previous + 1;
-        $delay = min(60, TaskRepairPolicy::redispatchAfterSeconds() * (2 ** min($attempt - 1, 6)));
+        if (ExternalSignalDelivery::isDeliveryTask($task, $sequence)) {
+            $attempts = (int) ($task->payload['external_signal_delivery_attempt'] ?? 0);
+            $task->forceFill([
+                'status' => TaskStatus::Ready,
+                'available_at' => now()
+                    ->addSeconds(ExternalSignalDelivery::retryDelaySeconds($attempts)),
+                'leased_at' => null,
+                'lease_owner' => null,
+                'lease_expires_at' => null,
+                'last_error' => null,
+            ])->save();
+            $retry = $task;
+        } else {
+            $request = ExternalSignalHistory::pendingRequests($run)[$sequence] ?? null;
+            if (! $request instanceof WorkflowHistoryEvent) {
+                return;
+            }
 
-        /** @var WorkflowTask $retry */
-        $retry = WorkflowTask::query()->create([
-            'workflow_run_id' => $run->id,
-            'namespace' => $run->namespace,
-            'task_type' => TaskType::Workflow->value,
-            'status' => TaskStatus::Ready->value,
-            'available_at' => now()
-                ->addSeconds($delay),
-            'payload' => WorkflowTaskPayload::forExternalSignal($sequence, $attempt),
-            'connection' => $run->connection,
-            'queue' => $run->queue,
-            'compatibility' => $run->compatibility,
-        ]);
+            $retry = ExternalSignalDelivery::createDeliveryTask(
+                $run,
+                $request,
+                now()
+                    ->addSeconds(ExternalSignalDelivery::retryDelaySeconds(0)),
+            );
+        }
 
         TaskDispatcher::dispatch($retry);
         $this->projectRun(

@@ -99,25 +99,40 @@ final class WorkflowTaskPayload
     }
 
     /**
-     * The sender's turn for a durable signal-external outcome, or the delayed
-     * turn that re-attempts a pending delivery (.github#223).
+     * The sender's turn after a durable signal-external outcome (.github#223).
      *
      * @return array<string, mixed>
      */
-    public static function forExternalSignal(WorkflowHistoryEvent|int $source, int $deliveryAttempt = 0): array
+    public static function forExternalSignal(WorkflowHistoryEvent $event): array
     {
-        $event = $source instanceof WorkflowHistoryEvent ? $source : null;
-        $payload = is_array($event?->payload) ? $event->payload : [];
-        $sequence = $event === null ? (int) $source : self::intValue($payload['sequence'] ?? null);
+        $payload = is_array($event->payload) ? $event->payload : [];
+        $sequence = self::intValue($payload['sequence'] ?? null);
 
         return array_filter([
             'workflow_wait_kind' => 'external_signal',
             'open_wait_id' => $sequence === null ? null : sprintf('external-signal:%d', $sequence),
             'resume_source_kind' => 'external_signal',
             'workflow_sequence' => $sequence,
-            'workflow_event_type' => $event?->event_type?->value,
-            'external_signal_delivery_attempt' => $deliveryAttempt > 0 ? $deliveryAttempt : null,
+            'workflow_event_type' => $event->event_type?->value,
+            'signal_name' => self::nonEmptyString($payload['signal_name'] ?? null),
+            'target_workflow_instance_id' => self::nonEmptyString($payload['target_workflow_instance_id'] ?? null),
         ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * The one delayed task that re-attempts a pending durable signal-external
+     * delivery. Its attempt and failure counts survive each re-attempt.
+     *
+     * @return array<string, mixed>
+     */
+    public static function forExternalSignalDelivery(WorkflowHistoryEvent $request): array
+    {
+        return [
+            ...self::forExternalSignal($request),
+            'external_signal_delivery' => true,
+            'external_signal_delivery_attempt' => 0,
+            'external_signal_delivery_failures' => 0,
+        ];
     }
 
     /**
