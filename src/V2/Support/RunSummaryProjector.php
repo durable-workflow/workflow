@@ -429,7 +429,22 @@ final class RunSummaryProjector
         );
 
         $statusBucket = $run->status->statusBucket();
-        $historyBudget = HistoryBudget::forRun($run);
+        $historyBudget = null;
+        if ($scopeActivityTimeline) {
+            $previousBytes = (int) $previousSummary->history_size_bytes;
+            $previousFanOut = (int) $previousSummary->history_fan_out;
+            $eventGroupSize = $activityResolution->payload['parallel_group_size'] ?? 0;
+            // The newest event cannot change the maximum if its group is already within it.
+            if ($previousBytes > 0 && $previousFanOut >= 0
+                && is_numeric($eventGroupSize) && (int) $eventGroupSize <= $previousFanOut) {
+                $historyBudget = HistoryBudget::fromCounters(
+                    (int) $activityResolution->sequence,
+                    $previousBytes + HistoryBudget::sizeOfEvent($activityResolution),
+                    $previousFanOut,
+                );
+            }
+        }
+        $historyBudget ??= HistoryBudget::forRun($run);
         $commandContract = RunCommandContract::forRun($run);
         $repairBlockedReason = RepairBlockedReason::forRun(
             $run,
