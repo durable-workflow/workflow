@@ -33,6 +33,7 @@ use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Support\ActivityOutcomeProjectionContext;
 use Workflow\V2\Support\ActivityOutcomeRecorder;
 use Workflow\V2\Support\DefaultHistoryProjectionRole;
+use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\RunTimelineProjector;
@@ -160,6 +161,11 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
             hash('sha256', $run->id . '|activity:' . $claim['activity_execution_id']),
             $waitReads[0]['bindings'],
         );
+        $historyReads = array_values(array_filter($queries, static fn (array $query): bool =>
+            str_starts_with($query['query'], 'select ')
+            && str_contains($query['query'], 'indexed_activity_execution_id')));
+        $this->assertCount(1, $historyReads);
+        $this->assertContains($claim['activity_execution_id'], $historyReads[0]['bindings']);
         foreach ($queries as $query) {
             if (str_starts_with($query['query'], 'select ')
                 && str_contains($query['query'], 'workflow_run_timeline_entries')) {
@@ -167,6 +173,39 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
             }
         }
         $this->assertActivityMemberProjectionMatchesFullProjection($run);
+    }
+
+    public function testActivityHistoryIndexPreservesFallbackAfterOlderWriterAppends(): void
+    {
+        [$run, $execution, $task] = $this->scaffoldLeasedAttempt('activity-index-legacy-writer');
+        $run->refresh();
+        $indexed = WorkflowHistoryEvent::indexedForActivity($run, $execution->id);
+        $this->assertNotNull($indexed);
+        $this->assertSame(2, $indexed->count());
+        $indexedThrough = (int) $run->activity_history_index_through;
+        $event = WorkflowHistoryEvent::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => (int) $run->last_history_sequence + 1,
+            'event_type' => HistoryEventType::RepairRequested,
+            'workflow_task_id' => $task->id,
+            'payload' => [
+                'task_type' => 'activity',
+            ],
+            'recorded_at' => now(),
+        ]);
+        $run->forceFill([
+            'last_history_sequence' => $event->sequence,
+        ])->save();
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::SignalReceived, [
+            'signal_id' => 'new-after-legacy',
+            'signal_name' => 'new-after-legacy',
+        ]);
+        $run->refresh();
+        $this->assertSame($indexedThrough, (int) $run->activity_history_index_through);
+        $this->assertNull(WorkflowHistoryEvent::indexedForActivity($run, $execution->id));
+        $timeline = iterator_to_array(HistoryTimeline::iterateFromHistory($run, $execution->id), false);
+        $this->assertContains($event->id, array_column($timeline, 'id'));
     }
 
     public function testLongHistoryOutcomesRefreshAffectedMetadataWithoutReadingUnrelatedTimelineRows(): void

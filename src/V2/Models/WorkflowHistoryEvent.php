@@ -6,6 +6,7 @@ namespace Workflow\V2\Models;
 
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Casts\Json;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -43,6 +44,8 @@ class WorkflowHistoryEvent extends Model
 
     protected $guarded = [];
 
+    protected $hidden = ['indexed_activity_execution_id'];
+
     protected $keyType = 'string';
 
     protected $dateFormat = 'Y-m-d H:i:s.u';
@@ -69,6 +72,27 @@ class WorkflowHistoryEvent extends Model
             ConfiguredV2Models::resolve('command_model', WorkflowCommand::class),
             'workflow_command_id',
         );
+    }
+
+    /**
+     * @return Collection<int, WorkflowHistoryEvent>|null
+     */
+    public static function indexedForActivity(WorkflowRun $run, string $activityId): ?Collection
+    {
+        if (! $run->exists || ! isset($run->activity_history_index_through)
+            || (int) $run->activity_history_index_through !== (int) $run->last_history_sequence
+            || $run->details_pruned_at !== null) {
+            return null;
+        }
+
+        $events = $run->historyEvents()
+            ->where('indexed_activity_execution_id', $activityId)
+            ->where('sequence', '<=', (int) $run->last_history_sequence)
+            ->get()
+            ->filter(static fn (self $event): bool => $event->indexed_activity_execution_id === $activityId)
+            ->values();
+
+        return $events->isEmpty() ? null : $events;
     }
 
     /**
@@ -227,8 +251,7 @@ class WorkflowHistoryEvent extends Model
                 $meter?->chargeEvent($eventType->value, $storedPayload);
                 $meter?->chargeRows(1);
 
-                /** @var self $event */
-                $event = ConfiguredV2Models::query('history_event_model', self::class)->create([
+                $values = [
                     'workflow_run_id' => $lockedRun->id,
                     'sequence' => $sequence,
                     'event_type' => $eventType->value,
@@ -236,12 +259,25 @@ class WorkflowHistoryEvent extends Model
                     'workflow_task_id' => $taskId,
                     'workflow_command_id' => $commandId,
                     'recorded_at' => $now,
-                ]);
+                ];
+                $indexedActivity = false;
+                if (array_key_exists('activity_history_index_through', $lockedRun->getAttributes())) {
+                    $indexedActivity = self::activityExecutionIdForIndex($storedPayload, $taskModel, $taskId);
+                    $values['indexed_activity_execution_id'] = $indexedActivity === false ? null : $indexedActivity;
+                }
+
+                /** @var self $event */
+                $event = ConfiguredV2Models::query('history_event_model', self::class)->create($values);
                 ExecutionTracing::observeOutcome($lockedRun, $taskModel, $event);
 
                 $updates = [
                     'last_history_sequence' => $sequence,
                 ];
+                // An earlier unindexed append leaves a gap that later writers cannot certify.
+                if ($indexedActivity !== false
+                    && (int) $lockedRun->activity_history_index_through === $sequence - 1) {
+                    $updates['activity_history_index_through'] = $sequence;
+                }
                 if ($eventType !== HistoryEventType::ActivityOutcomeRejected) {
                     $updates['last_progress_at'] = $now;
                 }
@@ -260,6 +296,31 @@ class WorkflowHistoryEvent extends Model
             });
 
         return $event;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return string|false|null False leaves coverage behind the history head. A null is an unassociated event.
+     */
+    private static function activityExecutionIdForIndex(
+        array $payload,
+        ?WorkflowTask $task,
+        ?string $taskId,
+    ): string|false|null {
+        if ($task === null && $taskId !== null) {
+            return false;
+        }
+
+        $subjects = array_values(array_unique(array_filter([
+            $payload['activity_execution_id'] ?? null,
+            $payload['activity']['id'] ?? null,
+            $payload['activity_attempt']['activity_execution_id'] ?? null,
+            $task?->payload['activity_execution_id'] ?? null,
+        ], static fn (mixed $id): bool => is_string($id) && $id !== '')));
+
+        $activityId = $subjects[0] ?? null;
+        return count($subjects) > 1 || ($activityId !== null && strlen($activityId) > 26)
+            ? false : $activityId;
     }
 
     private static function nextSequenceForRun(WorkflowRun $run): int
