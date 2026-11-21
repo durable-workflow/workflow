@@ -210,8 +210,11 @@ final class NamespaceScope
     /**
      * Limit rows by the namespace of the run named in `$runColumn`.
      */
-    public function applyThroughRun($query, string $runColumn = 'workflow_run_id'): void
-    {
+    public function applyThroughRun(
+        $query,
+        string $runColumn = 'workflow_run_id',
+        ?string $qualifiedRunColumn = null,
+    ): void {
         if ($this->namespaces === null) {
             return;
         }
@@ -222,7 +225,14 @@ final class NamespaceScope
             return;
         }
 
-        $query->whereIn($runColumn, $this->runIdsInScope());
+        $runs = $this->runIdsInScope();
+        if ($qualifiedRunColumn !== null) {
+            $query->whereExists($runs->whereColumn($runs->getModel()->getQualifiedKeyName(), $qualifiedRunColumn));
+
+            return;
+        }
+
+        $query->whereIn($runColumn, $runs);
     }
 
     /**
