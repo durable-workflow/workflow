@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 2.35.1 - 2026-11-21
+
+Run the package's normal Laravel migrations when upgrading. This release adds
+two maintenance indexes. MySQL, MariaDB, and PostgreSQL create them online.
+SQLite creates its indexes during the migration.
+
 - Repair and activity-timeout scans use indexes on open status, keeping
   retained closed work out of the scan. The additive migration uses the
   same index names and columns as native Server on the standard tables.
