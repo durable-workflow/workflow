@@ -20,6 +20,8 @@ class WorkflowRunWait extends Model
 {
     use ResolvesStorageConnection;
 
+    public const OPENING_TIME_POSITION = 2147483647;
+
     private const MAX_CACHED_PAYLOAD_MODELS = 256;
 
     private const MAX_CACHED_PAYLOAD_JSON_BYTES = 4096;
@@ -100,8 +102,40 @@ class WorkflowRunWait extends Model
 
         return $query->orderByRaw(
             "CASE {$status} WHEN 'open' THEN 0 WHEN 'resolved' THEN 1 WHEN 'cancelled' THEN 2 ELSE 99 END",
-        )->orderBy($this->qualifyColumn('position'))
-            ->orderBy($this->qualifyColumn('wait_id'));
+        )->inOpeningOrder();
+    }
+
+    public function scopeInOpeningOrder(Builder $query): Builder
+    {
+        $base = $query->getQuery();
+        $grammar = $base->getGrammar();
+        $opened = $grammar->wrap($this->qualifyColumn('opened_at'));
+        $id = $grammar->wrap($this->qualifyColumn('wait_id'));
+        $position = $grammar->wrap($this->qualifyColumn('position'));
+        [$milliseconds, $binaryId] = match ($base->getConnection()->getDriverName()) {
+            'sqlite' => [
+                "substr({$opened}, 1, 19) || '.' || substr(substr({$opened}, 21, 3) || '000', 1, 3)",
+                "CAST({$id} AS BLOB)",
+            ],
+            'mysql', 'mariadb' => [
+                "LEFT(DATE_FORMAT({$opened}, '%Y-%m-%d %H:%i:%s.%f'), 23)",
+                "CAST({$id} AS BINARY)",
+            ],
+            'pgsql' => ["date_trunc('milliseconds', {$opened})", "{$id} COLLATE \"C\""],
+            'sqlsrv' => [
+                "DATEDIFF_BIG(millisecond, CONVERT(datetime2, '19700101', 112), {$opened})",
+                "{$id} COLLATE Latin1_General_100_BIN2",
+            ],
+            default => [$opened, $id],
+        };
+
+        $useOpeningTime = $position . ' = ' . self::OPENING_TIME_POSITION;
+
+        // Legacy rows keep their stored ranks until a full projection refreshes them.
+        return $query->orderBy($this->qualifyColumn('position'))
+            ->orderByRaw("CASE WHEN {$useOpeningTime} AND {$opened} IS NULL THEN 1 ELSE 0 END")
+            ->orderByRaw("CASE WHEN {$useOpeningTime} THEN {$milliseconds} END")
+            ->orderByRaw($binaryId);
     }
 
     public function run(): BelongsTo

@@ -143,7 +143,6 @@ final class RunWaitProjector
         $waitModel = self::waitModel();
         $seen = [];
         $projected = [];
-        $positions = self::chronologicalPositions($waits);
 
         foreach (array_chunk(array_values($waits), 100, true) as $page) {
             $projectionIds = [];
@@ -171,7 +170,8 @@ final class RunWaitProjector
                         'workflow_run_id' => $run->id,
                         'workflow_instance_id' => $run->workflow_instance_id,
                         'wait_id' => $waitId,
-                        'position' => $positions[$waitId],
+                        // The opening time and wait ID determine order independently of other rows.
+                        'position' => WorkflowRunWait::OPENING_TIME_POSITION,
                         'kind' => self::stringValue($wait['kind'] ?? null) ?? 'unknown',
                         'sequence' => self::intValue($wait['sequence'] ?? null),
                         'status' => self::stringValue($wait['status'] ?? null) ?? 'unknown',
@@ -314,35 +314,6 @@ final class RunWaitProjector
             ->get();
 
         return $waits;
-    }
-
-    /**
-     * Keep stored order independent of status. Otherwise closing one open
-     * wait and opening the next rewrites every retained row twice.
-     *
-     * @param list<array<string, mixed>> $waits
-     * @return array<string, int>
-     */
-    private static function chronologicalPositions(array $waits): array
-    {
-        $ordered = [];
-
-        foreach (array_values($waits) as $position => $wait) {
-            $ordered[] = [
-                'id' => self::waitId($wait, $position),
-                'opened_at' => self::timestamp($wait['opened_at'] ?? null)?->getTimestampMs() ?? PHP_INT_MAX,
-            ];
-        }
-
-        usort($ordered, static fn (array $left, array $right): int =>
-            ($left['opened_at'] <=> $right['opened_at']) ?: ($left['id'] <=> $right['id']));
-        $positions = [];
-
-        foreach ($ordered as $position => $wait) {
-            $positions[$wait['id']] = $position;
-        }
-
-        return $positions;
     }
 
     /**

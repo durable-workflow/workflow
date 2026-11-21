@@ -42,8 +42,7 @@ final class RunCurrentWaits
         if (! $pruned && ! $terminal) {
             $rows = self::query($run, 'run_wait_model', WorkflowRunWait::class)
                 ->where('status', 'open')
-                ->orderBy('position')
-                ->orderBy('wait_id')
+                ->inOpeningOrder()
                 ->limit($limit + 1)
                 ->get([
                     'id', 'wait_id', 'kind', 'summary', 'target_name', 'target_type',
