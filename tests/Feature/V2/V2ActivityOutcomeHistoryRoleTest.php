@@ -979,7 +979,9 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
         $this->assertFalse($waits['stale']);
         $this->assertFalse($timeline['stale']);
         $summary = WorkflowRunSummary::query()->findOrFail($run->id)->getAttributes();
-        $this->assertEquals($summary, RunSummaryProjector::project($run->fresh())->getAttributes());
+        $rebuilt = RunSummaryProjector::project($run->fresh())
+            ->refresh();
+        $this->assertEquals($summary, $rebuilt->getAttributes());
     }
 
     /**
