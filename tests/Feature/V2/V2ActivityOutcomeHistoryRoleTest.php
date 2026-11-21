@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use RuntimeException;
+use Tests\Fixtures\V2\TestFanOutPayloadActivityWorkflow;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
@@ -19,6 +21,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -33,7 +36,9 @@ use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\RunTimelineProjector;
+use Workflow\V2\Support\RunWaitProjector;
 use Workflow\V2\Support\TaskDispatcher;
+use Workflow\V2\WorkflowStub;
 
 /**
  * Pins every ActivityOutcomeRecorder::record exit that refreshes operator
@@ -67,6 +72,60 @@ use Workflow\V2\Support\TaskDispatcher;
  */
 final class V2ActivityOutcomeHistoryRoleTest extends TestCase
 {
+    public function testParallelMemberCompletionKeepsTheTimelineCurrentWithoutReadingUnrelatedEntries(): void
+    {
+        Queue::fake();
+        config()
+            ->set('workflows.v2.task_dispatch_mode', 'poll');
+        $workflow = WorkflowStub::make(TestFanOutPayloadActivityWorkflow::class, 'bounded-parallel-outcome');
+        $workflow->start(2, 8);
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $workflowTask = $run->tasks()
+            ->where('task_type', TaskType::Workflow->value)->sole();
+        $this->app->call([new RunWorkflowTask($workflowTask->id), 'handle']);
+
+        $activityTasks = $run->tasks()
+            ->where('task_type', TaskType::Activity->value);
+        $this->assertSame(2, $activityTasks->count());
+        $activityTask = $activityTasks->orderBy('id')
+            ->firstOrFail();
+        $bridge = app(ActivityTaskBridge::class);
+        $claim = $bridge->claim($activityTask->id, 'parallel-activity-worker');
+        $this->assertNotNull($claim);
+        $this->assertIsString($claim['activity_attempt_id']);
+
+        $this->addUnrelatedSignals($run);
+        RunSummaryProjector::project($run->fresh());
+        $signalIds = WorkflowTimelineEntry::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('type', HistoryEventType::SignalReceived->value)
+            ->pluck('id')
+            ->all();
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        try {
+            $outcome = $bridge->complete($claim['activity_attempt_id'], 8);
+            $queries = DB::getQueryLog();
+        } finally {
+            DB::disableQueryLog();
+            DB::flushQueryLog();
+        }
+
+        $this->assertTrue($outcome['recorded']);
+        $this->assertNull($outcome['next_task_id']);
+        foreach ($queries as $query) {
+            if (str_starts_with($query['query'], 'select ')
+                && str_contains($query['query'], 'workflow_run_timeline_entries')) {
+                $this->assertSame([], array_intersect($signalIds, $query['bindings']));
+            }
+        }
+        $this->assertFalse(RunTimelineProjector::driftStatusForRun($run->fresh())['stale']);
+        $this->assertFalse(RunWaitProjector::driftStatusForRun($run->fresh())['stale']);
+        $summary = WorkflowRunSummary::query()->findOrFail($run->id);
+        $this->assertEquals($summary->getAttributes(), RunSummaryProjector::project($run->fresh())->getAttributes());
+    }
+
     public function testLongHistoryOutcomesRefreshAffectedMetadataWithoutReadingUnrelatedTimelineRows(): void
     {
         config()->set('workflows.v2.task_dispatch_mode', 'poll');

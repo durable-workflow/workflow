@@ -542,7 +542,10 @@ final class ActivityOutcomeRecorder
                     lockHistoryForUpdate: true,
                 )
             ) {
-                self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+                self::projectRun(
+                    $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']),
+                    $resolutionEvent,
+                );
 
                 return self::recorded(null);
             }

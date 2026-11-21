@@ -164,7 +164,8 @@ final class RunSummaryProjector
             ], true)
             && $previousSummary instanceof WorkflowRunSummary
             && $previousSummary->projection_schema_version === self::SCHEMA_VERSION
-            && (int) $previousSummary->history_event_count + 1 === (int) $activityResolution->sequence;
+            && (int) $previousSummary->history_event_count + 1 === (int) $activityResolution->sequence
+            && (int) $activityResolution->sequence === (int) $run->last_history_sequence;
 
         $run->loadMissing(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']);
         $run->loadMissing([
