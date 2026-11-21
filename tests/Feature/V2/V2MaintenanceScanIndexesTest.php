@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Database\MySqlConnection;
 use Illuminate\Support\Facades\DB;
 use ReflectionMethod;
 use Tests\TestCase;
@@ -64,18 +65,22 @@ final class V2MaintenanceScanIndexesTest extends TestCase
 
     private function assertIndexSeek(string $table, string $index, callable $query): void
     {
-        $driver = DB::connection()->getDriverName();
+        $connection = DB::connection();
+        $driver = $connection->getDriverName();
         if (in_array($driver, ['mysql', 'mariadb'], true)) {
             DB::select('ANALYZE TABLE ' . $table);
         } else {
             DB::statement('ANALYZE ' . $table);
         }
 
-        $queries = DB::connection()->pretend($query);
+        $queries = $connection->pretend($query);
         $this->assertCount(1, $queries);
         $command = match ($driver) {
             'sqlite' => 'EXPLAIN QUERY PLAN ',
             'pgsql' => 'EXPLAIN (FORMAT JSON) ',
+            'mysql' => $connection instanceof MySqlConnection && ! $connection->isMaria()
+                ? 'EXPLAIN FORMAT=TRADITIONAL '
+                : 'EXPLAIN ',
             default => 'EXPLAIN ',
         };
         $plan = DB::select($command . $queries[0]['query']);
@@ -83,7 +88,7 @@ final class V2MaintenanceScanIndexesTest extends TestCase
 
         if (in_array($driver, ['mysql', 'mariadb'], true)) {
             $access = collect($plan)
-                ->first(static fn (object $step): bool => $step->table === $table);
+                ->first(static fn (object $step): bool => ($step->table ?? null) === $table);
             $this->assertNotNull($access, $evidence);
             $this->assertSame($index, $access->key, $evidence);
             $this->assertContains($access->type, ['range', 'ref'], $evidence);
