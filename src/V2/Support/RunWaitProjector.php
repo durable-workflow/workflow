@@ -169,8 +169,14 @@ final class RunWaitProjector
     {
         $sequence = self::intValue($event->payload['sequence'] ?? null);
         $childCallId = self::stringValue($event->payload['child_call_id'] ?? null);
+        $childRunId = self::stringValue($event->payload['child_workflow_run_id'] ?? null);
+        $childInstanceId = self::stringValue($event->payload['child_workflow_instance_id'] ?? null);
+        $label = self::stringValue($event->payload['child_workflow_type'] ?? null)
+            ?? self::stringValue($event->payload['child_workflow_class'] ?? null);
         $path = ParallelChildGroup::metadataPathFromPayload($event->payload);
-        if ($sequence === null || $childCallId === null || count($path) !== 1
+        if ($event->event_type !== HistoryEventType::ChildRunCompleted
+            || $sequence === null || $childCallId === null || $childRunId === null
+            || $childInstanceId === null || $label === null || count($path) !== 1
             || ! str_starts_with($path[0]['parallel_group_id'], 'parallel-children:')) {
             return false;
         }
@@ -180,24 +186,62 @@ final class RunWaitProjector
         $projectionId = self::projectionId($run->id, $waitId);
         /** @var WorkflowRunWait|null $previous */
         $previous = $waitModel::query()->find($projectionId);
-        if ($previous === null || $previous->position !== WorkflowRunWait::OPENING_TIME_POSITION
-            || $previous->kind !== 'child' || $previous->status !== 'open'
-            || $previous->history_authority !== ChildRunHistory::HISTORY_AUTHORITY_TYPED
-            || $previous->task_id !== null) {
+        if ($previous === null || ! self::isOpenChildGroupWait($previous, $path[0]['parallel_group_id'])
+            || $previous->kind !== 'child' || $previous->status !== 'open' || $previous->sequence !== $sequence
+            || $previous->resume_source_id !== $childRunId || $previous->target_name !== $childInstanceId
+            || $previous->target_type !== $label
+            || ParallelChildGroup::metadataPathFromPayload($previous->payload) !== $path) {
             return false;
         }
 
-        $wait = RunWaitView::forChild($run, $sequence);
-        if (($wait['id'] ?? null) !== $waitId || ($wait['status'] ?? null) !== 'resolved'
-            || ($wait['resume_source_id'] ?? null) !== $previous->resume_source_id
-            || ($wait['task_id'] ?? null) !== null) {
-            return false;
-        }
-
-        self::saveWait($waitModel, $run, $projectionId, $waitId, $wait, $previous);
+        self::saveWait($waitModel, $run, $projectionId, $waitId, [
+            ...$previous->payload,
+            'status' => 'resolved',
+            'source_status' => RunStatus::Completed->value,
+            'summary' => sprintf('Child workflow %s completed.', $label),
+            'resolved_at' => $event->recorded_at ?? $event->created_at,
+        ], $previous);
         $run->unsetRelation('waits');
 
         return true;
+    }
+
+    public static function openChildWaitAfterCompletion(
+        WorkflowRun $run,
+        string $currentWaitId,
+        WorkflowHistoryEvent $event,
+    ): ?WorkflowRunWait {
+        $childCallId = self::stringValue($event->payload['child_call_id'] ?? null);
+        $sequence = self::intValue($event->payload['sequence'] ?? null);
+        $path = ParallelChildGroup::metadataPathFromPayload($event->payload);
+        if ($childCallId === null || $sequence === null || count($path) !== 1
+            || ! str_starts_with($path[0]['parallel_group_id'], 'parallel-children:')) {
+            return null;
+        }
+
+        $waitModel = self::waitModel();
+        $query = $waitModel::query()->where('workflow_run_id', $run->id)
+            ->where('kind', 'child')
+            ->where('status', 'open');
+        /** @var WorkflowRunWait|null $current */
+        $current = (clone $query)->where('wait_id', $currentWaitId)
+            ->first();
+        if (! self::isOpenChildGroupWait($current, $path[0]['parallel_group_id'])) {
+            return null;
+        }
+
+        if ($currentWaitId !== 'child:' . $childCallId) {
+            return $current;
+        }
+
+        /** @var WorkflowRunWait|null $next */
+        $end = $path[0]['parallel_group_base_sequence'] + $path[0]['parallel_group_size'] - 1;
+        $next = $query->where('sequence', '>', $sequence)
+            ->where('sequence', '<=', $end)
+            ->orderBy('sequence')
+            ->first();
+
+        return self::isOpenChildGroupWait($next, $path[0]['parallel_group_id']) ? $next : null;
     }
 
     /**
@@ -299,6 +343,16 @@ final class RunWaitProjector
             'missing' => $hasCanonical && ! $hasProjection,
             'stale' => $hasProjection && ! self::projectionMatchesSnapshot($projected, $canonicalWaits),
         ];
+    }
+
+    private static function isOpenChildGroupWait(?WorkflowRunWait $wait, string $groupId): bool
+    {
+        return $wait !== null
+            && $wait->position === WorkflowRunWait::OPENING_TIME_POSITION
+            && $wait->history_authority === ChildRunHistory::HISTORY_AUTHORITY_TYPED
+            && $wait->resume_source_kind === 'child_workflow_run'
+            && $wait->task_id === null
+            && ($wait->payload['parallel_group_id'] ?? null) === $groupId;
     }
 
     /**

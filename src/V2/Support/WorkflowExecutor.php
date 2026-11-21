@@ -5876,7 +5876,7 @@ final class WorkflowExecutor
                         $parentRun,
                         null,
                         $resolutionEvent,
-                        fn () => $this->projectParentAfterChildClosure($parentRun),
+                        fn () => $this->projectParentAfterChildClosure($parentRun, intermediateClosure: true),
                     );
 
                     continue;
@@ -5925,9 +5925,15 @@ final class WorkflowExecutor
         }
     }
 
-    private function projectParentAfterChildClosure(WorkflowRun $parentRun): void
-    {
-        $this->projectRun($parentRun->fresh(ChildClosureParentState::PROJECTION_RELATIONS));
+    private function projectParentAfterChildClosure(
+        WorkflowRun $parentRun,
+        bool $intermediateClosure = false,
+    ): void {
+        $role = $this->historyProjectionRole();
+        $relations = $intermediateClosure && $role instanceof DefaultHistoryProjectionRole
+            ? [] : ChildClosureParentState::PROJECTION_RELATIONS;
+
+        $role->projectRun($parentRun->fresh($relations) ?? $parentRun);
     }
 
     /**

@@ -65,6 +65,14 @@ final class V2EmbeddedParallelChildConcurrencyTest extends TestCase
                 DB::disableQueryLog();
                 DB::flushQueryLog();
             }
+            $selectedProjectedWait = collect($queries)
+                ->contains(static fn (array $query): bool =>
+                                str_starts_with(strtolower($query['query']), 'select')
+                                && str_contains($query['query'], 'workflow_run_waits')
+                                && str_contains($query['query'], 'wait_id')
+                                && in_array($parentId, $query['bindings'], true)
+                                && in_array('open', $query['bindings'], true));
+            $this->assertSame($closed < 2, $selectedProjectedWait);
             foreach (['workflow_run_timeline_entries', 'workflow_run_waits'] as $table) {
                 $readsParentRows = collect($queries)
                     ->contains(static fn (array $query): bool =>

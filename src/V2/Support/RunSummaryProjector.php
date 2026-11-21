@@ -156,6 +156,21 @@ final class RunSummaryProjector
         /** @var WorkflowRunSummary|null $previousSummary */
         $previousSummary = $activityExecutionId === null && $childResolution === null
             ? null : $summaryModel::query()->find($run->id);
+        $childEvent = $childResolution['event'] ?? null;
+        // A best-effort projection can leave the summary ahead of the timeline.
+        $scopeChildTimeline = ! $run->status->isTerminal() && $childEvent?->workflow_run_id === $run->id
+            && $childEvent->event_type === HistoryEventType::ChildRunCompleted
+            && $previousSummary?->projection_schema_version === self::SCHEMA_VERSION
+            && (int) $previousSummary->history_event_count + 1 === (int) $childEvent->sequence
+            && (int) $childEvent->sequence === (int) $run->last_history_sequence
+            && RunTimelineProjector::hasProjectedSequence($run, (int) $childEvent->sequence - 1);
+        if ($scopeChildTimeline) {
+            $summary = self::projectWaitingChildGroup($run, $childEvent, $previousSummary);
+            if ($summary !== null) {
+                return $summary;
+            }
+        }
+
         $scopeActivityTimeline = ! $run->status->isTerminal()
             && $activityResolution?->workflow_run_id === $run->id
             && in_array($activityResolution?->event_type, [
@@ -551,14 +566,6 @@ final class RunSummaryProjector
             $failureIds,
         );
 
-        $childEvent = $childResolution['event'] ?? null;
-        // A best-effort projection can leave the summary ahead of the timeline.
-        $scopeChildTimeline = ! $isTerminal && $childEvent?->workflow_run_id === $run->id
-            && $childEvent->event_type === HistoryEventType::ChildRunCompleted
-            && $previousSummary?->projection_schema_version === self::SCHEMA_VERSION
-            && (int) $previousSummary->history_event_count + 1 === (int) $childEvent->sequence
-            && (int) $childEvent->sequence === (int) $run->last_history_sequence
-            && RunTimelineProjector::hasProjectedSequence($run, (int) $childEvent->sequence - 1);
         $scopedWait = ($scopeActivityTimeline && self::projectParallelActivityWait(
             $run,
             $activityResolution,
@@ -609,6 +616,75 @@ final class RunSummaryProjector
         // Redispatch changes task availability, not history. Rebuild the open
         // task's operator view without scanning or rewriting the run timeline.
         return self::projectOpenWorkflowTask($run, $task, []);
+    }
+
+    private static function projectWaitingChildGroup(
+        WorkflowRun $run,
+        WorkflowHistoryEvent $event,
+        WorkflowRunSummary $previous,
+    ): ?WorkflowRunSummary {
+        $waitId = self::nonEmptyString($previous->open_wait_id);
+        if ($run->status !== RunStatus::Waiting || $previous->status !== RunStatus::Waiting->value
+            || $previous->wait_kind !== 'child' || $previous->liveness_state !== 'waiting_for_child'
+            || $previous->next_task_id !== null || $previous->task_problem || $waitId === null
+            || $run->details_pruned_at !== null || ImportedLineageReferences::imported($run)
+            || $previous->history_size_bytes <= 0
+            || ! self::claimIsCurrentRun($run)
+            || ConfiguredV2Models::query('task_model', WorkflowTask::class)
+                ->where('workflow_run_id', $run->id)
+                ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])->exists()
+            || self::claimHasWorkflowTaskProblem($run)) {
+            return null;
+        }
+
+        $next = RunWaitProjector::openChildWaitAfterCompletion($run, $waitId, $event);
+        $label = self::nonEmptyString($next?->target_type);
+        if ($next === null || $label === null || ! RunWaitProjector::projectCompletedChildWait($run, $event)) {
+            return null;
+        }
+
+        $budget = HistoryBudget::fromCounters(
+            (int) $event->sequence,
+            (int) $previous->history_size_bytes + HistoryBudget::sizeOfEvent($event),
+            max((int) $previous->history_fan_out, self::intValue($event->payload['parallel_group_size'] ?? null) ?? 0),
+        );
+        $repair = RepairBlockedReason::forRun($run, true, 'waiting_for_child', false);
+        $contract = RunCommandContract::forRun($run);
+        $livenessReason = sprintf('Waiting for child workflow %s.', $label);
+        $values = [
+            ...self::claimSummaryIdentity($run, $contract),
+            'is_current_run' => true,
+            'wait_reason' => sprintf('Waiting for child workflow %s', $label),
+            'wait_started_at' => $next->opened_at,
+            'open_wait_id' => $next->wait_id,
+            'resume_source_id' => $next->resume_source_id,
+            'liveness_reason' => $livenessReason,
+            'repair_blocked_reason' => $repair,
+            'repair_attention' => RepairBlockedReason::needsAttention($repair),
+            ...WorkflowTaskLeaseLoss::summaryAttributes($run),
+            'history_event_count' => $budget['history_event_count'],
+            'history_size_bytes' => $budget['history_size_bytes'],
+            'history_fan_out' => $budget['history_fan_out'],
+            'continue_as_new_recommended' => $budget['continue_as_new_recommended'],
+            'history_budget_pressure' => $budget['pressure'],
+            'updated_at' => $run->last_progress_at ?? $run->updated_at,
+        ];
+        /** @var WorkflowRunSummary $summary */
+        $summary = WorkflowTaskLeaseLoss::writeSummary(
+            $values,
+            static fn (array $values): WorkflowRunSummary => IdempotentProjectionUpsert::upsert(
+                self::summaryModel(),
+                [
+                    'id' => $run->id,
+                ],
+                $values,
+                $previous,
+            ),
+        );
+        RunTimelineProjector::projectChildResolutionEvent($run, $event);
+        RunLineageProjector::project($run);
+
+        return $summary;
     }
 
     /**
@@ -1003,9 +1079,10 @@ final class RunSummaryProjector
     }
 
     /**
+     * @param array{entry_mode: 'canonical'|null, source: string}|null $commandContract
      * @return array<string, mixed>
      */
-    private static function claimSummaryIdentity(WorkflowRun $run): array
+    private static function claimSummaryIdentity(WorkflowRun $run, ?array $commandContract = null): array
     {
         /** @var WorkflowInstance|null $instance */
         $instance = $run->instance()
@@ -1013,7 +1090,7 @@ final class RunSummaryProjector
         if ($instance !== null && $instance->namespace !== $run->namespace) {
             $instance = null;
         }
-        $commandContract = self::freshRunCommandContract($run);
+        $commandContract ??= self::freshRunCommandContract($run);
         $sortTimestamp = RunSummarySortKey::timestamp($run->started_at, $run->created_at, $run->updated_at);
 
         return [
