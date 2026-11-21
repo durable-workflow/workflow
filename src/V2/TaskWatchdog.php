@@ -692,26 +692,33 @@ final class TaskWatchdog
     ) {
         $now = $at->format('Y-m-d H:i:s.u');
 
-        $query = WorkflowRun::query()
-            ->whereIn('status', [RunStatus::Pending->value, RunStatus::Running->value, RunStatus::Waiting->value])
-            ->where(static function ($deadline) use ($now): void {
-                $deadline->where(static function ($execution) use ($now): void {
-                    $execution->whereNotNull('execution_deadline_at')
-                        ->where('execution_deadline_at', '<=', $now);
-                })->orWhere(static function ($run) use ($now): void {
-                    $run->whereNotNull('run_deadline_at')
-                        ->where('run_deadline_at', '<=', $now);
-                })->orWhere(static function ($cancellation) use ($now): void {
-                    $cancellation->whereNotNull('cancellation_request_command_id')
-                        ->whereNotNull('cancellation_deadline_at')
-                        ->where('cancellation_deadline_at', '<=', $now);
-                })->orWhere(static function ($cleanup) use ($now): void {
-                    // An opted-in run reaches its work deadline (#863).
-                    $cleanup->whereNull('cancellation_request_command_id')
-                        ->whereNotNull('timeout_cleanup_work_deadline_at')
-                        ->where('timeout_cleanup_work_deadline_at', '<=', $now);
-                });
-            })
+        $query = WorkflowRun::query();
+        $openStatuses = [RunStatus::Pending->value, RunStatus::Running->value, RunStatus::Waiting->value];
+        if ($query->getQuery()->getConnection()->getDriverName() === 'sqlite') {
+            // Keep the status seek when ANALYZE has only averages for a skewed table.
+            $query->whereRaw('unlikely(status in (?, ?, ?))', $openStatuses);
+        } else {
+            $query->whereIn('status', $openStatuses);
+        }
+
+        $query->where(static function ($deadline) use ($now): void {
+            $deadline->where(static function ($execution) use ($now): void {
+                $execution->whereNotNull('execution_deadline_at')
+                    ->where('execution_deadline_at', '<=', $now);
+            })->orWhere(static function ($run) use ($now): void {
+                $run->whereNotNull('run_deadline_at')
+                    ->where('run_deadline_at', '<=', $now);
+            })->orWhere(static function ($cancellation) use ($now): void {
+                $cancellation->whereNotNull('cancellation_request_command_id')
+                    ->whereNotNull('cancellation_deadline_at')
+                    ->where('cancellation_deadline_at', '<=', $now);
+            })->orWhere(static function ($cleanup) use ($now): void {
+                // An opted-in run reaches its work deadline (#863).
+                $cleanup->whereNull('cancellation_request_command_id')
+                    ->whereNotNull('timeout_cleanup_work_deadline_at')
+                    ->where('timeout_cleanup_work_deadline_at', '<=', $now);
+            });
+        })
             ->where(static function ($available) use ($now): void {
                 $available->whereDoesntHave('tasks', static function ($task): void {
                     $task->where('task_type', TaskType::Workflow->value)

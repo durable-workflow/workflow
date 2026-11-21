@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Repair and activity-timeout scans use indexes on open status, keeping
+  retained closed work out of the scan. The additive migration uses the
+  same index names and columns as native Server on the standard tables.
+  It builds the indexes online on MySQL, MariaDB, and PostgreSQL. (#1249)
+
 ## 2.35.0 - 2026-11-20
 
 2.35.0 has no database migration. It adds **experimental** durable

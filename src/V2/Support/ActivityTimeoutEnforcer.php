@@ -65,26 +65,33 @@ final class ActivityTimeoutEnforcer
     ) {
         $deadlineBoundary = self::deadlineBoundary($now);
 
-        $query = ActivityExecution::query()
-            ->whereIn('status', [ActivityStatus::Pending->value, ActivityStatus::Running->value])
-            ->where(static function ($query) use ($deadlineBoundary): void {
-                $query->where(static function ($schedule) use ($deadlineBoundary): void {
-                    $schedule->where('status', ActivityStatus::Pending->value)
-                        ->whereNotNull('schedule_deadline_at')
-                        ->where('schedule_deadline_at', '<=', $deadlineBoundary);
-                })->orWhere(static function ($close) use ($deadlineBoundary): void {
-                    $close->where('status', ActivityStatus::Running->value)
-                        ->whereNotNull('close_deadline_at')
-                        ->where('close_deadline_at', '<=', $deadlineBoundary);
-                })->orWhere(static function ($scheduleToClose) use ($deadlineBoundary): void {
-                    $scheduleToClose->whereNotNull('schedule_to_close_deadline_at')
-                        ->where('schedule_to_close_deadline_at', '<=', $deadlineBoundary);
-                })->orWhere(static function ($heartbeat) use ($deadlineBoundary): void {
-                    $heartbeat->where('status', ActivityStatus::Running->value)
-                        ->whereNotNull('heartbeat_deadline_at')
-                        ->where('heartbeat_deadline_at', '<=', $deadlineBoundary);
-                });
+        $query = ActivityExecution::query();
+        $openStatuses = [ActivityStatus::Pending->value, ActivityStatus::Running->value];
+        if ($query->getQuery()->getConnection()->getDriverName() === 'sqlite') {
+            // SQLite's per-index averages can hide a small open set among many closed rows.
+            $query->whereRaw('unlikely(status in (?, ?))', $openStatuses);
+        } else {
+            $query->whereIn('status', $openStatuses);
+        }
+
+        $query->where(static function ($query) use ($deadlineBoundary): void {
+            $query->where(static function ($schedule) use ($deadlineBoundary): void {
+                $schedule->where('status', ActivityStatus::Pending->value)
+                    ->whereNotNull('schedule_deadline_at')
+                    ->where('schedule_deadline_at', '<=', $deadlineBoundary);
+            })->orWhere(static function ($close) use ($deadlineBoundary): void {
+                $close->where('status', ActivityStatus::Running->value)
+                    ->whereNotNull('close_deadline_at')
+                    ->where('close_deadline_at', '<=', $deadlineBoundary);
+            })->orWhere(static function ($scheduleToClose) use ($deadlineBoundary): void {
+                $scheduleToClose->whereNotNull('schedule_to_close_deadline_at')
+                    ->where('schedule_to_close_deadline_at', '<=', $deadlineBoundary);
+            })->orWhere(static function ($heartbeat) use ($deadlineBoundary): void {
+                $heartbeat->where('status', ActivityStatus::Running->value)
+                    ->whereNotNull('heartbeat_deadline_at')
+                    ->where('heartbeat_deadline_at', '<=', $deadlineBoundary);
             });
+        });
 
         // Executions carry no namespace column; their run owns it.
         RequestedTaskScope::applyThroughRun($query, $connection, $queue, $namespaces);

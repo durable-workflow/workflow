@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Database\Eloquent\Builder;
+
 /**
  * The task scope a repair, timeout or matching pass may act on: the requested
  * connection and queue, always inside the application's namespace allowlist.
@@ -69,7 +71,10 @@ final class RequestedTaskScope
     ): void {
         self::applyValue($query, 'connection', $connection);
         self::applyValue($query, 'queue', $queue);
-        ($namespaces ?? NamespaceScope::configured())->applyThroughRun($query, $runColumn);
+        // Let the timeout scan seek open rows before it checks their parent runs.
+        $qualifiedRunColumn = $query instanceof Builder ? $query->getModel()
+            ->qualifyColumn($runColumn) : null;
+        ($namespaces ?? NamespaceScope::configured())->applyThroughRun($query, $runColumn, $qualifiedRunColumn);
     }
 
     private static function applyValue($query, string $column, ?string $value): void
