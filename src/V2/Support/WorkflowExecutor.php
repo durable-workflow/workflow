@@ -5872,7 +5872,12 @@ final class WorkflowExecutor
                         lockHistoryForUpdate: true,
                     )
                 ) {
-                    $this->projectParentAfterChildClosure($parentRun);
+                    ChildResolutionProjectionContext::run(
+                        $parentRun,
+                        null,
+                        $resolutionEvent,
+                        fn () => $this->projectParentAfterChildClosure($parentRun),
+                    );
 
                     continue;
                 }

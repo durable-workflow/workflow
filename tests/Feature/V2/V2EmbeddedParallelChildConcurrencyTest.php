@@ -21,6 +21,7 @@ use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Support\RunLineageProjector;
 use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\RunTimelineProjector;
@@ -49,7 +50,28 @@ final class V2EmbeddedParallelChildConcurrencyTest extends TestCase
         foreach ([2, 0, 1, 3] as $closed => $index) {
             $this->travel(1)
                 ->seconds();
-            $this->runWorkflowTask($childIds[$index]);
+            if ($closed === 2) {
+                $historyHead = WorkflowRun::query()->findOrFail($parentId)->last_history_sequence;
+                $this->assertSame(1, WorkflowTimelineEntry::query()
+                    ->where('workflow_run_id', $parentId)
+                    ->where('sequence', $historyHead)
+                    ->delete());
+            }
+            DB::enableQueryLog();
+            try {
+                $this->runWorkflowTask($childIds[$index]);
+                $queries = DB::getQueryLog();
+            } finally {
+                DB::disableQueryLog();
+                DB::flushQueryLog();
+            }
+            $readsParentTimeline = collect($queries)
+                ->contains(static fn (array $query): bool =>
+                                str_starts_with(strtolower($query['query']), 'select')
+                                && str_contains($query['query'], 'workflow_run_timeline_entries')
+                                && str_contains($query['query'], ' in (')
+                                && in_array($parentId, $query['bindings'], true));
+            $this->assertSame($closed >= 2, $readsParentTimeline);
             $this->assertSame($closed === 3 ? 1 : 0, $this->openTasks($parentId)->count());
             $parent = WorkflowRun::query()->findOrFail($parentId);
 

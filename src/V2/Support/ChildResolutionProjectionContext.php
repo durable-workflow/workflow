@@ -16,7 +16,7 @@ use Workflow\V2\Models\WorkflowTask;
 final class ChildResolutionProjectionContext
 {
     /**
-     * @var array<string, list<array{task: WorkflowTask, event: WorkflowHistoryEvent}>>
+     * @var array<string, list<array{task: WorkflowTask|null, event: WorkflowHistoryEvent}>>
      */
     private static array $projectionsByRunId = [];
 
@@ -27,7 +27,7 @@ final class ChildResolutionProjectionContext
      */
     public static function run(
         WorkflowRun $run,
-        WorkflowTask $task,
+        ?WorkflowTask $task,
         WorkflowHistoryEvent $event,
         callable $project,
     ): mixed {
@@ -50,7 +50,7 @@ final class ChildResolutionProjectionContext
     }
 
     /**
-     * @return array{task: WorkflowTask, event: WorkflowHistoryEvent}|null
+     * @return array{task: WorkflowTask|null, event: WorkflowHistoryEvent}|null
      */
     public static function projectionFor(WorkflowRun $run): ?array
     {

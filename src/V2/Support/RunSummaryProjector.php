@@ -138,7 +138,7 @@ final class RunSummaryProjector
 
         $childResolution = ChildResolutionProjectionContext::projectionFor($run);
 
-        if ($childResolution !== null) {
+        if (($childResolution['task'] ?? null) instanceof WorkflowTask) {
             return self::projectOpenWorkflowTask($run, $childResolution['task'], [$childResolution['event']]);
         }
 
@@ -154,7 +154,8 @@ final class RunSummaryProjector
             : null;
         $summaryModel = self::summaryModel();
         /** @var WorkflowRunSummary|null $previousSummary */
-        $previousSummary = $activityExecutionId === null ? null : $summaryModel::query()->find($run->id);
+        $previousSummary = $activityExecutionId === null && $childResolution === null
+            ? null : $summaryModel::query()->find($run->id);
         $scopeActivityTimeline = ! $run->status->isTerminal()
             && $activityResolution?->workflow_run_id === $run->id
             && in_array($activityResolution?->event_type, [
@@ -553,13 +554,24 @@ final class RunSummaryProjector
         if (! $scopeActivityTimeline || ! self::projectParallelActivityWait($run, $activityResolution, $activities)) {
             RunWaitProjector::project($run, RunWaitView::forRun($run, $activities, $timers), collectRows: false);
         }
-        RunTimelineProjector::project(
-            $run,
-            $scopeActivityTimeline
-                ? HistoryTimeline::iterateFromHistory($run, $activityExecutionId)
-                : null,
-            collectRows: false,
-        );
+        $childEvent = $childResolution['event'] ?? null;
+        // A best-effort projection can leave the summary ahead of the timeline.
+        if (! $isTerminal && $childEvent?->workflow_run_id === $run->id
+            && $childEvent->event_type === HistoryEventType::ChildRunCompleted
+            && $previousSummary?->projection_schema_version === self::SCHEMA_VERSION
+            && (int) $previousSummary->history_event_count + 1 === (int) $childEvent->sequence
+            && (int) $childEvent->sequence === (int) $run->last_history_sequence
+            && RunTimelineProjector::hasProjectedSequence($run, (int) $childEvent->sequence - 1)) {
+            RunTimelineProjector::projectChildResolutionEvent($run, $childEvent);
+        } else {
+            RunTimelineProjector::project(
+                $run,
+                $scopeActivityTimeline
+                    ? HistoryTimeline::iterateFromHistory($run, $activityExecutionId)
+                    : null,
+                collectRows: false,
+            );
+        }
         RunTimerProjector::project($run, $timers, collectRows: false);
         RunLineageProjector::project($run);
 

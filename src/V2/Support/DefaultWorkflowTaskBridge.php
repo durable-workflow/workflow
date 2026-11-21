@@ -5713,10 +5713,15 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                         lockHistoryForUpdate: true,
                     )
                 ) {
-                    self::projectRunBestEffort(
+                    ChildResolutionProjectionContext::run(
                         $parentRun,
-                        self::PROJECTION_RUN_RELATIONS_WITH_CHILDREN,
-                        'child_workflow_parallel_wait',
+                        null,
+                        $resolutionEvent,
+                        static fn () => self::projectRunBestEffort(
+                            $parentRun,
+                            self::PROJECTION_RUN_RELATIONS_WITH_CHILDREN,
+                            'child_workflow_parallel_wait',
+                        ),
                     );
 
                     continue;
