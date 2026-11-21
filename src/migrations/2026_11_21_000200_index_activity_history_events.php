@@ -7,6 +7,7 @@ use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Workflow\Support\WorkflowMigration;
+use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\ConfiguredV2Models;
@@ -38,6 +39,14 @@ return new class() extends WorkflowMigration {
             ]);
         }
 
+        foreach ($this->tables('activity_execution_model', ActivityExecution::class) as $table) {
+            if ($schema->hasTable($table)) {
+                $this->createIndexOnline($table, $this->openActivityIndexName($table), [
+                    'workflow_run_id', 'status', 'sequence',
+                ]);
+            }
+        }
+
         foreach ($this->tables('run_model', WorkflowRun::class) as $table) {
             if ($schema->hasTable($table) && ! $schema->hasColumn($table, 'activity_history_index_through')) {
                 $this->withSchemaLockBudget(
@@ -61,6 +70,17 @@ return new class() extends WorkflowMigration {
                         $table->dropColumn('activity_history_index_through');
                     })
                 );
+            }
+        }
+
+        foreach ($this->tables('activity_execution_model', ActivityExecution::class) as $table) {
+            $index = $this->openActivityIndexName($table);
+            if ($schema->hasTable($table) && $schema->hasIndex($table, $index)) {
+                $this->withSchemaLockBudget(static fn () => $schema->table($table, static function (Blueprint $table) use (
+                    $index
+                ): void {
+                    $table->dropIndex($index);
+                }));
             }
         }
         foreach ($this->tables('history_event_model', WorkflowHistoryEvent::class) as $table) {
@@ -97,11 +117,16 @@ return new class() extends WorkflowMigration {
 
     private function indexName(string $table): string
     {
-        $prefix = DB::connection($this->getConnection())->getTablePrefix();
-        $name = 'dw_history_run_activity_sequence';
+        return WorkflowHistoryEvent::activityIndexName(
+            $table,
+            DB::connection($this->getConnection())->getTablePrefix()
+        );
+    }
 
-        return $prefix === '' && $table === 'workflow_history_events'
-            ? $name
-            : $name . '_' . substr(hash('sha256', $prefix . $table), 0, 12);
+    private function openActivityIndexName(string $table): string
+    {
+        $prefix = DB::connection($this->getConnection())->getTablePrefix();
+
+        return 'dw_run_open_activity_' . substr(hash('sha256', $prefix . $table), 0, 12);
     }
 };

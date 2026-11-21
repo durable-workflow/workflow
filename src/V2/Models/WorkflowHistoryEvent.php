@@ -75,24 +75,52 @@ class WorkflowHistoryEvent extends Model
     }
 
     /**
+     * Locking reads require the caller to hold the run lock.
+     *
      * @return Collection<int, WorkflowHistoryEvent>|null
      */
-    public static function indexedForActivity(WorkflowRun $run, string $activityId): ?Collection
-    {
-        if (! $run->exists || ! isset($run->activity_history_index_through)
-            || (int) $run->activity_history_index_through !== (int) $run->last_history_sequence
-            || $run->details_pruned_at !== null) {
+    public static function indexedForActivity(
+        WorkflowRun $run,
+        string $activityId,
+        bool $lockForUpdate = false
+    ): ?Collection {
+        if (! self::activityIndexCovers($run)) {
             return null;
         }
 
-        $events = $run->historyEvents()
+        $query = $run->historyEvents()
             ->where('indexed_activity_execution_id', $activityId)
-            ->where('sequence', '<=', (int) $run->last_history_sequence)
-            ->get()
+            ->where('sequence', '<=', (int) $run->last_history_sequence);
+        if ($lockForUpdate) {
+            $model = $query->getRelated();
+            $connection = $model->getConnection();
+            if (in_array($connection->getDriverName(), ['mysql', 'mariadb'], true)) {
+                $query->forceIndex(self::activityIndexName($model->getTable(), $connection->getTablePrefix()));
+            }
+            $query->lockForUpdate();
+        }
+
+        $events = $query->get()
             ->filter(static fn (self $event): bool => $event->indexed_activity_execution_id === $activityId)
             ->values();
 
         return $events->isEmpty() ? null : $events;
+    }
+
+    public static function activityIndexCovers(WorkflowRun $run): bool
+    {
+        return $run->exists && isset($run->activity_history_index_through)
+            && (int) $run->activity_history_index_through === (int) $run->last_history_sequence
+            && $run->details_pruned_at === null;
+    }
+
+    public static function activityIndexName(string $table, string $prefix): string
+    {
+        $name = 'dw_history_run_activity_sequence';
+
+        return $prefix === '' && $table === 'workflow_history_events'
+            ? $name
+            : $name . '_' . substr(hash('sha256', $prefix . $table), 0, 12);
     }
 
     /**

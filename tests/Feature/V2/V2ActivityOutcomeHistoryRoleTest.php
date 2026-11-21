@@ -128,6 +128,8 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
         $this->assertSame(2, $activityTasks->count());
         $activityTask = $activityTasks->orderBy('id')
             ->firstOrFail();
+        $sibling = $run->activityExecutions()
+            ->whereKeyNot($activityTask->payload['activity_execution_id'])->sole();
         $bridge = app(ActivityTaskBridge::class);
         $claim = $bridge->claim($activityTask->id, 'parallel-activity-worker');
         $this->assertNotNull($claim);
@@ -164,8 +166,9 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
         $historyReads = array_values(array_filter($queries, static fn (array $query): bool =>
             str_starts_with($query['query'], 'select ')
             && str_contains($query['query'], 'indexed_activity_execution_id')));
-        $this->assertCount(1, $historyReads);
-        $this->assertContains($claim['activity_execution_id'], $historyReads[0]['bindings']);
+        $this->assertCount(2, $historyReads);
+        $this->assertContains($sibling->id, $historyReads[0]['bindings']);
+        $this->assertContains($claim['activity_execution_id'], $historyReads[1]['bindings']);
         foreach ($queries as $query) {
             if (str_starts_with($query['query'], 'select ')
                 && str_contains($query['query'], 'workflow_run_timeline_entries')) {

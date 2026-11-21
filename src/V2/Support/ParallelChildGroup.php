@@ -675,6 +675,14 @@ final class ParallelChildGroup
             || ($closedKind === 'timer' && $closedStatus !== TimerStatus::Fired)
         );
 
+        if ($successful && $lockHistoryForUpdate && $closedKind === 'activity' && count($metadataPath) === 1
+            && self::groupMode($metadataPath[0]) === 'all'
+            && str_starts_with($metadataPath[0]['parallel_group_id'], 'parallel-activities:')
+            && WorkflowHistoryEvent::activityIndexCovers($parentRun)
+            && self::hasOpenActivityMember($parentRun, $metadataPath[0])) {
+            return false;
+        }
+
         $eligible = true;
         $nestedMember = false;
 
@@ -701,6 +709,38 @@ final class ParallelChildGroup
         }
 
         return $eligible || ! $successful;
+    }
+
+    /**
+     * @param array{parallel_group_id: string, parallel_group_base_sequence: int, parallel_group_size: int} $group
+     */
+    private static function hasOpenActivityMember(WorkflowRun $run, array $group): bool
+    {
+        $start = $group['parallel_group_base_sequence'];
+        $end = $start + $group['parallel_group_size'] - 1;
+        // Mutable rows locate a candidate only. The current typed history must
+        // prove it remains open after taking the parent lock.
+        foreach ([ActivityStatus::Pending, ActivityStatus::Running] as $status) {
+            $candidate = $run->activityExecutions()
+                ->whereBetween('sequence', [$start, $end])
+                ->where('status', $status->value)
+                ->first(['id', 'sequence']);
+            if ($candidate === null) {
+                continue;
+            }
+            $state = RunActivityView::indexedState($run, (string) $candidate->id, lockForUpdate: true);
+            if (($state['sequence'] ?? null) === $candidate->sequence
+                && ($state['parallel_group_id'] ?? null) === $group['parallel_group_id']
+                && in_array(
+                    $state['status'] ?? null,
+                    [ActivityStatus::Pending->value, ActivityStatus::Running->value],
+                    true
+                )) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

@@ -24,6 +24,44 @@ final class RunActivityView
 
     public const UNSUPPORTED_TERMINAL_REASON = 'terminal_activity_row_without_typed_history';
 
+    private const ACTIVITY_EVENTS = [
+        HistoryEventType::ActivityScheduled,
+        HistoryEventType::ActivityStarted,
+        HistoryEventType::ActivityHeartbeatRecorded,
+        HistoryEventType::ActivityRetryScheduled,
+        HistoryEventType::ActivityCompleted,
+        HistoryEventType::ActivityFailed,
+        HistoryEventType::ActivityTimedOut,
+        HistoryEventType::ActivityCancelled,
+    ];
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public static function indexedState(WorkflowRun $run, string $activityId, bool $lockForUpdate = false): ?array
+    {
+        $events = WorkflowHistoryEvent::indexedForActivity($run, $activityId, $lockForUpdate);
+        if ($events === null) {
+            return null;
+        }
+
+        $state = [];
+        $schedules = 0;
+        foreach ($events as $event) {
+            if (! in_array($event->event_type, self::ACTIVITY_EVENTS, true)) {
+                continue;
+            }
+            $snapshot = ActivitySnapshot::fromEvent($event);
+            if (($snapshot['id'] ?? null) !== $activityId) {
+                return null;
+            }
+            $schedules += $event->event_type === HistoryEventType::ActivityScheduled ? 1 : 0;
+            $state = ActivitySnapshot::merge($state, $snapshot);
+        }
+
+        return $schedules === 1 ? $state : null;
+    }
+
     /**
      * Typed history is the default authority. Callers rendering bounded
      * projection-backed views may disable it to avoid loading durable history.
@@ -220,16 +258,13 @@ final class RunActivityView
     private static function activityEvents(WorkflowRun $run): iterable
     {
         return $run->historyEvents
-            ->filter(static fn (WorkflowHistoryEvent $event): bool => in_array($event->event_type, [
-                HistoryEventType::ActivityScheduled,
-                HistoryEventType::ActivityStarted,
-                HistoryEventType::ActivityHeartbeatRecorded,
-                HistoryEventType::ActivityRetryScheduled,
-                HistoryEventType::ActivityCompleted,
-                HistoryEventType::ActivityFailed,
-                HistoryEventType::ActivityTimedOut,
-                HistoryEventType::ActivityCancelled,
-            ], true))
+            ->filter(
+                static fn (WorkflowHistoryEvent $event): bool => in_array(
+                    $event->event_type,
+                    self::ACTIVITY_EVENTS,
+                    true
+                )
+            )
             ->sortBy('sequence');
     }
 
