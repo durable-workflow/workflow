@@ -72,6 +72,44 @@ use Workflow\V2\WorkflowStub;
  */
 final class V2ActivityOutcomeHistoryRoleTest extends TestCase
 {
+    public function testParallelMemberProjectionsMatchFullProjectionAfterEveryTransition(): void
+    {
+        Queue::fake();
+        config()
+            ->set('workflows.v2.task_dispatch_mode', 'poll');
+        $this->freezeTime();
+        $workflow = WorkflowStub::make(TestFanOutPayloadActivityWorkflow::class, 'staggered-parallel-projection');
+        $workflow->start(4, 8);
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $workflowTask = $run->tasks()
+            ->where('task_type', TaskType::Workflow->value)->sole();
+        $this->app->call([new RunWorkflowTask($workflowTask->id), 'handle']);
+
+        $bridge = app(ActivityTaskBridge::class);
+        $tasks = $run->tasks()
+            ->where('task_type', TaskType::Activity->value)->orderBy('id')->get();
+        $this->assertCount(4, $tasks);
+        $attempts = [];
+        foreach ($tasks as $task) {
+            $this->travel(1)
+                ->seconds();
+            $claim = $bridge->claim($task->id, 'staggered-worker');
+            $this->assertNotNull($claim);
+            $this->assertIsString($claim['activity_attempt_id']);
+            $attempts[] = $claim['activity_attempt_id'];
+            $this->assertActivityMemberProjectionMatchesFullProjection($run);
+        }
+
+        foreach (array_reverse($attempts) as $index => $attempt) {
+            $this->travel(1)
+                ->seconds();
+            $outcome = $bridge->complete($attempt, 8);
+            $this->assertTrue($outcome['recorded']);
+            $this->assertSame($index === 3, $outcome['next_task_id'] !== null);
+            $this->assertActivityMemberProjectionMatchesFullProjection($run);
+        }
+    }
+
     public function testParallelMemberCompletionKeepsTheTimelineCurrentWithoutReadingUnrelatedEntries(): void
     {
         Queue::fake();
@@ -120,10 +158,7 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
                 $this->assertSame([], array_intersect($signalIds, $query['bindings']));
             }
         }
-        $this->assertFalse(RunTimelineProjector::driftStatusForRun($run->fresh())['stale']);
-        $this->assertFalse(RunWaitProjector::driftStatusForRun($run->fresh())['stale']);
-        $summary = WorkflowRunSummary::query()->findOrFail($run->id);
-        $this->assertEquals($summary->getAttributes(), RunSummaryProjector::project($run->fresh())->getAttributes());
+        $this->assertActivityMemberProjectionMatchesFullProjection($run);
     }
 
     public function testLongHistoryOutcomesRefreshAffectedMetadataWithoutReadingUnrelatedTimelineRows(): void
@@ -925,6 +960,18 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
                 'signal_name' => 'unrelated',
             ]);
         }
+    }
+
+    private function assertActivityMemberProjectionMatchesFullProjection(WorkflowRun $run): void
+    {
+        $waits = RunWaitProjector::driftStatusForRun($run->fresh());
+        $timeline = RunTimelineProjector::driftStatusForRun($run->fresh());
+        $this->assertTrue($waits['has_projection']);
+        $this->assertTrue($timeline['has_projection']);
+        $this->assertFalse($waits['stale']);
+        $this->assertFalse($timeline['stale']);
+        $summary = WorkflowRunSummary::query()->findOrFail($run->id)->getAttributes();
+        $this->assertEquals($summary, RunSummaryProjector::project($run->fresh())->getAttributes());
     }
 
     /**

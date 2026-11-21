@@ -22,6 +22,7 @@ final class RunWaitProjector
     /**
      * Apply bounded task metadata to its selected wait and every child outcome
      * already assigned to the same task, without rebuilding the wait snapshot.
+     * An activity wait keeps the activity task that executed the attempt.
      */
     public static function projectWorkflowTaskClaim(WorkflowRun $run, WorkflowTask $task, ?string $waitId): void
     {
@@ -36,6 +37,7 @@ final class RunWaitProjector
         if ($waitId !== null && $waitId !== '') {
             $selected = $waitModel::query()
                 ->where('workflow_run_id', $run->id)
+                ->where('kind', '<>', 'activity')
                 ->where('wait_id', $waitId);
             HistoryTransactionMeter::affecting($selected, static fn (): int => $selected->update($values));
         }
