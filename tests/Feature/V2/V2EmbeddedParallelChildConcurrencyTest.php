@@ -65,13 +65,15 @@ final class V2EmbeddedParallelChildConcurrencyTest extends TestCase
                 DB::disableQueryLog();
                 DB::flushQueryLog();
             }
-            $readsParentTimeline = collect($queries)
-                ->contains(static fn (array $query): bool =>
-                                str_starts_with(strtolower($query['query']), 'select')
-                                && str_contains($query['query'], 'workflow_run_timeline_entries')
-                                && str_contains($query['query'], ' in (')
-                                && in_array($parentId, $query['bindings'], true));
-            $this->assertSame($closed >= 2, $readsParentTimeline);
+            foreach (['workflow_run_timeline_entries', 'workflow_run_waits'] as $table) {
+                $readsParentRows = collect($queries)
+                    ->contains(static fn (array $query): bool =>
+                                        str_starts_with(strtolower($query['query']), 'select')
+                                        && str_contains($query['query'], $table)
+                                        && str_contains($query['query'], ' in (')
+                                        && in_array($parentId, $query['bindings'], true));
+                $this->assertSame($closed >= 2, $readsParentRows, $table);
+            }
             $this->assertSame($closed === 3 ? 1 : 0, $this->openTasks($parentId)->count());
             $parent = WorkflowRun::query()->findOrFail($parentId);
 

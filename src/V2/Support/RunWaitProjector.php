@@ -165,6 +165,41 @@ final class RunWaitProjector
         return true;
     }
 
+    public static function projectCompletedChildWait(WorkflowRun $run, WorkflowHistoryEvent $event): bool
+    {
+        $sequence = self::intValue($event->payload['sequence'] ?? null);
+        $childCallId = self::stringValue($event->payload['child_call_id'] ?? null);
+        $path = ParallelChildGroup::metadataPathFromPayload($event->payload);
+        if ($sequence === null || $childCallId === null || count($path) !== 1
+            || ! str_starts_with($path[0]['parallel_group_id'], 'parallel-children:')) {
+            return false;
+        }
+
+        $waitModel = self::waitModel();
+        $waitId = 'child:' . $childCallId;
+        $projectionId = self::projectionId($run->id, $waitId);
+        /** @var WorkflowRunWait|null $previous */
+        $previous = $waitModel::query()->find($projectionId);
+        if ($previous === null || $previous->position !== WorkflowRunWait::OPENING_TIME_POSITION
+            || $previous->kind !== 'child' || $previous->status !== 'open'
+            || $previous->history_authority !== ChildRunHistory::HISTORY_AUTHORITY_TYPED
+            || $previous->task_id !== null) {
+            return false;
+        }
+
+        $wait = RunWaitView::forChild($run, $sequence);
+        if (($wait['id'] ?? null) !== $waitId || ($wait['status'] ?? null) !== 'resolved'
+            || ($wait['resume_source_id'] ?? null) !== $previous->resume_source_id
+            || ($wait['task_id'] ?? null) !== null) {
+            return false;
+        }
+
+        self::saveWait($waitModel, $run, $projectionId, $waitId, $wait, $previous);
+        $run->unsetRelation('waits');
+
+        return true;
+    }
+
     /**
      * @param list<array<string, mixed>>|null $waits
      * @return list<WorkflowRunWait>

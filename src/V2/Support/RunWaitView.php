@@ -119,6 +119,19 @@ final class RunWaitView
     }
 
     /**
+     * @return array<string, mixed>|null
+     */
+    public static function forChild(WorkflowRun $run, int $sequence): ?array
+    {
+        return self::childWaits(
+            $run,
+            self::preferredTasksByPayloadKey($run, 'child_call_id'),
+            self::preferredTasksByPayloadKey($run, 'child_workflow_run_id'),
+            [$sequence],
+        )[0] ?? null;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private static function activityWait(array $activity, ?WorkflowTask $task): array
@@ -411,12 +424,14 @@ final class RunWaitView
     }
 
     /**
+     * @param list<int>|null $sequences
      * @return list<array<string, mixed>>
      */
     private static function childWaits(
         WorkflowRun $run,
         array $taskByChildCallId,
         array $taskByChildRunId,
+        ?array $sequences = null,
     ): array {
         return array_values(array_filter(array_map(static function (int $sequence) use (
             $run,
@@ -507,7 +522,7 @@ final class RunWaitView
                 'parallel_group_index' => $parallelMetadata['parallel_group_index'] ?? null,
                 'parallel_group_path' => $parallelMetadataPath,
             ];
-        }, ChildRunHistory::knownSequences($run))));
+        }, $sequences ?? ChildRunHistory::knownSequences($run))));
     }
 
     private static function stringValue(mixed $value): ?string

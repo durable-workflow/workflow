@@ -551,17 +551,26 @@ final class RunSummaryProjector
             $failureIds,
         );
 
-        if (! $scopeActivityTimeline || ! self::projectParallelActivityWait($run, $activityResolution, $activities)) {
-            RunWaitProjector::project($run, RunWaitView::forRun($run, $activities, $timers), collectRows: false);
-        }
         $childEvent = $childResolution['event'] ?? null;
         // A best-effort projection can leave the summary ahead of the timeline.
-        if (! $isTerminal && $childEvent?->workflow_run_id === $run->id
+        $scopeChildTimeline = ! $isTerminal && $childEvent?->workflow_run_id === $run->id
             && $childEvent->event_type === HistoryEventType::ChildRunCompleted
             && $previousSummary?->projection_schema_version === self::SCHEMA_VERSION
             && (int) $previousSummary->history_event_count + 1 === (int) $childEvent->sequence
             && (int) $childEvent->sequence === (int) $run->last_history_sequence
-            && RunTimelineProjector::hasProjectedSequence($run, (int) $childEvent->sequence - 1)) {
+            && RunTimelineProjector::hasProjectedSequence($run, (int) $childEvent->sequence - 1);
+        $scopedWait = ($scopeActivityTimeline && self::projectParallelActivityWait(
+            $run,
+            $activityResolution,
+            $activities
+        ))
+            || ($scopeChildTimeline && $previousSummary->wait_kind === 'child' && $waitKind === 'child'
+                && $previousSummary->next_task_id === null && $selectedNextTask === null
+                && RunWaitProjector::projectCompletedChildWait($run, $childEvent));
+        if (! $scopedWait) {
+            RunWaitProjector::project($run, RunWaitView::forRun($run, $activities, $timers), collectRows: false);
+        }
+        if ($scopeChildTimeline) {
             RunTimelineProjector::projectChildResolutionEvent($run, $childEvent);
         } else {
             RunTimelineProjector::project(
