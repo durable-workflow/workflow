@@ -83,7 +83,13 @@ final class RunLineageView
      */
     public static function continuedWorkflowsForRun(WorkflowRun $run): array
     {
-        $run->loadMissing(['historyEvents', 'childLinks', 'instance.runs.summary']);
+        $run->loadMissing([
+            'historyEvents',
+            'childLinks.childRun.summary',
+            'childLinks.childRun.instance.currentRun',
+            'childLinks.childRun.failures',
+            'instance.runs.summary',
+        ]);
 
         $entries = [];
         $seen = [];
