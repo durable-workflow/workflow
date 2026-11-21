@@ -6,6 +6,7 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Tests\Fixtures\V2\TestFanOutPayloadChildWorkflow;
 use Tests\Fixtures\V2\TestParallelChildWorkflow;
 use Tests\Fixtures\V2\TestParallelGreetingChildrenWorkflow;
 use Tests\TestCase;
@@ -20,13 +21,64 @@ use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\RunLineageProjector;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\RunTimelineProjector;
+use Workflow\V2\Support\RunWaitProjector;
 use Workflow\V2\Support\TaskRepairCandidates;
 use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub;
 
 final class V2EmbeddedParallelChildConcurrencyTest extends TestCase
 {
+    public function testParallelChildClosureProjectionsMatchFullProjectionAfterEveryMember(): void
+    {
+        self::stopWorkers();
+        Queue::fake();
+        $this->freezeTime();
+        $workflow = WorkflowStub::make(TestFanOutPayloadChildWorkflow::class, 'parallel-child-projection');
+        $workflow->start(4, 8);
+        $parentId = $workflow->runId();
+        $this->runWorkflowTask($parentId);
+        $childIds = WorkflowLink::query()->where('parent_workflow_run_id', $parentId)
+            ->orderBy('sequence')
+            ->pluck('child_workflow_run_id')
+            ->all();
+        $this->assertCount(4, $childIds);
+
+        foreach ([2, 0, 1, 3] as $closed => $index) {
+            $this->travel(1)
+                ->seconds();
+            $this->runWorkflowTask($childIds[$index]);
+            $this->assertSame($closed === 3 ? 1 : 0, $this->openTasks($parentId)->count());
+            $parent = WorkflowRun::query()->findOrFail($parentId);
+
+            foreach ([RunWaitProjector::class, RunTimelineProjector::class, RunLineageProjector::class] as $projector) {
+                $drift = $projector::driftStatusForRun($parent->fresh());
+                $this->assertTrue($drift['has_projection'], $projector);
+                $this->assertFalse($drift['stale'], $projector);
+            }
+
+            $stored = WorkflowRunSummary::query()->findOrFail($parentId)->getAttributes();
+            $connection = $parent->getConnection();
+            $connection->beginTransaction();
+            try {
+                $rebuilt = RunSummaryProjector::project($parent->fresh())->refresh()->getAttributes();
+                $this->assertEquals($stored, $rebuilt);
+            } finally {
+                // The next child must see the stored projection from the real transition.
+                $connection->rollBack();
+            }
+        }
+
+        $this->runWorkflowTask($parentId);
+        $workflow->refresh();
+        $this->assertSame([
+            'members' => 4,
+            'total_bytes' => 32,
+        ], $workflow->output());
+    }
+
     public function testThreeFourChildParentsCompleteWithConcurrentQueueWorkers(): void
     {
         $this->enableAutomaticTaskRepair();
