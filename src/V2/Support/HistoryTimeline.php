@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Collection;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
@@ -73,28 +75,10 @@ final class HistoryTimeline
                 $needsFailures = $needsFailures || self::stringValue($event->payload['failure_id'] ?? null) !== null;
             }
 
-            $commands = $commandIds === []
-                ? collect()
-                : $run->commands()
-                    ->whereKey(array_values($commandIds))
-                    ->get()
-                    ->keyBy('id');
-            $tasks = $taskIds === []
-                ? collect()
-                : $run->tasks()
-                    ->whereKey(array_values($taskIds))
-                    ->get()
-                    ->keyBy('id');
-            $activities = $run->activityExecutions()
-                ->whereKey($activityExecutionId)
-                ->get()
-                ->keyBy('id');
-            $timers = $timerIds === []
-                ? collect()
-                : $run->timers()
-                    ->whereKey(array_values($timerIds))
-                    ->get()
-                    ->keyBy('id');
+            $commands = self::relatedById($run->commands(), $commandIds);
+            $tasks = self::relatedById($run->tasks(), $taskIds);
+            $activities = self::relatedById($run->activityExecutions(), [$activityExecutionId]);
+            $timers = self::relatedById($run->timers(), $timerIds);
         } else {
             $run->loadMissing(['historyEvents', 'commands', 'tasks', 'activityExecutions', 'timers']);
             $events = $run->historyEvents->sortBy('sequence');
@@ -236,6 +220,26 @@ final class HistoryTimeline
                 'attempt_count' => $attemptNumber,
             ],
         ];
+    }
+
+    /**
+     * @template TRelated of Model
+     * @param HasMany<TRelated, WorkflowRun> $relation
+     * @param array<array-key, string> $ids
+     * @return Collection<string, TRelated>
+     */
+    private static function relatedById(HasMany $relation, array $ids): Collection
+    {
+        $models = collect();
+
+        // A single execution may have more attempts than one query can bind.
+        foreach (array_chunk($ids, 250) as $batch) {
+            foreach ((clone $relation)->whereKey($batch)->get() as $model) {
+                $models->put((string) $model->getKey(), $model);
+            }
+        }
+
+        return $models;
     }
 
     private static function mapEvent(
