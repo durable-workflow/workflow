@@ -152,6 +152,14 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
 
         $this->assertTrue($outcome['recorded']);
         $this->assertNull($outcome['next_task_id']);
+        $waitReads = array_values(array_filter($queries, static fn (array $query): bool =>
+            str_starts_with($query['query'], 'select ')
+            && str_contains($query['query'], 'workflow_run_waits')));
+        $this->assertCount(1, $waitReads);
+        $this->assertContains(
+            hash('sha256', $run->id . '|activity:' . $claim['activity_execution_id']),
+            $waitReads[0]['bindings'],
+        );
         foreach ($queries as $query) {
             if (str_starts_with($query['query'], 'select ')
                 && str_contains($query['query'], 'workflow_run_timeline_entries')) {

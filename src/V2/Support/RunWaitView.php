@@ -108,6 +108,17 @@ final class RunWaitView
     }
 
     /**
+     * @param array<string, mixed> $activity
+     * @return array<string, mixed>
+     */
+    public static function forActivity(WorkflowRun $run, string $executionId, array $activity): array
+    {
+        $tasks = self::preferredTasksByPayloadKey($run, 'activity_execution_id', TaskType::Activity, $executionId);
+
+        return self::activityWait($activity, $tasks[$executionId] ?? null);
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private static function activityWait(array $activity, ?WorkflowTask $task): array
@@ -537,6 +548,7 @@ final class RunWaitView
         WorkflowRun $run,
         string $payloadKey,
         ?TaskType $requiredType = null,
+        ?string $onlyId = null,
     ): array {
         $tasks = [];
 
@@ -551,7 +563,7 @@ final class RunWaitView
 
             $payloadId = self::stringValue($task->payload[$payloadKey] ?? null);
 
-            if ($payloadId === null) {
+            if ($payloadId === null || ($onlyId !== null && $payloadId !== $onlyId)) {
                 continue;
             }
 

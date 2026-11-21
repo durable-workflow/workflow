@@ -535,7 +535,9 @@ final class RunSummaryProjector
             $failureIds,
         );
 
-        RunWaitProjector::project($run, RunWaitView::forRun($run, $activities, $timers), collectRows: false);
+        if (! $scopeActivityTimeline || ! self::projectParallelActivityWait($run, $activityResolution, $activities)) {
+            RunWaitProjector::project($run, RunWaitView::forRun($run, $activities, $timers), collectRows: false);
+        }
         RunTimelineProjector::project(
             $run,
             $scopeActivityTimeline
@@ -571,6 +573,38 @@ final class RunSummaryProjector
         // Redispatch changes task availability, not history. Rebuild the open
         // task's operator view without scanning or rewriting the run timeline.
         return self::projectOpenWorkflowTask($run, $task, []);
+    }
+
+    /**
+     * @param list<array<string, mixed>> $activities
+     */
+    private static function projectParallelActivityWait(
+        WorkflowRun $run,
+        WorkflowHistoryEvent $event,
+        array $activities,
+    ): bool {
+        if ($run->status !== RunStatus::Waiting || ! in_array(
+            $event->event_type,
+            [HistoryEventType::ActivityStarted, HistoryEventType::ActivityCompleted],
+            true,
+        )) {
+            return false;
+        }
+
+        $path = ParallelChildGroup::metadataPathFromPayload($event->payload);
+        $executionId = self::nonEmptyString($event->payload['activity_execution_id'] ?? null);
+        if ($executionId === null || count($path) !== 1
+            || ! str_starts_with($path[0]['parallel_group_id'], 'parallel-activities:')) {
+            return false;
+        }
+
+        foreach ($activities as $activity) {
+            if (($activity['id'] ?? null) === $executionId) {
+                return RunWaitProjector::projectActivityWait($run, $executionId, $activity);
+            }
+        }
+
+        return false;
     }
 
     /**
