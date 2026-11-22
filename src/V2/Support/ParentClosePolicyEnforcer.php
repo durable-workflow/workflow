@@ -80,126 +80,131 @@ final class ParentClosePolicyEnforcer
             'is_string',
         ));
 
-        foreach (self::targets($run, $limit !== null) as $target) {
+        foreach (self::targets($run) as $target) {
             $policy = ParentClosePolicy::tryFrom($target['policy']);
-
-            if ($policy === null || $policy === ParentClosePolicy::Abandon) {
-                continue;
-            }
-
             $childRun = $target['child_run'];
 
-            if (! $childRun instanceof WorkflowRun) {
+            if ($policy === null || $policy === ParentClosePolicy::Abandon
+                || ! $childRun instanceof WorkflowRun || ChildSupervision::isTerminal($childRun)) {
                 continue;
             }
 
-            // Only act on non-terminal children.
-            if (ChildSupervision::isTerminal($childRun)) {
+            if (isset($settled[$childRun->id])) {
                 continue;
             }
 
-            if ($limit !== null) {
-                if (isset($settled[$childRun->id])) {
-                    continue;
-                }
-                if ($acted >= $limit) {
-                    $complete = false;
+            if ($limit !== null && $acted >= $limit) {
+                $complete = false;
 
-                    break;
-                }
-                ++$acted;
+                break;
             }
 
-            $childInstanceId = $target['child_instance_id'];
+            ++$acted;
 
-            $reason = sprintf(
-                'Parent workflow closed (%s); parent-close policy: %s.',
-                $run->closed_reason ?? $run->status->value ?? 'unknown',
-                $policy->value,
-            );
-
-            try {
-                $cancellation = [];
-
-                if ($policy === ParentClosePolicy::RequestCancellation) {
-                    // A previously accepted request is already durable. Replaying
-                    // enforcement must not append another receipt or grant time.
-                    if ($run->historyEvents()
-                        ->where('event_type', HistoryEventType::ParentClosePolicyApplied->value)
-                        ->where('payload->child_run_id', $childRun->id)
-                        ->where('payload->policy', $policy->value)
-                        ->exists()) {
-                        continue;
-                    }
-                    ParentCloseCancellation::ensureOrigin($run, $reason);
-                    $result = WorkflowStub::load($childInstanceId)->withCommandContext(CommandContext::workflow(
-                        $run->workflow_instance_id,
-                        $run->id,
-                        $target['sequence'] ?? 0,
-                        $target['link_id'],
-                    ))
-                        ->attemptRequestCancellationFromParent($run->id);
-                    $cancellation = [
-                        'request_id' => $result->commandId(),
-                        'cancellation' => $result->cancellationContext()?->toArray(),
-                    ];
-                    if (! $result->accepted()) {
-                        WorkflowHistoryEvent::record($run, HistoryEventType::ParentClosePolicyFailed, array_merge([
-                            'child_instance_id' => $childInstanceId,
-                            'child_run_id' => $childRun->id,
-                            'policy' => $policy->value,
-                            'reason' => $reason,
-                            'error' => $result->rejectionReason() ?? 'cancellation_request_rejected',
-                            'request_diagnostics' => $result->payloadValues([
-                                'existing_request_id', 'existing_root_request_id', 'existing_cleanup_deadline_at',
-                                'incoming_root_request_id', 'incoming_cleanup_deadline_at',
-                            ]),
-                        ], $cancellation));
-
-                        continue;
-                    }
-                    if ($result->cancellationContext() === null) {
-                        throw new LogicException('cancellation_child_context_unavailable');
-                    }
-                } else {
-                    WorkflowStub::closeChildWithParentPolicy($childRun, $childInstanceId, $run, $policy, $reason);
-                }
-
-                self::markChildCallForPolicy($run, $target, $policy);
-
-                WorkflowHistoryEvent::record($run, HistoryEventType::ParentClosePolicyApplied, array_merge([
-                    'child_instance_id' => $childInstanceId,
-                    'child_run_id' => $childRun->id,
-                    'policy' => $policy->value,
-                    'reason' => $reason,
-                ], $cancellation));
-
-                $appliedTo[] = $childInstanceId;
-            } catch (\Throwable $throwable) {
-                // Best-effort: if the child cannot be loaded or the command
-                // is rejected (already terminal), continue with the remaining
-                // children. Record the failure so operators can distinguish
-                // "policy applied" from "policy failed silently".
-                WorkflowHistoryEvent::record($run, HistoryEventType::ParentClosePolicyFailed, [
-                    'child_instance_id' => $childInstanceId,
-                    'child_run_id' => $childRun->id,
-                    'policy' => $policy->value,
-                    'reason' => $reason,
-                    'error' => $throwable->getMessage(),
-                ]);
-
-                Log::warning('Parent-close policy enforcement failed.', [
-                    'parent_run_id' => $run->id,
-                    'child_instance_id' => $childInstanceId,
-                    'policy' => $policy->value,
-                    'error' => $throwable->getMessage(),
-                ]);
-
-                continue;
+            if (self::applyTarget($run, $target, $childRun, $policy)) {
+                $appliedTo[] = $target['child_instance_id'];
             }
         }
 
         return $appliedTo;
+    }
+
+    /**
+     * @param array{link_id: string, sequence: int|null, child_instance_id: string, origin_run_id: string} $target
+     */
+    private static function applyTarget(
+        WorkflowRun $run,
+        array $target,
+        WorkflowRun $childRun,
+        ParentClosePolicy $policy,
+    ): bool {
+        $childInstanceId = $target['child_instance_id'];
+
+        $reason = sprintf(
+            'Parent workflow closed (%s); parent-close policy: %s.',
+            $run->closed_reason ?? $run->status->value ?? 'unknown',
+            $policy->value,
+        );
+
+        try {
+            $cancellation = [];
+
+            if ($policy === ParentClosePolicy::RequestCancellation) {
+                // A previously accepted request is already durable. Replaying
+                // enforcement must not append another receipt or grant time.
+                if ($run->historyEvents()
+                    ->where('event_type', HistoryEventType::ParentClosePolicyApplied->value)
+                    ->where('payload->child_run_id', $childRun->id)
+                    ->where('payload->policy', $policy->value)
+                    ->exists()) {
+                    return false;
+                }
+                ParentCloseCancellation::ensureOrigin($run, $reason);
+                $result = WorkflowStub::load($childInstanceId)->withCommandContext(CommandContext::workflow(
+                    $run->workflow_instance_id,
+                    $run->id,
+                    $target['sequence'] ?? 0,
+                    $target['link_id'],
+                ))
+                    ->attemptRequestCancellationFromParent($run->id);
+                $cancellation = [
+                    'request_id' => $result->commandId(),
+                    'cancellation' => $result->cancellationContext()?->toArray(),
+                ];
+                if (! $result->accepted()) {
+                    WorkflowHistoryEvent::record($run, HistoryEventType::ParentClosePolicyFailed, array_merge([
+                        'child_instance_id' => $childInstanceId,
+                        'child_run_id' => $childRun->id,
+                        'policy' => $policy->value,
+                        'reason' => $reason,
+                        'error' => $result->rejectionReason() ?? 'cancellation_request_rejected',
+                        'request_diagnostics' => $result->payloadValues([
+                            'existing_request_id', 'existing_root_request_id', 'existing_cleanup_deadline_at',
+                            'incoming_root_request_id', 'incoming_cleanup_deadline_at',
+                        ]),
+                    ], $cancellation));
+
+                    return false;
+                }
+                if ($result->cancellationContext() === null) {
+                    throw new LogicException('cancellation_child_context_unavailable');
+                }
+            } else {
+                WorkflowStub::closeChildWithParentPolicy($childRun, $childInstanceId, $run, $policy, $reason);
+            }
+
+            self::markChildCallForPolicy($run, $target, $policy);
+
+            WorkflowHistoryEvent::record($run, HistoryEventType::ParentClosePolicyApplied, array_merge([
+                'child_instance_id' => $childInstanceId,
+                'child_run_id' => $childRun->id,
+                'policy' => $policy->value,
+                'reason' => $reason,
+            ], $cancellation));
+
+            return true;
+        } catch (\Throwable $throwable) {
+            // Best-effort: if the child cannot be loaded or the command
+            // is rejected (already terminal), continue with the remaining
+            // children. Record the failure so operators can distinguish
+            // "policy applied" from "policy failed silently".
+            WorkflowHistoryEvent::record($run, HistoryEventType::ParentClosePolicyFailed, [
+                'child_instance_id' => $childInstanceId,
+                'child_run_id' => $childRun->id,
+                'policy' => $policy->value,
+                'reason' => $reason,
+                'error' => $throwable->getMessage(),
+            ]);
+
+            Log::warning('Parent-close policy enforcement failed.', [
+                'parent_run_id' => $run->id,
+                'child_instance_id' => $childInstanceId,
+                'policy' => $policy->value,
+                'error' => $throwable->getMessage(),
+            ]);
+
+            return false;
+        }
     }
 
     /**
@@ -208,7 +213,7 @@ final class ParentClosePolicyEnforcer
      * continue-as-new chain handed to it (#868). A handed-over child keeps its
      * original link, sequence and policy; this run only applies the policy.
      *
-     * @return list<array{
+     * @return iterable<array{
      *     link_id: string,
      *     sequence: int|null,
      *     policy: string,
@@ -217,22 +222,20 @@ final class ParentClosePolicyEnforcer
      *     origin_run_id: string
      * }>
      */
-    private static function targets(WorkflowRun $run, bool $ordered = false): array
+    private static function targets(WorkflowRun $run): iterable
     {
-        $targets = [];
-
+        // Keep only one page of child runs and their instances in memory.
         $childLinks = WorkflowLink::query()
             ->where('parent_workflow_run_id', $run->id)
             ->where('link_type', 'child_workflow')
             ->where('parent_close_policy', '!=', ParentClosePolicy::Abandon->value)
             ->with('childRun.instance')
-            ->when($ordered, static fn ($query) => $query->orderBy('id'))
-            ->get();
+            ->lazyById(100);
 
         foreach ($childLinks as $link) {
             $childRun = $link->childRun;
 
-            $targets[] = [
+            yield [
                 'link_id' => (string) $link->id,
                 'sequence' => is_int($link->sequence) ? $link->sequence : null,
                 'policy' => (string) $link->parent_close_policy,
@@ -251,7 +254,7 @@ final class ParentClosePolicyEnforcer
             $childRun = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                 ->find($supervision->child_workflow_run_id);
 
-            $targets[] = [
+            yield [
                 'link_id' => (string) $supervision->workflow_link_id,
                 'sequence' => is_int($supervision->sequence) ? $supervision->sequence : null,
                 'policy' => (string) $supervision->parent_close_policy,
@@ -263,8 +266,6 @@ final class ParentClosePolicyEnforcer
                 'origin_run_id' => (string) $supervision->parent_workflow_run_id,
             ];
         }
-
-        return $targets;
     }
 
     /**

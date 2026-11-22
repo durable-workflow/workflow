@@ -48,6 +48,23 @@ final class CurrentRunResolver
             ];
         }
 
+        if (! $instance->relationLoaded('runs') && (int) $instance->run_count === 1) {
+            // Confirm the one-run hint against the owned rows. Older data can
+            // have a stale count, so multiple runs still need lineage resolution.
+            $candidates = self::queryForInstance($instance, lockForUpdate: $lockForUpdate)->limit(2)->get();
+            if ($candidates->count() === 1) {
+                /** @var WorkflowRun $run */
+                $run = $candidates->first();
+                $run->loadMissing($relations);
+                self::attachResolvedRun($instance, $run);
+
+                return [
+                    'run' => $run,
+                    'source' => self::SOURCE_RUN_ORDER_FALLBACK,
+                ];
+            }
+        }
+
         $lineageRunId = self::lineageResolvedRunId($instance, $lockForUpdate);
         $run = $lineageRunId === null
             ? null
