@@ -19,6 +19,7 @@ use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
@@ -38,19 +39,25 @@ final class V2EmbeddedParallelChildConcurrencyTest extends TestCase
         Queue::fake();
         $this->freezeTime();
         $workflow = WorkflowStub::make(TestFanOutPayloadChildWorkflow::class, 'parallel-child-projection');
-        $workflow->start(4, 8);
+        $workflow->start(5, 8);
         $parentId = $workflow->runId();
         $this->runWorkflowTask($parentId);
         $childIds = WorkflowLink::query()->where('parent_workflow_run_id', $parentId)
             ->orderBy('sequence')
             ->pluck('child_workflow_run_id')
             ->all();
-        $this->assertCount(4, $childIds);
+        $this->assertCount(5, $childIds);
 
-        foreach ([2, 0, 1, 3] as $closed => $index) {
+        foreach ([2, 0, 1, 3, 4] as $closed => $index) {
             $this->travel(1)
                 ->seconds();
             if ($closed === 2) {
+                $this->assertSame(1, WorkflowRunLineageEntry::query()
+                    ->where('workflow_run_id', $parentId)
+                    ->where('direction', 'child')
+                    ->where('related_workflow_run_id', $childIds[$index])
+                    ->delete());
+            } elseif ($closed === 3) {
                 $historyHead = WorkflowRun::query()->findOrFail($parentId)->last_history_sequence;
                 $this->assertSame(1, WorkflowTimelineEntry::query()
                     ->where('workflow_run_id', $parentId)
@@ -72,7 +79,14 @@ final class V2EmbeddedParallelChildConcurrencyTest extends TestCase
                                 && str_contains($query['query'], 'wait_id')
                                 && in_array($parentId, $query['bindings'], true)
                                 && in_array('open', $query['bindings'], true));
-            $this->assertSame($closed < 2, $selectedProjectedWait);
+            $this->assertSame($closed < 3, $selectedProjectedWait);
+            $readsParentLineage = collect($queries)
+                ->contains(static fn (array $query): bool =>
+                    str_starts_with(strtolower($query['query']), 'select')
+                    && str_contains($query['query'], 'workflow_run_lineage_entries')
+                    && ! str_contains(strtolower($query['query']), ' limit ')
+                    && in_array($parentId, $query['bindings'], true));
+            $this->assertSame($closed >= 2, $readsParentLineage);
             foreach (['workflow_run_timeline_entries', 'workflow_run_waits'] as $table) {
                 $readsParentRows = collect($queries)
                     ->contains(static fn (array $query): bool =>
@@ -80,9 +94,9 @@ final class V2EmbeddedParallelChildConcurrencyTest extends TestCase
                                         && str_contains($query['query'], $table)
                                         && str_contains($query['query'], ' in (')
                                         && in_array($parentId, $query['bindings'], true));
-                $this->assertSame($closed >= 2, $readsParentRows, $table);
+                $this->assertSame($closed >= 3, $readsParentRows, $table);
             }
-            $this->assertSame($closed === 3 ? 1 : 0, $this->openTasks($parentId)->count());
+            $this->assertSame($closed === 4 ? 1 : 0, $this->openTasks($parentId)->count());
             $parent = WorkflowRun::query()->findOrFail($parentId);
 
             foreach ([RunWaitProjector::class, RunTimelineProjector::class, RunLineageProjector::class] as $projector) {
@@ -106,8 +120,8 @@ final class V2EmbeddedParallelChildConcurrencyTest extends TestCase
         $this->runWorkflowTask($parentId);
         $workflow->refresh();
         $this->assertSame([
-            'members' => 4,
-            'total_bytes' => 32,
+            'members' => 5,
+            'total_bytes' => 40,
         ], $workflow->output());
     }
 

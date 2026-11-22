@@ -64,11 +64,14 @@ final class RunLineageProjector
      * the existing row retains scheduling metadata such as position, link
      * time, and parent-close policy. This keeps claim-time catch-up bounded to
      * one lineage row without rebuilding the run's growing child relations.
+     * A missing or superseded row needs a rebuild when the caller is advancing
+     * an existing projection.
      */
     public static function projectChildResolutionEvent(
         WorkflowRun $run,
         WorkflowHistoryEvent $event,
-    ): WorkflowRunLineageEntry {
+        bool $requireCurrentChild = false,
+    ): ?WorkflowRunLineageEntry {
         if (
             $event->workflow_run_id !== $run->id
             || ! in_array($event->event_type, ChildRunHistory::resolutionEventTypes(), true)
@@ -82,11 +85,17 @@ final class RunLineageProjector
             ?? self::stringValue($eventPayload['workflow_link_id'] ?? null);
         $childRunId = self::stringValue($eventPayload['child_workflow_run_id'] ?? null);
         $lineageModel = self::lineageModel();
+        if ($requireCurrentChild && ($childCallId === null || $childRunId === null)) {
+            return null;
+        }
+
         $existingQuery = $lineageModel::query()
             ->where('workflow_run_id', $run->id)
             ->where('direction', 'child');
 
-        if ($childCallId !== null) {
+        if ($requireCurrentChild) {
+            $existingQuery->whereKey(self::projectionId($run->id, 'child', $childCallId));
+        } elseif ($childCallId !== null) {
             $existingQuery->where(static function ($identity) use ($childCallId): void {
                 $identity->where('lineage_id', $childCallId)
                     ->orWhere('child_call_id', $childCallId);
@@ -102,6 +111,14 @@ final class RunLineageProjector
         /** @var WorkflowRunLineageEntry|null $existing */
         $existing = $existingQuery->limit(1)
             ->first();
+        if ($requireCurrentChild && (
+            $existing === null
+            || $existing->sequence !== $sequence
+            || $existing->related_workflow_run_id !== $childRunId
+        )) {
+            return null;
+        }
+
         $existingPayload = $existing?->toLineagePayload() ?? [];
         $lineageId = $childCallId
             ?? self::stringValue($existingPayload['id'] ?? null)
@@ -154,7 +171,10 @@ final class RunLineageProjector
                 ->where('direction', 'child')
                 ->count();
         $seen = [];
-        $projected = self::projectEntry($lineageModel, $run, $entry, 'child', (int) $position, $seen);
+        $existingRows = new EloquentCollection($existing === null ? [] : [
+            $existing->id => $existing,
+        ]);
+        $projected = self::projectEntry($lineageModel, $run, $entry, 'child', (int) $position, $seen, $existingRows);
 
         if (! $projected instanceof WorkflowRunLineageEntry) {
             throw new \LogicException('Child-resolution lineage projection requires a lineage identity.');

@@ -639,7 +639,12 @@ final class RunSummaryProjector
 
         $next = RunWaitProjector::openChildWaitAfterCompletion($run, $waitId, $event);
         $label = self::nonEmptyString($next?->target_type);
-        if ($next === null || $label === null || ! RunWaitProjector::projectCompletedChildWait($run, $event)) {
+        if (
+            $next === null
+            || $label === null
+            || RunLineageProjector::projectChildResolutionEvent($run, $event, requireCurrentChild: true) === null
+            || ! RunWaitProjector::projectCompletedChildWait($run, $event)
+        ) {
             return null;
         }
 
@@ -682,7 +687,6 @@ final class RunSummaryProjector
             ),
         );
         RunTimelineProjector::projectChildResolutionEvent($run, $event);
-        RunLineageProjector::project($run);
 
         return $summary;
     }
