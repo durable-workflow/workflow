@@ -86,7 +86,7 @@ final class RunLineageView
         $run->loadMissing([
             'historyEvents',
             'childLinks.childRun.summary',
-            'childLinks.childRun.instance.currentRun',
+            'childLinks.childRun.instance',
             'childLinks.childRun.failures',
             'instance.runs.summary',
         ]);

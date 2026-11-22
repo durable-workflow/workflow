@@ -310,8 +310,14 @@ final class TaskDispatcher
         );
         $failure ??= $batchFailure;
 
+        $referenceWrites = [];
         foreach ($pushes as $push) {
-            $failure = self::pushPrepared($push) ?? $failure;
+            $failure = self::pushPrepared($push, $referenceWrites) ?? $failure;
+        }
+
+        if ($referenceWrites !== []) {
+            [, $referenceFailure] = self::inBatchTransaction($admissionTaskId, $referenceWrites);
+            $failure ??= $referenceFailure;
         }
 
         return $failure;
@@ -505,8 +511,9 @@ final class TaskDispatcher
      * failed publish leaves it, and is returned for the caller to throw.
      *
      * @param array<string, mixed> $push
+     * @param list<\Closure(): null> $referenceWrites
      */
-    private static function pushPrepared(array $push): ?Throwable
+    private static function pushPrepared(array $push, array &$referenceWrites): ?Throwable
     {
         if (($push['failure'] ?? null) instanceof Throwable) {
             return $push['failure'];
@@ -539,13 +546,48 @@ final class TaskDispatcher
             $reference = DatabaseTaskDelivery::capture($task, $job);
 
             if ($reference !== null) {
-                $task->forceFill([
-                    'queue_delivery_reference' => $reference,
-                ])->save();
+                $connection = $task->getConnection();
+                if ($task::class === WorkflowTask::class && $connection->getDriverName() === 'sqlite'
+                    && $connection->transactionLevel() === 0 && $connection === ConfiguredV2Models::connection()) {
+                    $referenceWrites[] = static function () use ($task, $reference): null {
+                        self::saveCurrentDeliveryReference($task, $reference);
+
+                        return null;
+                    };
+                } else {
+                    $task->forceFill([
+                        'queue_delivery_reference' => $reference,
+                    ])->save();
+                }
             }
         }
 
         return null;
+    }
+
+    /**
+     * Attach lookup metadata after the independent Laravel queue delivery.
+     * The batch holds the SQLite writer and matches the prepared attempt, so
+     * a worker or repair pass that advanced the task keeps its own reference.
+     *
+     * @param array<string, mixed> $reference
+     */
+    private static function saveCurrentDeliveryReference(WorkflowTask $task, array $reference): void
+    {
+        $current = WorkflowTask::query()
+            ->where('status', TaskStatus::Ready->value)
+            ->where('attempt_count', $task->getRawOriginal('attempt_count'))
+            ->where('repair_count', $task->getRawOriginal('repair_count'))
+            ->where('last_dispatch_attempt_at', $task->getRawOriginal('last_dispatch_attempt_at'))
+            ->where('last_dispatched_at', $task->getRawOriginal('last_dispatched_at'))
+            ->whereNull('queue_delivery_reference')
+            ->find($task->getKey());
+
+        if ($current instanceof WorkflowTask) {
+            $current->forceFill([
+                'queue_delivery_reference' => $reference,
+            ])->save();
+        }
     }
 
     private static function publish(

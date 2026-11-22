@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Support\Carbon;
 use Throwable;
 use Workflow\V2\Enums\ActivityStatus;
@@ -125,7 +127,7 @@ final class RunSummaryProjector
         ]);
     }
 
-    public static function project(WorkflowRun $run): WorkflowRunSummary
+    public static function project(WorkflowRun $run, bool $disposableRun = false): WorkflowRunSummary
     {
         if (ImportedLineageReferences::imported($run)) {
             RunInstanceMetadata::detachForeign($run);
@@ -202,9 +204,12 @@ final class RunSummaryProjector
             }
         }
         $run->loadMissing(['instance', 'tasks', 'timers', 'failures', 'historyEvents']);
+        if ($disposableRun) {
+            self::loadChildProjectionRelations($run);
+        }
         $run->loadMissing([
             'childLinks.childRun.summary',
-            'childLinks.childRun.instance.currentRun',
+            'childLinks.childRun.instance',
             'childLinks.childRun.failures',
         ]);
         RunInstanceMetadata::detachForeign($run);
@@ -587,7 +592,7 @@ final class RunSummaryProjector
             );
         }
         RunTimerProjector::project($run, $timers, collectRows: false);
-        RunLineageProjector::project($run);
+        RunLineageProjector::project($run, collectRows: false);
 
         return $summary;
     }
@@ -614,6 +619,35 @@ final class RunSummaryProjector
         // Redispatch changes task availability, not history. Rebuild the open
         // task's operator view without scanning or rewriting the run timeline.
         return self::projectOpenWorkflowTask($run, $task, []);
+    }
+
+    private static function loadChildProjectionRelations(WorkflowRun $run): void
+    {
+        // The caller discards this run after projection. Load the child data
+        // used by the projectors and keep the full rows for retrieved observers.
+        $run->loadMissing([
+            'childLinks.childRun' => static function (BelongsTo $relation): void {
+                $child = $relation->getRelated();
+                if ($child::class === WorkflowRun::class
+                    && ! $child::getEventDispatcher()?->hasListeners('eloquent.retrieved: ' . WorkflowRun::class)) {
+                    $columns = $child->getConnection()
+                        ->getSchemaBuilder()
+                        ->getColumnListing($child->getTable());
+                    $relation->getQuery()
+                        ->select(array_values(array_diff($columns, ['arguments'])));
+                }
+            },
+            'childLinks.childRun.summary' => static function (HasOne $relation): void {
+                $summary = $relation->getRelated();
+                if ($summary::class === WorkflowRunSummary::class
+                    && ! $summary::getEventDispatcher()?->hasListeners(
+                        'eloquent.retrieved: ' . WorkflowRunSummary::class
+                    )) {
+                    $relation->getQuery()
+                        ->select(['id', 'status_bucket', 'closed_reason']);
+                }
+            },
+        ]);
     }
 
     private static function projectWaitingChildGroup(

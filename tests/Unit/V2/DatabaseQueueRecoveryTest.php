@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace Tests\Unit\V2;
 
+use Illuminate\Queue\Events\JobQueued;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Schema;
 use Orchestra\Testbench\TestCase;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -540,6 +542,45 @@ final class DatabaseQueueRecoveryTest extends TestCase
         self::assertSame(0, $probeReads);
         self::assertSame(2, DB::table('jobs')->count());
         self::assertSame(1, WorkflowTask::query()->sole()->repair_count);
+    }
+
+    public function testCoalescedSqliteDeliveryReferenceKeepsANewerPublish(): void
+    {
+        $first = WorkflowStub::make(TestGreetingWorkflow::class, 'coalesced-first', '0');
+        $second = WorkflowStub::make(TestGreetingWorkflow::class, 'coalesced-second', '0');
+        $queued = 0;
+        Event::listen(JobQueued::class, static function () use ($first, &$queued): void {
+            self::assertSame(0, DB::transactionLevel());
+            if (++$queued !== 2) {
+                return;
+            }
+
+            $task = WorkflowTask::query()->where('workflow_run_id', $first->runId())->sole();
+            $task->increment('repair_count');
+            TaskDispatcher::dispatch($task);
+        });
+        TaskDispatcher::coalescingRunSummaries(static function () use ($first, $second): void {
+            DB::transaction(static function () use ($first, $second): void {
+                $first->start('first');
+                $second->start('second');
+            });
+        });
+
+        self::assertSame(3, $queued);
+        $jobs = DB::table('jobs')->orderBy('id')->get();
+        self::assertCount(3, $jobs);
+
+        foreach ([[$first, $jobs[2]], [$second, $jobs[1]]] as [$stub, $job]) {
+            $task = WorkflowTask::query()->where('workflow_run_id', $stub->runId())->sole();
+            $reference = $task->queue_delivery_reference;
+            self::assertIsArray($reference);
+            self::assertSame($task->id, $reference['task_id']);
+            self::assertSame((string) $job->id, $reference['job_id']);
+            self::assertSame(
+                json_decode($job->payload, true, flags: JSON_THROW_ON_ERROR)['uuid'],
+                $reference['payload_uuid']
+            );
+        }
     }
 
     protected function getPackageProviders($app): array

@@ -7,6 +7,7 @@ namespace Tests\Feature\V2;
 use DateTimeImmutable;
 use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Queue\WorkerOptions;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Artisan;
@@ -3184,6 +3185,57 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 ->where('liveness_state', 'repair_needed')
                 ->count()
         );
+    }
+
+    public function testChildFanOutCorpusProjectsWithoutReadingChildArguments(): void
+    {
+        $path = self::FIXTURE_DIR . '/child-fan-out-projection-keeps-arguments-out-of-hydration.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The child projection hydration fixture is absent.');
+        }
+        $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['child_projection'];
+        config([
+            'queue.default' => 'database',
+        ]);
+        Queue::fake();
+
+        $parent = WorkflowStub::make(TestFanOutPayloadChildWorkflow::class, 'projection-child-arguments');
+        $parent->start($scenario['children'], $scenario['argument_bytes']);
+        $measuring = true;
+        $batchedReads = 0;
+        $argumentReads = 0;
+        DB::listen(static function (QueryExecuted $query) use (&$measuring, &$batchedReads, &$argumentReads): void {
+            $sql = strtolower(str_replace(['"', '`'], '', $query->sql));
+            if ($measuring
+                && preg_match('/^select (.+) from workflow_runs where workflow_runs\.id in \(/', $sql, $match)) {
+                ++$batchedReads;
+                if ($match[1] === '*' || in_array('arguments', explode(', ', $match[1]), true)) {
+                    ++$argumentReads;
+                }
+            }
+        });
+        try {
+            $this->runReadyTaskOfType($parent->runId(), TaskType::Workflow);
+        } finally {
+            $measuring = false;
+        }
+
+        $this->assertGreaterThan(0, $batchedReads);
+        $this->assertLessThanOrEqual($scenario['max_batched_argument_reads'], $argumentReads);
+        $children = WorkflowLink::query()->where('parent_workflow_run_id', $parent->runId())
+            ->orderBy('sequence')
+            ->pluck('child_workflow_run_id');
+        $this->assertCount($scenario['children'], $children);
+        foreach ($children as $child) {
+            $this->runReadyTaskOfType($child, TaskType::Workflow);
+        }
+        $this->runReadyTaskOfType($parent->runId(), TaskType::Workflow);
+        $this->assertSame([
+            'members' => $scenario['children'],
+            'total_bytes' => $scenario['children'] * $scenario['argument_bytes'],
+        ], $parent->refresh()
+            ->output());
     }
 
     public function testChildClosureCorpusReadsEachSiblingRunABoundedNumberOfTimes(): void

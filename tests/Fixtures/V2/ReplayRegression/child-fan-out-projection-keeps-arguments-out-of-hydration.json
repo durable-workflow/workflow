@@ -1,0 +1,54 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "child-fan-out-projection-keeps-arguments-out-of-hydration",
+  "protocol_version": "1.0",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestFanOutPayloadLeafWorkflow",
+    "arguments": [
+      0,
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "id": "01j0000000000000000000000p",
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "recorded_at": "2026-11-22T12:00:00.123456Z",
+      "payload": {
+        "workflow_class": "Tests\\Fixtures\\V2\\TestFanOutPayloadLeafWorkflow",
+        "workflow_type": "test-fan-out-payload-leaf-workflow",
+        "workflow_instance_id": "01j0000000000000000000000b",
+        "workflow_run_id": "01j0000000000000000000000c",
+        "parent_workflow_instance_id": "record-parity",
+        "parent_workflow_run_id": "01j00000000000000000000000",
+        "parent_sequence": 1,
+        "workflow_link_id": "01J0000000000000000000000D",
+        "child_call_id": "01J0000000000000000000000D"
+      }
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": 32,
+    "commands": [
+      {
+        "type": "complete_workflow",
+        "payload_codec": "avro"
+      }
+    ]
+  },
+  "child_projection": {
+    "children": 4,
+    "argument_bytes": 10240,
+    "max_batched_argument_reads": 0
+  }
+}
