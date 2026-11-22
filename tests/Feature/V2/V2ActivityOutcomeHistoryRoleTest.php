@@ -101,6 +101,20 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
             $this->assertActivityMemberProjectionMatchesFullProjection($run);
         }
 
+        $lastTask = $tasks[3]->refresh();
+        $expiresAt = $lastTask->lease_expires_at;
+        $this->assertNotSame($lastTask->id, $run->summary()->sole()->next_task_id);
+        $lastTask->forceFill([
+            'lease_expires_at' => now()->subSecond(),
+        ])->save();
+        $expired = RunSummaryProjector::project($run->fresh());
+        $this->assertSame($lastTask->id, $expired->next_task_id);
+        $this->assertSame('repair_needed', $expired->liveness_state);
+        $lastTask->forceFill([
+            'lease_expires_at' => $expiresAt,
+        ])->save();
+        RunSummaryProjector::project($run->fresh());
+
         foreach ([1, 0, 3, 2] as $index => $member) {
             $this->travel(1)
                 ->seconds();

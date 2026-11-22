@@ -1687,49 +1687,30 @@ final class RunSummaryProjector
 
     private static function nextOpenTask(WorkflowRun $run): ?WorkflowTask
     {
-        /** @var WorkflowTask|null $task */
-        $task = $run->tasks
-            ->filter(static fn (WorkflowTask $task): bool => in_array(
-                $task->status,
-                [TaskStatus::Ready, TaskStatus::Leased],
-                true,
-            ))
-            ->sort(static function (WorkflowTask $left, WorkflowTask $right): int {
-                // Another in-flight task must not hide an expired lease from
-                // the run-level repair decision.
-                $leftExpired = TaskRepairPolicy::leaseExpired($left) ? 0 : 1;
-                $rightExpired = TaskRepairPolicy::leaseExpired($right) ? 0 : 1;
+        $selected = null;
+        $selectedPriority = null;
 
-                if ($leftExpired !== $rightExpired) {
-                    return $leftExpired <=> $rightExpired;
-                }
+        foreach ($run->tasks as $task) {
+            if (! in_array($task->status, [TaskStatus::Ready, TaskStatus::Leased], true)) {
+                continue;
+            }
 
-                $leftStatus = $left->status === TaskStatus::Leased ? 0 : 1;
-                $rightStatus = $right->status === TaskStatus::Leased ? 0 : 1;
+            // Surface expired leases even when another task is in flight.
+            $priority = [
+                TaskRepairPolicy::leaseExpired($task) ? 0 : 1,
+                $task->status === TaskStatus::Leased ? 0 : 1,
+                $task->available_at?->getTimestampMs() ?? PHP_INT_MAX,
+                $task->created_at?->getTimestampMs() ?? PHP_INT_MAX,
+                $task->id,
+            ];
 
-                if ($leftStatus !== $rightStatus) {
-                    return $leftStatus <=> $rightStatus;
-                }
+            if ($selectedPriority === null || $priority < $selectedPriority) {
+                $selected = $task;
+                $selectedPriority = $priority;
+            }
+        }
 
-                $leftAvailableAt = $left->available_at?->getTimestampMs() ?? PHP_INT_MAX;
-                $rightAvailableAt = $right->available_at?->getTimestampMs() ?? PHP_INT_MAX;
-
-                if ($leftAvailableAt !== $rightAvailableAt) {
-                    return $leftAvailableAt <=> $rightAvailableAt;
-                }
-
-                $leftCreatedAt = $left->created_at?->getTimestampMs() ?? PHP_INT_MAX;
-                $rightCreatedAt = $right->created_at?->getTimestampMs() ?? PHP_INT_MAX;
-
-                if ($leftCreatedAt !== $rightCreatedAt) {
-                    return $leftCreatedAt <=> $rightCreatedAt;
-                }
-
-                return $left->id <=> $right->id;
-            })
-            ->first();
-
-        return $task;
+        return $selected;
     }
 
     private static function replayBlockedTask(WorkflowRun $run): ?WorkflowTask
