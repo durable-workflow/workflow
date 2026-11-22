@@ -1457,6 +1457,84 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertCount($admission['pending_count_queries'], $pendingCounts);
     }
 
+    public function testServiceParentCloseCorpusKeepsReceiptsAcrossChildLinkPages(): void
+    {
+        $path = self::FIXTURE_DIR . '/service-parent-close-across-child-link-pages.json';
+        $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $workflow = $fixture['workflow'];
+        $close = $fixture['parent_close'];
+        self::stopWorkers();
+        $this->clearWorkflowState();
+        config([
+            'queue.default' => 'database',
+        ]);
+        Queue::fake();
+
+        $parent = WorkflowStub::make($workflow['type'], $fixture['id']);
+        $parent->start(...$workflow['arguments']);
+        $run = WorkflowRun::query()->findOrFail($parent->runId());
+        $initial = WorkflowTask::query()->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Workflow->value)->sole();
+        $bridge = $this->app->make(WorkflowTaskBridge::class);
+        $worker = 'service-parent-close-worker';
+        $this->assertTrue($bridge->claimStatus($initial->id, $worker)['claimed']);
+        $history = $bridge->historyPayload($initial->id);
+        $this->assertNotNull($history);
+        $step = WorkflowFiberRunner::forClass(
+            $workflow['type'],
+            $run->workflow_instance_id,
+            $run->id,
+            $workflow['arguments'],
+            $workflow['payload_codec'],
+            $history['history_events'],
+        )->step();
+        $this->assertStepMatches($fixture['expected'], $step, $fixture['id']);
+        $commands = array_map(static fn (array $command): array => [
+            ...$command,
+            'parent_close_policy' => $close['policy'],
+        ], $step->commands);
+        $started = $bridge->complete($initial->id, $commands);
+        $this->assertTrue($started['completed'], $started['reason'] ?? '');
+        $children = WorkflowLink::query()->where('parent_workflow_run_id', $run->id)
+            ->where('link_type', 'child_workflow')
+            ->pluck('child_workflow_run_id')
+            ->all();
+        $this->assertCount($close['receipts'], array_unique($children));
+
+        $closing = WorkflowTask::query()->create([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow,
+            'status' => TaskStatus::Ready,
+            'available_at' => now()
+                ->subSecond(),
+            'payload' => [],
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'compatibility' => $run->compatibility,
+        ]);
+        $this->assertTrue($bridge->claimStatus($closing->id, $worker)['claimed']);
+        $completed = $bridge->complete($closing->id, [[
+            'type' => 'complete_workflow',
+            'result' => Serializer::serializeWithCodec($workflow['payload_codec'], 'finished'),
+            'payload_codec' => $workflow['payload_codec'],
+        ]]);
+        $this->assertTrue($completed['completed'], $completed['reason'] ?? '');
+        $this->assertSame(RunStatus::Completed->value, $completed['run_status']);
+
+        $this->assertSame([], \Workflow\V2\Support\ParentClosePolicyEnforcer::enforce($run->refresh()));
+        $events = $run->historyEvents()
+            ->where('event_type', $close['receipt_type'])->get();
+        $this->assertEqualsCanonicalizing($children, $events->map(
+            static fn (WorkflowHistoryEvent $event): string => $event->payload['child_run_id'],
+        )->all());
+        $this->assertSame([$close['policy']], $events->pluck('payload.policy')->unique()->values()->all());
+        $this->assertSame($close['receipts'], WorkflowRun::query()->whereKey($children)
+            ->where('status', $close['child_status'])->count());
+        $this->assertFalse(
+            $run->historyEvents()->where('event_type', HistoryEventType::ParentClosePolicyFailed)->exists()
+        );
+    }
+
     public function testServiceCommandPayloadLimitCorpusRefusesOversizedWorkerPayloads(): void
     {
         $this->assertServiceCommandPayloadLimitCorpus(
