@@ -29,6 +29,7 @@ use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\DuplicateStartPolicy;
 use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\ParentClosePolicy;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\SignalStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -1581,14 +1582,7 @@ final class WorkflowStub
 
     public function attemptCancel(?string $reason = null): CommandResult
     {
-        return $this->attemptTerminalCommand(
-            CommandType::Cancel,
-            RunStatus::Cancelled,
-            HistoryEventType::CancelRequested,
-            HistoryEventType::WorkflowCancelled,
-            'cancelled',
-            $reason,
-        );
+        return $this->attemptTerminalCommand(CommandType::Cancel, $reason);
     }
 
     public function attemptRequestCancellation(?string $reason = null, int $cleanupTimeoutSeconds = 600): CommandResult
@@ -1650,14 +1644,34 @@ final class WorkflowStub
 
     public function attemptTerminate(?string $reason = null): CommandResult
     {
-        return $this->attemptTerminalCommand(
-            CommandType::Terminate,
-            RunStatus::Terminated,
-            HistoryEventType::TerminateRequested,
-            HistoryEventType::WorkflowTerminated,
-            'terminated',
-            $reason,
-        );
+        return $this->attemptTerminalCommand(CommandType::Terminate, $reason);
+    }
+
+    /**
+     * @internal Apply an immediate policy using the child already selected by the enforcer.
+     */
+    public static function closeChildWithParentPolicy(
+        WorkflowRun $childRun,
+        string $childInstanceId,
+        WorkflowRun $parentRun,
+        ParentClosePolicy $policy,
+        string $reason,
+    ): void {
+        $instance = $childRun->instance;
+        if (! $instance instanceof WorkflowInstance || $instance->id !== $childInstanceId) {
+            $instance = self::instanceQuery()->findOrFail($childInstanceId);
+        }
+
+        // The command still locks the instance and resolves its current run.
+        // The temporary handle never needs a second current-run lookup afterwards.
+        $stub = new self($instance, $childRun);
+        $closedParentId = $parentRun->status->isTerminal() ? $parentRun->id : null;
+        $command = match ($policy) {
+            ParentClosePolicy::RequestCancel => CommandType::Cancel,
+            ParentClosePolicy::Terminate => CommandType::Terminate,
+            default => throw new LogicException('An immediate parent-close policy is required.'),
+        };
+        $stub->attemptTerminalCommand($command, $reason, refresh: false, closedParentId: $closedParentId);
     }
 
     public function archive(?string $reason = null): CommandResult
@@ -4248,12 +4262,16 @@ final class WorkflowStub
 
     private function attemptTerminalCommand(
         CommandType $commandType,
-        RunStatus $terminalStatus,
-        HistoryEventType $requestedEventType,
-        HistoryEventType $terminalEventType,
-        string $closedReason,
         ?string $reason = null,
+        bool $refresh = true,
+        ?string $closedParentId = null,
     ): CommandResult {
+        $cancel = $commandType === CommandType::Cancel;
+        $terminalStatus = $cancel ? RunStatus::Cancelled : RunStatus::Terminated;
+        $requestedEventType = $cancel ? HistoryEventType::CancelRequested : HistoryEventType::TerminateRequested;
+        $terminalEventType = $cancel ? HistoryEventType::WorkflowCancelled : HistoryEventType::WorkflowTerminated;
+        $closedReason = $terminalStatus->value;
+
         /** @var WorkflowCommand|null $command */
         $command = null;
         $parentTasks = [];
@@ -4269,6 +4287,7 @@ final class WorkflowStub
             $terminalEventType,
             $closedReason,
             $reason,
+            $closedParentId,
         ): void {
             $command = null;
             $parentTasks = [];
@@ -4523,9 +4542,9 @@ final class WorkflowStub
                 'applied_at' => now(),
             ])->save();
 
-            ParentClosePolicyEnforcer::enforce($run);
+            ParentClosePolicyEnforcer::enforceLocked($run);
 
-            $parentTasks = $this->createParentResumeTasks($run);
+            $parentTasks = $this->createParentResumeTasks($run, $closedParentId);
 
             self::projectRun($run, self::PROJECTION_RUN_RELATIONS);
             $closedRun = $run;
@@ -4548,7 +4567,9 @@ final class WorkflowStub
             }
         }
 
-        $this->refresh();
+        if ($refresh) {
+            $this->refresh();
+        }
 
         foreach ($parentTasks as $task) {
             if ($task instanceof WorkflowTask) {
@@ -5997,7 +6018,7 @@ final class WorkflowStub
     /**
      * @return list<WorkflowTask>
      */
-    private function createParentResumeTasks(WorkflowRun $childRun): array
+    private function createParentResumeTasks(WorkflowRun $childRun, ?string $closedParentId = null): array
     {
         $tasks = [];
 
@@ -6033,6 +6054,10 @@ final class WorkflowStub
         }
 
         foreach ($parentReferences as $parentReference) {
+            if ($parentReference['parent_workflow_run_id'] === $closedParentId) {
+                continue;
+            }
+
             /** @var WorkflowRun|null $parentRun */
             $parentRun = self::runQuery()
                 ->where('namespace', $childRun->namespace)

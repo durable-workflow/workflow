@@ -51,16 +51,18 @@ final class ParentClosePolicyEnforcer
     }
 
     /**
-     * @return list<string>
-     */
-    /**
+     * Apply policies while the caller holds the parent run's write lock.
+     *
      * With a limit (a bounded deadline close, #1116), at most that many
      * children are acted on, in link order. A child this run already
      * recorded a policy outcome for is skipped, so a later transaction
      * continues where this one stopped; $complete reports whether any
      * child is left.
+     *
+     * @internal
+     * @return list<string>
      */
-    private static function enforceLocked(WorkflowRun $run, ?int $limit = null, bool &$complete = true): array
+    public static function enforceLocked(WorkflowRun $run, ?int $limit = null, bool &$complete = true): array
     {
         $appliedTo = [];
         $acted = 0;
@@ -117,7 +119,6 @@ final class ParentClosePolicyEnforcer
             );
 
             try {
-                $stub = WorkflowStub::load($childInstanceId);
                 $cancellation = [];
 
                 if ($policy === ParentClosePolicy::RequestCancellation) {
@@ -131,7 +132,7 @@ final class ParentClosePolicyEnforcer
                         continue;
                     }
                     ParentCloseCancellation::ensureOrigin($run, $reason);
-                    $result = $stub->withCommandContext(CommandContext::workflow(
+                    $result = WorkflowStub::load($childInstanceId)->withCommandContext(CommandContext::workflow(
                         $run->workflow_instance_id,
                         $run->id,
                         $target['sequence'] ?? 0,
@@ -160,13 +161,9 @@ final class ParentClosePolicyEnforcer
                     if ($result->cancellationContext() === null) {
                         throw new LogicException('cancellation_child_context_unavailable');
                     }
+                } else {
+                    WorkflowStub::closeChildWithParentPolicy($childRun, $childInstanceId, $run, $policy, $reason);
                 }
-
-                match ($policy) {
-                    ParentClosePolicy::RequestCancel => $stub->attemptCancel($reason),
-                    ParentClosePolicy::Terminate => $stub->attemptTerminate($reason),
-                    default => null,
-                };
 
                 self::markChildCallForPolicy($run, $target, $policy);
 
@@ -228,6 +225,7 @@ final class ParentClosePolicyEnforcer
             ->where('parent_workflow_run_id', $run->id)
             ->where('link_type', 'child_workflow')
             ->where('parent_close_policy', '!=', ParentClosePolicy::Abandon->value)
+            ->with('childRun.instance')
             ->when($ordered, static fn ($query) => $query->orderBy('id'))
             ->get();
 

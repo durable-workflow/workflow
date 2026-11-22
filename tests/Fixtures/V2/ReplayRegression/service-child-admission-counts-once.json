@@ -1,0 +1,31 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "service-child-admission-counts-once",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestParallelChildReplayWorkflow",
+    "arguments": ["count-once-left", "count-once-right"],
+    "payload_codec": "avro"
+  },
+  "history": [{
+    "sequence": 1,
+    "event_type": "WorkflowStarted",
+    "payload": {},
+    "recorded_at": "2026-11-22T16:30:00.000000Z"
+  }],
+  "service_child_admission": {
+    "pending_limit": 2,
+    "pending_count_queries": 1
+  },
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {"type": "start_child_workflow"},
+      {"type": "start_child_workflow"}
+    ]
+  }
+}
