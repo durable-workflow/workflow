@@ -592,7 +592,11 @@ final class HistoryTimeline
                     ?? (string) (self::intValue($payload['member_index'] ?? null) ?? 0),
             ),
             HistoryEventType::ChildWorkflowScheduled => sprintf('Scheduled child workflow %s.', $childLabel),
-            HistoryEventType::ChildWorkflowAwaited => sprintf('Awaited admitted child workflow %s.', $childLabel),
+            HistoryEventType::ChildWorkflowAwaited => match ($payload['selection_handle']['status'] ?? null) {
+                'waiting' => 'Waiting for a child through a selection handle.',
+                'resumed' => 'Child selection wait ended.',
+                default => sprintf('Awaited admitted child workflow %s.', $childLabel),
+            },
             HistoryEventType::ChildRunStarted => sprintf('Child workflow %s started.', $childLabel),
             HistoryEventType::ChildRunCompleted => sprintf('Child workflow %s completed.', $childLabel),
             HistoryEventType::ChildRunFailed => $message === null

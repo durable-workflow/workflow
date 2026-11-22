@@ -136,6 +136,69 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
     private int $workflowNumber = 0;
 
+    public function testSelectionChildAwaitCorpusRetainsOriginalMemberAcrossReplay(): void
+    {
+        $path = self::FIXTURE_DIR . '/selection-child-await-history.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The selection child await evidence is absent.');
+        }
+
+        $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['selection_child_await'];
+        self::stopWorkers();
+        $this->clearWorkflowState();
+        config([
+            'queue.default' => 'database',
+        ]);
+        Queue::fake();
+
+        $parent = WorkflowStub::make($fixture['workflow']['type'], $fixture['id']);
+        $parent->start(...$fixture['workflow']['arguments']);
+        $runId = $parent->runId();
+        $this->runReadyTaskOfType($runId, TaskType::Workflow);
+        foreach ($scenario['signals'] as $signal => $value) {
+            $parent->signal($signal, $value);
+            $this->runReadyTaskOfType($runId, TaskType::Workflow);
+        }
+
+        $records = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::ChildWorkflowAwaited)
+            ->orderBy('sequence');
+        $waiting = (clone $records)->sole();
+        $this->assertSame($scenario['statuses'][0], $waiting->payload['selection_handle']['status']);
+
+        // Replay the parked run through another task before its child finishes.
+        $run = WorkflowRun::query()->findOrFail($runId);
+        WorkflowTask::query()->create([
+            'workflow_run_id' => $runId,
+            'namespace' => $run->namespace,
+            'task_type' => TaskType::Workflow,
+            'status' => TaskStatus::Ready,
+            'available_at' => now(),
+            'payload' => [],
+            'connection' => $run->connection,
+            'queue' => $run->queue,
+            'compatibility' => $run->compatibility,
+        ]);
+        $this->runReadyTaskOfType($runId, TaskType::Workflow);
+        $this->assertSame($waiting->id, (clone $records)->sole()->id);
+
+        $child = WorkflowLink::query()->where('parent_workflow_run_id', $runId)
+            ->where('link_type', 'child_workflow')
+            ->sole();
+        $this->runReadyTaskOfType($child->child_workflow_run_id, TaskType::Workflow);
+        $this->runReadyTaskOfType($runId, TaskType::Workflow);
+        $this->assertSame($scenario['result'], $parent->refresh()->output());
+
+        $events = $records->get();
+        $this->assertSame($scenario['statuses'], $events->pluck('payload.selection_handle.status')->all());
+        foreach ($events as $event) {
+            $this->assertArrayNotHasKey('sequence', $event->payload);
+            $this->assertArrayContains($scenario['member'], $event->payload['selection_handle'], $fixture['id']);
+        }
+    }
+
     public function testVersionUsageCorpusAlsoExecutesDeclaredReplayConsumers(): void
     {
         $path = self::FIXTURE_DIR . '/version-usage-retained-reused-decision.json';
@@ -2872,6 +2935,11 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             }
             if ($fixture['id'] === 'selection-cancelled-signal-occurrence') {
                 $this->assertLaterSignalBelongsToItsCurrentSelection($fixture);
+                continue;
+            }
+
+            if ($fixture['id'] === 'selection-child-await-history') {
+                // The live park and resume records are covered by the dedicated test.
                 continue;
             }
 

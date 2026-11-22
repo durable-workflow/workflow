@@ -2614,7 +2614,7 @@ final class RunSummaryProjector
      * counts, so every call sequenced before the outermost group of those waits was replayed past.
      *
      * @param list<array<string, mixed>> $signalWaits
-     * @return array{floor: int, paths: list<list<array<string, mixed>>>}|null
+     * @return array{floor: int, paths: list<list<array<string, mixed>>>, selection_await: ?WorkflowHistoryEvent}|null
      */
     private static function signalWaitChildScope(WorkflowRun $run, array $signalWaits): ?array
     {
@@ -2649,19 +2649,21 @@ final class RunSummaryProjector
             : [
                 'floor' => $floor,
                 'paths' => $paths,
+                'selection_await' => SelectionChildAwaitHistory::active($run),
             ];
     }
 
     /**
      * Whether this child's closure can still resume a run suspended on a plain signal wait.
      *
-     * A child whose call and every recorded await (`ChildWorkflowAwaited`) come before the signal wait
-     * was consumed or never awaited (`startChild()`). A child that completed inside an `all()` group whose
-     * completion also needs the open signal wait cannot complete that group either. Any other child, such
-     * as a member of the same `select()` or a child awaited later through its handle, still can.
+     * A child whose call and every recorded await come before the signal wait
+     * was consumed or never awaited (`startChild()`). A parked selection handle
+     * can name an earlier child without taking another authored step.
+     * A successful child inside an `all()` group cannot resume it while the
+     * group still needs that signal. A child in the same `select()` can.
      *
-     * @param array<string, mixed> $snapshot
-     * @param array{floor: int, paths: list<list<array<string, mixed>>>}|null $signalWaitChildScope
+     * @param array{sequence: int, resolution_event: ?WorkflowHistoryEvent, parallel_group_path: list<array<string, mixed>>, child_call_id?: ?string} $snapshot
+     * @param array{floor: int, paths: list<list<array<string, mixed>>>, selection_await: ?WorkflowHistoryEvent}|null $signalWaitChildScope
      */
     private static function childCanResumeSignalWait(
         WorkflowRun $run,
@@ -2674,7 +2676,8 @@ final class RunSummaryProjector
 
         $lastAwait = max($snapshot['sequence'], self::lastChildAwaitSequence($run, $snapshot));
 
-        if ($lastAwait < $signalWaitChildScope['floor']) {
+        if ($lastAwait < $signalWaitChildScope['floor']
+            && ! SelectionChildAwaitHistory::awaitsChild($signalWaitChildScope['selection_await'], $snapshot)) {
             return false;
         }
 

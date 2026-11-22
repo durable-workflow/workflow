@@ -809,15 +809,19 @@ final class WorkflowExecutor
             $current->size
         );
         if ($cancellationDelivery === CancellationDeliveryState::Waiting) {
+            SelectionChildAwaitHistory::park($run, $task, $current, $sequence);
             return $this->waitForNextResumeSource($run, $task);
         }
         if ($cancellationDelivery === CancellationDeliveryState::Delivered) {
+            SelectionChildAwaitHistory::resume($run, $task, $current, $sequence);
             return $this->resumeCancellation($run, $task, $frame);
         }
         if (! $resolution['resolved']) {
+            SelectionChildAwaitHistory::park($run, $task, $current, $sequence);
             $this->syncWorkflowCursor($workflow, $sequence);
             return $this->waitForNextResumeSource($run, $task, true);
         }
+        SelectionChildAwaitHistory::resume($run, $task, $current, $sequence);
         try {
             $this->syncWorkflowCursor($workflow, $sequence);
             $current = $resolution['failure'] instanceof Throwable ? $workflowExecution->throw(
