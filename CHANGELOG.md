@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 2.35.3 - 2026-11-22
+
+- Embedded workers refresh each child run after its final dispatch batch. Large
+  child groups avoid unnecessary repair projections while later batches publish.
+  The built-in child projector also skips redundant reads during startup. Both
+  hosted SQLite and MySQL passed the 1,000-child test with 10 KiB inputs. (#1238)
+
 ## 2.35.2 - 2026-11-22
 
 Run the package's normal Laravel migrations before starting the updated
