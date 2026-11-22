@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 2.35.5 - 2026-11-22
+
+- Service worker completions count pending children once per batch and reuse
+  the stored child identities for immediate parent-close actions. The hosted
+  SQLite and MySQL tests start and close 1,000 children within the default
+  worker timeout and verify all child links, tasks, and termination receipts.
+  (#1203)
+
 ## 2.35.4 - 2026-11-22
 
 - Embedded child-start projections avoid hydrating child arguments in the
