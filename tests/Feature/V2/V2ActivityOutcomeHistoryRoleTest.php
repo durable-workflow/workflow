@@ -36,8 +36,10 @@ use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\RunSummaryTaskSelection;
 use Workflow\V2\Support\RunTimelineProjector;
 use Workflow\V2\Support\RunWaitProjector;
+use Workflow\V2\Support\RunWaitView;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\WorkflowStub;
 
@@ -106,6 +108,7 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
             $this->assertIsString($claim['activity_attempt_id']);
             $attempts[] = $claim['activity_attempt_id'];
             $this->assertNoWholeHistoryRead($queries, $run->id);
+            $this->assertNoWholeTaskRead($queries, $run->id);
             $this->assertActivityMemberProjectionMatchesFullProjection($run);
         }
 
@@ -132,6 +135,108 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
             $this->assertSame($index === 3, $outcome['next_task_id'] !== null);
             $this->assertActivityMemberProjectionMatchesFullProjection($run);
         }
+    }
+
+    public function testIndexedTaskSelectionKeepsLeaseAndRoundedTimestampOrder(): void
+    {
+        Queue::fake();
+        config()
+            ->set('workflows.v2.task_dispatch_mode', 'poll');
+        $this->freezeTime();
+        $workflow = WorkflowStub::make(TestFanOutPayloadActivityWorkflow::class, 'indexed-next-task-order');
+        $workflow->start(4, 8);
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $workflowTask = $run->tasks()
+            ->where('task_type', TaskType::Workflow->value)->sole();
+        $this->app->call([new RunWorkflowTask($workflowTask->id), 'handle']);
+        $tasks = $run->tasks()
+            ->where('task_type', TaskType::Activity->value)->reorder('id')->get();
+        foreach ([[123400, 152400],
+            [123100, 152100],
+            [122600, 153000],
+            [123600, 150000],
+        ] as $index => [$available, $created]) {
+            $tasks[$index]->forceFill([
+                'available_at' => now()
+                    ->setMicrosecond($available),
+                'created_at' => now()
+                    ->setMicrosecond($created),
+            ])->save();
+        }
+        $this->assertSame($tasks[0]->id, RunSummaryTaskSelection::next($run)?->id);
+
+        $tasks[1]->forceFill([
+            'status' => TaskStatus::Leased,
+            'lease_expires_at' => now()
+                ->addMinute(),
+        ])->save();
+        $this->assertSame($tasks[1]->id, RunSummaryTaskSelection::next($run)?->id);
+
+        $tasks[3]->forceFill([
+            'status' => TaskStatus::Leased,
+            'lease_expires_at' => now()
+                ->subSecond(),
+            'available_at' => null,
+        ])->save();
+        $this->assertSame($tasks[3]->id, RunSummaryTaskSelection::next($run)?->id);
+
+        $tasks[1]->forceFill([
+            'lease_expires_at' => now()
+                ->subSecond(),
+        ])->save();
+        $this->assertSame($tasks[1]->id, RunSummaryTaskSelection::next($run)?->id);
+    }
+
+    public function testActivityWaitIndexCoversExistingRowsAndTracksPayloadUpdates(): void
+    {
+        Queue::fake();
+        config()
+            ->set('workflows.v2.task_dispatch_mode', 'poll');
+        $workflow = WorkflowStub::make(TestFanOutPayloadActivityWorkflow::class, 'indexed-wait-task-legacy');
+        $workflow->start(3, 8);
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $workflowTask = $run->tasks()
+            ->where('task_type', TaskType::Workflow->value)->sole();
+        $migration = require __DIR__ . '/../../../src/migrations/2026_11_21_000204_index_activity_wait_tasks.php';
+        $migration->down();
+        try {
+            $this->app->call([new RunWorkflowTask($workflowTask->id), 'handle']);
+            $tasks = $run->tasks()
+                ->where('task_type', TaskType::Activity->value)->reorder('id')->get();
+            $original = $tasks[0];
+            $executionId = $original->payload['activity_execution_id'];
+            $original->forceFill([
+                'status' => TaskStatus::Completed,
+            ])->save();
+            $retry = WorkflowTask::query()->create([
+                'workflow_run_id' => $run->id,
+                'task_type' => TaskType::Activity,
+                'status' => TaskStatus::Ready,
+                'payload' => [
+                    'activity_execution_id' => $executionId,
+                ],
+            ]);
+        } finally {
+            $migration->up();
+        }
+        $migration->up();
+        $activity = [
+            'id' => $executionId,
+            'status' => ActivityStatus::Pending->value,
+        ];
+        $this->assertSame($retry->id, RunWaitView::forActivity($run->fresh(), $executionId, $activity)['task_id']);
+        $this->assertSame(
+            RunWaitView::forActivity($run->fresh(['tasks']), $executionId, $activity),
+            RunWaitView::forActivity($run->fresh(), $executionId, $activity),
+        );
+        $this->assertArrayNotHasKey('indexed_activity_execution_id', $retry->fresh()->getAttributes());
+
+        $retry->forceFill([
+            'payload' => [
+                'activity_execution_id' => $tasks[1]->payload['activity_execution_id'],
+            ],
+        ])->save();
+        $this->assertSame($original->id, RunWaitView::forActivity($run->fresh(), $executionId, $activity)['task_id']);
     }
 
     public function testParallelMemberCompletionKeepsTheTimelineCurrentWithoutReadingUnrelatedEntries(): void
@@ -179,6 +284,7 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
         $this->assertTrue($outcome['recorded']);
         $this->assertNull($outcome['next_task_id']);
         $this->assertNoWholeHistoryRead($queries, $run->id);
+        $this->assertNoWholeTaskRead($queries, $run->id);
         $waitReads = array_values(array_filter($queries, static fn (array $query): bool =>
             str_starts_with($query['query'], 'select ')
             && str_contains($query['query'], 'workflow_run_waits')));
@@ -190,6 +296,7 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
         );
         $historyReads = array_values(array_filter($queries, static fn (array $query): bool =>
             str_starts_with($query['query'], 'select ')
+            && str_contains($query['query'], 'workflow_history_events')
             && str_contains($query['query'], 'indexed_activity_execution_id')));
         $this->assertCount(5, $historyReads);
         $this->assertContains($claim['activity_execution_id'], $historyReads[0]['bindings']);
@@ -1091,6 +1198,31 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
                     && in_array($runId, $query['bindings'], true);
             });
         $this->assertFalse($wholeHistoryRead);
+    }
+
+    /**
+     * @param list<array{query: string, bindings: array<mixed>}> $queries
+     */
+    private function assertNoWholeTaskRead(array $queries, string $runId): void
+    {
+        $wholeTaskReads = collect($queries)
+            ->filter(static function (array $query) use ($runId): bool {
+                $sql = $query['query'];
+
+                return str_starts_with(strtolower($sql), 'select *')
+                    && str_contains($sql, 'workflow_tasks')
+                    && ! str_contains($sql, 'limit 1')
+                    && ! str_contains($sql, 'activity_execution_id')
+                    && ! (str_contains($sql, 'task_type') && in_array(
+                        TaskType::Workflow->value,
+                        $query['bindings'],
+                        true
+                    ))
+                    && preg_match('/\bid["`]?\s+in\s*\(/i', $sql) !== 1
+                    && in_array($runId, $query['bindings'], true);
+            })
+            ->pluck('query');
+        $this->assertSame([], $wholeTaskReads->all());
     }
 
     /**

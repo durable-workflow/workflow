@@ -79,7 +79,7 @@ final class DefaultHistoryProjectionRole implements HistoryProjectionRole, Histo
         return ActivityOutcomeProjectionContext::run(
             $run,
             $started,
-            fn (): WorkflowRunSummary => $this->projectRun($run->fresh(['instance', 'tasks', 'failures']) ?? $run),
+            fn (): WorkflowRunSummary => $this->projectRun($run->fresh(['instance']) ?? $run),
         );
     }
 

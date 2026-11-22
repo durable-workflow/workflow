@@ -846,10 +846,15 @@ final class RunSummaryProjector
             return null;
         }
 
-        $run->loadMissing('tasks');
-        $nextTask = self::nextOpenTask($run);
-        if ($nextTask === null
-            || $run->tasks->contains(static fn (WorkflowTask $task): bool => self::workflowTaskProblemEvidence($task))
+        $nextTask = $run->relationLoaded('tasks') ? self::nextOpenTask($run) : RunSummaryTaskSelection::next($run);
+        if ($nextTask === null) {
+            return null;
+        }
+        $workflowTasks = $run->relationLoaded('tasks')
+            ? $run->tasks
+            : $run->tasks()
+                ->where('task_type', TaskType::Workflow->value)->get();
+        if ($workflowTasks->contains(static fn (WorkflowTask $task): bool => self::workflowTaskProblemEvidence($task))
             || ! self::projectParallelActivityWait($run, $event, $activities)) {
             return null;
         }
@@ -862,6 +867,9 @@ final class RunSummaryProjector
         RunInstanceMetadata::detachForeign($run);
         $current = CurrentRunResolver::forRun($run)?->id === $run->id;
         $repair = RepairBlockedReason::forRun($run, $current, $livenessState, false);
+        // The lost-lease diagnostic only considers workflow tasks.
+        $diagnosticRun = clone $run;
+        $diagnosticRun->setRelation('tasks', $workflowTasks);
         $values = [
             ...self::claimSummaryIdentity($run, RunCommandContract::forRun($run)),
             'is_current_run' => $current,
@@ -883,7 +891,7 @@ final class RunSummaryProjector
             'liveness_reason' => $livenessReason,
             'repair_blocked_reason' => $repair,
             'repair_attention' => RepairBlockedReason::needsAttention($repair),
-            ...WorkflowTaskLeaseLoss::summaryAttributes($run),
+            ...WorkflowTaskLeaseLoss::summaryAttributes($diagnosticRun),
             'task_problem' => false,
             'exception_count' => 0,
             'history_event_count' => $budget['history_event_count'],

@@ -1038,7 +1038,7 @@ final class ActivityOutcomeRecorder
     {
         $role = self::historyProjectionRole();
         $relations = $role instanceof DefaultHistoryProjectionRole
-            ? ['instance', 'tasks', 'failures']
+            ? ['instance']
             : ['instance', 'tasks', 'activityExecutions', 'failures'];
         $run = $run->fresh($relations) ?? throw new \LogicException('The activity run disappeared before projection.');
         if (! $activityResolution instanceof WorkflowHistoryEvent) {
