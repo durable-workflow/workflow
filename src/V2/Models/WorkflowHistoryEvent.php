@@ -45,7 +45,7 @@ class WorkflowHistoryEvent extends Model
 
     protected $guarded = [];
 
-    protected $hidden = ['indexed_activity_execution_id', 'indexed_step_sequence', OpenActivityHistoryIndex::SEQUENCE];
+    protected $hidden = ['indexed_activity_execution_id', 'indexed_step_sequence'];
 
     protected $keyType = 'string';
 
@@ -344,9 +344,7 @@ class WorkflowHistoryEvent extends Model
                 }
 
                 /** @var self $event */
-                $event = ConfiguredV2Models::query('history_event_model', self::class)->newModelInstance($values);
-                $openIndexComplete = OpenActivityHistoryIndex::prepare($lockedRun, $event, $indexedActivity);
-                $event->save();
+                $event = ConfiguredV2Models::query('history_event_model', self::class)->create($values);
                 ExecutionTracing::observeOutcome($lockedRun, $taskModel, $event);
 
                 $updates = [
@@ -360,7 +358,7 @@ class WorkflowHistoryEvent extends Model
                 if ($stepIndexComplete && (int) $lockedRun->step_history_index_through === $sequence - 1) {
                     $updates['step_history_index_through'] = $sequence;
                 }
-                if ($openIndexComplete) {
+                if (OpenActivityHistoryIndex::advance($lockedRun, $event, $indexedActivity)) {
                     $updates[OpenActivityHistoryIndex::THROUGH] = $sequence;
                 }
                 if ($eventType !== HistoryEventType::ActivityOutcomeRejected) {

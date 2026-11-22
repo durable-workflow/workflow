@@ -135,6 +135,10 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
         foreach ([1, 0, 3, 2] as $index => $member) {
             $this->travel(1)
                 ->seconds();
+            $before = $run->historyEvents()
+                ->get()
+                ->map(static fn (WorkflowHistoryEvent $event): array => $event->getAttributes())
+                ->all();
             DB::enableQueryLog();
             try {
                 $outcome = $bridge->complete($attempts[$member], 8);
@@ -145,6 +149,14 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
             }
             $this->assertTrue($outcome['recorded']);
             $this->assertSame($index === 3, $outcome['next_task_id'] !== null);
+            $this->assertSame(
+                $before,
+                $run->historyEvents()
+                    ->where('sequence', '<=', count($before))
+                    ->get()
+                    ->map(static fn (WorkflowHistoryEvent $event): array => $event->getAttributes())
+                    ->all(),
+            );
             if ($index < 3) {
                 $this->assertNoWholeHistoryRead($queries, $run->id);
                 $this->assertNoWholeTaskRead($queries, $run->id);
@@ -157,7 +169,7 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
 ->resume_source_id
                 );
                 $this->assertTrue(collect($queries)->contains(static fn (array $query): bool =>
-                    str_contains($query['query'], 'indexed_open_activity_sequence')
+                    str_contains($query['query'], 'workflow_open_activities')
                     && str_contains($query['query'], 'limit 2')));
             }
             $this->assertActivityMemberProjectionMatchesFullProjection($run);
@@ -406,7 +418,6 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
         $historyReads = array_values(array_filter($queries, static fn (array $query): bool =>
             str_starts_with($query['query'], 'select ')
             && str_contains($query['query'], 'workflow_history_events')
-            && ! str_contains($query['query'], 'indexed_open_activity_sequence')
             && str_contains($query['query'], 'indexed_activity_execution_id')));
         $this->assertCount(5, $historyReads);
         $this->assertContains($claim['activity_execution_id'], $historyReads[0]['bindings']);

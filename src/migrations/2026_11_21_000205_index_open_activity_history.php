@@ -2,13 +2,9 @@
 
 declare(strict_types=1);
 
-use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Workflow\Support\WorkflowMigration;
-use Workflow\V2\Models\WorkflowHistoryEvent;
-use Workflow\V2\Models\WorkflowRun;
-use Workflow\V2\Support\ConfiguredV2Models;
 use Workflow\V2\Support\OpenActivityHistoryIndex;
 
 return new class() extends WorkflowMigration {
@@ -17,77 +13,45 @@ return new class() extends WorkflowMigration {
     public function up(): void
     {
         $schema = DB::connection($this->getConnection())->getSchemaBuilder();
-        foreach ($this->tables('history_event_model', WorkflowHistoryEvent::class) as $table) {
-            if (! $schema->hasTable($table)) {
-                continue;
-            }
-            $this->addSequenceColumn($table, OpenActivityHistoryIndex::SEQUENCE);
-            $this->createIndexOnline($table, $this->index($table), [
-                'workflow_run_id', OpenActivityHistoryIndex::SEQUENCE,
-            ]);
+        if (! $schema->hasTable('workflow_runs') || ! $schema->hasTable('workflow_history_events')) {
+            return;
         }
-        foreach ($this->tables('run_model', WorkflowRun::class) as $table) {
-            if ($schema->hasTable($table)) {
-                $this->addSequenceColumn($table, OpenActivityHistoryIndex::THROUGH);
-            }
+        if (! $schema->hasTable(OpenActivityHistoryIndex::TABLE)) {
+            $this->withSchemaLockBudget(static fn () => $schema->create(
+                OpenActivityHistoryIndex::TABLE,
+                static function (Blueprint $table): void {
+                    $table->string('workflow_run_id', 26);
+                    $table->string('activity_execution_id', 26);
+                    $table->string('history_event_id', 26);
+                    $table->unsignedInteger('sequence');
+                    $table->primary(['workflow_run_id', 'activity_execution_id']);
+                    $table->index(['workflow_run_id', 'sequence'], 'dw_open_activities_run_sequence');
+                    $table->index('history_event_id', 'dw_open_activities_event');
+                    $table->foreign('history_event_id', 'dw_open_activities_history_reference')
+                        ->references('id')
+                        ->on('workflow_history_events')
+                        ->cascadeOnDelete();
+                },
+            ));
+        }
+        if (! $schema->hasColumn('workflow_runs', OpenActivityHistoryIndex::THROUGH)) {
+            $this->withSchemaLockBudget(static fn () => $schema->table(
+                'workflow_runs',
+                static fn (Blueprint $blueprint) => $blueprint->unsignedInteger(OpenActivityHistoryIndex::THROUGH)
+                    ->nullable(),
+            ));
         }
     }
 
     public function down(): void
     {
         $schema = DB::connection($this->getConnection())->getSchemaBuilder();
-        foreach ($this->tables('run_model', WorkflowRun::class) as $table) {
-            if ($schema->hasColumn($table, OpenActivityHistoryIndex::THROUGH)) {
-                $this->withSchemaLockBudget(static fn () => $schema->table(
-                    $table,
-                    static fn (Blueprint $blueprint) => $blueprint->dropColumn(OpenActivityHistoryIndex::THROUGH),
-                ));
-            }
-        }
-        foreach ($this->tables('history_event_model', WorkflowHistoryEvent::class) as $table) {
-            $index = $this->index($table);
-            if ($schema->hasTable($table) && $schema->hasIndex($table, $index)) {
-                $this->withSchemaLockBudget(static fn () => $schema->table(
-                    $table,
-                    static fn (Blueprint $blueprint) => $blueprint->dropIndex($index),
-                ));
-            }
-            if ($schema->hasColumn($table, OpenActivityHistoryIndex::SEQUENCE)) {
-                $this->withSchemaLockBudget(static fn () => $schema->table(
-                    $table,
-                    static fn (Blueprint $blueprint) => $blueprint->dropColumn(OpenActivityHistoryIndex::SEQUENCE),
-                ));
-            }
-        }
-    }
-
-    private function addSequenceColumn(string $table, string $column): void
-    {
-        $schema = DB::connection($this->getConnection())->getSchemaBuilder();
-        if (! $schema->hasColumn($table, $column)) {
+        if ($schema->hasColumn('workflow_runs', OpenActivityHistoryIndex::THROUGH)) {
             $this->withSchemaLockBudget(static fn () => $schema->table(
-                $table,
-                static fn (Blueprint $blueprint) => $blueprint->unsignedInteger($column)
-                    ->nullable(),
+                'workflow_runs',
+                static fn (Blueprint $blueprint) => $blueprint->dropColumn(OpenActivityHistoryIndex::THROUGH),
             ));
         }
-    }
-
-    /**
-     * @param class-string<Model> $default
-     * @return list<string>
-     */
-    private function tables(string $key, string $default): array
-    {
-        $model = ConfiguredV2Models::resolve($key, $default);
-
-        return array_values(array_unique([(new $default())->getTable(), (new $model())->getTable()]));
-    }
-
-    private function index(string $table): string
-    {
-        $prefix = DB::connection($this->getConnection())->getTablePrefix();
-
-        return 'dw_history_open_activity_' . substr(hash('sha256', $prefix . $table), 0, 12);
+        $this->withSchemaLockBudget(static fn () => $schema->dropIfExists(OpenActivityHistoryIndex::TABLE));
     }
 };

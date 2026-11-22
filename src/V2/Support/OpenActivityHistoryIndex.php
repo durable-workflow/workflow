@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Database\Query\Builder;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
@@ -13,19 +14,20 @@ final class OpenActivityHistoryIndex
 {
     public const THROUGH = 'activity_open_index_through';
 
-    public const SEQUENCE = 'indexed_open_activity_sequence';
+    public const TABLE = 'workflow_open_activities';
 
     /**
-     * Called in the append transaction under the run lock. Only one event per
-     * open activity carries the lookup key. Historical event data stays intact.
+     * Called in the append transaction under the run lock. The lookup rows
+     * follow typed activity history without updating a previously authored event.
      */
-    public static function prepare(
+    public static function advance(
         WorkflowRun $run,
         WorkflowHistoryEvent $event,
         string|false|null $indexedActivityId,
     ): bool {
         if (! array_key_exists(self::THROUGH, $run->getAttributes())
             || (int) $run->getAttribute(self::THROUGH) !== (int) $event->sequence - 1
+            || $event->getTable() !== 'workflow_history_events'
             || $indexedActivityId === false) {
             return false;
         }
@@ -47,26 +49,9 @@ final class OpenActivityHistoryIndex
             return count($path) !== 1 || ! str_starts_with($path[0]['parallel_group_id'], 'parallel-activities:');
         }
 
-        $marks = $run->historyEvents()
-            ->where('indexed_activity_execution_id', $id)
-            ->whereNotNull(self::SEQUENCE)
-            ->reorder();
-        if (in_array($run->getConnection()->getDriverName(), ['mysql', 'mariadb'], true)) {
-            $connection = $marks->getRelated()
-                ->getConnection();
-            $marks->forceIndex(WorkflowHistoryEvent::activityIndexName(
-                $marks->getRelated()
-                    ->getTable(),
-                $connection->getTablePrefix(),
-            ));
-        }
-        $current = $marks->lockForUpdate()
-            ->limit(2)
-            ->get(['id', self::SEQUENCE]);
-        if ($current->count() > 1) {
-            return false;
-        }
-        $previous = $current->first();
+        $entry = self::forRun($run)->where('activity_execution_id', $id);
+        $previous = (clone $entry)->lockForUpdate()
+            ->first(['sequence']);
 
         $sequence = null;
         if (in_array($status, [ActivityStatus::Pending->value, ActivityStatus::Running->value], true)) {
@@ -78,26 +63,34 @@ final class OpenActivityHistoryIndex
             if (! is_int($sequence) || $sequence < 0 || $sequence > 2147483647) {
                 return false;
             }
-            if ($previous !== null && (int) $previous->getAttribute(self::SEQUENCE) === $sequence) {
+            if ($previous !== null && (int) $previous->sequence === $sequence) {
                 return true;
             }
         }
 
-        if ($previous !== null) {
-            // Preserve the workflow command's row budget. A transition inside
-            // a metered completion cannot spend an extra row on this index.
-            if (HistoryTransactionMeter::current() !== null) {
-                return false;
-            }
-            $run->historyEvents()
-                ->whereKey($previous->id)
-                ->toBase()
-                ->update([
-                    self::SEQUENCE => null,
-                ]);
+        if ($previous === null && $sequence === null) {
+            return true;
         }
-        if ($sequence !== null) {
-            $event->setAttribute(self::SEQUENCE, $sequence);
+        // A metered service-mode completion keeps its established write budget.
+        // Leave its index incomplete if the transition requires an extra row.
+        if (HistoryTransactionMeter::current() !== null) {
+            return false;
+        }
+        if ($sequence === null) {
+            $entry->delete();
+        } elseif ($previous === null) {
+            $run->getConnection()
+                ->table(self::TABLE)->insert([
+                    'workflow_run_id' => $run->id,
+                    'activity_execution_id' => $id,
+                    'history_event_id' => $event->id,
+                    'sequence' => $sequence,
+                ]);
+        } else {
+            $entry->update([
+                'history_event_id' => $event->id,
+                'sequence' => $sequence,
+            ]);
         }
 
         return true;
@@ -115,21 +108,21 @@ final class OpenActivityHistoryIndex
             return null;
         }
 
-        $entries = $run->historyEvents()
-            ->whereBetween(self::SEQUENCE, [$after, $last])
-            ->reorder(self::SEQUENCE)
+        $entries = self::forRun($run)
+            ->whereBetween('sequence', [$after, $last])
+            ->orderBy('sequence')
             ->lockForUpdate()
             ->limit(2)
-            ->get(['indexed_activity_execution_id', self::SEQUENCE]);
+            ->get(['activity_execution_id', 'sequence']);
         $first = $entries->first();
         if ($first === null) {
             return null;
         }
 
-        $sequence = (int) $first->getAttribute(self::SEQUENCE);
-        $id = $first->indexed_activity_execution_id;
+        $sequence = (int) $first->sequence;
+        $id = $first->activity_execution_id;
         if (! is_string($id) || $sequence <= $after
-            || ($entries->get(1) !== null && (int) $entries->get(1)->getAttribute(self::SEQUENCE) === $sequence)) {
+            || ($entries->get(1) !== null && (int) $entries->get(1)->sequence === $sequence)) {
             return null;
         }
 
@@ -137,5 +130,18 @@ final class OpenActivityHistoryIndex
             'id' => $id,
             'sequence' => $sequence,
         ];
+    }
+
+    public static function prune(WorkflowRun $run): void
+    {
+        if (array_key_exists(self::THROUGH, $run->getAttributes())) {
+            self::forRun($run)->delete();
+        }
+    }
+
+    private static function forRun(WorkflowRun $run): Builder
+    {
+        return $run->getConnection()
+            ->table(self::TABLE)->where('workflow_run_id', $run->id);
     }
 }

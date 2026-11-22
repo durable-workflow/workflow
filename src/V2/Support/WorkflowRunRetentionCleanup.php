@@ -160,6 +160,7 @@ final class WorkflowRunRetentionCleanup
                 ConfiguredV2Models::query('search_attribute_model', WorkflowSearchAttribute::class),
                 $runId,
             );
+            OpenActivityHistoryIndex::prune($lockedRun);
             $report['history_events_deleted'] = self::deleteByRun(
                 ConfiguredV2Models::query('history_event_model', WorkflowHistoryEvent::class),
                 $runId,
