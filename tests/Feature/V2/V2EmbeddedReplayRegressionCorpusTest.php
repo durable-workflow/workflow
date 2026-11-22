@@ -3195,6 +3195,9 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         }
         $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
         $scenario = $fixture['child_projection'];
+        config([
+            'queue.default' => 'database',
+        ]);
         Queue::fake();
 
         $parent = WorkflowStub::make(TestFanOutPayloadChildWorkflow::class, 'projection-child-arguments');
