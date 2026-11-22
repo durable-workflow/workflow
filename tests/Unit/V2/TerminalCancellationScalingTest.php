@@ -202,12 +202,20 @@ final class TerminalCancellationScalingTest extends TestCase
             'parent_sequence' => 7,
             'child_call_id' => 'application-child-call',
         ];
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        try {
+            $reference = ChildRunHistory::parentReferenceForRun($run);
+            $this->assertSame([], DB::getQueryLog());
+        } finally {
+            DB::disableQueryLog();
+        }
         $this->assertSame([
             'parent_workflow_instance_id' => 'application-parent-instance',
             'parent_workflow_run_id' => 'application-parent-run',
             'parent_sequence' => 7,
             'child_call_id' => 'application-child-call',
-        ], ChildRunHistory::parentReferenceForRun($run));
+        ], $reference);
     }
 
     public function testParentMetadataUsesOneRetrievedApplicationViewOfTheStartedEvent(): void

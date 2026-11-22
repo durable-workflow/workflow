@@ -841,17 +841,21 @@ final class ChildRunHistory
      */
     private static function childCallIdFromStartedPayload(?array $payload, WorkflowRun $origin): ?string
     {
+        $callId = self::childCallIdFromPayload($payload)
+            ?? self::legacyChildCallIdFromStartedWorkflowPayload($payload);
+        if ($callId !== null) {
+            return $callId;
+        }
+
         $parentRunId = self::stringValue($payload['parent_workflow_run_id'] ?? null);
         $parentSequence = self::intValue($payload['parent_sequence'] ?? null);
-        $parentRun = $parentRunId === null ? null : self::loadRun($parentRunId, $origin);
+        if ($parentRunId === null || $parentSequence === null) {
+            return null;
+        }
 
-        return self::childCallIdFromPayload($payload)
-            ?? self::legacyChildCallIdFromStartedWorkflowPayload($payload)
-            ?? (
-                $parentRun instanceof WorkflowRun && $parentSequence !== null
-                    ? self::childCallIdForSequence($parentRun, $parentSequence)
-                    : null
-            );
+        $parentRun = self::loadRun($parentRunId, $origin);
+
+        return $parentRun instanceof WorkflowRun ? self::childCallIdForSequence($parentRun, $parentSequence) : null;
     }
 
     private static function workflowStartedEvent(WorkflowRun $run): ?WorkflowHistoryEvent

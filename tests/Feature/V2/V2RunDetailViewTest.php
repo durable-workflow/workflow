@@ -6,6 +6,7 @@ namespace Tests\Feature\V2;
 
 use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Tests\Fixtures\V2\TestAbstractReplayedException;
@@ -57,6 +58,7 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\ActivitySnapshot;
+use Workflow\V2\Support\CurrentRunResolver;
 use Workflow\V2\Support\ExternalPayloads;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\RunDetailView;
@@ -2464,8 +2466,17 @@ final class V2RunDetailViewTest extends TestCase
             ->findOrFail($historicalRun->workflow_instance_id)
             ->forceFill([
                 'current_run_id' => null,
+                'run_count' => 1,
             ])
             ->save();
+
+        $lockedResolution = DB::transaction(static function () use ($historicalRun): array {
+            $instance = WorkflowInstance::query()->lockForUpdate()->findOrFail($historicalRun->workflow_instance_id);
+
+            return CurrentRunResolver::resolutionForInstance($instance, lockForUpdate: true);
+        });
+        $this->assertSame($currentRun->id, $lockedResolution['run']?->id);
+        $this->assertSame('continue_as_new_lineage', $lockedResolution['source']);
 
         RunSummaryProjector::project(
             $historicalRun->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
