@@ -701,10 +701,16 @@ final class RunSummaryProjector
         $changed = self::nonEmptyString($event->payload['activity_execution_id'] ?? null);
         $sequence = self::intValue($event->payload['sequence'] ?? null);
         $selected = self::nonEmptyString($previous->resume_source_id);
+        // A ready or leased activity can need repair while its wait is still current.
+        $repairableActivityTask = $previous->liveness_state === 'repair_needed'
+            && $previous->next_task_type === TaskType::Activity->value
+            && in_array($previous->next_task_status, [TaskStatus::Ready->value, TaskStatus::Leased->value], true)
+            && self::nonEmptyString($previous->next_task_id) !== null;
         if (
             $run->status !== RunStatus::Waiting || $previous->status !== RunStatus::Waiting->value
             || $previous->wait_kind !== 'activity' || $previous->resume_source_kind !== 'activity_execution'
-            || ! in_array($previous->liveness_state, ['activity_task_ready', 'activity_task_leased'], true)
+            || (! $repairableActivityTask
+                && ! in_array($previous->liveness_state, ['activity_task_ready', 'activity_task_leased'], true))
             || $previous->task_problem || ImportedLineageReferences::imported($run)
             || $changed === null || $sequence === null || $selected === null
             || $previous->open_wait_id !== 'activity:' . $selected

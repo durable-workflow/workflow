@@ -42,6 +42,7 @@ use Workflow\V2\Support\RunTimelineProjector;
 use Workflow\V2\Support\RunWaitProjector;
 use Workflow\V2\Support\RunWaitView;
 use Workflow\V2\Support\TaskDispatcher;
+use Workflow\V2\Support\TaskRepairPolicy;
 use Workflow\V2\WorkflowStub;
 
 /**
@@ -97,6 +98,10 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
             ->sortBy(static fn (WorkflowTask $task): int => $positions[$task->payload['activity_execution_id']])
             ->values();
         $this->assertCount(4, $tasks);
+        $this->travel(TaskRepairPolicy::redispatchAfterSeconds())->seconds();
+        $overdue = RunSummaryProjector::project($run->fresh());
+        $this->assertSame(TaskStatus::Ready->value, $overdue->next_task_status);
+        $this->assertSame('repair_needed', $overdue->liveness_state);
         $attempts = [];
         foreach ($tasks as $task) {
             $this->travel(1)
@@ -127,10 +132,6 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
         $expired = RunSummaryProjector::project($run->fresh());
         $this->assertSame($lastTask->id, $expired->next_task_id);
         $this->assertSame('repair_needed', $expired->liveness_state);
-        $lastTask->forceFill([
-            'lease_expires_at' => $expiresAt,
-        ])->save();
-        RunSummaryProjector::project($run->fresh());
 
         foreach ([1, 0, 3, 2] as $index => $member) {
             $this->travel(1)
@@ -173,6 +174,12 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
                     && str_contains($query['query'], 'limit 2')));
             }
             $this->assertActivityMemberProjectionMatchesFullProjection($run);
+            if ($index === 0) {
+                $lastTask->forceFill([
+                    'lease_expires_at' => $expiresAt,
+                ])->save();
+                RunSummaryProjector::project($run->fresh());
+            }
         }
     }
 
