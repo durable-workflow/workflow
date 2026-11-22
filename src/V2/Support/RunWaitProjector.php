@@ -288,6 +288,7 @@ final class RunWaitProjector
         $waitModel = self::waitModel();
         $seen = [];
         $projected = [];
+        $positions = self::openingPositions($waits);
 
         foreach (array_chunk(array_values($waits), 100, true) as $page) {
             $projectionIds = [];
@@ -303,7 +304,15 @@ final class RunWaitProjector
                 $waitId = self::waitId($wait, $position);
                 $projectionId = self::projectionId($run->id, $waitId);
                 $seen[] = $projectionId;
-                $row = self::saveWait($waitModel, $run, $projectionId, $waitId, $wait, $existing->get($projectionId));
+                $row = self::saveWait(
+                    $waitModel,
+                    $run,
+                    $projectionId,
+                    $waitId,
+                    $wait,
+                    $existing->get($projectionId),
+                    $positions[$waitId] ?? WorkflowRunWait::OPENING_TIME_POSITION,
+                );
 
                 if ($collectRows) {
                     $projected[] = $row;
@@ -400,6 +409,7 @@ final class RunWaitProjector
         string $waitId,
         array $wait,
         ?WorkflowRunWait $existing,
+        int $position = WorkflowRunWait::OPENING_TIME_POSITION,
     ): WorkflowRunWait {
         /** @var WorkflowRunWait $row */
         $row = IdempotentProjectionUpsert::upsert(
@@ -411,8 +421,7 @@ final class RunWaitProjector
                 'workflow_run_id' => $run->id,
                 'workflow_instance_id' => $run->workflow_instance_id,
                 'wait_id' => $waitId,
-                // The opening time and wait ID determine order independently of other rows.
-                'position' => WorkflowRunWait::OPENING_TIME_POSITION,
+                'position' => $position,
                 'kind' => self::stringValue($wait['kind'] ?? null) ?? 'unknown',
                 'sequence' => self::intValue($wait['sequence'] ?? null),
                 'status' => self::stringValue($wait['status'] ?? null) ?? 'unknown',
@@ -484,6 +493,41 @@ final class RunWaitProjector
             ->get();
 
         return $waits;
+    }
+
+    /**
+     * Parallel member updates can move a wait in opening order. In those runs,
+     * sort every wait by its own opening time so a move needs no sibling writes.
+     * Other runs keep their existing rank representation.
+     *
+     * @param list<array<string, mixed>> $waits
+     * @return array<string, int>
+     */
+    private static function openingPositions(array $waits): array
+    {
+        $ordered = [];
+
+        foreach (array_values($waits) as $position => $wait) {
+            $group = self::stringValue($wait['parallel_group_id'] ?? null);
+            if ($group !== null && (str_starts_with($group, 'parallel-activities:')
+                || str_starts_with($group, 'parallel-children:'))) {
+                return [];
+            }
+
+            $ordered[] = [
+                'id' => self::waitId($wait, $position),
+                'opened_at' => self::timestamp($wait['opened_at'] ?? null)?->getTimestampMs() ?? PHP_INT_MAX,
+            ];
+        }
+
+        usort($ordered, static fn (array $left, array $right): int =>
+            ($left['opened_at'] <=> $right['opened_at']) ?: ($left['id'] <=> $right['id']));
+        $positions = [];
+        foreach ($ordered as $position => $wait) {
+            $positions[$wait['id']] = $position;
+        }
+
+        return $positions;
     }
 
     /**

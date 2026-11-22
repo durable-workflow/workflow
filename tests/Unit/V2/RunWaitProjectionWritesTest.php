@@ -300,18 +300,20 @@ final class RunWaitProjectionWritesTest extends TestCase
         $this->assertSame($a['opened_at']->getTimestampMs(), $z['opened_at']->getTimestampMs());
         $missing = $this->wait('signal:missing', 1, 'resolved');
         $missing['opened_at'] = null;
-        $open = $this->wait('signal:open', 2, 'open');
+        $open = $this->wait('activity:open', 2, 'open');
+        $open['kind'] = 'activity';
+        $open['parallel_group_id'] = 'parallel-activities:fixture';
         RunWaitProjector::project($run, [$open, $a, $z, $missing]);
 
         // The canonical view uses millisecond precision, then the wait id.
         $this->assertSame(
-            ['signal:open', 'signal:Z', 'signal:a', 'signal:missing'],
+            ['activity:open', 'signal:Z', 'signal:a', 'signal:missing'],
             $run->fresh()
                 ->waits->pluck('wait_id')
                 ->all(),
         );
         $this->assertSame(
-            ['signal:Z', 'signal:a', 'signal:open', 'signal:missing'],
+            ['signal:Z', 'signal:a', 'activity:open', 'signal:missing'],
             WorkflowRunWait::query()->where('workflow_run_id', $run->id)
                 ->inOpeningOrder()
                 ->pluck('wait_id')
@@ -324,7 +326,10 @@ final class RunWaitProjectionWritesTest extends TestCase
         $run = $this->runFixture();
         $waits = [];
         for ($index = 0; $index < 32; $index++) {
-            $waits[] = $this->wait('signal:' . $index, $index, 'open');
+            $waits[] = array_replace($this->wait('activity:' . $index, $index, 'open'), [
+                'kind' => 'activity',
+                'parallel_group_id' => 'parallel-activities:fixture',
+            ]);
         }
         RunWaitProjector::project($run, $waits);
         $before = $this->rows($run);
@@ -336,7 +341,7 @@ final class RunWaitProjectionWritesTest extends TestCase
         $expected = array_column($waits, 'id');
         $expected[] = array_shift($expected);
         $this->assertSame($expected, $run->fresh()->waits->pluck('wait_id')->all());
-        $changed = hash('sha256', $run->id . '|signal:0');
+        $changed = hash('sha256', $run->id . '|activity:0');
         $this->assertSame(
             array_diff_key($before, [
                 $changed => true,
