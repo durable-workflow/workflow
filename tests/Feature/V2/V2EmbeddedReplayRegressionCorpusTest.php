@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use DateTimeImmutable;
+use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Queue\WorkerOptions;
 use Illuminate\Support\Carbon;
@@ -21,6 +22,7 @@ use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use Symfony\Component\Uid\Ulid;
 use Tests\Fixtures\V2\TestFanOutPayloadActivity;
+use Tests\Fixtures\V2\TestFanOutPayloadChildWorkflow;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestLocalActivityWorkflow;
@@ -110,6 +112,7 @@ use Workflow\V2\Support\RunWaitProjector;
 use Workflow\V2\Support\ScheduleManager;
 use Workflow\V2\Support\ServiceCallPrincipal;
 use Workflow\V2\Support\ServiceCallScheduler;
+use Workflow\V2\Support\TaskRepairPolicy;
 use Workflow\V2\Support\VersionUsageQuery;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
 use Workflow\V2\Support\WorkflowDefinition;
@@ -3105,6 +3108,82 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
             $this->assertSame([], $mismatches, implode(' ', $mismatches));
         }
+    }
+
+    public function testChildDispatchCorpusRefreshesSummariesBeforeTheNextBatch(): void
+    {
+        $path = self::FIXTURE_DIR . '/child-dispatch-summary-before-later-batch.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('Child dispatch summary fixture is not present in the base corpus.');
+        }
+
+        $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $dispatch = $fixture['coalesced_dispatch'];
+        $firstBatchSize = $dispatch['first_batch_size'];
+        config([
+            'queue.default' => 'database',
+        ]);
+        Queue::fake();
+        Carbon::setTestNow($fixture['history'][0]['recorded_at']);
+        $workflow = WorkflowStub::make(TestFanOutPayloadChildWorkflow::class, 'coalesced-child-summary');
+        $workflow->start($dispatch['children'], strlen($fixture['workflow']['arguments'][1]));
+        $pushed = new \ArrayObject();
+        $bus = $this->app->make(BusDispatcher::class);
+        $this->app->instance(BusDispatcher::class, new class(
+            $bus,
+            $pushed,
+            $firstBatchSize,
+            $dispatch['delay_after_redispatch_seconds']
+        ) {
+            public function __construct(
+                private readonly object $bus,
+                private readonly \ArrayObject $pushed,
+                private readonly int $firstBatchSize,
+                private readonly int $delayAfterRedispatchSeconds,
+            ) {
+            }
+
+            public function dispatch(mixed $job): mixed
+            {
+                if ($job instanceof RunWorkflowTask) {
+                    $this->pushed[] = $job->taskId;
+                    if (count($this->pushed) === $this->firstBatchSize + 1) {
+                        Carbon::setTestNow(now()->addSeconds(
+                            TaskRepairPolicy::redispatchAfterSeconds() + $this->delayAfterRedispatchSeconds
+                        ));
+                    }
+                }
+
+                return $this->bus->dispatch($job);
+            }
+
+            public function __call(string $method, array $arguments): mixed
+            {
+                return $this->bus->{$method}(...$arguments);
+            }
+        });
+
+        try {
+            $this->runReadyTaskOfType($workflow->runId(), TaskType::Workflow);
+        } finally {
+            $this->app->instance(BusDispatcher::class, $bus);
+            Carbon::setTestNow();
+        }
+
+        $this->assertCount($dispatch['children'], $pushed);
+        $firstBatchRuns = WorkflowTask::query()->whereIn('id', array_slice($pushed->getArrayCopy(), 0, $firstBatchSize))
+            ->pluck('workflow_run_id');
+        $secondBatchRuns = WorkflowTask::query()->whereIn('id', array_slice($pushed->getArrayCopy(), $firstBatchSize))
+            ->pluck('workflow_run_id');
+        $this->assertSame($firstBatchSize, WorkflowRunSummary::query()->whereIn('id', $firstBatchRuns)
+            ->where('liveness_state', 'workflow_task_ready')
+            ->count());
+        $this->assertSame(
+            $dispatch['children'] - $firstBatchSize,
+            WorkflowRunSummary::query()->whereIn('id', $secondBatchRuns)
+                ->where('liveness_state', 'repair_needed')
+                ->count()
+        );
     }
 
     public function testChildClosureCorpusReadsEachSiblingRunABoundedNumberOfTimes(): void
