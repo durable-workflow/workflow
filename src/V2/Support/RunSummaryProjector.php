@@ -176,6 +176,7 @@ final class RunSummaryProjector
             && in_array($activityResolution?->event_type, [
                 HistoryEventType::ActivityStarted,
                 HistoryEventType::ActivityCompleted,
+                HistoryEventType::ActivityRetryScheduled,
                 HistoryEventType::ActivityFailed,
             ], true)
             && $previousSummary instanceof WorkflowRunSummary
@@ -719,7 +720,11 @@ final class RunSummaryProjector
             || count($path) !== 1 || ! str_starts_with($path[0]['parallel_group_id'], 'parallel-activities:')
             || ! in_array(
                 $event->event_type,
-                [HistoryEventType::ActivityStarted, HistoryEventType::ActivityCompleted],
+                [
+                    HistoryEventType::ActivityStarted,
+                    HistoryEventType::ActivityCompleted,
+                    HistoryEventType::ActivityRetryScheduled,
+                ],
                 true
             )
         ) {
@@ -773,7 +778,11 @@ final class RunSummaryProjector
     ): bool {
         if ($run->status !== RunStatus::Waiting || ! in_array(
             $event->event_type,
-            [HistoryEventType::ActivityStarted, HistoryEventType::ActivityCompleted],
+            [
+                HistoryEventType::ActivityStarted,
+                HistoryEventType::ActivityCompleted,
+                HistoryEventType::ActivityRetryScheduled,
+            ],
             true,
         )) {
             return false;

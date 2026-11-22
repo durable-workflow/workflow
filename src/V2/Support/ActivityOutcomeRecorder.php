@@ -412,7 +412,7 @@ final class ActivityOutcomeRecorder
                     'attempt_count' => $attemptCount,
                 ]);
 
-                WorkflowHistoryEvent::record($run, HistoryEventType::ActivityRetryScheduled, array_merge([
+                $retryEvent = WorkflowHistoryEvent::record($run, HistoryEventType::ActivityRetryScheduled, array_merge([
                     'activity_execution_id' => $lockedExecution->id,
                     'activity_attempt_id' => $attemptId,
                     'activity_class' => $lockedExecution->activity_class,
@@ -446,7 +446,7 @@ final class ActivityOutcomeRecorder
                     ),
                 ], $parallelMetadata ?? []), $task);
 
-                self::projectRun($run);
+                self::projectRun($run, $retryEvent);
 
                 return self::recorded($retryTask);
             } else {

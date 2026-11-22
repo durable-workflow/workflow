@@ -137,6 +137,47 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
         }
     }
 
+    public function testParallelActivityRetryProjectsOnlyItsMemberAndMatchesFullProjection(): void
+    {
+        Queue::fake();
+        config()
+            ->set('workflows.v2.task_dispatch_mode', 'poll');
+        $this->freezeTime();
+        $workflow = WorkflowStub::make(TestFanOutPayloadActivityWorkflow::class, 'bounded-parallel-retry');
+        $workflow->start(4, 8);
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $workflowTask = $run->tasks()
+            ->where('task_type', TaskType::Workflow->value)->sole();
+        $this->app->call([new RunWorkflowTask($workflowTask->id), 'handle']);
+        $task = $run->tasks()
+            ->where('task_type', TaskType::Activity->value)->firstOrFail();
+        $claim = app(ActivityTaskBridge::class)->claim($task->id, 'retrying-member');
+        $this->assertNotNull($claim);
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        try {
+            $outcome = ActivityOutcomeRecorder::record(
+                taskId: $task->id,
+                attemptId: $claim['activity_attempt_id'],
+                attemptCount: 1,
+                result: null,
+                throwable: new RuntimeException('retry this member'),
+                maxAttempts: 2,
+                backoffSeconds: 1,
+            );
+            $queries = DB::getQueryLog();
+        } finally {
+            DB::disableQueryLog();
+            DB::flushQueryLog();
+        }
+        $this->assertTrue($outcome['recorded']);
+        $this->assertSame(TaskType::Activity, $outcome['next_task']?->task_type);
+        $this->assertNoWholeHistoryRead($queries, $run->id);
+        $this->assertNoWholeTaskRead($queries, $run->id);
+        $this->assertActivityMemberProjectionMatchesFullProjection($run);
+    }
+
     public function testIndexedTaskSelectionKeepsLeaseAndRoundedTimestampOrder(): void
     {
         Queue::fake();
