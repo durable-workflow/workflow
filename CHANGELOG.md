@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 2.35.6 - 2026-11-22
+
+- Parent-close policies load child links, runs and instances in pages. In
+  the 1,000-child service test, SQLite and MySQL recorded every termination
+  within the 128 MiB PHP CLI limit. (#1203)
+
 ## 2.35.5 - 2026-11-22
 
 - Service worker completions count pending children once per batch and reuse
