@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 2.35.2 - 2026-11-22
+
+Run the package's normal Laravel migrations before starting the updated
+workers. The migrations add lookups derived from durable history. Runs already
+in flight continue through the existing full projection when their recorded
+history predates those lookups.
+
+- Within a parallel group, an activity start or outcome and an intermediate
+  child closure refresh the affected summary, wait, and timeline rows with
+  work bounded per member. The group barrier refreshes the full projection.
+  (#1240)
+
 ## 2.35.1 - 2026-11-21
 
 Run the package's normal Laravel migrations when upgrading. This release adds
