@@ -80,7 +80,7 @@ final class ParentClosePolicyEnforcer
             'is_string',
         ));
 
-        foreach (self::targets($run, $limit !== null) as $target) {
+        foreach (self::targets($run) as $target) {
             $policy = ParentClosePolicy::tryFrom($target['policy']);
 
             if ($policy === null || $policy === ParentClosePolicy::Abandon) {
@@ -208,7 +208,7 @@ final class ParentClosePolicyEnforcer
      * continue-as-new chain handed to it (#868). A handed-over child keeps its
      * original link, sequence and policy; this run only applies the policy.
      *
-     * @return list<array{
+     * @return iterable<array{
      *     link_id: string,
      *     sequence: int|null,
      *     policy: string,
@@ -217,22 +217,20 @@ final class ParentClosePolicyEnforcer
      *     origin_run_id: string
      * }>
      */
-    private static function targets(WorkflowRun $run, bool $ordered = false): array
+    private static function targets(WorkflowRun $run): iterable
     {
-        $targets = [];
-
+        // Keep only one page of child runs and their instances in memory.
         $childLinks = WorkflowLink::query()
             ->where('parent_workflow_run_id', $run->id)
             ->where('link_type', 'child_workflow')
             ->where('parent_close_policy', '!=', ParentClosePolicy::Abandon->value)
             ->with('childRun.instance')
-            ->when($ordered, static fn ($query) => $query->orderBy('id'))
-            ->get();
+            ->lazyById(100);
 
         foreach ($childLinks as $link) {
             $childRun = $link->childRun;
 
-            $targets[] = [
+            yield [
                 'link_id' => (string) $link->id,
                 'sequence' => is_int($link->sequence) ? $link->sequence : null,
                 'policy' => (string) $link->parent_close_policy,
@@ -251,7 +249,7 @@ final class ParentClosePolicyEnforcer
             $childRun = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                 ->find($supervision->child_workflow_run_id);
 
-            $targets[] = [
+            yield [
                 'link_id' => (string) $supervision->workflow_link_id,
                 'sequence' => is_int($supervision->sequence) ? $supervision->sequence : null,
                 'policy' => (string) $supervision->parent_close_policy,
@@ -263,8 +261,6 @@ final class ParentClosePolicyEnforcer
                 'origin_run_id' => (string) $supervision->parent_workflow_run_id,
             ];
         }
-
-        return $targets;
     }
 
     /**

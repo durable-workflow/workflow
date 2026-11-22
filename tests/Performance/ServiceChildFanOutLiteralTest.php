@@ -32,11 +32,19 @@ final class ServiceChildFanOutLiteralTest extends TestCase
         Queue::fake();
         $bridge = $this->app->make(WorkflowTaskBridge::class);
         $pendingCountQueries = 0;
-        DB::listen(static function (QueryExecuted $query) use (&$pendingCountQueries): void {
+        $largestParentClosePage = 0;
+        DB::listen(static function (QueryExecuted $query) use (&$pendingCountQueries, &$largestParentClosePage): void {
             $sql = strtolower($query->sql);
             if (str_starts_with($sql, 'select count(') && str_contains($sql, 'workflow_links')
                 && str_contains($sql, 'exists (') && str_contains($sql, 'not in')) {
                 ++$pendingCountQueries;
+            }
+            if (str_starts_with($sql, 'select * from ') && str_contains($sql, 'workflow_links')
+                && str_contains($sql, 'parent_close_policy')) {
+                $pageSize = preg_match('/\blimit (\d+)\b/', $sql, $matches) === 1
+                    ? (int) $matches[1]
+                    : PHP_INT_MAX;
+                $largestParentClosePage = max($largestParentClosePage, $pageSize);
             }
         });
 
@@ -45,6 +53,8 @@ final class ServiceChildFanOutLiteralTest extends TestCase
         $literal = $this->measure($bridge, 1_000);
         fwrite(STDOUT, json_encode(compact('reference', 'literal', 'pendingCountQueries'), JSON_THROW_ON_ERROR) . "\n");
         $this->assertSame(3, $pendingCountQueries, 'Each admission counts pending children once.');
+        $this->assertGreaterThan(0, $largestParentClosePage);
+        $this->assertLessThanOrEqual(100, $largestParentClosePage, 'Parent close loads child links in bounded pages.');
 
         foreach (['start', 'close'] as $phase) {
             $this->assertLessThan(
