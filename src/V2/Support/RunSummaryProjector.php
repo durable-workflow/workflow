@@ -701,19 +701,9 @@ final class RunSummaryProjector
         $changed = self::nonEmptyString($event->payload['activity_execution_id'] ?? null);
         $sequence = self::intValue($event->payload['sequence'] ?? null);
         $selected = self::nonEmptyString($previous->resume_source_id);
-        // A ready or leased activity can need repair while its wait is still current.
-        $repairableActivityTask = $previous->liveness_state === 'repair_needed'
-            && $previous->next_task_type === TaskType::Activity->value
-            && in_array($previous->next_task_status, [TaskStatus::Ready->value, TaskStatus::Leased->value], true)
-            && self::nonEmptyString($previous->next_task_id) !== null;
         if (
-            $run->status !== RunStatus::Waiting || $previous->status !== RunStatus::Waiting->value
-            || $previous->wait_kind !== 'activity' || $previous->resume_source_kind !== 'activity_execution'
-            || (! $repairableActivityTask
-                && ! in_array($previous->liveness_state, ['activity_task_ready', 'activity_task_leased'], true))
-            || $previous->task_problem || ImportedLineageReferences::imported($run)
-            || $changed === null || $sequence === null || $selected === null
-            || $previous->open_wait_id !== 'activity:' . $selected
+            $changed === null || $sequence === null || $selected === null
+            || ! self::hasCurrentActivityWait($run, $previous, $selected)
             || count($path) !== 1 || ! str_starts_with($path[0]['parallel_group_id'], 'parallel-activities:')
             || ! in_array(
                 $event->event_type,
@@ -728,22 +718,73 @@ final class RunSummaryProjector
             return null;
         }
 
-        $movesSelection = $selected === $changed && $event->event_type === HistoryEventType::ActivityCompleted;
         $selectedSequence = null;
-        if ($movesSelection) {
+        if ($selected === $changed && $event->event_type === HistoryEventType::ActivityCompleted) {
             $lastSequence = $path[0]['parallel_group_base_sequence'] + $path[0]['parallel_group_size'] - 1;
-            $next = OpenActivityHistoryIndex::nextInGroup($run, $sequence, $lastSequence);
+            $next = self::nextParallelActivityWait($run, $sequence, $lastSequence);
             if ($next === null) {
-                return null;
-            }
-            $wait = RunWaitProjector::openActivityAfterSequence($run, $sequence, $lastSequence);
-            if ($wait?->resume_source_id !== $next['id'] || $wait?->sequence !== $next['sequence']) {
                 return null;
             }
             $selected = $next['id'];
             $selectedSequence = $next['sequence'];
         }
 
+        return self::indexedParallelActivityMembers(
+            $run,
+            $path[0]['parallel_group_id'],
+            $changed,
+            $sequence,
+            $selected,
+            $selectedSequence,
+        );
+    }
+
+    private static function hasCurrentActivityWait(
+        WorkflowRun $run,
+        WorkflowRunSummary $previous,
+        string $selected,
+    ): bool {
+        if ($run->status !== RunStatus::Waiting || $previous->status !== RunStatus::Waiting->value
+            || $previous->wait_kind !== 'activity' || $previous->resume_source_kind !== 'activity_execution'
+            || $previous->open_wait_id !== 'activity:' . $selected
+            || $previous->task_problem || ImportedLineageReferences::imported($run)) {
+            return false;
+        }
+
+        // A ready or leased activity can need repair while its wait is still current.
+        return in_array($previous->liveness_state, ['activity_task_ready', 'activity_task_leased'], true)
+            || ($previous->liveness_state === 'repair_needed'
+                && $previous->next_task_type === TaskType::Activity->value
+                && in_array($previous->next_task_status, [TaskStatus::Ready->value, TaskStatus::Leased->value], true)
+                && self::nonEmptyString($previous->next_task_id) !== null);
+    }
+
+    /**
+     * @return array{id: string, sequence: int}|null
+     */
+    private static function nextParallelActivityWait(WorkflowRun $run, int $sequence, int $lastSequence): ?array
+    {
+        $next = OpenActivityHistoryIndex::nextInGroup($run, $sequence, $lastSequence);
+        if ($next === null) {
+            return null;
+        }
+
+        $wait = RunWaitProjector::openActivityAfterSequence($run, $sequence, $lastSequence);
+
+        return $wait?->resume_source_id === $next['id'] && $wait?->sequence === $next['sequence'] ? $next : null;
+    }
+
+    /**
+     * @return list<array<string, mixed>>|null
+     */
+    private static function indexedParallelActivityMembers(
+        WorkflowRun $run,
+        string $groupId,
+        string $changed,
+        int $sequence,
+        string $selected,
+        ?int $selectedSequence,
+    ): ?array {
         $activityIds = $selected === $changed ? [$changed] : [$selected, $changed];
         $activities = RunActivityView::indexedActivitiesForWaits($run, $activityIds);
         if ($activities === null || count($activities) !== count($activityIds)) {
@@ -751,60 +792,21 @@ final class RunSummaryProjector
         }
 
         foreach ($activities as $activity) {
-            if (($activity['parallel_group_id'] ?? null) !== $path[0]['parallel_group_id']
+            $id = $activity['id'] ?? null;
+            if (($activity['parallel_group_id'] ?? null) !== $groupId
                 || ($activity['history_authority'] ?? null) !== RunActivityView::HISTORY_AUTHORITY_TYPED
-                || ! in_array($activity['id'] ?? null, $activityIds, true)) {
-                return null;
-            }
-            if (($activity['id'] ?? null) === $changed && ($activity['sequence'] ?? null) !== $sequence) {
+                || ! in_array($id, $activityIds, true)
+                || ($id === $changed && ($activity['sequence'] ?? null) !== $sequence)) {
                 return null;
             }
         }
 
         $open = collect($activities)
             ->first(static fn (array $activity): bool => self::isAuthoritativeOpenActivity($activity));
-        if (($open['id'] ?? null) !== $selected
-            || ($movesSelection && ($open['sequence'] ?? null) !== $selectedSequence)) {
-            return null;
-        }
-
-        return $activities;
-    }
-
-    /**
-     * @param list<array<string, mixed>> $activities
-     */
-    private static function projectParallelActivityWait(
-        WorkflowRun $run,
-        WorkflowHistoryEvent $event,
-        array $activities,
-    ): bool {
-        if ($run->status !== RunStatus::Waiting || ! in_array(
-            $event->event_type,
-            [
-                HistoryEventType::ActivityStarted,
-                HistoryEventType::ActivityCompleted,
-                HistoryEventType::ActivityRetryScheduled,
-            ],
-            true,
-        )) {
-            return false;
-        }
-
-        $path = ParallelChildGroup::metadataPathFromPayload($event->payload);
-        $executionId = self::nonEmptyString($event->payload['activity_execution_id'] ?? null);
-        if ($executionId === null || count($path) !== 1
-            || ! str_starts_with($path[0]['parallel_group_id'], 'parallel-activities:')) {
-            return false;
-        }
-
-        foreach ($activities as $activity) {
-            if (($activity['id'] ?? null) === $executionId) {
-                return RunWaitProjector::projectActivityWait($run, $executionId, $activity);
-            }
-        }
-
-        return false;
+        return ($open['id'] ?? null) === $selected
+            && ($selectedSequence === null || ($open['sequence'] ?? null) === $selectedSequence)
+            ? $activities
+            : null;
     }
 
     /**
@@ -851,23 +853,22 @@ final class RunSummaryProjector
             return null;
         }
 
-        $open = collect($activities)
-            ->first(static fn (array $activity): bool => self::isAuthoritativeOpenActivity($activity));
+        $members = collect($activities);
+        $open = $members->first(static fn (array $activity): bool => self::isAuthoritativeOpenActivity($activity));
         $executionId = self::nonEmptyString($event->payload['activity_execution_id'] ?? null);
-        if ($open === null || $executionId === null) {
-            return null;
-        }
-
+        $changedActivity = $members->first(
+            static fn (array $activity): bool => ($activity['id'] ?? null) === $executionId
+        );
         $nextTask = $run->relationLoaded('tasks') ? self::nextOpenTask($run) : RunSummaryTaskSelection::next($run);
-        if ($nextTask === null) {
-            return null;
-        }
         $workflowTasks = $run->relationLoaded('tasks')
             ? $run->tasks
             : $run->tasks()
                 ->where('task_type', TaskType::Workflow->value)->get();
-        if ($workflowTasks->contains(static fn (WorkflowTask $task): bool => self::workflowTaskProblemEvidence($task))
-            || ! self::projectParallelActivityWait($run, $event, $activities)) {
+        if ($open === null || $executionId === null || $changedActivity === null || $nextTask === null
+            || $workflowTasks->contains(
+                static fn (WorkflowTask $task): bool => self::workflowTaskProblemEvidence($task)
+            )
+            || ! RunWaitProjector::projectActivityWait($run, $executionId, $changedActivity)) {
             return null;
         }
 
