@@ -711,6 +711,14 @@ final class ParallelChildGroup
             return false;
         }
 
+        if ($successful && $lockHistoryForUpdate && $closedKind === 'child' && count($metadataPath) === 1
+            && self::groupMode($metadataPath[0]) === 'all'
+            && str_starts_with($metadataPath[0]['parallel_group_id'], 'parallel-children:')
+            && WorkflowHistoryEvent::stepIndexCovers($parentRun)
+            && self::hasOpenChildMember($parentRun, $metadataPath[0])) {
+            return false;
+        }
+
         $eligible = true;
         $nestedMember = false;
 
@@ -769,6 +777,57 @@ final class ParallelChildGroup
         }
 
         return false;
+    }
+
+    /**
+     * @param array{parallel_group_id: string, parallel_group_base_sequence: int,
+     *     parallel_group_size: int, parallel_group_index: int} $group
+     */
+    private static function hasOpenChildMember(WorkflowRun $run, array $group): bool
+    {
+        $first = $group['parallel_group_base_sequence'];
+        $wait = RunWaitProjector::openSiblingChildWait(
+            $run,
+            $group['parallel_group_id'],
+            $first,
+            $first + $group['parallel_group_size'] - 1,
+            $first + $group['parallel_group_index'],
+        );
+        if ($wait === null || $wait->sequence === null || ! is_string($wait->resume_source_id)) {
+            return false;
+        }
+
+        // The wait locates one candidate. The current history and child run
+        // decide whether it still keeps the group open.
+        $events = WorkflowHistoryEvent::lockedForStep($run, $wait->sequence);
+        $childEventTypes = [
+            HistoryEventType::ChildWorkflowScheduled,
+            HistoryEventType::ChildRunStarted,
+            ...ChildRunHistory::resolutionEventTypes(),
+        ];
+        if ($events === null || $events->contains(static fn (WorkflowHistoryEvent $event): bool =>
+            in_array($event->event_type, self::PARALLEL_MEMBER_EVENT_TYPES, true)
+            && ! in_array($event->event_type, $childEventTypes, true))) {
+            return false;
+        }
+
+        $member = clone $run;
+        $member->setRelation('historyEvents', $events);
+        $scheduled = ChildRunHistory::scheduledEventForSequence($member, $wait->sequence);
+        $started = ChildRunHistory::startedEventForSequence($member, $wait->sequence);
+        $path = self::metadataPathFromPayload($scheduled?->payload ?? []);
+        if (count($path) !== 1 || $path[0]['parallel_group_id'] !== $group['parallel_group_id']
+            || ! $started instanceof WorkflowHistoryEvent
+            || ($started->payload['child_workflow_run_id'] ?? null) !== $wait->resume_source_id
+            || ChildRunHistory::resolutionEventForSequence($member, $wait->sequence) !== null) {
+            return false;
+        }
+
+        $child = ImportedLineageReferences::resolve($run, $wait->resume_source_id);
+        $status = ChildRunHistory::resolvedStatus(null, $child);
+
+        return $child !== null && $child->workflow_instance_id === ($started->payload['child_workflow_instance_id'] ?? null)
+            && $status instanceof RunStatus && ! $status->isTerminal();
     }
 
     /**

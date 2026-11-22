@@ -258,6 +258,26 @@ final class RunWaitProjector
         return self::isOpenChildGroupWait($next, $path[0]['parallel_group_id']) ? $next : null;
     }
 
+    public static function openSiblingChildWait(
+        WorkflowRun $run,
+        string $groupId,
+        int $first,
+        int $last,
+        int $closed,
+    ): ?WorkflowRunWait {
+        $waitModel = self::waitModel();
+        /** @var WorkflowRunWait|null $wait */
+        $wait = $waitModel::query()->where('workflow_run_id', $run->id)
+            ->where('kind', 'child')
+            ->where('status', 'open')
+            ->whereBetween('sequence', [$first, $last])
+            ->where('sequence', '<>', $closed)
+            ->orderBy('sequence')
+            ->first();
+
+        return self::isOpenChildGroupWait($wait, $groupId) ? $wait : null;
+    }
+
     /**
      * @param list<array<string, mixed>>|null $waits
      * @return list<WorkflowRunWait>

@@ -58,7 +58,11 @@ final class V2EmbeddedParallelChildConcurrencyTest extends TestCase
                     ->where('related_workflow_run_id', $childIds[$index])
                     ->delete());
             } elseif ($closed === 3) {
-                $historyHead = WorkflowRun::query()->findOrFail($parentId)->last_history_sequence;
+                $parent = WorkflowRun::query()->findOrFail($parentId);
+                $historyHead = $parent->last_history_sequence;
+                $parent->forceFill([
+                    'step_history_index_through' => $historyHead - 1,
+                ])->save();
                 $this->assertSame(1, WorkflowTimelineEntry::query()
                     ->where('workflow_run_id', $parentId)
                     ->where('sequence', $historyHead)
@@ -72,6 +76,23 @@ final class V2EmbeddedParallelChildConcurrencyTest extends TestCase
                 DB::disableQueryLog();
                 DB::flushQueryLog();
             }
+            $indexedParentReads = collect($queries)
+                ->filter(static fn (array $query): bool =>
+                                str_starts_with(strtolower($query['query']), 'select')
+                                && str_contains($query['query'], 'indexed_step_sequence')
+                                && in_array($parentId, $query['bindings'], true));
+            $this->assertCount($closed < 3 ? 2 : 0, $indexedParentReads);
+            if ($closed < 2) {
+                $readWholeParentHistory = collect($queries)
+                    ->contains(static fn (array $query): bool =>
+                                        str_starts_with(strtolower($query['query']), 'select *')
+                                        && str_contains($query['query'], 'workflow_history_events')
+                                        && ! str_contains($query['query'], 'indexed_step_sequence')
+                                        && ! str_contains($query['query'], 'event_type')
+                                        && in_array($parentId, $query['bindings'], true));
+                $this->assertFalse($readWholeParentHistory);
+            }
+
             $selectedProjectedWait = collect($queries)
                 ->contains(static fn (array $query): bool =>
                                 str_starts_with(strtolower($query['query']), 'select')

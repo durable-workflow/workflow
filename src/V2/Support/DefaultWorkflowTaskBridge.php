@@ -5675,22 +5675,22 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             $parallelMetadataPath = [];
 
             if ($sequence !== null) {
-                ChildClosureParentState::hydrate($parentRun);
-
                 if ($this->startChildRetryIfAvailable($parentRun, $sequence, $childRun) !== null) {
                     continue;
                 }
 
                 try {
-                    WorkflowStepHistory::assertCompatible(
+                    [$resolutionEvent, $parallelMetadataPath] = ChildClosureParentState::recordResolution(
                         $parentRun,
                         $sequence,
-                        WorkflowStepHistory::CHILD_WORKFLOW,
-                    );
-                    WorkflowStepHistory::assertTypedHistoryRecorded(
-                        $parentRun,
-                        $sequence,
-                        WorkflowStepHistory::CHILD_WORKFLOW,
+                        $childRun,
+                        self::historyProjectionRole() instanceof DefaultHistoryProjectionRole,
+                        fn (): WorkflowHistoryEvent => $this->recordChildResolution(
+                            $parentRun,
+                            null,
+                            $sequence,
+                            $childRun
+                        ),
                     );
                 } catch (HistoryEventShapeMismatchException) {
                     self::projectRun($parentRun, self::PROJECTION_RUN_RELATIONS_WITH_CHILDREN);
@@ -5698,9 +5698,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                     continue;
                 }
 
-                $resolutionEvent = $this->recordChildResolution($parentRun, null, $sequence, $childRun);
                 $parentTaskPayload = WorkflowTaskPayload::forChildResolution($resolutionEvent);
-                $parallelMetadataPath = ChildRunHistory::parallelGroupPathForSequence($parentRun, $sequence);
                 $childStatus = ChildRunHistory::resolvedStatus($resolutionEvent, $childRun);
 
                 if (
