@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Carbon;
 use Throwable;
 use Workflow\Serializers\Serializer;
@@ -75,6 +76,39 @@ final class RunActivityView
         bool $decodePayloads = true,
     ): array {
         return self::activityStates($run, $useDurableHistory, $decodePayloads);
+    }
+
+    /**
+     * @param list<string> $activityIds
+     * @return list<array<string, mixed>>|null
+     */
+    public static function indexedActivitiesForWaits(WorkflowRun $run, array $activityIds): ?array
+    {
+        $events = new Collection();
+        foreach ($activityIds as $activityId) {
+            $history = WorkflowHistoryEvent::indexedForActivity($run, $activityId);
+            if ($history === null || $history->where(
+                'event_type',
+                HistoryEventType::ActivityScheduled
+            )->count() !== 1) {
+                return null;
+            }
+            $events = $events->merge($history);
+        }
+
+        $executions = $run->activityExecutions()
+            ->whereKey($activityIds)
+            ->get();
+        if ($executions->count() !== count($activityIds)) {
+            return null;
+        }
+
+        // Keep the caller's complete history and execution relations intact.
+        $projection = clone $run;
+        $projection->setRelation('historyEvents', $events);
+        $projection->setRelation('activityExecutions', $executions);
+
+        return self::activitiesForRun($projection, decodePayloads: false);
     }
 
     /**

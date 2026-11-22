@@ -165,6 +165,20 @@ final class RunWaitProjector
         return true;
     }
 
+    public static function openActivityAtSequence(WorkflowRun $run, int $sequence): ?string
+    {
+        $waitModel = self::waitModel();
+        /** @var WorkflowRunWait|null $wait */
+        $wait = $waitModel::query()->where('workflow_run_id', $run->id)
+            ->where('kind', 'activity')
+            ->where('status', 'open')
+            ->where('sequence', $sequence)
+            ->where('history_authority', RunActivityView::HISTORY_AUTHORITY_TYPED)
+            ->first();
+
+        return $wait?->resume_source_id;
+    }
+
     public static function projectCompletedChildWait(WorkflowRun $run, WorkflowHistoryEvent $event): bool
     {
         $sequence = self::intValue($event->payload['sequence'] ?? null);

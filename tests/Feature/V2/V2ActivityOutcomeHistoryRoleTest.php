@@ -101,10 +101,10 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
             $this->assertActivityMemberProjectionMatchesFullProjection($run);
         }
 
-        foreach (array_reverse($attempts) as $index => $attempt) {
+        foreach ([1, 0, 3, 2] as $index => $member) {
             $this->travel(1)
                 ->seconds();
-            $outcome = $bridge->complete($attempt, 8);
+            $outcome = $bridge->complete($attempts[$member], 8);
             $this->assertTrue($outcome['recorded']);
             $this->assertSame($index === 3, $outcome['next_task_id'] !== null);
             $this->assertActivityMemberProjectionMatchesFullProjection($run);
@@ -158,17 +158,20 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
         $waitReads = array_values(array_filter($queries, static fn (array $query): bool =>
             str_starts_with($query['query'], 'select ')
             && str_contains($query['query'], 'workflow_run_waits')));
-        $this->assertCount(1, $waitReads);
+        $this->assertCount(2, $waitReads);
+        $this->assertContains($sibling->sequence, $waitReads[0]['bindings']);
         $this->assertContains(
             hash('sha256', $run->id . '|activity:' . $claim['activity_execution_id']),
-            $waitReads[0]['bindings'],
+            $waitReads[1]['bindings'],
         );
         $historyReads = array_values(array_filter($queries, static fn (array $query): bool =>
             str_starts_with($query['query'], 'select ')
             && str_contains($query['query'], 'indexed_activity_execution_id')));
-        $this->assertCount(2, $historyReads);
+        $this->assertCount(4, $historyReads);
         $this->assertContains($sibling->id, $historyReads[0]['bindings']);
-        $this->assertContains($claim['activity_execution_id'], $historyReads[1]['bindings']);
+        $this->assertContains($sibling->id, $historyReads[1]['bindings']);
+        $this->assertContains($claim['activity_execution_id'], $historyReads[2]['bindings']);
+        $this->assertContains($claim['activity_execution_id'], $historyReads[3]['bindings']);
         foreach ($queries as $query) {
             if (str_starts_with($query['query'], 'select ')
                 && str_contains($query['query'], 'workflow_run_timeline_entries')) {

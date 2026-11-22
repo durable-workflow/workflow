@@ -183,7 +183,9 @@ final class RunSummaryProjector
             && (int) $previousSummary->history_event_count + 1 === (int) $activityResolution->sequence
             && (int) $activityResolution->sequence === (int) $run->last_history_sequence;
 
-        $run->loadMissing(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']);
+        $scopedActivities = $scopeActivityTimeline
+            ? self::parallelActivityProjection($run, $activityResolution, $previousSummary) : null;
+        $run->loadMissing(['instance', 'tasks', 'timers', 'failures', 'historyEvents']);
         $run->loadMissing([
             'childLinks.childRun.summary',
             'childLinks.childRun.instance.currentRun',
@@ -195,7 +197,7 @@ final class RunSummaryProjector
             : CurrentRunResolver::forInstance($run->instance);
 
         $isTerminal = $run->status->isTerminal();
-        $activities = RunActivityView::activitiesForRun($run, decodePayloads: false);
+        $activities = $scopedActivities ?? RunActivityView::activitiesForRun($run, decodePayloads: false);
         $timers = RunTimerView::timersForRun($run);
 
         $openActivity = $isTerminal
@@ -575,7 +577,11 @@ final class RunSummaryProjector
                 && $previousSummary->next_task_id === null && $selectedNextTask === null
                 && RunWaitProjector::projectCompletedChildWait($run, $childEvent));
         if (! $scopedWait) {
-            RunWaitProjector::project($run, RunWaitView::forRun($run, $activities, $timers), collectRows: false);
+            RunWaitProjector::project(
+                $run,
+                RunWaitView::forRun($run, $scopedActivities === null ? $activities : null, $timers),
+                collectRows: false,
+            );
         }
         if ($scopeChildTimeline) {
             RunTimelineProjector::projectChildResolutionEvent($run, $childEvent);
@@ -689,6 +695,72 @@ final class RunSummaryProjector
         RunTimelineProjector::projectChildResolutionEvent($run, $event);
 
         return $summary;
+    }
+
+    /**
+     * @return list<array<string, mixed>>|null
+     */
+    private static function parallelActivityProjection(
+        WorkflowRun $run,
+        WorkflowHistoryEvent $event,
+        WorkflowRunSummary $previous,
+    ): ?array {
+        $path = ParallelChildGroup::metadataPathFromPayload($event->payload);
+        $changed = self::nonEmptyString($event->payload['activity_execution_id'] ?? null);
+        $sequence = self::intValue($event->payload['sequence'] ?? null);
+        $selected = self::nonEmptyString($previous->resume_source_id);
+        if (
+            $run->status !== RunStatus::Waiting || $previous->status !== RunStatus::Waiting->value
+            || $previous->wait_kind !== 'activity' || $previous->resume_source_kind !== 'activity_execution'
+            || ! in_array($previous->liveness_state, ['activity_task_ready', 'activity_task_leased'], true)
+            || $previous->task_problem || ImportedLineageReferences::imported($run)
+            || $changed === null || $sequence === null || $selected === null
+            || $previous->open_wait_id !== 'activity:' . $selected
+            || count($path) !== 1 || ! str_starts_with($path[0]['parallel_group_id'], 'parallel-activities:')
+            || ! in_array(
+                $event->event_type,
+                [HistoryEventType::ActivityStarted, HistoryEventType::ActivityCompleted],
+                true
+            )
+        ) {
+            return null;
+        }
+
+        $movesSelection = $selected === $changed && $event->event_type === HistoryEventType::ActivityCompleted;
+        if ($movesSelection) {
+            // Only advance to the immediately following authored member. A hole
+            // in the open waits needs authoritative selection from full history.
+            $selected = RunWaitProjector::openActivityAtSequence($run, $sequence + 1);
+            if ($selected === null) {
+                return null;
+            }
+        }
+
+        $activityIds = $selected === $changed ? [$changed] : [$selected, $changed];
+        $activities = RunActivityView::indexedActivitiesForWaits($run, $activityIds);
+        if ($activities === null || count($activities) !== count($activityIds)) {
+            return null;
+        }
+
+        foreach ($activities as $activity) {
+            if (($activity['parallel_group_id'] ?? null) !== $path[0]['parallel_group_id']
+                || ($activity['history_authority'] ?? null) !== RunActivityView::HISTORY_AUTHORITY_TYPED
+                || ! in_array($activity['id'] ?? null, $activityIds, true)) {
+                return null;
+            }
+            if (($activity['id'] ?? null) === $changed && ($activity['sequence'] ?? null) !== $sequence) {
+                return null;
+            }
+        }
+
+        $open = collect($activities)
+            ->first(static fn (array $activity): bool => self::isAuthoritativeOpenActivity($activity));
+        if (($open['id'] ?? null) !== $selected
+            || ($movesSelection && ($open['sequence'] ?? null) !== $sequence + 1)) {
+            return null;
+        }
+
+        return $activities;
     }
 
     /**
