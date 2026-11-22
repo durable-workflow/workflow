@@ -32,9 +32,6 @@ jobs:
     name: Literal 1,000-member fan-out (${{ matrix.kind }}, ${{ matrix.database }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # Starting 1,000 children takes 33-65 s on hosted MySQL runners, around
-    # the bound (#1238); report it without failing the build until then.
-    continue-on-error: ${{ matrix.kind == 'children' }}
     strategy:
       fail-fast: false
       matrix:
