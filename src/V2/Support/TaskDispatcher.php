@@ -21,6 +21,9 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\WorkflowStub;
 
+/**
+ * @phpstan-type DeferredPublish array{task_id: string, run_id: string, queue_timer_wakeup: bool, bounded: bool}
+ */
 final class TaskDispatcher
 {
     /**
@@ -34,7 +37,7 @@ final class TaskDispatcher
      * Publishes and post-commit writes registered inside the active coalescing
      * scope, in commit order.
      *
-     * @var list<array{task_id: string, queue_timer_wakeup: bool, bounded: bool}|\Closure(): void>|null
+     * @var list<DeferredPublish|\Closure(): void>|null
      */
     private static ?array $deferredPublishes = null;
 
@@ -96,9 +99,10 @@ final class TaskDispatcher
         $connection = $task->getConnection();
         if ($connection->transactionLevel() > 0) {
             $taskId = (string) $task->id;
+            $runId = (string) $task->workflow_run_id;
             AfterCommit::on(
                 $connection,
-                static fn () => self::publishOrDefer($taskId, $queueTimerWakeup, $boundedWorkflowTaskProjection)
+                static fn () => self::publishOrDefer($taskId, $runId, $queueTimerWakeup, $boundedWorkflowTaskProjection)
             );
 
             return;
@@ -170,12 +174,14 @@ final class TaskDispatcher
 
     private static function publishOrDefer(
         string $taskId,
+        string $runId,
         bool $queueTimerWakeup,
         bool $boundedWorkflowTaskProjection,
     ): void {
         if (self::$deferredPublishes !== null && ! WorkflowStub::faked()) {
             self::$deferredPublishes[] = [
                 'task_id' => $taskId,
+                'run_id' => $runId,
                 'queue_timer_wakeup' => $queueTimerWakeup,
                 'bounded' => $boundedWorkflowTaskProjection,
             ];
@@ -194,15 +200,7 @@ final class TaskDispatcher
         self::$flushingPublishes = true;
 
         try {
-            $admissionTaskId = null;
-            foreach ($deferred as $item) {
-                if (is_array($item)) {
-                    $admissionTaskId = $item['task_id'];
-
-                    break;
-                }
-            }
-
+            [$admissionTaskId, $lastWrite, $lastPublishForRun] = self::publishOrder($deferred);
             if ($admissionTaskId === null) {
                 // Writes alone keep their own transactions.
                 foreach ($deferred as $write) {
@@ -211,33 +209,7 @@ final class TaskDispatcher
                     }
                 }
             } else {
-                foreach (array_chunk($deferred, self::COALESCED_BATCH_SIZE) as $batch) {
-                    // Record the batch's writes and dispatch metadata in one
-                    // transaction, then push its jobs only after it commits,
-                    // so a job never runs ahead of the rows it reads.
-                    [$pushes, $batchFailure] = self::inBatchTransaction(
-                        $admissionTaskId,
-                        array_map(
-                            static fn (array|\Closure $item): \Closure => $item instanceof \Closure
-                                ? static function () use ($item): ?array {
-                                    $item();
-
-                                    return null;
-                                }
-                                : static fn (): ?array => self::preparePublish(
-                                    $item['task_id'],
-                                    $item['queue_timer_wakeup'],
-                                    $item['bounded'],
-                                ),
-                            $batch,
-                        ),
-                    );
-                    $failure ??= $batchFailure;
-
-                    foreach ($pushes as $push) {
-                        $failure = self::pushPrepared($push) ?? $failure;
-                    }
-                }
+                $failure = self::flushPublishBatches($deferred, $admissionTaskId, $lastWrite, $lastPublishForRun);
             }
         } finally {
             self::$flushingPublishes = false;
@@ -245,6 +217,122 @@ final class TaskDispatcher
             self::$deferredRunSummaries = null;
         }
 
+        $failure = self::flushRunSummaries($summaries, $failure);
+        if ($failure !== null) {
+            throw $failure;
+        }
+    }
+
+    /**
+     * @param list<DeferredPublish|\Closure(): void> $deferred
+     * @return array{?string, int, array<string, int>}
+     */
+    private static function publishOrder(array $deferred): array
+    {
+        $firstTaskId = null;
+        $lastWrite = -1;
+        $lastPublishForRun = [];
+        foreach ($deferred as $position => $item) {
+            if ($item instanceof \Closure) {
+                $lastWrite = $position;
+            } else {
+                $firstTaskId ??= $item['task_id'];
+                $lastPublishForRun[$item['run_id']] = $position;
+            }
+        }
+
+        return [$firstTaskId, $lastWrite, $lastPublishForRun];
+    }
+
+    /**
+     * @param list<DeferredPublish|\Closure(): void> $deferred
+     * @param array<string, int> $lastPublishForRun
+     */
+    private static function flushPublishBatches(
+        array $deferred,
+        string $admissionTaskId,
+        int $lastWrite,
+        array $lastPublishForRun,
+    ): ?Throwable {
+        $failure = null;
+        $readyRuns = [];
+        $refreshDuringPublish = self::historyProjectionRole() instanceof DefaultHistoryProjectionRole;
+        foreach (array_chunk($deferred, self::COALESCED_BATCH_SIZE, true) as $batch) {
+            $failure = self::pushPublishBatch(array_values($batch), $admissionTaskId, $failure);
+            if (! $refreshDuringPublish) {
+                continue;
+            }
+
+            foreach ($batch as $position => $item) {
+                if (is_array($item) && $lastPublishForRun[$item['run_id']] === $position) {
+                    $readyRuns[] = $item['run_id'];
+                }
+            }
+            // Wait for post-commit writes and this run's final publish.
+            // Independent child runs can refresh before later batches.
+            if (array_key_last($batch) >= $lastWrite && $readyRuns !== []) {
+                $failure = self::flushRunSummaries(self::takeDeferredSummaries($readyRuns), $failure);
+                $readyRuns = [];
+            }
+        }
+
+        return $failure;
+    }
+
+    /**
+     * @param list<DeferredPublish|\Closure(): void> $batch
+     */
+    private static function pushPublishBatch(array $batch, string $admissionTaskId, ?Throwable $failure): ?Throwable
+    {
+        // Commit dispatch metadata and post-commit writes before pushing jobs.
+        [$pushes, $batchFailure] = self::inBatchTransaction(
+            $admissionTaskId,
+            array_map(
+                static fn (array|\Closure $item): \Closure => $item instanceof \Closure
+                    ? static function () use ($item): ?array {
+                        $item();
+
+                        return null;
+                    }
+                    : static fn (): ?array => self::preparePublish(
+                        $item['task_id'],
+                        $item['queue_timer_wakeup'],
+                        $item['bounded'],
+                    ),
+                $batch,
+            ),
+        );
+        $failure ??= $batchFailure;
+
+        foreach ($pushes as $push) {
+            $failure = self::pushPrepared($push) ?? $failure;
+        }
+
+        return $failure;
+    }
+
+    /**
+     * @param list<string> $runIds
+     * @return array<string, list<array{task_id: string, bounded: bool}>>
+     */
+    private static function takeDeferredSummaries(array $runIds): array
+    {
+        $summaries = [];
+        foreach ($runIds as $runId) {
+            if (isset(self::$deferredRunSummaries[$runId])) {
+                $summaries[$runId] = self::$deferredRunSummaries[$runId];
+                unset(self::$deferredRunSummaries[$runId]);
+            }
+        }
+
+        return $summaries;
+    }
+
+    /**
+     * @param array<string, list<array{task_id: string, bounded: bool}>> $summaries
+     */
+    private static function flushRunSummaries(array $summaries, ?Throwable $failure): ?Throwable
+    {
         foreach (array_chunk($summaries, self::COALESCED_BATCH_SIZE, true) as $batch) {
             $entries = array_values($batch);
             [, $batchFailure] = self::inBatchTransaction(
@@ -265,9 +353,7 @@ final class TaskDispatcher
             $failure ??= $batchFailure;
         }
 
-        if ($failure !== null) {
-            throw $failure;
-        }
+        return $failure;
     }
 
     /**

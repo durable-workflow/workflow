@@ -6,6 +6,7 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
 use Illuminate\Database\QueryException;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use PDOException;
@@ -19,8 +20,10 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowChildCall;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\TaskDispatcher;
+use Workflow\V2\Support\TaskRepairPolicy;
 use Workflow\V2\WorkflowStub;
 
 /**
@@ -198,6 +201,59 @@ final class V2CoalescedTaskPublishTest extends TestCase
             $this->assertSame(0, $push['transaction_level']);
             $this->assertSame(3, $push['child_calls']);
         }
+    }
+
+    public function testChildSummariesFinishBeforeTheNextDispatchBatch(): void
+    {
+        Queue::fake();
+        $this->freezeTime();
+        $workflow = WorkflowStub::make(TestFanOutPayloadChildWorkflow::class, 'coalesced-child-summary');
+        $workflow->start(100, 16);
+        $scheduling = $this->readyWorkflowTask($workflow->runId());
+        $pushed = new \ArrayObject();
+        $bus = $this->app->make(BusDispatcher::class);
+        $this->app->instance(BusDispatcher::class, new class($bus, $pushed) {
+            public function __construct(
+                private readonly object $bus,
+                private readonly \ArrayObject $pushed,
+            ) {
+            }
+
+            public function dispatch(mixed $job): mixed
+            {
+                if ($job instanceof RunWorkflowTask) {
+                    $this->pushed[] = $job->taskId;
+                    if (count($this->pushed) === 51) {
+                        Carbon::setTestNow(now()->addSeconds(TaskRepairPolicy::redispatchAfterSeconds() + 1));
+                    }
+                }
+
+                return $this->bus->dispatch($job);
+            }
+
+            public function __call(string $method, array $arguments): mixed
+            {
+                return $this->bus->{$method}(...$arguments);
+            }
+        });
+
+        try {
+            $this->app->call([new RunWorkflowTask($scheduling->id), 'handle']);
+        } finally {
+            $this->app->instance(BusDispatcher::class, $bus);
+        }
+
+        $this->assertCount(100, $pushed);
+        $firstBatchRuns = WorkflowTask::query()->whereIn('id', array_slice($pushed->getArrayCopy(), 0, 50))
+            ->pluck('workflow_run_id');
+        $secondBatchRuns = WorkflowTask::query()->whereIn('id', array_slice($pushed->getArrayCopy(), 50))
+            ->pluck('workflow_run_id');
+        $this->assertSame(50, WorkflowRunSummary::query()->whereIn('id', $firstBatchRuns)
+            ->where('liveness_state', 'workflow_task_ready')
+            ->count());
+        $this->assertSame(50, WorkflowRunSummary::query()->whereIn('id', $secondBatchRuns)
+            ->where('liveness_state', 'repair_needed')
+            ->count());
     }
 
     protected function startQueueWorkersAutomatically(): bool
