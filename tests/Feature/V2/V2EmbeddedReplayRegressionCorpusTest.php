@@ -1517,6 +1517,15 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             'compatibility' => $run->compatibility,
         ]);
         $this->assertTrue($bridge->claimStatus($closing->id, $worker)['claimed']);
+        $parentRunId = $run->id;
+        $pageLimits = [];
+        DB::listen(static function (QueryExecuted $query) use ($parentRunId, &$pageLimits): void {
+            $sql = strtolower($query->sql);
+            if (str_starts_with($sql, 'select * from ') && str_contains($sql, 'workflow_links')
+                && str_contains($sql, 'parent_close_policy') && in_array($parentRunId, $query->bindings, true)) {
+                $pageLimits[] = preg_match('/\blimit (\d+)\b/', $sql, $matches) === 1 ? (int) $matches[1] : null;
+            }
+        });
         $completed = $bridge->complete($closing->id, [[
             'type' => 'complete_workflow',
             'result' => Serializer::serializeWithCodec($workflow['payload_codec'], 'finished'),
@@ -1524,6 +1533,7 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         ]]);
         $this->assertTrue($completed['completed'], $completed['reason'] ?? '');
         $this->assertSame(RunStatus::Completed->value, $completed['run_status']);
+        $this->assertSame($close['child_link_page_limits'], $pageLimits);
 
         $this->assertSame([], \Workflow\V2\Support\ParentClosePolicyEnforcer::enforce($run->refresh()));
         $events = $run->historyEvents()

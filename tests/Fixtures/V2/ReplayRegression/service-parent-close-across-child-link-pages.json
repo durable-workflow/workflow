@@ -27,6 +27,7 @@
   ],
   "parent_close": {
     "policy": "terminate",
+    "child_link_page_limits": [100, 100],
     "receipts": 101,
     "receipt_type": "ParentClosePolicyApplied",
     "child_status": "terminated"
