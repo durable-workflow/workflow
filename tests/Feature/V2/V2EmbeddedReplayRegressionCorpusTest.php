@@ -1535,7 +1535,8 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertSame($close['receipts'], WorkflowRun::query()->whereKey($children)
             ->where('status', $close['child_status'])->count());
         $this->assertFalse(
-            $run->historyEvents()->where('event_type', HistoryEventType::ParentClosePolicyFailed)->exists()
+            $run->historyEvents()
+                ->where('event_type', HistoryEventType::ParentClosePolicyFailed)->exists()
         );
     }
 
