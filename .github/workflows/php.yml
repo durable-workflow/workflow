@@ -608,8 +608,12 @@ jobs:
     - name: Install dependencies
       run: composer install --prefer-dist --no-progress
 
-    - name: Prepare tracing report directory
-      run: mkdir -p build/test-results
+    - name: Prepare tracing report and fixture paths
+      run: |
+        mkdir -p build/test-results
+        if [ -d /dev/shm ] && [ -w /dev/shm ]; then
+          echo "TMPDIR=/dev/shm" >> "$GITHUB_ENV"
+        fi
 
     - name: Run optional embedded tracing controls
       run: >-
