@@ -156,7 +156,7 @@ final class ActivityOutcomeRecorder
                     ])->save();
                 }
 
-                self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+                self::projectRun($run);
 
                 return self::ignored('run_closed');
             }
@@ -180,7 +180,7 @@ final class ActivityOutcomeRecorder
 
                 ActivityCancellation::record($run, $lockedExecution, $task);
 
-                self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+                self::projectRun($run);
 
                 return self::ignored($reason);
             }
@@ -305,15 +305,12 @@ final class ActivityOutcomeRecorder
                     'lease_expires_at' => null,
                 ])->save();
 
-                self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+                self::projectRun($run);
 
                 return self::recorded(null);
             }
 
-            $parallelMetadataPath = ParallelChildGroup::metadataPathForSequence(
-                $run,
-                (int) $lockedExecution->sequence,
-            );
+            $parallelMetadataPath = ParallelChildGroup::metadataPathForActivity($run, $lockedExecution);
             $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
             $resolutionEvent = null;
 
@@ -449,7 +446,7 @@ final class ActivityOutcomeRecorder
                     ),
                 ], $parallelMetadata ?? []), $task);
 
-                self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+                self::projectRun($run);
 
                 return self::recorded($retryTask);
             } else {
@@ -542,16 +539,13 @@ final class ActivityOutcomeRecorder
                     lockHistoryForUpdate: true,
                 )
             ) {
-                self::projectRun(
-                    $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']),
-                    $resolutionEvent,
-                );
+                self::projectRun($run, $resolutionEvent);
 
                 return self::recorded(null);
             }
 
             if ($abandoned && $run->status->isTerminal()) {
-                self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+                self::projectRun($run);
                 return self::recorded(null);
             }
 
@@ -562,7 +556,7 @@ final class ActivityOutcomeRecorder
             if (StandaloneActivityHostType::isHostRun($run)) {
                 self::closeStandaloneHostRun($run, $lockedExecution, $throwable, $resolutionEvent);
 
-                self::projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+                self::projectRun($run);
 
                 return self::recorded(null);
             }
@@ -582,10 +576,7 @@ final class ActivityOutcomeRecorder
                 'compatibility' => $run->compatibility,
             ]);
 
-            self::projectRun(
-                $run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']),
-                $parallelMetadataPath === [] ? $resolutionEvent : null,
-            );
+            self::projectRun($run, $parallelMetadataPath === [] ? $resolutionEvent : null);
 
             return self::recorded($resumeTask);
         }, admissionDeadline: $admissionDeadline);
@@ -1045,17 +1036,18 @@ final class ActivityOutcomeRecorder
 
     private static function projectRun(WorkflowRun $run, ?WorkflowHistoryEvent $activityResolution = null): void
     {
+        $role = self::historyProjectionRole();
+        $relations = $role instanceof DefaultHistoryProjectionRole
+            ? ['instance', 'tasks', 'failures']
+            : ['instance', 'tasks', 'activityExecutions', 'failures'];
+        $run = $run->fresh($relations) ?? throw new \LogicException('The activity run disappeared before projection.');
         if (! $activityResolution instanceof WorkflowHistoryEvent) {
-            self::historyProjectionRole()->projectRun($run);
+            $role->projectRun($run);
 
             return;
         }
 
-        ActivityOutcomeProjectionContext::run(
-            $run,
-            $activityResolution,
-            static fn () => self::historyProjectionRole()->projectRun($run),
-        );
+        ActivityOutcomeProjectionContext::run($run, $activityResolution, static fn () => $role->projectRun($run));
     }
 
     private static function historyProjectionRole(): HistoryProjectionRole

@@ -105,7 +105,8 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
         $expiresAt = $lastTask->lease_expires_at;
         $this->assertNotSame($lastTask->id, $run->summary()->sole()->next_task_id);
         $lastTask->forceFill([
-            'lease_expires_at' => now()->subSecond(),
+            'lease_expires_at' => now()
+                ->subSecond(),
         ])->save();
         $expired = RunSummaryProjector::project($run->fresh());
         $this->assertSame($lastTask->id, $expired->next_task_id);
@@ -181,11 +182,17 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
         $historyReads = array_values(array_filter($queries, static fn (array $query): bool =>
             str_starts_with($query['query'], 'select ')
             && str_contains($query['query'], 'indexed_activity_execution_id')));
-        $this->assertCount(4, $historyReads);
-        $this->assertContains($sibling->id, $historyReads[0]['bindings']);
+        $this->assertCount(5, $historyReads);
+        $this->assertContains($claim['activity_execution_id'], $historyReads[0]['bindings']);
         $this->assertContains($sibling->id, $historyReads[1]['bindings']);
-        $this->assertContains($claim['activity_execution_id'], $historyReads[2]['bindings']);
+        $this->assertContains($sibling->id, $historyReads[2]['bindings']);
         $this->assertContains($claim['activity_execution_id'], $historyReads[3]['bindings']);
+        $this->assertContains($claim['activity_execution_id'], $historyReads[4]['bindings']);
+        $executionReads = collect($queries)
+            ->filter(static fn (array $query): bool => str_starts_with($query['query'], 'select ')
+                && str_contains($query['query'], 'activity_executions'));
+        $this->assertFalse($executionReads->contains(static fn (array $query): bool =>
+            preg_match('/`?"?workflow_run_id`?"? in \\(/i', $query['query']) === 1));
         foreach ($queries as $query) {
             if (str_starts_with($query['query'], 'select ')
                 && str_contains($query['query'], 'workflow_run_timeline_entries')) {

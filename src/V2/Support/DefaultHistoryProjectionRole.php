@@ -52,7 +52,7 @@ final class DefaultHistoryProjectionRole implements HistoryProjectionRole, Histo
         ActivityAttempt $attempt,
         WorkflowTask $task,
     ): WorkflowRunSummary {
-        $parallelMetadataPath = ParallelChildGroup::metadataPathForSequence($run, (int) $execution->sequence);
+        $parallelMetadataPath = ParallelChildGroup::metadataPathForActivity($run, $execution);
         $parallelMetadata = ParallelChildGroup::payloadForPath($parallelMetadataPath);
 
         $started = WorkflowHistoryEvent::record($run, HistoryEventType::ActivityStarted, array_merge([

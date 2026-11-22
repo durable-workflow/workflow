@@ -13,6 +13,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
+use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
@@ -166,6 +167,33 @@ final class ParallelChildGroup
         }
 
         return self::metadataPathFromPayload($event->payload);
+    }
+
+    /**
+     * @return list<array{
+     *     parallel_group_id: string,
+     *     parallel_group_kind: string,
+     *     parallel_group_base_sequence: int,
+     *     parallel_group_size: int,
+     *     parallel_group_index: int
+     * }>
+     */
+    public static function metadataPathForActivity(WorkflowRun $run, ActivityExecution $execution): array
+    {
+        if (! $run->relationLoaded('historyEvents') && $execution->workflow_run_id === $run->id) {
+            $events = WorkflowHistoryEvent::indexedForActivity($run, $execution->id);
+            $first = $events?->first();
+            if ($first instanceof WorkflowHistoryEvent && $first->event_type === HistoryEventType::ActivityScheduled
+                && ($first->payload['activity_execution_id'] ?? null) === $execution->id
+                && ($first->payload['sequence'] ?? null) === (int) $execution->sequence) {
+                $path = self::metadataPathFromPayload($first->payload);
+                if ($path !== []) {
+                    return $path;
+                }
+            }
+        }
+
+        return self::metadataPathForSequence($run, (int) $execution->sequence);
     }
 
     /**
