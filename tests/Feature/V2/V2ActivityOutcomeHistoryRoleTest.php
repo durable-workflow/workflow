@@ -94,10 +94,18 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
         foreach ($tasks as $task) {
             $this->travel(1)
                 ->seconds();
-            $claim = $bridge->claim($task->id, 'staggered-worker');
+            DB::enableQueryLog();
+            try {
+                $claim = $bridge->claim($task->id, 'staggered-worker');
+                $queries = DB::getQueryLog();
+            } finally {
+                DB::disableQueryLog();
+                DB::flushQueryLog();
+            }
             $this->assertNotNull($claim);
             $this->assertIsString($claim['activity_attempt_id']);
             $attempts[] = $claim['activity_attempt_id'];
+            $this->assertNoWholeHistoryRead($queries, $run->id);
             $this->assertActivityMemberProjectionMatchesFullProjection($run);
         }
 
@@ -170,6 +178,7 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
 
         $this->assertTrue($outcome['recorded']);
         $this->assertNull($outcome['next_task_id']);
+        $this->assertNoWholeHistoryRead($queries, $run->id);
         $waitReads = array_values(array_filter($queries, static fn (array $query): bool =>
             str_starts_with($query['query'], 'select ')
             && str_contains($query['query'], 'workflow_run_waits')));
@@ -199,6 +208,21 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
                 $this->assertSame([], array_intersect($signalIds, $query['bindings']));
             }
         }
+        $this->assertActivityMemberProjectionMatchesFullProjection($run);
+
+        // The next member's timeline scope would omit this deleted point.
+        $head = (int) $run->fresh()
+->last_history_sequence;
+        $timeline = WorkflowTimelineEntry::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('sequence', $head);
+        $this->assertSame(1, $timeline->delete());
+        $siblingTask = $run->tasks()
+            ->where('task_type', TaskType::Activity->value)
+            ->whereKeyNot($activityTask->id)
+            ->sole();
+        $this->assertNotNull($bridge->claim($siblingTask->id, 'parallel-activity-worker'));
+        $this->assertTrue($timeline->exists());
         $this->assertActivityMemberProjectionMatchesFullProjection($run);
     }
 
@@ -1048,6 +1072,25 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
         $rebuilt = RunSummaryProjector::project($run->fresh())
             ->refresh();
         $this->assertEquals($summary, $rebuilt->getAttributes());
+    }
+
+    /**
+     * @param list<array{query: string, bindings: array<mixed>}> $queries
+     */
+    private function assertNoWholeHistoryRead(array $queries, string $runId): void
+    {
+        $wholeHistoryRead = collect($queries)
+            ->contains(static function (array $query) use ($runId): bool {
+                $sql = $query['query'];
+
+                return str_starts_with(strtolower($sql), 'select *')
+                    && str_contains($sql, 'workflow_history_events')
+                    && ! str_contains($sql, 'indexed_activity_execution_id')
+                    && ! str_contains($sql, 'event_type')
+                    && preg_match('/["`]?sequence["`]?\s*=\s*\?/i', $sql) !== 1
+                    && in_array($runId, $query['bindings'], true);
+            });
+        $this->assertFalse($wholeHistoryRead);
     }
 
     /**

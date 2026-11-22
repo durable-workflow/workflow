@@ -10,8 +10,8 @@ use Tests\Support\FanOutWidthProbe;
 use Tests\TestCase;
 
 /**
- * A fan-out's workflow tasks cost roughly the same per member at any width
- * (#1203, #1231).
+ * A fan-out's workflow tasks and member projections stay within the same
+ * growth bound as width increases (#1203, #1231, #1240).
  *
  * The scheduling task used to rebuild the run summary once per published
  * member, and the final task rescanned the whole history for every member,
@@ -54,7 +54,7 @@ final class V2FanOutWidthScalingTest extends TestCase
      * @param 'activity'|'child' $kind
      */
     #[DataProvider('kinds')]
-    public function testWorkflowTasksCostRoughlyConstantPerMember(string $kind): void
+    public function testFanOutTasksAndMemberProjectionGrowth(string $kind): void
     {
         Queue::fake();
         // A frozen clock also keeps activity lease maintenance in process.
@@ -62,20 +62,20 @@ final class V2FanOutWidthScalingTest extends TestCase
         $probe = new FanOutWidthProbe($this->app);
 
         // Warm the autoloader, container and query compilation first.
-        $probe->run($kind, 3, self::PAYLOAD_BYTES, "fan-out-warmup-{$kind}", refreshMemberProjections: false);
+        $probe->run($kind, 3, self::PAYLOAD_BYTES, "fan-out-warmup-{$kind}", refreshMemberProjections: true);
         $small = $probe->run(
             $kind,
             self::SMALL,
             self::PAYLOAD_BYTES,
             "fan-out-small-{$kind}",
-            refreshMemberProjections: false
+            refreshMemberProjections: true
         );
         $large = $probe->run(
             $kind,
             self::LARGE,
             self::PAYLOAD_BYTES,
             "fan-out-large-{$kind}",
-            refreshMemberProjections: false
+            refreshMemberProjections: true
         );
 
         foreach ([$small, $large] as $result) {
@@ -101,11 +101,17 @@ final class V2FanOutWidthScalingTest extends TestCase
             "Workflow-task queries grew faster than linearly with fan-out width.\n{$report}",
         );
 
-        foreach (['scheduling', 'final'] as $phase) {
+        $this->assertLessThanOrEqual(
+            self::MAX_GROWTH * $small['members']['queries'],
+            $large['members']['queries'],
+            "Member queries exceeded the fan-out growth allowance.\n{$report}",
+        );
+
+        foreach (['scheduling', 'members', 'final'] as $phase) {
             $this->assertLessThanOrEqual(
                 self::MAX_GROWTH * max($small[$phase]['seconds'], self::NOISE_FLOOR_SECONDS),
                 $large[$phase]['seconds'],
-                "The {$phase} workflow task grew faster than linearly with fan-out width.\n{$report}",
+                "The {$phase} phase exceeded the fan-out growth allowance.\n{$report}",
             );
         }
     }

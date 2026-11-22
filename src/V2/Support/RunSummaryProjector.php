@@ -181,10 +181,25 @@ final class RunSummaryProjector
             && $previousSummary instanceof WorkflowRunSummary
             && $previousSummary->projection_schema_version === self::SCHEMA_VERSION
             && (int) $previousSummary->history_event_count + 1 === (int) $activityResolution->sequence
-            && (int) $activityResolution->sequence === (int) $run->last_history_sequence;
+            && (int) $activityResolution->sequence === (int) $run->last_history_sequence
+            && RunTimelineProjector::hasProjectedSequence($run, (int) $activityResolution->sequence - 1);
 
         $scopedActivities = $scopeActivityTimeline
             ? self::parallelActivityProjection($run, $activityResolution, $previousSummary) : null;
+        $activityBudget = $scopeActivityTimeline
+            ? self::activityHistoryBudget($activityResolution, $previousSummary) : null;
+        if ($scopedActivities !== null && $activityBudget !== null) {
+            $summary = self::projectWaitingActivityGroup(
+                $run,
+                $activityResolution,
+                $previousSummary,
+                $scopedActivities,
+                $activityBudget,
+            );
+            if ($summary !== null) {
+                return $summary;
+            }
+        }
         $run->loadMissing(['instance', 'tasks', 'timers', 'failures', 'historyEvents']);
         $run->loadMissing([
             'childLinks.childRun.summary',
@@ -447,22 +462,7 @@ final class RunSummaryProjector
         );
 
         $statusBucket = $run->status->statusBucket();
-        $historyBudget = null;
-        if ($scopeActivityTimeline) {
-            $previousBytes = (int) $previousSummary->history_size_bytes;
-            $previousFanOut = (int) $previousSummary->history_fan_out;
-            $eventGroupSize = $activityResolution->payload['parallel_group_size'] ?? 0;
-            // The newest event cannot change the maximum if its group is already within it.
-            if ($previousBytes > 0 && $previousFanOut >= 0
-                && is_numeric($eventGroupSize) && (int) $eventGroupSize <= $previousFanOut) {
-                $historyBudget = HistoryBudget::fromCounters(
-                    (int) $activityResolution->sequence,
-                    $previousBytes + HistoryBudget::sizeOfEvent($activityResolution),
-                    $previousFanOut,
-                );
-            }
-        }
-        $historyBudget ??= HistoryBudget::forRun($run);
+        $historyBudget = $activityBudget ?? HistoryBudget::forRun($run);
         $commandContract = RunCommandContract::forRun($run);
         $repairBlockedReason = RepairBlockedReason::forRun(
             $run,
@@ -793,6 +793,125 @@ final class RunSummaryProjector
         }
 
         return false;
+    }
+
+    /**
+     * @return array{
+     *     history_event_count: int, history_size_bytes: int, history_fan_out: int,
+     *     continue_as_new_recommended: bool, pressure: string
+     * }|null
+     */
+    private static function activityHistoryBudget(WorkflowHistoryEvent $event, WorkflowRunSummary $previous): ?array
+    {
+        $previousBytes = (int) $previous->history_size_bytes;
+        $previousFanOut = (int) $previous->history_fan_out;
+        $eventGroupSize = $event->payload['parallel_group_size'] ?? 0;
+        // The appended activity event leaves the first size of each recorded group unchanged.
+        if ($previousBytes <= 0 || $previousFanOut < 0
+            || ! is_numeric($eventGroupSize) || (int) $eventGroupSize > $previousFanOut) {
+            return null;
+        }
+
+        return HistoryBudget::fromCounters(
+            (int) $event->sequence,
+            $previousBytes + HistoryBudget::sizeOfEvent($event),
+            $previousFanOut,
+        );
+    }
+
+    /**
+     * @param list<array<string, mixed>> $activities
+     * @param array{
+     *     history_event_count: int, history_size_bytes: int, history_fan_out: int,
+     *     continue_as_new_recommended: bool, pressure: string
+     * } $budget
+     */
+    private static function projectWaitingActivityGroup(
+        WorkflowRun $run,
+        WorkflowHistoryEvent $event,
+        WorkflowRunSummary $previous,
+        array $activities,
+        array $budget,
+    ): ?WorkflowRunSummary {
+        // A typed start or completion advances this wait and its timeline.
+        // Timer, lineage and failure projections stay at the preceding state.
+        if ($run->closed_at !== null || (int) $previous->exception_count !== 0 || $run->failures()->exists()) {
+            return null;
+        }
+
+        $open = collect($activities)
+            ->first(static fn (array $activity): bool => self::isAuthoritativeOpenActivity($activity));
+        $executionId = self::nonEmptyString($event->payload['activity_execution_id'] ?? null);
+        if ($open === null || $executionId === null) {
+            return null;
+        }
+
+        $run->loadMissing('tasks');
+        $nextTask = self::nextOpenTask($run);
+        if ($nextTask === null
+            || $run->tasks->contains(static fn (WorkflowTask $task): bool => self::workflowTaskProblemEvidence($task))
+            || ! self::projectParallelActivityWait($run, $event, $activities)) {
+            return null;
+        }
+
+        [$livenessState, $livenessReason] = self::taskLiveness(
+            $nextTask,
+            $run,
+            self::hasActionableTransportFailure($nextTask) ? self::taskLabelFor($nextTask) : 'Activity',
+        );
+        RunInstanceMetadata::detachForeign($run);
+        $current = CurrentRunResolver::forRun($run)?->id === $run->id;
+        $repair = RepairBlockedReason::forRun($run, $current, $livenessState, false);
+        $values = [
+            ...self::claimSummaryIdentity($run, RunCommandContract::forRun($run)),
+            'is_current_run' => $current,
+            'wait_kind' => 'activity',
+            'wait_reason' => sprintf('Waiting for activity %s', self::activityType($open)),
+            'wait_started_at' => self::timestamp($open['started_at'] ?? null) ?? self::timestamp(
+                $open['created_at'] ?? null
+            ),
+            'wait_deadline_at' => null,
+            'open_wait_id' => sprintf('activity:%s', $open['id']),
+            'resume_source_kind' => 'activity_execution',
+            'resume_source_id' => $open['id'],
+            'next_task_at' => $nextTask->available_at,
+            'next_task_id' => $nextTask->id,
+            'next_task_type' => $nextTask->task_type->value,
+            'next_task_status' => $nextTask->status->value,
+            'next_task_lease_expires_at' => $nextTask->lease_expires_at,
+            'liveness_state' => $livenessState,
+            'liveness_reason' => $livenessReason,
+            'repair_blocked_reason' => $repair,
+            'repair_attention' => RepairBlockedReason::needsAttention($repair),
+            ...WorkflowTaskLeaseLoss::summaryAttributes($run),
+            'task_problem' => false,
+            'exception_count' => 0,
+            'history_event_count' => $budget['history_event_count'],
+            'history_size_bytes' => $budget['history_size_bytes'],
+            'history_fan_out' => $budget['history_fan_out'],
+            'continue_as_new_recommended' => $budget['continue_as_new_recommended'],
+            'history_budget_pressure' => $budget['pressure'],
+            'updated_at' => $run->last_progress_at ?? $run->updated_at,
+        ];
+        /** @var WorkflowRunSummary $summary */
+        $summary = WorkflowTaskLeaseLoss::writeSummary(
+            $values,
+            static fn (array $values): WorkflowRunSummary => IdempotentProjectionUpsert::upsert(
+                self::summaryModel(),
+                [
+                    'id' => $run->id,
+                ],
+                $values,
+                $previous,
+            ),
+        );
+        RunTimelineProjector::project(
+            $run,
+            HistoryTimeline::iterateFromHistory($run, $executionId),
+            collectRows: false
+        );
+
+        return $summary;
     }
 
     /**
