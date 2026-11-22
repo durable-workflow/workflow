@@ -34,13 +34,13 @@ final class RunWaitView
         ]);
 
         $taskByActivityExecutionId = self::preferredTasksByPayloadKey(
-            $run,
+            $run->tasks,
             'activity_execution_id',
             TaskType::Activity
         );
-        $taskByTimerId = self::preferredTasksByPayloadKey($run, 'timer_id', TaskType::Timer);
-        $taskByChildCallId = self::preferredTasksByPayloadKey($run, 'child_call_id');
-        $taskByChildRunId = self::preferredTasksByPayloadKey($run, 'child_workflow_run_id');
+        $taskByTimerId = self::preferredTasksByPayloadKey($run->tasks, 'timer_id', TaskType::Timer);
+        $taskByChildCallId = self::preferredTasksByPayloadKey($run->tasks, 'child_call_id');
+        $taskByChildRunId = self::preferredTasksByPayloadKey($run->tasks, 'child_workflow_run_id');
         $conditionWaits = ConditionWaits::forRun($run);
         $conditionTimerIds = array_values(array_filter(
             array_map(
@@ -105,6 +105,22 @@ final class RunWaitView
         });
 
         return array_values($waits);
+    }
+
+    /**
+     * @param array<string, mixed> $activity
+     * @return array<string, mixed>
+     */
+    public static function forActivity(WorkflowRun $run, string $executionId, array $activity): array
+    {
+        $tasks = self::preferredTasksByPayloadKey(
+            ActivityTaskLookup::forExecution($run, $executionId) ?? $run->tasks,
+            'activity_execution_id',
+            TaskType::Activity,
+            $executionId,
+        );
+
+        return self::activityWait($activity, $tasks[$executionId] ?? null);
     }
 
     /**
@@ -531,16 +547,18 @@ final class RunWaitView
     }
 
     /**
+     * @param iterable<WorkflowTask> $candidates
      * @return array<string, WorkflowTask>
      */
     private static function preferredTasksByPayloadKey(
-        WorkflowRun $run,
+        iterable $candidates,
         string $payloadKey,
         ?TaskType $requiredType = null,
+        ?string $onlyId = null,
     ): array {
         $tasks = [];
 
-        foreach ($run->tasks as $task) {
+        foreach ($candidates as $task) {
             if (! $task instanceof WorkflowTask) {
                 continue;
             }
@@ -551,7 +569,7 @@ final class RunWaitView
 
             $payloadId = self::stringValue($task->payload[$payloadKey] ?? null);
 
-            if ($payloadId === null) {
+            if ($payloadId === null || ($onlyId !== null && $payloadId !== $onlyId)) {
                 continue;
             }
 

@@ -293,29 +293,62 @@ final class RunWaitProjectionWritesTest extends TestCase
     public function testDisplayOrderingPreservesTimestampTiesAndMissingTimes(): void
     {
         $run = $this->runFixture();
+        $z = $this->wait('signal:Z', 0, 'resolved');
         $a = $this->wait('signal:a', 0, 'resolved');
-        $z = $this->wait('signal:z', 0, 'resolved');
-        $a['opened_at'] = Carbon::parse('2026-10-26T10:00:00.000400Z');
-        $z['opened_at'] = Carbon::parse('2026-10-26T10:00:00.000100Z');
+        $z['opened_at'] = Carbon::parse('2026-10-26T10:00:00.000400Z');
+        $a['opened_at'] = Carbon::parse('2026-10-26T10:00:00.000100Z');
         $this->assertSame($a['opened_at']->getTimestampMs(), $z['opened_at']->getTimestampMs());
         $missing = $this->wait('signal:missing', 1, 'resolved');
         $missing['opened_at'] = null;
-        $open = $this->wait('signal:open', 2, 'open');
+        $open = $this->wait('activity:open', 2, 'open');
+        $open['kind'] = 'activity';
+        $open['parallel_group_id'] = 'parallel-activities:fixture';
         RunWaitProjector::project($run, [$open, $a, $z, $missing]);
 
         // The canonical view uses millisecond precision, then the wait id.
         $this->assertSame(
-            ['signal:open', 'signal:a', 'signal:z', 'signal:missing'],
+            ['activity:open', 'signal:Z', 'signal:a', 'signal:missing'],
             $run->fresh()
                 ->waits->pluck('wait_id')
                 ->all(),
         );
         $this->assertSame(
-            ['signal:a', 'signal:z', 'signal:open', 'signal:missing'],
+            ['signal:Z', 'signal:a', 'activity:open', 'signal:missing'],
             WorkflowRunWait::query()->where('workflow_run_id', $run->id)
-                ->orderBy('position')
+                ->inOpeningOrder()
                 ->pluck('wait_id')
                 ->all(),
+        );
+    }
+
+    public function testOpeningTimeChangeMovesOnlyTheAffectedRow(): void
+    {
+        $run = $this->runFixture();
+        $waits = [];
+        for ($index = 0; $index < 32; $index++) {
+            $waits[] = array_replace($this->wait('activity:' . $index, $index, 'open'), [
+                'kind' => 'activity',
+                'parallel_group_id' => 'parallel-activities:fixture',
+            ]);
+        }
+        RunWaitProjector::project($run, $waits);
+        $before = $this->rows($run);
+
+        $waits[0]['opened_at'] = $waits[31]['opened_at']->copy()->addSecond();
+        $queries = $this->capture(static fn () => RunWaitProjector::project($run->fresh(), $waits));
+
+        $this->assertSame(1, $this->updateCount($queries));
+        $expected = array_column($waits, 'id');
+        $expected[] = array_shift($expected);
+        $this->assertSame($expected, $run->fresh()->waits->pluck('wait_id')->all());
+        $changed = hash('sha256', $run->id . '|activity:0');
+        $this->assertSame(
+            array_diff_key($before, [
+                $changed => true,
+            ]),
+            array_diff_key($this->rows($run), [
+                $changed => true,
+            ])
         );
     }
 

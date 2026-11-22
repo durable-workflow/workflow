@@ -119,6 +119,16 @@ final class RunTimelineProjector
         return $row;
     }
 
+    public static function hasProjectedSequence(WorkflowRun $run, int $sequence): bool
+    {
+        $entryModel = self::entryModel();
+
+        return $entryModel::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('sequence', $sequence)
+            ->exists();
+    }
+
     public static function projectSignalReceivedEvent(
         WorkflowRun $run,
         WorkflowHistoryEvent $event,

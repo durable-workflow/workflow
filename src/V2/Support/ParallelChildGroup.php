@@ -13,6 +13,7 @@ use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
+use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
@@ -166,6 +167,33 @@ final class ParallelChildGroup
         }
 
         return self::metadataPathFromPayload($event->payload);
+    }
+
+    /**
+     * @return list<array{
+     *     parallel_group_id: string,
+     *     parallel_group_kind: string,
+     *     parallel_group_base_sequence: int,
+     *     parallel_group_size: int,
+     *     parallel_group_index: int
+     * }>
+     */
+    public static function metadataPathForActivity(WorkflowRun $run, ActivityExecution $execution): array
+    {
+        if (! $run->relationLoaded('historyEvents') && $execution->workflow_run_id === $run->id) {
+            $events = WorkflowHistoryEvent::indexedForActivity($run, $execution->id);
+            $first = $events?->first();
+            if ($first instanceof WorkflowHistoryEvent && $first->event_type === HistoryEventType::ActivityScheduled
+                && ($first->payload['activity_execution_id'] ?? null) === $execution->id
+                && ($first->payload['sequence'] ?? null) === (int) $execution->sequence) {
+                $path = self::metadataPathFromPayload($first->payload);
+                if ($path !== []) {
+                    return $path;
+                }
+            }
+        }
+
+        return self::metadataPathForSequence($run, (int) $execution->sequence);
     }
 
     /**
@@ -675,6 +703,22 @@ final class ParallelChildGroup
             || ($closedKind === 'timer' && $closedStatus !== TimerStatus::Fired)
         );
 
+        if ($successful && $lockHistoryForUpdate && $closedKind === 'activity' && count($metadataPath) === 1
+            && self::groupMode($metadataPath[0]) === 'all'
+            && str_starts_with($metadataPath[0]['parallel_group_id'], 'parallel-activities:')
+            && WorkflowHistoryEvent::activityIndexCovers($parentRun)
+            && self::hasOpenActivityMember($parentRun, $metadataPath[0])) {
+            return false;
+        }
+
+        if ($successful && $lockHistoryForUpdate && $closedKind === 'child' && count($metadataPath) === 1
+            && self::groupMode($metadataPath[0]) === 'all'
+            && str_starts_with($metadataPath[0]['parallel_group_id'], 'parallel-children:')
+            && WorkflowHistoryEvent::stepIndexCovers($parentRun)
+            && self::hasOpenChildMember($parentRun, $metadataPath[0])) {
+            return false;
+        }
+
         $eligible = true;
         $nestedMember = false;
 
@@ -701,6 +745,89 @@ final class ParallelChildGroup
         }
 
         return $eligible || ! $successful;
+    }
+
+    /**
+     * @param array{parallel_group_id: string, parallel_group_base_sequence: int, parallel_group_size: int} $group
+     */
+    private static function hasOpenActivityMember(WorkflowRun $run, array $group): bool
+    {
+        $start = $group['parallel_group_base_sequence'];
+        $end = $start + $group['parallel_group_size'] - 1;
+        // Mutable rows locate a candidate only. The current typed history must
+        // prove it remains open after taking the parent lock.
+        foreach ([ActivityStatus::Pending, ActivityStatus::Running] as $status) {
+            $candidate = $run->activityExecutions()
+                ->whereBetween('sequence', [$start, $end])
+                ->where('status', $status->value)
+                ->first(['id', 'sequence']);
+            if ($candidate === null) {
+                continue;
+            }
+            $state = RunActivityView::indexedState($run, (string) $candidate->id, lockForUpdate: true);
+            if (($state['sequence'] ?? null) === $candidate->sequence
+                && ($state['parallel_group_id'] ?? null) === $group['parallel_group_id']
+                && in_array(
+                    $state['status'] ?? null,
+                    [ActivityStatus::Pending->value, ActivityStatus::Running->value],
+                    true
+                )) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array{parallel_group_id: string, parallel_group_base_sequence: int,
+     *     parallel_group_size: int, parallel_group_index: int} $group
+     */
+    private static function hasOpenChildMember(WorkflowRun $run, array $group): bool
+    {
+        $first = $group['parallel_group_base_sequence'];
+        $wait = RunWaitProjector::openSiblingChildWait(
+            $run,
+            $group['parallel_group_id'],
+            $first,
+            $first + $group['parallel_group_size'] - 1,
+            $first + $group['parallel_group_index'],
+        );
+        if ($wait === null || $wait->sequence === null || ! is_string($wait->resume_source_id)) {
+            return false;
+        }
+
+        // The wait locates one candidate. The current history and child run
+        // decide whether it still keeps the group open.
+        $events = WorkflowHistoryEvent::lockedForStep($run, $wait->sequence);
+        $childEventTypes = [
+            HistoryEventType::ChildWorkflowScheduled,
+            HistoryEventType::ChildRunStarted,
+            ...ChildRunHistory::resolutionEventTypes(),
+        ];
+        if ($events === null || $events->contains(static fn (WorkflowHistoryEvent $event): bool =>
+            in_array($event->event_type, self::PARALLEL_MEMBER_EVENT_TYPES, true)
+            && ! in_array($event->event_type, $childEventTypes, true))) {
+            return false;
+        }
+
+        $member = clone $run;
+        $member->setRelation('historyEvents', $events);
+        $scheduled = ChildRunHistory::scheduledEventForSequence($member, $wait->sequence);
+        $started = ChildRunHistory::startedEventForSequence($member, $wait->sequence);
+        $path = self::metadataPathFromPayload($scheduled?->payload ?? []);
+        if (count($path) !== 1 || $path[0]['parallel_group_id'] !== $group['parallel_group_id']
+            || ! $started instanceof WorkflowHistoryEvent
+            || ($started->payload['child_workflow_run_id'] ?? null) !== $wait->resume_source_id
+            || ChildRunHistory::resolutionEventForSequence($member, $wait->sequence) !== null) {
+            return false;
+        }
+
+        $child = ImportedLineageReferences::resolve($run, $wait->resume_source_id);
+        $status = ChildRunHistory::resolvedStatus(null, $child);
+
+        return $child !== null && $child->workflow_instance_id === ($started->payload['child_workflow_instance_id'] ?? null)
+            && $status instanceof RunStatus && ! $status->isTerminal();
     }
 
     /**

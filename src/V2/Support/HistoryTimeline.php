@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Carbon\CarbonInterface;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Collection;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
@@ -40,30 +42,56 @@ final class HistoryTimeline
     /**
      * Map each event when the consumer is ready for it. Full projection can
      * then persist one page at a time without retaining a second array of the
-     * run's entire mapped history. An activity scope maps only points that can
-     * depend on that execution or one of its tasks; it does not make the
-     * authoritative summary's growing history relation bounded.
+     * run's entire mapped history. An activity scope maps points that can
+     * depend on that execution or one of its tasks.
      *
      * @return \Generator<int, array<string, mixed>>
      */
     public static function iterateFromHistory(WorkflowRun $run, ?string $activityExecutionId = null): \Generator
     {
-        $run->loadMissing(['historyEvents', 'commands', 'tasks', 'activityExecutions', 'timers', 'failures']);
+        $events = $activityExecutionId === null
+            ? null
+            : WorkflowHistoryEvent::indexedForActivity($run, $activityExecutionId);
 
-        /** @var Collection<string, WorkflowCommand> $commands */
-        $commands = $run->commands->keyBy('id');
-        /** @var Collection<string, WorkflowTask> $tasks */
-        $tasks = $run->tasks->keyBy('id');
-        /** @var Collection<string, ActivityExecution> $activities */
-        $activities = $run->activityExecutions->keyBy('id');
-        /** @var Collection<string, WorkflowTimer> $timers */
-        $timers = $run->timers->keyBy('id');
-        /** @var Collection<string, array<string, mixed>> $failures */
-        $failures = collect(FailureSnapshots::forRun($run))
-            ->filter(static fn (array $failure): bool => is_string($failure['id'] ?? null))
-            ->keyBy('id');
+        if ($events !== null && $activityExecutionId !== null) {
+            $commandIds = [];
+            $taskIds = [];
+            $timerIds = [];
+            $needsFailures = false;
 
-        foreach ($run->historyEvents->sortBy('sequence') as $event) {
+            foreach ($events as $event) {
+                $commandId = self::stringValue($event->workflow_command_id)
+                    ?? self::stringValue($event->payload['workflow_command_id'] ?? null);
+                if ($commandId !== null) {
+                    $commandIds[$commandId] = $commandId;
+                }
+                if (is_string($event->workflow_task_id)) {
+                    $taskIds[$event->workflow_task_id] = $event->workflow_task_id;
+                }
+                $timerId = self::stringValue($event->payload['timer_id'] ?? null);
+                if ($timerId !== null) {
+                    $timerIds[$timerId] = $timerId;
+                }
+                $needsFailures = $needsFailures || self::stringValue($event->payload['failure_id'] ?? null) !== null;
+            }
+
+            $commands = self::relatedById($run->commands(), $commandIds);
+            $tasks = self::relatedById($run->tasks(), $taskIds);
+            $activities = self::relatedById($run->activityExecutions(), [$activityExecutionId]);
+            $timers = self::relatedById($run->timers(), $timerIds);
+        } else {
+            $run->loadMissing(['historyEvents', 'commands', 'tasks', 'activityExecutions', 'timers']);
+            $events = $run->historyEvents->sortBy('sequence');
+            $commands = $run->commands->keyBy('id');
+            $tasks = $run->tasks->keyBy('id');
+            $activities = $run->activityExecutions->keyBy('id');
+            $timers = $run->timers->keyBy('id');
+            $needsFailures = true;
+        }
+
+        $failures = $needsFailures ? collect(FailureSnapshots::keyedForRun($run)) : collect();
+
+        foreach ($events as $event) {
             if ($activityExecutionId !== null) {
                 $task = $tasks->get((string) $event->workflow_task_id);
                 $taskActivityId = $task instanceof WorkflowTask
@@ -192,6 +220,26 @@ final class HistoryTimeline
                 'attempt_count' => $attemptNumber,
             ],
         ];
+    }
+
+    /**
+     * @template TRelated of Model
+     * @param HasMany<TRelated, WorkflowRun> $relation
+     * @param array<array-key, string> $ids
+     * @return Collection<string, TRelated>
+     */
+    private static function relatedById(HasMany $relation, array $ids): Collection
+    {
+        $models = collect();
+
+        // A single execution may have more attempts than one query can bind.
+        foreach (array_chunk($ids, 250) as $batch) {
+            foreach ((clone $relation)->whereKey($batch)->get() as $model) {
+                $models->put((string) $model->getKey(), $model);
+            }
+        }
+
+        return $models;
     }
 
     private static function mapEvent(

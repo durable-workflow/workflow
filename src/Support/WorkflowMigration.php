@@ -7,6 +7,7 @@ namespace Workflow\Support;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\MySqlConnection;
+use Illuminate\Database\Query\Expression;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -161,7 +162,7 @@ abstract class WorkflowMigration extends Migration
     }
 
     /**
-     * Create a plain index without blocking writes to a populated table.
+     * Create an index without blocking writes to a populated table.
      *
      * PostgreSQL builds it with CREATE INDEX CONCURRENTLY and replaces an
      * invalid index left by an interrupted build. MySQL and MariaDB build it
@@ -170,7 +171,7 @@ abstract class WorkflowMigration extends Migration
      * Only use this outside a transaction, with
      * `public $withinTransaction = false;`.
      *
-     * @param list<string> $columns
+     * @param list<string|Expression> $columns
      */
     protected function createIndexOnline(string $table, string $index, array $columns): void
     {
@@ -179,7 +180,7 @@ abstract class WorkflowMigration extends Migration
         $grammar = $connection->getQueryGrammar();
         $wrappedTable = $grammar->wrapTable($table);
         $wrappedIndex = $grammar->wrap($index);
-        $wrappedColumns = implode(', ', array_map(static fn (string $column): string => $grammar->wrap(
+        $wrappedColumns = implode(', ', array_map(static fn (string|Expression $column): string => $grammar->wrap(
             $column
         ), $columns));
         $physicalTable = $connection->getTablePrefix() . $table;
@@ -229,9 +230,7 @@ abstract class WorkflowMigration extends Migration
 
         $schema = Schema::connection($this->getConnection());
         if (! $schema->hasIndex($table, $index)) {
-            $schema->table($table, static function ($blueprint) use ($columns, $index): void {
-                $blueprint->index($columns, $index);
-            });
+            $connection->statement("CREATE INDEX {$wrappedIndex} ON {$wrappedTable} ({$wrappedColumns})");
         }
     }
 

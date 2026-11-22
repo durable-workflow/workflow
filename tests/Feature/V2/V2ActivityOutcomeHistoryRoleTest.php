@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use RuntimeException;
+use Tests\Fixtures\V2\TestFanOutPayloadActivityWorkflow;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\TestCase;
@@ -19,21 +21,28 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Support\ActivityOutcomeProjectionContext;
 use Workflow\V2\Support\ActivityOutcomeRecorder;
 use Workflow\V2\Support\DefaultHistoryProjectionRole;
+use Workflow\V2\Support\HistoryTimeline;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\RunSummaryTaskSelection;
 use Workflow\V2\Support\RunTimelineProjector;
+use Workflow\V2\Support\RunWaitProjector;
+use Workflow\V2\Support\RunWaitView;
 use Workflow\V2\Support\TaskDispatcher;
+use Workflow\V2\WorkflowStub;
 
 /**
  * Pins every ActivityOutcomeRecorder::record exit that refreshes operator
@@ -67,6 +76,417 @@ use Workflow\V2\Support\TaskDispatcher;
  */
 final class V2ActivityOutcomeHistoryRoleTest extends TestCase
 {
+    public function testParallelMemberProjectionsMatchFullProjectionAfterEveryTransition(): void
+    {
+        Queue::fake();
+        config()
+            ->set('workflows.v2.task_dispatch_mode', 'poll');
+        $this->freezeTime();
+        $workflow = WorkflowStub::make(TestFanOutPayloadActivityWorkflow::class, 'staggered-parallel-projection');
+        $workflow->start(4, 8);
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $workflowTask = $run->tasks()
+            ->where('task_type', TaskType::Workflow->value)->sole();
+        $this->app->call([new RunWorkflowTask($workflowTask->id), 'handle']);
+
+        $bridge = app(ActivityTaskBridge::class);
+        $positions = $run->activityExecutions()
+            ->pluck('sequence', 'id');
+        $tasks = $run->tasks()
+            ->where('task_type', TaskType::Activity->value)->get()
+            ->sortBy(static fn (WorkflowTask $task): int => $positions[$task->payload['activity_execution_id']])
+            ->values();
+        $this->assertCount(4, $tasks);
+        $attempts = [];
+        foreach ($tasks as $task) {
+            $this->travel(1)
+                ->seconds();
+            DB::enableQueryLog();
+            try {
+                $claim = $bridge->claim($task->id, 'staggered-worker');
+                $queries = DB::getQueryLog();
+            } finally {
+                DB::disableQueryLog();
+                DB::flushQueryLog();
+            }
+            $this->assertNotNull($claim);
+            $this->assertIsString($claim['activity_attempt_id']);
+            $attempts[] = $claim['activity_attempt_id'];
+            $this->assertNoWholeHistoryRead($queries, $run->id);
+            $this->assertNoWholeTaskRead($queries, $run->id);
+            $this->assertActivityMemberProjectionMatchesFullProjection($run);
+        }
+
+        $lastTask = $tasks[3]->refresh();
+        $expiresAt = $lastTask->lease_expires_at;
+        $this->assertNotSame($lastTask->id, $run->summary()->sole()->next_task_id);
+        $lastTask->forceFill([
+            'lease_expires_at' => now()
+                ->subSecond(),
+        ])->save();
+        $expired = RunSummaryProjector::project($run->fresh());
+        $this->assertSame($lastTask->id, $expired->next_task_id);
+        $this->assertSame('repair_needed', $expired->liveness_state);
+        $lastTask->forceFill([
+            'lease_expires_at' => $expiresAt,
+        ])->save();
+        RunSummaryProjector::project($run->fresh());
+
+        foreach ([1, 0, 3, 2] as $index => $member) {
+            $this->travel(1)
+                ->seconds();
+            $before = $run->historyEvents()
+                ->get()
+                ->map(static fn (WorkflowHistoryEvent $event): array => $event->getAttributes())
+                ->all();
+            DB::enableQueryLog();
+            try {
+                $outcome = $bridge->complete($attempts[$member], 8);
+                $queries = DB::getQueryLog();
+            } finally {
+                DB::disableQueryLog();
+                DB::flushQueryLog();
+            }
+            $this->assertTrue($outcome['recorded']);
+            $this->assertSame($index === 3, $outcome['next_task_id'] !== null);
+            $this->assertSame(
+                $before,
+                $run->historyEvents()
+                    ->where('sequence', '<=', count($before))
+                    ->get()
+                    ->map(static fn (WorkflowHistoryEvent $event): array => $event->getAttributes())
+                    ->all(),
+            );
+            if ($index < 3) {
+                $this->assertNoWholeHistoryRead($queries, $run->id);
+                $this->assertNoWholeTaskRead($queries, $run->id);
+            }
+            if ($member === 0) {
+                $this->assertSame(
+                    $tasks[2]->payload['activity_execution_id'],
+                    $run->summary()
+                        ->sole()
+->resume_source_id
+                );
+                $this->assertTrue(collect($queries)->contains(static fn (array $query): bool =>
+                    str_contains($query['query'], 'workflow_open_activities')
+                    && str_contains($query['query'], 'limit 2')));
+            }
+            $this->assertActivityMemberProjectionMatchesFullProjection($run);
+        }
+    }
+
+    public function testStaleActivityWaitCannotHideAnEarlierOpenMemberFromDurableHistory(): void
+    {
+        Queue::fake();
+        config()
+            ->set('workflows.v2.task_dispatch_mode', 'poll');
+        $this->freezeTime();
+        $workflow = WorkflowStub::make(TestFanOutPayloadActivityWorkflow::class, 'activity-wait-fallback');
+        $workflow->start(4, 8);
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $workflowTask = $run->tasks()
+            ->where('task_type', TaskType::Workflow->value)->sole();
+        $this->app->call([new RunWorkflowTask($workflowTask->id), 'handle']);
+        $ordered = $run->activityExecutions()
+            ->pluck('id')
+            ->values();
+        $tasks = $run->tasks()
+            ->where('task_type', TaskType::Activity->value)->get()->keyBy(
+                static fn (WorkflowTask $task): string => $task->payload['activity_execution_id'],
+            );
+        $bridge = app(ActivityTaskBridge::class);
+        $first = $bridge->claim($tasks[$ordered[0]]->id, 'first-member');
+        $second = $bridge->claim($tasks[$ordered[1]]->id, 'second-member');
+        $this->assertNotNull($first);
+        $this->assertNotNull($second);
+        $this->assertTrue($bridge->complete($second['activity_attempt_id'], 8)['recorded']);
+
+        WorkflowRunWait::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('resume_source_id', $ordered[2])
+            ->update([
+                'status' => 'cancelled',
+            ]);
+        ActivityExecution::query()->whereKey($ordered[2])->update([
+            'status' => ActivityStatus::Cancelled->value,
+        ]);
+
+        $this->assertTrue($bridge->complete($first['activity_attempt_id'], 8)['recorded']);
+        $this->assertSame($ordered[2], $run->summary()->sole()->resume_source_id);
+        $this->assertActivityMemberProjectionMatchesFullProjection($run);
+    }
+
+    public function testParallelActivityRetryProjectsOnlyItsMemberAndMatchesFullProjection(): void
+    {
+        Queue::fake();
+        config()
+            ->set('workflows.v2.task_dispatch_mode', 'poll');
+        $this->freezeTime();
+        $workflow = WorkflowStub::make(TestFanOutPayloadActivityWorkflow::class, 'bounded-parallel-retry');
+        $workflow->start(4, 8);
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $workflowTask = $run->tasks()
+            ->where('task_type', TaskType::Workflow->value)->sole();
+        $this->app->call([new RunWorkflowTask($workflowTask->id), 'handle']);
+        $task = $run->tasks()
+            ->where('task_type', TaskType::Activity->value)->firstOrFail();
+        $claim = app(ActivityTaskBridge::class)->claim($task->id, 'retrying-member');
+        $this->assertNotNull($claim);
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        try {
+            $outcome = ActivityOutcomeRecorder::record(
+                taskId: $task->id,
+                attemptId: $claim['activity_attempt_id'],
+                attemptCount: 1,
+                result: null,
+                throwable: new RuntimeException('retry this member'),
+                maxAttempts: 2,
+                backoffSeconds: 1,
+            );
+            $queries = DB::getQueryLog();
+        } finally {
+            DB::disableQueryLog();
+            DB::flushQueryLog();
+        }
+        $this->assertTrue($outcome['recorded']);
+        $this->assertSame(TaskType::Activity, $outcome['next_task']?->task_type);
+        $this->assertNoWholeHistoryRead($queries, $run->id);
+        $this->assertNoWholeTaskRead($queries, $run->id);
+        $this->assertActivityMemberProjectionMatchesFullProjection($run);
+    }
+
+    public function testIndexedTaskSelectionKeepsLeaseAndRoundedTimestampOrder(): void
+    {
+        Queue::fake();
+        config()
+            ->set('workflows.v2.task_dispatch_mode', 'poll');
+        $this->freezeTime();
+        $workflow = WorkflowStub::make(TestFanOutPayloadActivityWorkflow::class, 'indexed-next-task-order');
+        $workflow->start(4, 8);
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $workflowTask = $run->tasks()
+            ->where('task_type', TaskType::Workflow->value)->sole();
+        $this->app->call([new RunWorkflowTask($workflowTask->id), 'handle']);
+        $tasks = $run->tasks()
+            ->where('task_type', TaskType::Activity->value)->reorder('id')->get();
+        foreach ([[123400, 152400],
+            [123100, 152100],
+            [122600, 153000],
+            [123600, 150000],
+        ] as $index => [$available, $created]) {
+            $tasks[$index]->forceFill([
+                'available_at' => now()
+                    ->setMicrosecond($available),
+                'created_at' => now()
+                    ->setMicrosecond($created),
+            ])->save();
+        }
+        $this->assertSame($tasks[0]->id, RunSummaryTaskSelection::next($run)?->id);
+
+        $tasks[1]->forceFill([
+            'status' => TaskStatus::Leased,
+            'lease_expires_at' => now()
+                ->addMinute(),
+        ])->save();
+        $this->assertSame($tasks[1]->id, RunSummaryTaskSelection::next($run)?->id);
+
+        $tasks[3]->forceFill([
+            'status' => TaskStatus::Leased,
+            'lease_expires_at' => now()
+                ->subSecond(),
+            'available_at' => null,
+        ])->save();
+        $this->assertSame($tasks[3]->id, RunSummaryTaskSelection::next($run)?->id);
+
+        $tasks[1]->forceFill([
+            'lease_expires_at' => now()
+                ->subSecond(),
+        ])->save();
+        $this->assertSame($tasks[1]->id, RunSummaryTaskSelection::next($run)?->id);
+    }
+
+    public function testActivityWaitIndexCoversExistingRowsAndTracksPayloadUpdates(): void
+    {
+        Queue::fake();
+        config()
+            ->set('workflows.v2.task_dispatch_mode', 'poll');
+        $workflow = WorkflowStub::make(TestFanOutPayloadActivityWorkflow::class, 'indexed-wait-task-legacy');
+        $workflow->start(3, 8);
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $workflowTask = $run->tasks()
+            ->where('task_type', TaskType::Workflow->value)->sole();
+        $migration = require __DIR__ . '/../../../src/migrations/2026_11_21_000204_index_activity_wait_tasks.php';
+        $migration->down();
+        try {
+            $this->app->call([new RunWorkflowTask($workflowTask->id), 'handle']);
+            $tasks = $run->tasks()
+                ->where('task_type', TaskType::Activity->value)->reorder('id')->get();
+            $original = $tasks[0];
+            $executionId = $original->payload['activity_execution_id'];
+            $original->forceFill([
+                'status' => TaskStatus::Completed,
+            ])->save();
+            $retry = WorkflowTask::query()->create([
+                'workflow_run_id' => $run->id,
+                'task_type' => TaskType::Activity,
+                'status' => TaskStatus::Ready,
+                'payload' => [
+                    'activity_execution_id' => $executionId,
+                ],
+            ]);
+        } finally {
+            $migration->up();
+        }
+        $migration->up();
+        $activity = [
+            'id' => $executionId,
+            'status' => ActivityStatus::Pending->value,
+        ];
+        $this->assertSame($retry->id, RunWaitView::forActivity($run->fresh(), $executionId, $activity)['task_id']);
+        $this->assertSame(
+            RunWaitView::forActivity($run->fresh(['tasks']), $executionId, $activity),
+            RunWaitView::forActivity($run->fresh(), $executionId, $activity),
+        );
+        $this->assertArrayNotHasKey('indexed_activity_execution_id', $retry->fresh()->getAttributes());
+
+        $retry->forceFill([
+            'payload' => [
+                'activity_execution_id' => $tasks[1]->payload['activity_execution_id'],
+            ],
+        ])->save();
+        $this->assertSame($original->id, RunWaitView::forActivity($run->fresh(), $executionId, $activity)['task_id']);
+    }
+
+    public function testParallelMemberCompletionKeepsTheTimelineCurrentWithoutReadingUnrelatedEntries(): void
+    {
+        Queue::fake();
+        config()
+            ->set('workflows.v2.task_dispatch_mode', 'poll');
+        $workflow = WorkflowStub::make(TestFanOutPayloadActivityWorkflow::class, 'bounded-parallel-outcome');
+        $workflow->start(2, 8);
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $workflowTask = $run->tasks()
+            ->where('task_type', TaskType::Workflow->value)->sole();
+        $this->app->call([new RunWorkflowTask($workflowTask->id), 'handle']);
+
+        $activityTasks = $run->tasks()
+            ->where('task_type', TaskType::Activity->value);
+        $this->assertSame(2, $activityTasks->count());
+        $activityTask = $activityTasks->orderBy('id')
+            ->firstOrFail();
+        $sibling = $run->activityExecutions()
+            ->whereKeyNot($activityTask->payload['activity_execution_id'])->sole();
+        $bridge = app(ActivityTaskBridge::class);
+        $claim = $bridge->claim($activityTask->id, 'parallel-activity-worker');
+        $this->assertNotNull($claim);
+        $this->assertIsString($claim['activity_attempt_id']);
+
+        $this->addUnrelatedSignals($run);
+        RunSummaryProjector::project($run->fresh());
+        $signalIds = WorkflowTimelineEntry::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('type', HistoryEventType::SignalReceived->value)
+            ->pluck('id')
+            ->all();
+
+        DB::flushQueryLog();
+        DB::enableQueryLog();
+        try {
+            $outcome = $bridge->complete($claim['activity_attempt_id'], 8);
+            $queries = DB::getQueryLog();
+        } finally {
+            DB::disableQueryLog();
+            DB::flushQueryLog();
+        }
+
+        $this->assertTrue($outcome['recorded']);
+        $this->assertNull($outcome['next_task_id']);
+        $this->assertNoWholeHistoryRead($queries, $run->id);
+        $this->assertNoWholeTaskRead($queries, $run->id);
+        $waitReads = array_values(array_filter($queries, static fn (array $query): bool =>
+            str_starts_with($query['query'], 'select ')
+            && str_contains($query['query'], 'workflow_run_waits')));
+        $this->assertCount(2, $waitReads);
+        $this->assertContains($sibling->sequence, $waitReads[0]['bindings']);
+        $this->assertContains(
+            hash('sha256', $run->id . '|activity:' . $claim['activity_execution_id']),
+            $waitReads[1]['bindings'],
+        );
+        $historyReads = array_values(array_filter($queries, static fn (array $query): bool =>
+            str_starts_with($query['query'], 'select ')
+            && str_contains($query['query'], 'workflow_history_events')
+            && str_contains($query['query'], 'indexed_activity_execution_id')));
+        $this->assertCount(5, $historyReads);
+        $this->assertContains($claim['activity_execution_id'], $historyReads[0]['bindings']);
+        $this->assertContains($sibling->id, $historyReads[1]['bindings']);
+        $this->assertContains($sibling->id, $historyReads[2]['bindings']);
+        $this->assertContains($claim['activity_execution_id'], $historyReads[3]['bindings']);
+        $this->assertContains($claim['activity_execution_id'], $historyReads[4]['bindings']);
+        $executionReads = collect($queries)
+            ->filter(static fn (array $query): bool => str_starts_with($query['query'], 'select ')
+                && str_contains($query['query'], 'activity_executions'));
+        $this->assertFalse($executionReads->contains(static fn (array $query): bool =>
+            preg_match('/`?"?workflow_run_id`?"? in \\(/i', $query['query']) === 1));
+        foreach ($queries as $query) {
+            if (str_starts_with($query['query'], 'select ')
+                && str_contains($query['query'], 'workflow_run_timeline_entries')) {
+                $this->assertSame([], array_intersect($signalIds, $query['bindings']));
+            }
+        }
+        $this->assertActivityMemberProjectionMatchesFullProjection($run);
+
+        // The next member's timeline scope would omit this deleted point.
+        $head = (int) $run->fresh()
+->last_history_sequence;
+        $timeline = WorkflowTimelineEntry::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('sequence', $head);
+        $this->assertSame(1, $timeline->delete());
+        $siblingTask = $run->tasks()
+            ->where('task_type', TaskType::Activity->value)
+            ->whereKeyNot($activityTask->id)
+            ->sole();
+        $this->assertNotNull($bridge->claim($siblingTask->id, 'parallel-activity-worker'));
+        $this->assertTrue($timeline->exists());
+        $this->assertActivityMemberProjectionMatchesFullProjection($run);
+    }
+
+    public function testActivityHistoryIndexPreservesFallbackAfterOlderWriterAppends(): void
+    {
+        [$run, $execution, $task] = $this->scaffoldLeasedAttempt('activity-index-legacy-writer');
+        $run->refresh();
+        $indexed = WorkflowHistoryEvent::indexedForActivity($run, $execution->id);
+        $this->assertNotNull($indexed);
+        $this->assertSame(2, $indexed->count());
+        $indexedThrough = (int) $run->activity_history_index_through;
+        $event = WorkflowHistoryEvent::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => (int) $run->last_history_sequence + 1,
+            'event_type' => HistoryEventType::RepairRequested,
+            'workflow_task_id' => $task->id,
+            'payload' => [
+                'task_type' => 'activity',
+            ],
+            'recorded_at' => now(),
+        ]);
+        $run->forceFill([
+            'last_history_sequence' => $event->sequence,
+        ])->save();
+
+        WorkflowHistoryEvent::record($run, HistoryEventType::SignalReceived, [
+            'signal_id' => 'new-after-legacy',
+            'signal_name' => 'new-after-legacy',
+        ]);
+        $run->refresh();
+        $this->assertSame($indexedThrough, (int) $run->activity_history_index_through);
+        $this->assertNull(WorkflowHistoryEvent::indexedForActivity($run, $execution->id));
+        $timeline = iterator_to_array(HistoryTimeline::iterateFromHistory($run, $execution->id), false);
+        $this->assertContains($event->id, array_column($timeline, 'id'));
+    }
+
     public function testLongHistoryOutcomesRefreshAffectedMetadataWithoutReadingUnrelatedTimelineRows(): void
     {
         config()->set('workflows.v2.task_dispatch_mode', 'poll');
@@ -866,6 +1286,64 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
                 'signal_name' => 'unrelated',
             ]);
         }
+    }
+
+    private function assertActivityMemberProjectionMatchesFullProjection(WorkflowRun $run): void
+    {
+        $waits = RunWaitProjector::driftStatusForRun($run->fresh());
+        $timeline = RunTimelineProjector::driftStatusForRun($run->fresh());
+        $this->assertTrue($waits['has_projection']);
+        $this->assertTrue($timeline['has_projection']);
+        $this->assertFalse($waits['stale']);
+        $this->assertFalse($timeline['stale']);
+        $summary = WorkflowRunSummary::query()->findOrFail($run->id)->getAttributes();
+        $rebuilt = RunSummaryProjector::project($run->fresh())
+            ->refresh();
+        $this->assertEquals($summary, $rebuilt->getAttributes());
+    }
+
+    /**
+     * @param list<array{query: string, bindings: array<mixed>}> $queries
+     */
+    private function assertNoWholeHistoryRead(array $queries, string $runId): void
+    {
+        $wholeHistoryRead = collect($queries)
+            ->contains(static function (array $query) use ($runId): bool {
+                $sql = $query['query'];
+
+                return str_starts_with(strtolower($sql), 'select *')
+                    && str_contains($sql, 'workflow_history_events')
+                    && ! str_contains($sql, 'indexed_activity_execution_id')
+                    && ! str_contains($sql, 'event_type')
+                    && preg_match('/["`]?sequence["`]?\s*=\s*\?/i', $sql) !== 1
+                    && in_array($runId, $query['bindings'], true);
+            });
+        $this->assertFalse($wholeHistoryRead);
+    }
+
+    /**
+     * @param list<array{query: string, bindings: array<mixed>}> $queries
+     */
+    private function assertNoWholeTaskRead(array $queries, string $runId): void
+    {
+        $wholeTaskReads = collect($queries)
+            ->filter(static function (array $query) use ($runId): bool {
+                $sql = $query['query'];
+
+                return str_starts_with(strtolower($sql), 'select *')
+                    && str_contains($sql, 'workflow_tasks')
+                    && ! str_contains($sql, 'limit 1')
+                    && ! str_contains($sql, 'activity_execution_id')
+                    && ! (str_contains($sql, 'task_type') && in_array(
+                        TaskType::Workflow->value,
+                        $query['bindings'],
+                        true
+                    ))
+                    && preg_match('/\bid["`]?\s+in\s*\(/i', $sql) !== 1
+                    && in_array($runId, $query['bindings'], true);
+            })
+            ->pluck('query');
+        $this->assertSame([], $wholeTaskReads->all());
     }
 
     /**

@@ -1057,10 +1057,22 @@ final class ChildRunHistory
             return null;
         }
 
-        foreach ($origin->childLinks as $link) {
-            if (! $link instanceof WorkflowLink
-                || $link->child_workflow_run_id !== $runId
-                || ! $link->relationLoaded('childRun')) {
+        $linksByRunId = HistoryEventIndex::remember(
+            $origin->childLinks,
+            'child-workflow-links-by-run',
+            static function (Collection $links): array {
+                $indexed = [];
+                foreach ($links as $link) {
+                    if ($link instanceof WorkflowLink) {
+                        $indexed[$link->child_workflow_run_id][] = $link;
+                    }
+                }
+
+                return $indexed;
+            },
+        );
+        foreach ($linksByRunId[$runId] ?? [] as $link) {
+            if ($link->child_workflow_run_id !== $runId || ! $link->relationLoaded('childRun')) {
                 continue;
             }
 

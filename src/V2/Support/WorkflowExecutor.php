@@ -5818,28 +5818,26 @@ final class WorkflowExecutor
             $parentTaskPayload = [];
 
             if (is_int($parentReference['parent_sequence'])) {
-                ChildClosureParentState::hydrate($parentRun);
+                $sequence = $parentReference['parent_sequence'];
 
-                if ($this->startChildRetryIfAvailable(
-                    $parentRun,
-                    $parentReference['parent_sequence'],
-                    $childRun,
-                ) !== null) {
+                if ($this->startChildRetryIfAvailable($parentRun, $sequence, $childRun) !== null) {
                     $this->projectParentAfterChildClosure($parentRun);
 
                     continue;
                 }
 
                 try {
-                    WorkflowStepHistory::assertCompatible(
+                    [$resolutionEvent, $parallelMetadataPath] = ChildClosureParentState::recordResolution(
                         $parentRun,
-                        $parentReference['parent_sequence'],
-                        WorkflowStepHistory::CHILD_WORKFLOW,
-                    );
-                    WorkflowStepHistory::assertTypedHistoryRecorded(
-                        $parentRun,
-                        $parentReference['parent_sequence'],
-                        WorkflowStepHistory::CHILD_WORKFLOW,
+                        $sequence,
+                        $childRun,
+                        $this->historyProjectionRole() instanceof DefaultHistoryProjectionRole,
+                        fn (): WorkflowHistoryEvent => $this->recordChildResolution(
+                            $parentRun,
+                            null,
+                            $sequence,
+                            $childRun
+                        ),
                     );
                 } catch (HistoryEventShapeMismatchException) {
                     $this->projectParentAfterChildClosure($parentRun);
@@ -5847,19 +5845,7 @@ final class WorkflowExecutor
                     continue;
                 }
 
-                // Every closer persists its outcome before checking the shared barrier.
-                // The next parent-lock holder must not depend on a stale child snapshot.
-                $resolutionEvent = $this->recordChildResolution(
-                    $parentRun,
-                    null,
-                    $parentReference['parent_sequence'],
-                    $childRun,
-                );
                 $parentTaskPayload = WorkflowTaskPayload::forChildResolution($resolutionEvent);
-                $parallelMetadataPath = ChildRunHistory::parallelGroupPathForSequence(
-                    $parentRun,
-                    $parentReference['parent_sequence'],
-                );
                 $childStatus = ChildRunHistory::resolvedStatus($resolutionEvent, $childRun);
 
                 if (
@@ -5872,18 +5858,19 @@ final class WorkflowExecutor
                         lockHistoryForUpdate: true,
                     )
                 ) {
-                    $this->projectParentAfterChildClosure($parentRun);
+                    ChildResolutionProjectionContext::run(
+                        $parentRun,
+                        null,
+                        $resolutionEvent,
+                        fn () => $this->projectParentAfterChildClosure($parentRun, intermediateClosure: true),
+                    );
 
                     continue;
                 }
 
                 if (
                     $parallelMetadataPath !== []
-                    && ! $this->recordClosedParallelChildResolutions(
-                        $parentRun,
-                        $parallelMetadataPath,
-                        $parentReference['parent_sequence'],
-                    )
+                    && ! $this->recordClosedParallelChildResolutions($parentRun, $parallelMetadataPath, $sequence)
                 ) {
                     $this->projectParentAfterChildClosure($parentRun);
 
@@ -5920,9 +5907,15 @@ final class WorkflowExecutor
         }
     }
 
-    private function projectParentAfterChildClosure(WorkflowRun $parentRun): void
-    {
-        $this->projectRun($parentRun->fresh(ChildClosureParentState::PROJECTION_RELATIONS));
+    private function projectParentAfterChildClosure(
+        WorkflowRun $parentRun,
+        bool $intermediateClosure = false,
+    ): void {
+        $role = $this->historyProjectionRole();
+        $relations = $intermediateClosure && $role instanceof DefaultHistoryProjectionRole
+            ? [] : ChildClosureParentState::PROJECTION_RELATIONS;
+
+        $role->projectRun($parentRun->fresh($relations) ?? $parentRun);
     }
 
     /**

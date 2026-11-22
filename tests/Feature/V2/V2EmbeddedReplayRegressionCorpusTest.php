@@ -104,7 +104,9 @@ use Workflow\V2\Support\ReplayDiff;
 use Workflow\V2\Support\RunActivityView;
 use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunLineageView;
+use Workflow\V2\Support\RunSummaryProjector;
 use Workflow\V2\Support\RunTimelineProjector;
+use Workflow\V2\Support\RunWaitProjector;
 use Workflow\V2\Support\ScheduleManager;
 use Workflow\V2\Support\ServiceCallPrincipal;
 use Workflow\V2\Support\ServiceCallScheduler;
@@ -3375,6 +3377,73 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertLiveFanOutRecordsEvidenceHistory($fixture);
     }
 
+    public function testOutOfOrderFanOutCorpusProjectsOnlyTheChangedActivity(): void
+    {
+        $path = self::FIXTURE_DIR . '/fan-out-activity-out-of-order-member-projection.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The out-of-order activity projection evidence is absent.');
+        }
+        $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        self::stopWorkers();
+        config()
+            ->set('queue.default', 'redis');
+        Queue::fake();
+        $this->freezeTime();
+
+        $workflow = WorkflowStub::make(
+            $fixture['workflow']['type'],
+            $fixture['history'][1]['payload']['workflow_instance_id']
+        );
+        $workflow->start(...$fixture['workflow']['arguments']);
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $this->runReadyTaskOfType($run->id, TaskType::Workflow);
+        $members = $run->activityExecutions()
+            ->pluck('id', 'sequence');
+        $tasks = $run->tasks()
+            ->where('task_type', TaskType::Activity->value)->get()
+            ->keyBy(static fn (WorkflowTask $task): string => $task->payload['activity_execution_id']);
+        $completions = array_values(array_filter(
+            $fixture['history'],
+            static fn (array $event): bool => $event['event_type'] === 'ActivityCompleted',
+        ));
+
+        foreach ($completions as $position => $event) {
+            $member = $members[$event['payload']['sequence']];
+            $nextSequence = $fixture['parallel_activity_member_projection']['next_open_sequence_after_completion'][$position];
+            DB::enableQueryLog();
+            try {
+                $this->app->call([new RunActivityTask($tasks[$member]->id), 'handle']);
+                $queries = DB::getQueryLog();
+            } finally {
+                DB::disableQueryLog();
+                DB::flushQueryLog();
+            }
+
+            $summary = $run->summary()
+                ->sole();
+            if ($nextSequence !== null) {
+                $wideReads = array_values(array_filter($queries, static fn (array $query): bool =>
+                    str_starts_with(strtolower($query['query']), 'select *')
+                    && str_contains($query['query'], 'workflow_history_events')
+                    && ! str_contains($query['query'], 'indexed_activity_execution_id')
+                    && ! str_contains($query['query'], 'event_type')
+                    && preg_match('/["`]?sequence["`]?\s*=\s*\?/i', $query['query']) !== 1
+                    && in_array($run->id, $query['bindings'], true)));
+                $this->assertSame([], array_column($wideReads, 'query'), 'The member reread the entire run history.');
+                $this->assertSame($members[$nextSequence], $summary->resume_source_id);
+            }
+            $this->assertFalse(RunWaitProjector::driftStatusForRun($run->fresh())['stale']);
+            $this->assertFalse(RunTimelineProjector::driftStatusForRun($run->fresh())['stale']);
+            $this->assertEquals(
+                $summary->getAttributes(),
+                RunSummaryProjector::project($run->fresh())->getAttributes()
+            );
+        }
+
+        $this->runReadyTaskOfType($run->id, TaskType::Workflow);
+        $this->assertRecordedFanOutHistory($fixture, $workflow);
+    }
+
     /**
      * @param array<string, mixed> $fixture
      */
@@ -3503,10 +3572,18 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             $this->app->call([$job, 'handle']);
         }
 
+        $this->assertRecordedFanOutHistory($fixture, $workflow);
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function assertRecordedFanOutHistory(array $fixture, WorkflowStub $workflow): void
+    {
         $this->assertTrue($workflow->refresh()->completed());
         $this->assertSame($fixture['expected']['result'], $workflow->output());
         $recorded = WorkflowHistoryEvent::query()
-            ->where('workflow_run_id', $runId)
+            ->where('workflow_run_id', $workflow->runId())
             ->orderBy('sequence')
             ->get()
             ->map(static fn (WorkflowHistoryEvent $event): array => [

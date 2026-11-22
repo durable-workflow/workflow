@@ -384,7 +384,12 @@ final class ActivityOutcomeRejectionAuditTest extends TestCase
     {
         $attributes = $run->fresh()
             ->getAttributes();
-        unset($attributes['last_history_sequence'], $attributes['updated_at']);
+        // History append bookkeeping can advance without changing the run or its effects.
+        unset(
+            $attributes['last_history_sequence'],
+            $attributes['step_history_index_through'],
+            $attributes['updated_at'],
+        );
 
         return [
             $attributes,

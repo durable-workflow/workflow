@@ -22,6 +22,7 @@ final class RunWaitProjector
     /**
      * Apply bounded task metadata to its selected wait and every child outcome
      * already assigned to the same task, without rebuilding the wait snapshot.
+     * An activity wait keeps the activity task that executed the attempt.
      */
     public static function projectWorkflowTaskClaim(WorkflowRun $run, WorkflowTask $task, ?string $waitId): void
     {
@@ -36,6 +37,7 @@ final class RunWaitProjector
         if ($waitId !== null && $waitId !== '') {
             $selected = $waitModel::query()
                 ->where('workflow_run_id', $run->id)
+                ->where('kind', '<>', 'activity')
                 ->where('wait_id', $waitId);
             HistoryTransactionMeter::affecting($selected, static fn (): int => $selected->update($values));
         }
@@ -134,6 +136,149 @@ final class RunWaitProjector
     }
 
     /**
+     * @param array<string, mixed> $activity
+     */
+    public static function projectActivityWait(WorkflowRun $run, string $executionId, array $activity): bool
+    {
+        $waitModel = self::waitModel();
+        $waitId = 'activity:' . $executionId;
+        $projectionId = self::projectionId($run->id, $waitId);
+        /** @var WorkflowRunWait|null $previous */
+        $previous = $waitModel::query()->find($projectionId);
+
+        if ($previous === null || $previous->position !== WorkflowRunWait::OPENING_TIME_POSITION
+            || $previous->kind !== 'activity'
+            || $previous->history_authority !== RunActivityView::HISTORY_AUTHORITY_TYPED) {
+            return false;
+        }
+
+        self::saveWait(
+            $waitModel,
+            $run,
+            $projectionId,
+            $waitId,
+            RunWaitView::forActivity($run, $executionId, $activity),
+            $previous,
+        );
+        $run->unsetRelation('waits');
+
+        return true;
+    }
+
+    public static function openActivityAfterSequence(WorkflowRun $run, int $sequence, int $last): ?WorkflowRunWait
+    {
+        $waitModel = self::waitModel();
+        return $waitModel::query()->where('workflow_run_id', $run->id)
+            ->where('kind', 'activity')
+            ->where('status', 'open')
+            ->where('sequence', '>', $sequence)
+            ->where('sequence', '<=', $last)
+            ->where('history_authority', RunActivityView::HISTORY_AUTHORITY_TYPED)
+            ->orderBy('sequence')
+            ->lockForUpdate()
+            ->first();
+    }
+
+    public static function projectCompletedChildWait(WorkflowRun $run, WorkflowHistoryEvent $event): bool
+    {
+        $sequence = self::intValue($event->payload['sequence'] ?? null);
+        $childCallId = self::stringValue($event->payload['child_call_id'] ?? null);
+        $childRunId = self::stringValue($event->payload['child_workflow_run_id'] ?? null);
+        $childInstanceId = self::stringValue($event->payload['child_workflow_instance_id'] ?? null);
+        $label = self::stringValue($event->payload['child_workflow_type'] ?? null)
+            ?? self::stringValue($event->payload['child_workflow_class'] ?? null);
+        $path = ParallelChildGroup::metadataPathFromPayload($event->payload);
+        if ($event->event_type !== HistoryEventType::ChildRunCompleted
+            || $sequence === null || $childCallId === null || $childRunId === null
+            || $childInstanceId === null || $label === null || count($path) !== 1
+            || ! str_starts_with($path[0]['parallel_group_id'], 'parallel-children:')) {
+            return false;
+        }
+
+        $waitModel = self::waitModel();
+        $waitId = 'child:' . $childCallId;
+        $projectionId = self::projectionId($run->id, $waitId);
+        /** @var WorkflowRunWait|null $previous */
+        $previous = $waitModel::query()->find($projectionId);
+        if ($previous === null || ! self::isOpenChildGroupWait($previous, $path[0]['parallel_group_id'])
+            || $previous->kind !== 'child' || $previous->status !== 'open' || $previous->sequence !== $sequence
+            || $previous->resume_source_id !== $childRunId || $previous->target_name !== $childInstanceId
+            || $previous->target_type !== $label
+            || ParallelChildGroup::metadataPathFromPayload($previous->payload) !== $path) {
+            return false;
+        }
+
+        self::saveWait($waitModel, $run, $projectionId, $waitId, [
+            ...$previous->payload,
+            'status' => 'resolved',
+            'source_status' => RunStatus::Completed->value,
+            'summary' => sprintf('Child workflow %s completed.', $label),
+            'resolved_at' => $event->recorded_at ?? $event->created_at,
+        ], $previous);
+        $run->unsetRelation('waits');
+
+        return true;
+    }
+
+    public static function openChildWaitAfterCompletion(
+        WorkflowRun $run,
+        string $currentWaitId,
+        WorkflowHistoryEvent $event,
+    ): ?WorkflowRunWait {
+        $childCallId = self::stringValue($event->payload['child_call_id'] ?? null);
+        $sequence = self::intValue($event->payload['sequence'] ?? null);
+        $path = ParallelChildGroup::metadataPathFromPayload($event->payload);
+        if ($childCallId === null || $sequence === null || count($path) !== 1
+            || ! str_starts_with($path[0]['parallel_group_id'], 'parallel-children:')) {
+            return null;
+        }
+
+        $waitModel = self::waitModel();
+        $query = $waitModel::query()->where('workflow_run_id', $run->id)
+            ->where('kind', 'child')
+            ->where('status', 'open');
+        /** @var WorkflowRunWait|null $current */
+        $current = (clone $query)->where('wait_id', $currentWaitId)
+            ->first();
+        if (! self::isOpenChildGroupWait($current, $path[0]['parallel_group_id'])) {
+            return null;
+        }
+
+        if ($currentWaitId !== 'child:' . $childCallId) {
+            return $current;
+        }
+
+        /** @var WorkflowRunWait|null $next */
+        $end = $path[0]['parallel_group_base_sequence'] + $path[0]['parallel_group_size'] - 1;
+        $next = $query->where('sequence', '>', $sequence)
+            ->where('sequence', '<=', $end)
+            ->orderBy('sequence')
+            ->first();
+
+        return self::isOpenChildGroupWait($next, $path[0]['parallel_group_id']) ? $next : null;
+    }
+
+    public static function openSiblingChildWait(
+        WorkflowRun $run,
+        string $groupId,
+        int $first,
+        int $last,
+        int $closed,
+    ): ?WorkflowRunWait {
+        $waitModel = self::waitModel();
+        /** @var WorkflowRunWait|null $wait */
+        $wait = $waitModel::query()->where('workflow_run_id', $run->id)
+            ->where('kind', 'child')
+            ->where('status', 'open')
+            ->whereBetween('sequence', [$first, $last])
+            ->where('sequence', '<>', $closed)
+            ->orderBy('sequence')
+            ->first();
+
+        return self::isOpenChildGroupWait($wait, $groupId) ? $wait : null;
+    }
+
+    /**
      * @param list<array<string, mixed>>|null $waits
      * @return list<WorkflowRunWait>
      */
@@ -143,7 +288,7 @@ final class RunWaitProjector
         $waitModel = self::waitModel();
         $seen = [];
         $projected = [];
-        $positions = self::chronologicalPositions($waits);
+        $positions = self::openingPositions($waits);
 
         foreach (array_chunk(array_values($waits), 100, true) as $page) {
             $projectionIds = [];
@@ -158,46 +303,15 @@ final class RunWaitProjector
             foreach ($page as $position => $wait) {
                 $waitId = self::waitId($wait, $position);
                 $projectionId = self::projectionId($run->id, $waitId);
-                $payload = self::normalizedPayload($wait);
                 $seen[] = $projectionId;
-
-                /** @var WorkflowRunWait $row */
-                $row = IdempotentProjectionUpsert::upsert(
+                $row = self::saveWait(
                     $waitModel,
-                    [
-                        'id' => $projectionId,
-                    ],
-                    [
-                        'workflow_run_id' => $run->id,
-                        'workflow_instance_id' => $run->workflow_instance_id,
-                        'wait_id' => $waitId,
-                        'position' => $positions[$waitId],
-                        'kind' => self::stringValue($wait['kind'] ?? null) ?? 'unknown',
-                        'sequence' => self::intValue($wait['sequence'] ?? null),
-                        'status' => self::stringValue($wait['status'] ?? null) ?? 'unknown',
-                        'source_status' => self::stringValue($wait['source_status'] ?? null),
-                        'summary' => self::stringValue($wait['summary'] ?? null),
-                        'opened_at' => self::timestamp($wait['opened_at'] ?? null),
-                        'deadline_at' => self::timestamp($wait['deadline_at'] ?? null),
-                        'resolved_at' => self::timestamp($wait['resolved_at'] ?? null),
-                        'target_name' => self::stringValue($wait['target_name'] ?? null),
-                        'target_type' => self::stringValue($wait['target_type'] ?? null),
-                        'task_backed' => (bool) ($wait['task_backed'] ?? false),
-                        'external_only' => (bool) ($wait['external_only'] ?? false),
-                        'resume_source_kind' => self::stringValue($wait['resume_source_kind'] ?? null),
-                        'resume_source_id' => self::stringValue($wait['resume_source_id'] ?? null),
-                        'task_id' => self::stringValue($wait['task_id'] ?? null),
-                        'task_type' => self::stringValue($wait['task_type'] ?? null),
-                        'task_status' => self::stringValue($wait['task_status'] ?? null),
-                        'command_id' => self::stringValue($wait['command_id'] ?? null),
-                        'command_sequence' => self::intValue($wait['command_sequence'] ?? null),
-                        'command_status' => self::stringValue($wait['command_status'] ?? null),
-                        'command_outcome' => self::stringValue($wait['command_outcome'] ?? null),
-                        'history_authority' => self::stringValue($wait['history_authority'] ?? null),
-                        'history_unsupported_reason' => self::stringValue($wait['history_unsupported_reason'] ?? null),
-                        'payload' => $payload,
-                    ],
+                    $run,
+                    $projectionId,
+                    $waitId,
+                    $wait,
                     $existing->get($projectionId),
+                    $positions[$waitId] ?? WorkflowRunWait::OPENING_TIME_POSITION,
                 );
 
                 if ($collectRows) {
@@ -274,6 +388,71 @@ final class RunWaitProjector
         ];
     }
 
+    private static function isOpenChildGroupWait(?WorkflowRunWait $wait, string $groupId): bool
+    {
+        return $wait !== null
+            && $wait->position === WorkflowRunWait::OPENING_TIME_POSITION
+            && $wait->history_authority === ChildRunHistory::HISTORY_AUTHORITY_TYPED
+            && $wait->resume_source_kind === 'child_workflow_run'
+            && $wait->task_id === null
+            && ($wait->payload['parallel_group_id'] ?? null) === $groupId;
+    }
+
+    /**
+     * @param class-string<WorkflowRunWait> $waitModel
+     * @param array<string, mixed> $wait
+     */
+    private static function saveWait(
+        string $waitModel,
+        WorkflowRun $run,
+        string $projectionId,
+        string $waitId,
+        array $wait,
+        ?WorkflowRunWait $existing,
+        int $position = WorkflowRunWait::OPENING_TIME_POSITION,
+    ): WorkflowRunWait {
+        /** @var WorkflowRunWait $row */
+        $row = IdempotentProjectionUpsert::upsert(
+            $waitModel,
+            [
+                'id' => $projectionId,
+            ],
+            [
+                'workflow_run_id' => $run->id,
+                'workflow_instance_id' => $run->workflow_instance_id,
+                'wait_id' => $waitId,
+                'position' => $position,
+                'kind' => self::stringValue($wait['kind'] ?? null) ?? 'unknown',
+                'sequence' => self::intValue($wait['sequence'] ?? null),
+                'status' => self::stringValue($wait['status'] ?? null) ?? 'unknown',
+                'source_status' => self::stringValue($wait['source_status'] ?? null),
+                'summary' => self::stringValue($wait['summary'] ?? null),
+                'opened_at' => self::timestamp($wait['opened_at'] ?? null),
+                'deadline_at' => self::timestamp($wait['deadline_at'] ?? null),
+                'resolved_at' => self::timestamp($wait['resolved_at'] ?? null),
+                'target_name' => self::stringValue($wait['target_name'] ?? null),
+                'target_type' => self::stringValue($wait['target_type'] ?? null),
+                'task_backed' => (bool) ($wait['task_backed'] ?? false),
+                'external_only' => (bool) ($wait['external_only'] ?? false),
+                'resume_source_kind' => self::stringValue($wait['resume_source_kind'] ?? null),
+                'resume_source_id' => self::stringValue($wait['resume_source_id'] ?? null),
+                'task_id' => self::stringValue($wait['task_id'] ?? null),
+                'task_type' => self::stringValue($wait['task_type'] ?? null),
+                'task_status' => self::stringValue($wait['task_status'] ?? null),
+                'command_id' => self::stringValue($wait['command_id'] ?? null),
+                'command_sequence' => self::intValue($wait['command_sequence'] ?? null),
+                'command_status' => self::stringValue($wait['command_status'] ?? null),
+                'command_outcome' => self::stringValue($wait['command_outcome'] ?? null),
+                'history_authority' => self::stringValue($wait['history_authority'] ?? null),
+                'history_unsupported_reason' => self::stringValue($wait['history_unsupported_reason'] ?? null),
+                'payload' => self::normalizedPayload($wait),
+            ],
+            $existing,
+        );
+
+        return $row;
+    }
+
     private static function historyProjectionMaintenanceRole(): HistoryProjectionMaintenanceRole
     {
         /** @var HistoryProjectionMaintenanceRole $role */
@@ -317,17 +496,24 @@ final class RunWaitProjector
     }
 
     /**
-     * Keep stored order independent of status. Otherwise closing one open
-     * wait and opening the next rewrites every retained row twice.
+     * Parallel member updates can move a wait in opening order. In those runs,
+     * sort every wait by its own opening time so a move needs no sibling writes.
+     * Other runs keep their existing rank representation.
      *
      * @param list<array<string, mixed>> $waits
      * @return array<string, int>
      */
-    private static function chronologicalPositions(array $waits): array
+    private static function openingPositions(array $waits): array
     {
         $ordered = [];
 
         foreach (array_values($waits) as $position => $wait) {
+            $group = self::stringValue($wait['parallel_group_id'] ?? null);
+            if ($group !== null && (str_starts_with($group, 'parallel-activities:')
+                || str_starts_with($group, 'parallel-children:'))) {
+                return [];
+            }
+
             $ordered[] = [
                 'id' => self::waitId($wait, $position),
                 'opened_at' => self::timestamp($wait['opened_at'] ?? null)?->getTimestampMs() ?? PHP_INT_MAX,
@@ -337,7 +523,6 @@ final class RunWaitProjector
         usort($ordered, static fn (array $left, array $right): int =>
             ($left['opened_at'] <=> $right['opened_at']) ?: ($left['id'] <=> $right['id']));
         $positions = [];
-
         foreach ($ordered as $position => $wait) {
             $positions[$wait['id']] = $position;
         }

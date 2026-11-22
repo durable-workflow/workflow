@@ -6,6 +6,7 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use Tests\Fixtures\V2\TestFanOutPayloadChildWorkflow;
 use Tests\Fixtures\V2\TestParallelChildWorkflow;
 use Tests\Fixtures\V2\TestParallelGreetingChildrenWorkflow;
 use Tests\TestCase;
@@ -18,15 +19,133 @@ use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Models\WorkflowTimelineEntry;
+use Workflow\V2\Support\RunLineageProjector;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\RunTimelineProjector;
+use Workflow\V2\Support\RunWaitProjector;
 use Workflow\V2\Support\TaskRepairCandidates;
 use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub;
 
 final class V2EmbeddedParallelChildConcurrencyTest extends TestCase
 {
+    public function testParallelChildClosureProjectionsMatchFullProjectionAfterEveryMember(): void
+    {
+        self::stopWorkers();
+        Queue::fake();
+        $this->freezeTime();
+        $workflow = WorkflowStub::make(TestFanOutPayloadChildWorkflow::class, 'parallel-child-projection');
+        $workflow->start(5, 8);
+        $parentId = $workflow->runId();
+        $this->runWorkflowTask($parentId);
+        $childIds = WorkflowLink::query()->where('parent_workflow_run_id', $parentId)
+            ->orderBy('sequence')
+            ->pluck('child_workflow_run_id')
+            ->all();
+        $this->assertCount(5, $childIds);
+
+        foreach ([2, 0, 1, 3, 4] as $closed => $index) {
+            $this->travel(1)
+                ->seconds();
+            if ($closed === 2) {
+                $this->assertSame(1, WorkflowRunLineageEntry::query()
+                    ->where('workflow_run_id', $parentId)
+                    ->where('direction', 'child')
+                    ->where('related_workflow_run_id', $childIds[$index])
+                    ->delete());
+            } elseif ($closed === 3) {
+                $parent = WorkflowRun::query()->findOrFail($parentId);
+                $historyHead = $parent->last_history_sequence;
+                $parent->forceFill([
+                    'step_history_index_through' => $historyHead - 1,
+                ])->save();
+                $this->assertSame(1, WorkflowTimelineEntry::query()
+                    ->where('workflow_run_id', $parentId)
+                    ->where('sequence', $historyHead)
+                    ->delete());
+            }
+            DB::enableQueryLog();
+            try {
+                $this->runWorkflowTask($childIds[$index]);
+                $queries = DB::getQueryLog();
+            } finally {
+                DB::disableQueryLog();
+                DB::flushQueryLog();
+            }
+            $indexedParentReads = collect($queries)
+                ->filter(static fn (array $query): bool =>
+                                str_starts_with(strtolower($query['query']), 'select')
+                                && str_contains($query['query'], 'indexed_step_sequence')
+                                && in_array($parentId, $query['bindings'], true));
+            $this->assertCount($closed < 3 ? 2 : 0, $indexedParentReads);
+            if ($closed < 2) {
+                $readWholeParentHistory = collect($queries)
+                    ->contains(static fn (array $query): bool =>
+                                        str_starts_with(strtolower($query['query']), 'select *')
+                                        && str_contains($query['query'], 'workflow_history_events')
+                                        && ! str_contains($query['query'], 'indexed_step_sequence')
+                                        && ! str_contains($query['query'], 'event_type')
+                                        && in_array($parentId, $query['bindings'], true));
+                $this->assertFalse($readWholeParentHistory);
+            }
+
+            $selectedProjectedWait = collect($queries)
+                ->contains(static fn (array $query): bool =>
+                                str_starts_with(strtolower($query['query']), 'select')
+                                && str_contains($query['query'], 'workflow_run_waits')
+                                && str_contains($query['query'], 'wait_id')
+                                && in_array($parentId, $query['bindings'], true)
+                                && in_array('open', $query['bindings'], true));
+            $this->assertSame($closed < 3, $selectedProjectedWait);
+            $readsParentLineage = collect($queries)
+                ->contains(static fn (array $query): bool =>
+                    str_starts_with(strtolower($query['query']), 'select')
+                    && str_contains($query['query'], 'workflow_run_lineage_entries')
+                    && ! str_contains(strtolower($query['query']), ' limit ')
+                    && in_array($parentId, $query['bindings'], true));
+            $this->assertSame($closed >= 2, $readsParentLineage);
+            foreach (['workflow_run_timeline_entries', 'workflow_run_waits'] as $table) {
+                $readsParentRows = collect($queries)
+                    ->contains(static fn (array $query): bool =>
+                                        str_starts_with(strtolower($query['query']), 'select')
+                                        && str_contains($query['query'], $table)
+                                        && str_contains($query['query'], ' in (')
+                                        && in_array($parentId, $query['bindings'], true));
+                $this->assertSame($closed >= 3, $readsParentRows, $table);
+            }
+            $this->assertSame($closed === 4 ? 1 : 0, $this->openTasks($parentId)->count());
+            $parent = WorkflowRun::query()->findOrFail($parentId);
+
+            foreach ([RunWaitProjector::class, RunTimelineProjector::class, RunLineageProjector::class] as $projector) {
+                $drift = $projector::driftStatusForRun($parent->fresh());
+                $this->assertTrue($drift['has_projection'], $projector);
+                $this->assertFalse($drift['stale'], $projector);
+            }
+
+            $stored = WorkflowRunSummary::query()->findOrFail($parentId)->getAttributes();
+            $connection = $parent->getConnection();
+            $connection->beginTransaction();
+            try {
+                $rebuilt = RunSummaryProjector::project($parent->fresh())->refresh()->getAttributes();
+                $this->assertEquals($stored, $rebuilt);
+            } finally {
+                // The next child must see the stored projection from the real transition.
+                $connection->rollBack();
+            }
+        }
+
+        $this->runWorkflowTask($parentId);
+        $workflow->refresh();
+        $this->assertSame([
+            'members' => 5,
+            'total_bytes' => 40,
+        ], $workflow->output());
+    }
+
     public function testThreeFourChildParentsCompleteWithConcurrentQueueWorkers(): void
     {
         $this->enableAutomaticTaskRepair();
