@@ -256,6 +256,42 @@ final class V2CoalescedTaskPublishTest extends TestCase
             ->count());
     }
 
+    public function testChildSummaryDeadlocksDoNotPreventLaterBatchesFromPublishing(): void
+    {
+        Queue::fake();
+        $workflow = WorkflowStub::make(TestFanOutPayloadChildWorkflow::class, 'coalesced-child-summary-deadlock');
+        $workflow->start(51, 16);
+        $scheduling = $this->readyWorkflowTask($workflow->runId());
+        Queue::fake();
+        $deadlocks = 0;
+        $active = true;
+        $scheduling->getConnection()
+            ->beforeExecuting(function (string $sql) use (&$deadlocks, &$active): void {
+                $pushed = Queue::pushed(RunWorkflowTask::class)->count();
+                if (
+                    $active
+                    && $deadlocks < 2
+                    && str_starts_with(strtolower($sql), 'select ')
+                    && str_contains($sql, 'workflow_run_summaries')
+                    && $pushed > 0
+                    && $pushed < 51
+                ) {
+                    $deadlocks++;
+
+                    throw $this->deadlock();
+                }
+            });
+
+        $this->expectExceptionMessage('Deadlock found');
+        try {
+            $this->app->call([new RunWorkflowTask($scheduling->id), 'handle']);
+        } finally {
+            $active = false;
+            $this->assertSame(2, $deadlocks);
+            Queue::assertPushed(RunWorkflowTask::class, 51);
+        }
+    }
+
     protected function startQueueWorkersAutomatically(): bool
     {
         return false;

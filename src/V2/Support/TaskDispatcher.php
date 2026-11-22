@@ -271,7 +271,13 @@ final class TaskDispatcher
             // Wait for post-commit writes and this run's final publish.
             // Independent child runs can refresh before later batches.
             if (array_key_last($batch) >= $lastWrite && $readyRuns !== []) {
-                $failure = self::flushRunSummaries(self::takeDeferredSummaries($readyRuns), $failure);
+                try {
+                    $failure = self::flushRunSummaries(self::takeDeferredSummaries($readyRuns), $failure);
+                } catch (Throwable $throwable) {
+                    // A summary transaction can exhaust its retries. Keep
+                    // publishing the remaining committed jobs before reporting it.
+                    $failure ??= $throwable;
+                }
                 $readyRuns = [];
             }
         }
