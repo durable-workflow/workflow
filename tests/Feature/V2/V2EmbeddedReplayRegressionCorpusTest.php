@@ -1383,6 +1383,80 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertSame($scenario['flagged'], array_column($diagnostics['findings'], 'symbol'));
     }
 
+    public function testServiceChildAdmissionCorpusCountsOnceAfterARolledBackCompletion(): void
+    {
+        $path = self::FIXTURE_DIR . '/service-child-admission-counts-once.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The service child admission fixture is absent.');
+        }
+
+        $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $workflow = $fixture['workflow'];
+        $admission = $fixture['service_child_admission'];
+        self::stopWorkers();
+        $this->clearWorkflowState();
+        config([
+            'queue.default' => 'database',
+        ]);
+        Queue::fake();
+
+        $parent = WorkflowStub::make($workflow['type'], 'service-child-admission-corpus');
+        $parent->start(...$workflow['arguments']);
+        $run = WorkflowRun::query()->findOrFail($parent->runId());
+        $task = WorkflowTask::query()->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Workflow->value)->sole();
+        $bridge = $this->app->make(WorkflowTaskBridge::class);
+        $this->assertTrue($bridge->claimStatus($task->id, 'service-child-admission-worker')['claimed']);
+        $history = $bridge->historyPayload($task->id);
+        $this->assertNotNull($history);
+        $step = WorkflowFiberRunner::forClass(
+            $workflow['type'],
+            $run->workflow_instance_id,
+            $run->id,
+            $workflow['arguments'],
+            $workflow['payload_codec'],
+            $history['history_events'],
+        )->step();
+        $this->assertStepMatches($fixture['expected'], $step, $fixture['id']);
+
+        config([
+            'workflows.v2.structural_limits.pending_child_count' => 1,
+        ]);
+        try {
+            $bridge->complete($task->id, $step->commands);
+            $this->fail('The two child starts exceeded the pending limit of one.');
+        } catch (StructuralLimitExceededException $exception) {
+            $this->assertSame('pending_child_count', $exception->limitKind->value);
+        }
+
+        $links = WorkflowLink::query()->where('parent_workflow_run_id', $run->id)->where('link_type', 'child_workflow');
+        $this->assertSame(0, $links->count());
+        $this->assertSame(TaskStatus::Leased, $task->refresh()->status);
+
+        config([
+            'workflows.v2.structural_limits.pending_child_count' => $admission['pending_limit'],
+        ]);
+        DB::enableQueryLog();
+        try {
+            $result = $bridge->complete($task->id, $step->commands);
+            $queries = DB::getQueryLog();
+        } finally {
+            DB::disableQueryLog();
+            DB::flushQueryLog();
+        }
+
+        $this->assertTrue($result['completed'], $result['reason'] ?? '');
+        $this->assertCount($admission['pending_limit'], $result['created_task_ids']);
+        $this->assertSame($admission['pending_limit'], $links->count());
+        $pendingCounts = array_filter($queries, static function (array $query): bool {
+            $sql = strtolower($query['query']);
+
+            return str_starts_with($sql, 'select count(') && str_contains($sql, 'workflow_links')
+                && str_contains($sql, 'exists (') && str_contains($sql, 'not in');
+        });
+        $this->assertCount($admission['pending_count_queries'], $pendingCounts);
+    }
+
     public function testServiceCommandPayloadLimitCorpusRefusesOversizedWorkerPayloads(): void
     {
         $this->assertServiceCommandPayloadLimitCorpus(

@@ -7,7 +7,7 @@ namespace Workflow\V2\Support;
 use Closure;
 
 /**
- * Values remembered only while one queued task runs (#1203).
+ * Values remembered only while one task or completion attempt runs (#1203).
  *
  * A workflow task that starts a fan-out repeats the same immutable lookups for
  * every member. Remembering them for the task's duration, and never longer,
@@ -30,18 +30,19 @@ final class TaskScopeMemo
      * @param callable(): T $operation
      * @return T
      */
-    public static function scope(callable $operation): mixed
+    public static function scope(callable $operation, bool $isolated = false): mixed
     {
-        if (self::$values !== null) {
+        if (self::$values !== null && ! $isolated) {
             return $operation();
         }
 
+        $outer = self::$values;
         self::$values = [];
 
         try {
             return $operation();
         } finally {
-            self::$values = null;
+            self::$values = $outer;
         }
     }
 

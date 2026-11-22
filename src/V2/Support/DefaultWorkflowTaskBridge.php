@@ -1611,10 +1611,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
     }
 
     /**
-     * Run one metered transaction (#930): each attempt gets a fresh history
-     * transaction meter, and the lifecycle events its body dispatches are
-     * held back until the transaction has committed, so a refused, failed or
-     * retried attempt dispatches none.
+     * Each attempt gets a fresh history meter and pending-operation counts.
+     * Lifecycle events leave the transaction only after it commits.
      *
      * @template T
      * @param callable(HistoryTransactionMeter): T $body
@@ -1623,8 +1621,11 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
     private static function meteredTransaction(callable $body, int $attempts = 1): mixed
     {
         [$result, $events] = ConfiguredV2Models::connection()->transaction(
-            static fn (): array => LifecycleEventDispatcher::collect(
-                static fn (): mixed => HistoryTransactionMeter::run($body)
+            static fn (): array => TaskScopeMemo::scope(
+                static fn (): array => LifecycleEventDispatcher::collect(
+                    static fn (): mixed => HistoryTransactionMeter::run($body),
+                ),
+                isolated: true,
             ),
             $attempts,
         );
