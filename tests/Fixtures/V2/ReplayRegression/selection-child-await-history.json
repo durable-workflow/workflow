@@ -1,0 +1,40 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "selection-child-await-history",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner", "workflow-executor"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestSelectionLoserHandleAfterStaleWaitWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-22T19:22:00.000000Z"
+    }
+  ],
+  "selection_child_await": {
+    "signals": {"first": "f", "third": "t"},
+    "member": {
+      "selection_group_id": "select-calls:1:2",
+      "member_base_sequence": 1,
+      "member_size": 1,
+      "await_position": 5
+    },
+    "statuses": ["waiting", "resumed"],
+    "result": {"race": "first", "later": "third", "child": "child:loser"}
+  },
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {"type": "start_child_workflow", "parallel_group_index": 0},
+      {"type": "open_signal_wait", "signal_name": "first", "parallel_group_index": 1}
+    ]
+  }
+}

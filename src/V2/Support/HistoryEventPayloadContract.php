@@ -679,7 +679,7 @@ final class HistoryEventPayloadContract
             'reused_recorded_at',
         ],
         'ChildWorkflowAwaited' => ['sequence', 'receipt', 'child_workflow_instance_id',
-            'child_workflow_run_id', 'child_call_id', 'child_workflow_type'],
+            'child_workflow_run_id', 'child_call_id', 'child_workflow_type', 'selection_handle'],
         'ChildRunStarted' => [
             'sequence',
             'child_reservation',

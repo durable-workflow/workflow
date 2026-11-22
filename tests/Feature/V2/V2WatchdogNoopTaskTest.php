@@ -6,6 +6,7 @@ namespace Tests\Feature\V2;
 
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\Queue;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\V2\TestAllChildAndSignalWorkflow;
 use Tests\Fixtures\V2\TestAwaitedChildThenSignalWorkflow;
 use Tests\Fixtures\V2\TestChildAwaitedAfterSignalWorkflow;
@@ -233,6 +234,101 @@ final class V2WatchdogNoopTaskTest extends TestCase
             'later' => 'third',
             'child' => 'child:loser',
         ], $workflow->output());
+    }
+
+    public static function selectionMemberShapes(): iterable
+    {
+        yield 'child' => [false, 1];
+        yield 'group of children' => [true, 2];
+    }
+
+    #[DataProvider('selectionMemberShapes')]
+    public function testMissingSignalSelectionMetadataDoesNotHideAnAwaitedChild(bool $nested, int $childCount): void
+    {
+        $workflow = $this->startWorkflow(TestSelectionLoserHandleAfterStaleWaitWorkflow::class, false, $nested);
+        $runId = $workflow->runId();
+        $workflow->signal('first', 'f');
+        $this->drain($runId);
+        $workflow->signal('third', 't');
+        $this->drain($runId);
+        $this->assertSame('waiting_for_child', WorkflowRunSummary::query()->findOrFail($runId)->liveness_state);
+        $wait = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::ChildWorkflowAwaited)->sole();
+        $this->assertSame('waiting', $wait->payload['selection_handle']['status']);
+        $this->assertSame($childCount, $wait->payload['selection_handle']['member_size']);
+        $this->assertArrayNotHasKey('sequence', $wait->payload);
+
+        // Model a stale open wait whose history cannot prove it belonged to the earlier selection.
+        $event = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::SignalWaitOpened)->get()
+            ->sole(static fn (WorkflowHistoryEvent $event): bool => $event->payload['signal_name'] === 'second');
+        $payload = array_filter(
+            $event->payload,
+            static fn (string $key): bool => ! str_starts_with($key, 'parallel_group_')
+                && ! str_starts_with($key, 'selection_member_'),
+            ARRAY_FILTER_USE_KEY,
+        );
+        $this->assertNotSame($event->payload, $payload);
+        $event->forceFill([
+            'payload' => $payload,
+        ])->save();
+
+        RunSummaryProjector::project(WorkflowRun::query()->findOrFail($runId));
+        $this->assertSame('waiting_for_child', WorkflowRunSummary::query()->findOrFail($runId)->liveness_state);
+
+        $childRunIds = WorkflowLink::query()->where('parent_workflow_run_id', $runId)
+            ->where('link_type', 'child_workflow')
+            ->pluck('child_workflow_run_id');
+        $this->assertCount($childCount, $childRunIds);
+        foreach ($childRunIds as $childRunId) {
+            $this->drain($childRunId);
+        }
+        $this->loseParentTask($runId);
+        $this->assertSame('repair_needed', WorkflowRunSummary::query()->findOrFail($runId)->liveness_state);
+        $this->assertSame(1, TaskWatchdog::runPass(respectThrottle: false)['repaired_missing_tasks']);
+        $this->assertSame(1, $this->openWorkflowTasks($runId)->count());
+        $this->assertSame(0, TaskWatchdog::runPass(respectThrottle: false)['repaired_missing_tasks']);
+    }
+
+    public function testResolvedSelectionHandleAllowsTheFollowingSignalWaitAtTheSamePosition(): void
+    {
+        $workflow = $this->startWorkflow(TestSelectionLoserHandleAfterStaleWaitWorkflow::class, true);
+        $runId = $workflow->runId();
+        $workflow->signal('first', 'f');
+        $this->drain($runId);
+        $workflow->signal('third', 't');
+        $this->drain($runId);
+        $this->drain($this->childRunId($runId));
+        $this->drain($runId);
+
+        $run = WorkflowRun::query()->with('historyEvents')->findOrFail($runId);
+        $records = $run->historyEvents->where('event_type', HistoryEventType::ChildWorkflowAwaited)->values();
+        $signal = $run->historyEvents->sole(static fn (WorkflowHistoryEvent $event): bool =>
+            $event->event_type === HistoryEventType::SignalWaitOpened && ($event->payload['signal_name'] ?? null) === 'after');
+        $this->assertSame(['waiting', 'resumed'], $records->pluck('payload.selection_handle.status')->all());
+        $this->assertSame($records[0]->payload['selection_handle']['await_position'], $signal->payload['sequence']);
+        $this->assertGreaterThan($records[1]->sequence, $signal->sequence);
+        $this->assertWaitingForSignal($runId, 'after');
+        $this->assertWatchdogCreatesNoTasks($runId);
+
+        // An older worker could resume the handle and open the next wait
+        // without writing the resume record.
+        $run->setRelation('historyEvents', $run->historyEvents->reject(
+            static fn (WorkflowHistoryEvent $event): bool => $event->id === $records[1]->id
+        ));
+        RunSummaryProjector::project($run);
+        $this->assertWaitingForSignal($runId, 'after');
+        $this->assertWatchdogCreatesNoTasks($runId);
+
+        $workflow->signal('after', 'go');
+        $this->drain($runId);
+        $this->assertSame([
+            'race' => 'first',
+            'later' => 'third',
+            'child' => 'child:loser',
+            'after' => 'go',
+        ], $workflow->refresh()
+            ->output());
     }
 
     public function testChildCompletedInsideAnAllGroupThatStillNeedsASignalIsNotReoffered(): void
