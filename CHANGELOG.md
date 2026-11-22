@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 2.35.4 - 2026-11-22
+
+- Embedded child-start projections avoid hydrating child arguments in the
+  waiting parent. SQLite batches queue delivery-reference writes after Laravel
+  publishes the jobs and preserves references from newer dispatches. The
+  1,000-child test with 10 KiB arguments fits the default Laravel worker timeout
+  and PHP CLI memory limit on SQLite and MySQL. (#1238)
+
 ## 2.35.3 - 2026-11-22
 
 - Embedded workers refresh each child run after its final dispatch batch. Large
