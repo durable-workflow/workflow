@@ -28,6 +28,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
+use Workflow\V2\Models\WorkflowRunWait;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimelineEntry;
 use Workflow\V2\Support\ActivityOutcomeProjectionContext;
@@ -89,8 +90,12 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
         $this->app->call([new RunWorkflowTask($workflowTask->id), 'handle']);
 
         $bridge = app(ActivityTaskBridge::class);
+        $positions = $run->activityExecutions()
+            ->pluck('sequence', 'id');
         $tasks = $run->tasks()
-            ->where('task_type', TaskType::Activity->value)->orderBy('id')->get();
+            ->where('task_type', TaskType::Activity->value)->get()
+            ->sortBy(static fn (WorkflowTask $task): int => $positions[$task->payload['activity_execution_id']])
+            ->values();
         $this->assertCount(4, $tasks);
         $attempts = [];
         foreach ($tasks as $task) {
@@ -130,11 +135,74 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
         foreach ([1, 0, 3, 2] as $index => $member) {
             $this->travel(1)
                 ->seconds();
-            $outcome = $bridge->complete($attempts[$member], 8);
+            DB::enableQueryLog();
+            try {
+                $outcome = $bridge->complete($attempts[$member], 8);
+                $queries = DB::getQueryLog();
+            } finally {
+                DB::disableQueryLog();
+                DB::flushQueryLog();
+            }
             $this->assertTrue($outcome['recorded']);
             $this->assertSame($index === 3, $outcome['next_task_id'] !== null);
+            if ($index < 3) {
+                $this->assertNoWholeHistoryRead($queries, $run->id);
+                $this->assertNoWholeTaskRead($queries, $run->id);
+            }
+            if ($member === 0) {
+                $this->assertSame(
+                    $tasks[2]->payload['activity_execution_id'],
+                    $run->summary()
+                        ->sole()
+->resume_source_id
+                );
+                $this->assertTrue(collect($queries)->contains(static fn (array $query): bool =>
+                    str_contains($query['query'], 'indexed_open_activity_sequence')
+                    && str_contains($query['query'], 'limit 2')));
+            }
             $this->assertActivityMemberProjectionMatchesFullProjection($run);
         }
+    }
+
+    public function testStaleActivityWaitCannotHideAnEarlierOpenMemberFromDurableHistory(): void
+    {
+        Queue::fake();
+        config()
+            ->set('workflows.v2.task_dispatch_mode', 'poll');
+        $this->freezeTime();
+        $workflow = WorkflowStub::make(TestFanOutPayloadActivityWorkflow::class, 'activity-wait-fallback');
+        $workflow->start(4, 8);
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $workflowTask = $run->tasks()
+            ->where('task_type', TaskType::Workflow->value)->sole();
+        $this->app->call([new RunWorkflowTask($workflowTask->id), 'handle']);
+        $ordered = $run->activityExecutions()
+            ->pluck('id')
+            ->values();
+        $tasks = $run->tasks()
+            ->where('task_type', TaskType::Activity->value)->get()->keyBy(
+                static fn (WorkflowTask $task): string => $task->payload['activity_execution_id'],
+            );
+        $bridge = app(ActivityTaskBridge::class);
+        $first = $bridge->claim($tasks[$ordered[0]]->id, 'first-member');
+        $second = $bridge->claim($tasks[$ordered[1]]->id, 'second-member');
+        $this->assertNotNull($first);
+        $this->assertNotNull($second);
+        $this->assertTrue($bridge->complete($second['activity_attempt_id'], 8)['recorded']);
+
+        WorkflowRunWait::query()
+            ->where('workflow_run_id', $run->id)
+            ->where('resume_source_id', $ordered[2])
+            ->update([
+                'status' => 'cancelled',
+            ]);
+        ActivityExecution::query()->whereKey($ordered[2])->update([
+            'status' => ActivityStatus::Cancelled->value,
+        ]);
+
+        $this->assertTrue($bridge->complete($first['activity_attempt_id'], 8)['recorded']);
+        $this->assertSame($ordered[2], $run->summary()->sole()->resume_source_id);
+        $this->assertActivityMemberProjectionMatchesFullProjection($run);
     }
 
     public function testParallelActivityRetryProjectsOnlyItsMemberAndMatchesFullProjection(): void
@@ -338,6 +406,7 @@ final class V2ActivityOutcomeHistoryRoleTest extends TestCase
         $historyReads = array_values(array_filter($queries, static fn (array $query): bool =>
             str_starts_with($query['query'], 'select ')
             && str_contains($query['query'], 'workflow_history_events')
+            && ! str_contains($query['query'], 'indexed_open_activity_sequence')
             && str_contains($query['query'], 'indexed_activity_execution_id')));
         $this->assertCount(5, $historyReads);
         $this->assertContains($claim['activity_execution_id'], $historyReads[0]['bindings']);

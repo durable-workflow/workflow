@@ -36,6 +36,11 @@ final class RunActivityView
         HistoryEventType::ActivityCancelled,
     ];
 
+    public static function isActivityEvent(HistoryEventType $event): bool
+    {
+        return in_array($event, self::ACTIVITY_EVENTS, true);
+    }
+
     /**
      * @return array<string, mixed>|null
      */
@@ -49,7 +54,7 @@ final class RunActivityView
         $state = [];
         $schedules = 0;
         foreach ($events as $event) {
-            if (! in_array($event->event_type, self::ACTIVITY_EVENTS, true)) {
+            if (! self::isActivityEvent($event->event_type)) {
                 continue;
             }
             $snapshot = ActivitySnapshot::fromEvent($event);
@@ -292,13 +297,7 @@ final class RunActivityView
     private static function activityEvents(WorkflowRun $run): iterable
     {
         return $run->historyEvents
-            ->filter(
-                static fn (WorkflowHistoryEvent $event): bool => in_array(
-                    $event->event_type,
-                    self::ACTIVITY_EVENTS,
-                    true
-                )
-            )
+            ->filter(static fn (WorkflowHistoryEvent $event): bool => self::isActivityEvent($event->event_type))
             ->sortBy('sequence');
     }
 

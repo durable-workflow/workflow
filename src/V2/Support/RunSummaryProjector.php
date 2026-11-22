@@ -213,7 +213,7 @@ final class RunSummaryProjector
             : CurrentRunResolver::forInstance($run->instance);
 
         $isTerminal = $run->status->isTerminal();
-        $activities = $scopedActivities ?? RunActivityView::activitiesForRun($run, decodePayloads: false);
+        $activities = RunActivityView::activitiesForRun($run, decodePayloads: false);
         $timers = RunTimerView::timersForRun($run);
 
         $openActivity = $isTerminal
@@ -569,20 +569,11 @@ final class RunSummaryProjector
             $failureIds,
         );
 
-        $scopedWait = ($scopeActivityTimeline && self::projectParallelActivityWait(
-            $run,
-            $activityResolution,
-            $activities
-        ))
-            || ($scopeChildTimeline && $previousSummary->wait_kind === 'child' && $waitKind === 'child'
-                && $previousSummary->next_task_id === null && $selectedNextTask === null
-                && RunWaitProjector::projectCompletedChildWait($run, $childEvent));
+        $scopedWait = $scopeChildTimeline && $previousSummary->wait_kind === 'child' && $waitKind === 'child'
+            && $previousSummary->next_task_id === null && $selectedNextTask === null
+            && RunWaitProjector::projectCompletedChildWait($run, $childEvent);
         if (! $scopedWait) {
-            RunWaitProjector::project(
-                $run,
-                RunWaitView::forRun($run, $scopedActivities === null ? $activities : null, $timers),
-                collectRows: false,
-            );
+            RunWaitProjector::project($run, RunWaitView::forRun($run, $activities, $timers), collectRows: false);
         }
         if ($scopeChildTimeline) {
             RunTimelineProjector::projectChildResolutionEvent($run, $childEvent);
@@ -732,13 +723,19 @@ final class RunSummaryProjector
         }
 
         $movesSelection = $selected === $changed && $event->event_type === HistoryEventType::ActivityCompleted;
+        $selectedSequence = null;
         if ($movesSelection) {
-            // Only advance to the immediately following authored member. A hole
-            // in the open waits needs authoritative selection from full history.
-            $selected = RunWaitProjector::openActivityAtSequence($run, $sequence + 1);
-            if ($selected === null) {
+            $lastSequence = $path[0]['parallel_group_base_sequence'] + $path[0]['parallel_group_size'] - 1;
+            $next = OpenActivityHistoryIndex::nextInGroup($run, $sequence, $lastSequence);
+            if ($next === null) {
                 return null;
             }
+            $wait = RunWaitProjector::openActivityAfterSequence($run, $sequence, $lastSequence);
+            if ($wait?->resume_source_id !== $next['id'] || $wait?->sequence !== $next['sequence']) {
+                return null;
+            }
+            $selected = $next['id'];
+            $selectedSequence = $next['sequence'];
         }
 
         $activityIds = $selected === $changed ? [$changed] : [$selected, $changed];
@@ -761,7 +758,7 @@ final class RunSummaryProjector
         $open = collect($activities)
             ->first(static fn (array $activity): bool => self::isAuthoritativeOpenActivity($activity));
         if (($open['id'] ?? null) !== $selected
-            || ($movesSelection && ($open['sequence'] ?? null) !== $sequence + 1)) {
+            || ($movesSelection && ($open['sequence'] ?? null) !== $selectedSequence)) {
             return null;
         }
 

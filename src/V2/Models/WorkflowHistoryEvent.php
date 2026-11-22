@@ -22,6 +22,7 @@ use Workflow\V2\Support\HistoryRecordedAt;
 use Workflow\V2\Support\HistoryTransactionMeter;
 use Workflow\V2\Support\LinkedServiceCallCloser;
 use Workflow\V2\Support\MemoPayload;
+use Workflow\V2\Support\OpenActivityHistoryIndex;
 use Workflow\V2\Support\PendingSignalCloser;
 use Workflow\V2\Support\ServiceCallWorkflowDelivery;
 use Workflow\V2\Support\TerminalCancellationHistory;
@@ -44,7 +45,7 @@ class WorkflowHistoryEvent extends Model
 
     protected $guarded = [];
 
-    protected $hidden = ['indexed_activity_execution_id', 'indexed_step_sequence'];
+    protected $hidden = ['indexed_activity_execution_id', 'indexed_step_sequence', OpenActivityHistoryIndex::SEQUENCE];
 
     protected $keyType = 'string';
 
@@ -343,7 +344,9 @@ class WorkflowHistoryEvent extends Model
                 }
 
                 /** @var self $event */
-                $event = ConfiguredV2Models::query('history_event_model', self::class)->create($values);
+                $event = ConfiguredV2Models::query('history_event_model', self::class)->newModelInstance($values);
+                $openIndexComplete = OpenActivityHistoryIndex::prepare($lockedRun, $event, $indexedActivity);
+                $event->save();
                 ExecutionTracing::observeOutcome($lockedRun, $taskModel, $event);
 
                 $updates = [
@@ -356,6 +359,9 @@ class WorkflowHistoryEvent extends Model
                 }
                 if ($stepIndexComplete && (int) $lockedRun->step_history_index_through === $sequence - 1) {
                     $updates['step_history_index_through'] = $sequence;
+                }
+                if ($openIndexComplete) {
+                    $updates[OpenActivityHistoryIndex::THROUGH] = $sequence;
                 }
                 if ($eventType !== HistoryEventType::ActivityOutcomeRejected) {
                     $updates['last_progress_at'] = $now;

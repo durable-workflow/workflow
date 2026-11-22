@@ -31,7 +31,7 @@ class WorkflowRun extends Model
 
     protected $guarded = [];
 
-    protected $hidden = ['activity_history_index_through', 'step_history_index_through'];
+    protected $hidden = ['activity_history_index_through', 'step_history_index_through', 'activity_open_index_through'];
 
     protected $keyType = 'string';
 

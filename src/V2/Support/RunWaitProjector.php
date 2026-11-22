@@ -165,18 +165,18 @@ final class RunWaitProjector
         return true;
     }
 
-    public static function openActivityAtSequence(WorkflowRun $run, int $sequence): ?string
+    public static function openActivityAfterSequence(WorkflowRun $run, int $sequence, int $last): ?WorkflowRunWait
     {
         $waitModel = self::waitModel();
-        /** @var WorkflowRunWait|null $wait */
-        $wait = $waitModel::query()->where('workflow_run_id', $run->id)
+        return $waitModel::query()->where('workflow_run_id', $run->id)
             ->where('kind', 'activity')
             ->where('status', 'open')
-            ->where('sequence', $sequence)
+            ->where('sequence', '>', $sequence)
+            ->where('sequence', '<=', $last)
             ->where('history_authority', RunActivityView::HISTORY_AUTHORITY_TYPED)
+            ->orderBy('sequence')
+            ->lockForUpdate()
             ->first();
-
-        return $wait?->resume_source_id;
     }
 
     public static function projectCompletedChildWait(WorkflowRun $run, WorkflowHistoryEvent $event): bool
