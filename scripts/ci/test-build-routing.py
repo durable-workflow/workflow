@@ -557,6 +557,27 @@ class BuildWorkflowTrustTest(unittest.TestCase):
         self.assertIn("vendor/bin/phpunit --testsuite unit", source)
         self.assertIn("image: redis", source)
         self.assertIn("pr-unit", workflow_job_needs(self.build, "build"))
+        self.assertIn("shard: [0, 1]", source)
+        self.assertIn("--shard=${{ matrix.shard }} --shards=2", source)
+        self.assertIn("xargs -a /tmp/pr-unit-files vendor/bin/phpunit --testsuite unit", source)
+
+        unit_files = sorted(str(path.relative_to(ROOT)) for path in (ROOT / "tests/Unit").rglob("*Test.php"))
+        assigned_files = []
+        for shard in range(2):
+            assigned = subprocess.check_output(
+                [
+                    "php",
+                    "scripts/ci/split-feature-tests.php",
+                    "--dir=tests/Unit",
+                    f"--shard={shard}",
+                    "--shards=2",
+                ],
+                cwd=ROOT,
+                text=True,
+            ).splitlines()
+            self.assertTrue(assigned)
+            assigned_files.extend(assigned)
+        self.assertEqual(unit_files, sorted(assigned_files))
 
         gate = self.job_source("build")
         self.assertIn('test "${{ needs.pr-unit.result }}" = "success"', gate)

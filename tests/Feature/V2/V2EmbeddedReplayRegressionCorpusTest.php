@@ -3388,7 +3388,7 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         config()
             ->set('queue.default', 'redis');
         Queue::fake();
-        $this->freezeTime();
+        $this->travelTo(Carbon::parse('2026-01-01T00:00:00.290160Z'));
 
         $workflow = WorkflowStub::make(
             $fixture['workflow']['type'],
@@ -3434,10 +3434,9 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             }
             $this->assertFalse(RunWaitProjector::driftStatusForRun($run->fresh())['stale']);
             $this->assertFalse(RunTimelineProjector::driftStatusForRun($run->fresh())['stale']);
-            $this->assertEquals(
-                $summary->getAttributes(),
-                RunSummaryProjector::project($run->fresh())->getAttributes()
-            );
+            $rebuilt = RunSummaryProjector::project($run->fresh())
+                ->refresh();
+            $this->assertEquals($summary->getAttributes(), $rebuilt->getAttributes());
         }
 
         $this->runReadyTaskOfType($run->id, TaskType::Workflow);

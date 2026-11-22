@@ -517,6 +517,11 @@ jobs:
     env:
       XDEBUG_MODE: 'off'
 
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
+
     services:
       redis:
         image: redis
@@ -562,10 +567,12 @@ jobs:
           echo "QUEUE_FAILED_DRIVER=null"
         } >> "$GITHUB_ENV"
 
-    - name: Run the unit suite
-      run: >-
-        vendor/bin/phpunit --testsuite unit
-        --log-junit build/test-results/pr-unit.xml
+    - name: Run unit suite shard ${{ matrix.shard }}
+      run: |
+        php scripts/ci/split-feature-tests.php --dir=tests/Unit \
+          --shard=${{ matrix.shard }} --shards=2 > /tmp/pr-unit-files
+        xargs -a /tmp/pr-unit-files vendor/bin/phpunit --testsuite unit \
+          --log-junit build/test-results/pr-unit-${{ matrix.shard }}.xml
       env:
         DB_CONNECTION: sqlite
         DB_DATABASE: ${{ env.UNIT_DB_PATH }}
@@ -601,8 +608,12 @@ jobs:
     - name: Install dependencies
       run: composer install --prefer-dist --no-progress
 
-    - name: Prepare tracing report directory
-      run: mkdir -p build/test-results
+    - name: Prepare tracing report and fixture paths
+      run: |
+        mkdir -p build/test-results
+        if [ -d /dev/shm ] && [ -w /dev/shm ]; then
+          echo "TMPDIR=/dev/shm" >> "$GITHUB_ENV"
+        fi
 
     - name: Run optional embedded tracing controls
       run: >-
