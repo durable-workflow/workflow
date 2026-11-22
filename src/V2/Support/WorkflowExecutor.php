@@ -3622,18 +3622,18 @@ final class WorkflowExecutor
             $this->markRunWaiting($run, $task);
         }
 
-        $this->projectRun(
-            $childRun->fresh([
-                'instance',
-                'tasks',
-                'activityExecutions',
-                'timers',
-                'failures',
-                'historyEvents',
-                'childLinks.childRun.instance.currentRun',
-                'childLinks.childRun.failures',
-            ])
-        );
+        $role = $this->historyProjectionRole();
+        $relations = $role instanceof DefaultHistoryProjectionRole ? [] : [
+            'instance',
+            'tasks',
+            'activityExecutions',
+            'timers',
+            'failures',
+            'historyEvents',
+            'childLinks.childRun.instance.currentRun',
+            'childLinks.childRun.failures',
+        ];
+        $role->projectRun($childRun->fresh($relations));
 
         if ($childWorkflowCall->reservation !== null) {
             ChildReservationStore::recordAdmission(
