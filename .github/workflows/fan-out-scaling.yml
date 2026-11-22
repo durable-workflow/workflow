@@ -2,9 +2,9 @@ name: Fan-out scaling
 
 # The literal documented fan-out limit (#1203, #1231): one all() of 1,000
 # activities and one of 1,000 child workflows with 10 KB arguments. Each
-# workflow task must finish inside the default 60-second queue job
-# timeout and cost roughly ten times the 100-member run's. The 30-versus-300
-# member guard runs in the ordinary feature shards.
+# workflow task must finish inside the default 60-second queue job timeout.
+# Also measure 1,000 child starts and terminations through the service bridge.
+# The 30-versus-300 member embedded guard runs in the ordinary feature shards.
 
 on:
   pull_request:
@@ -12,6 +12,7 @@ on:
     paths:
       - 'src/V2/**'
       - 'tests/Performance/FanOutWidthLiteralTest.php'
+      - 'tests/Performance/ServiceChildFanOutLiteralTest.php'
       - 'tests/Support/FanOutWidthProbe.php'
       - 'tests/Support/MemberPhaseProjectionRole.php'
       - 'tests/Fixtures/V2/TestFanOutPayload*.php'
@@ -36,7 +37,7 @@ jobs:
       fail-fast: false
       matrix:
         database: [sqlite, mysql]
-        kind: [activities, children]
+        kind: [activities, children, service-children]
 
     services:
       mysql:
@@ -112,6 +113,7 @@ jobs:
         fi
 
     - name: Run the literal 1,000-member fan-out
+      if: ${{ matrix.kind != 'service-children' }}
       run: >-
         vendor/bin/phpunit --no-coverage --fail-on-skipped
         --filter "testLiteralThousandMemberFanOut@${KIND}"
@@ -120,4 +122,14 @@ jobs:
       env:
         FANOUT_LITERAL: '1'
         KIND: ${{ matrix.kind }}
+        XDEBUG_MODE: off
+
+    - name: Run the literal 1,000-child service completion
+      if: ${{ matrix.kind == 'service-children' }}
+      run: >-
+        vendor/bin/phpunit --no-coverage --fail-on-skipped
+        --log-junit build/test-results/service-child-fan-out.xml
+        tests/Performance/ServiceChildFanOutLiteralTest.php
+      env:
+        FANOUT_LITERAL: '1'
         XDEBUG_MODE: off
