@@ -4248,9 +4248,16 @@ final class WorkflowExecutor
             TaskDispatcher::dispatch($signalTask);
         }
 
-        $this->projectRun(
-            $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+        $projectionRun = $run->fresh(
+            ['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents']
         );
+        $projection = $this->historyProjectionRole();
+
+        if ($projection instanceof DefaultHistoryProjectionRole) {
+            RunSummaryProjector::project($projectionRun, disposableRun: true);
+        } else {
+            $projection->projectRun($projectionRun);
+        }
     }
 
     private function createPendingSignalResumeTask(

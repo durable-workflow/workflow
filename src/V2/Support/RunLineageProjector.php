@@ -27,6 +27,7 @@ final class RunLineageProjector
         WorkflowRun $run,
         ?array $parents = null,
         ?array $continuedWorkflows = null,
+        bool $collectRows = true,
     ): array {
         $parents ??= RunLineageView::parentsForRun($run);
         $continuedWorkflows ??= RunLineageView::continuedWorkflowsForRun($run);
@@ -43,11 +44,17 @@ final class RunLineageProjector
             ->keyBy('id');
 
         foreach (array_values($parents) as $position => $entry) {
-            $projected[] = self::projectEntry($lineageModel, $run, $entry, 'parent', $position, $seen, $existing);
+            $row = self::projectEntry($lineageModel, $run, $entry, 'parent', $position, $seen, $existing);
+            if ($collectRows && $row !== null) {
+                $projected[] = $row;
+            }
         }
 
         foreach (array_values($continuedWorkflows) as $position => $entry) {
-            $projected[] = self::projectEntry($lineageModel, $run, $entry, 'child', $position, $seen, $existing);
+            $row = self::projectEntry($lineageModel, $run, $entry, 'child', $position, $seen, $existing);
+            if ($collectRows && $row !== null) {
+                $projected[] = $row;
+            }
         }
 
         self::historyProjectionMaintenanceRole()
@@ -55,7 +62,7 @@ final class RunLineageProjector
 
         $run->unsetRelation('lineageEntries');
 
-        return array_values(array_filter($projected));
+        return $projected;
     }
 
     /**
