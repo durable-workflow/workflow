@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 2.39.0 - 2026-11-23
+
+- Embedded workflows can use `continueAsNewWithTarget('promoted', ...)` when
+  build targeting is enabled and an eligible worker advertises the promoted
+  marker. Both runs record the build transition. An unavailable promotion
+  leaves the current run open and follows its workflow-task retry policy.
+  Plain continue-as-new keeps its original build pin. (#880)
+
 ## 2.38.0 - 2026-11-23
 
 - External workers using the embedded task bridge can request a stable child
