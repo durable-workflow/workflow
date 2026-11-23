@@ -39,7 +39,6 @@ final class WorkflowParallelDispatch
     public function __construct(
         public readonly int $baseSequence,
         public readonly bool $propagate,
-        public readonly WorkflowExecution $execution,
     ) {
     }
 }
