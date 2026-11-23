@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.38.0 - 2026-11-23
+
 - External workers using the embedded task bridge can request a stable child
   workflow ID. The bridge records it with the child start and rolls back the
   completion if the ID is already in use. (#850)
