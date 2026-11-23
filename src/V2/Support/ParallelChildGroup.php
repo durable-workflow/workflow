@@ -67,11 +67,13 @@ final class ParallelChildGroup
         ?int $selectionMemberBaseSequence = null,
         ?int $selectionMemberSize = null,
         ?string $selectionMemberKind = null,
+        ?string $failurePolicy = null,
     ): array {
         return array_filter([
             'parallel_group_id' => self::groupId($kind, $baseSequence, $size, $mode),
             'parallel_group_kind' => $kind,
             'parallel_group_mode' => $mode === 'select' ? $mode : null,
+            'parallel_group_policy' => $failurePolicy,
             'parallel_group_base_sequence' => $baseSequence,
             'parallel_group_size' => $size,
             'parallel_group_index' => $index,
@@ -284,7 +286,18 @@ final class ParallelChildGroup
         }
 
         if ($path !== []) {
+            $recordedPolicy = $path[array_key_last($path)]['parallel_group_policy'] ?? null;
+            $flattenedPolicy = array_key_exists('parallel_group_policy', $payload)
+                ? ($payload['parallel_group_policy'] ?? false)
+                : null;
+            if (array_key_exists('parallel_group_id', $payload) && $flattenedPolicy !== $recordedPolicy) {
+                throw new \InvalidArgumentException('Parallel group failure policy must match its innermost frame.');
+            }
+
             return $path;
+        }
+        if (array_key_exists('parallel_group_policy', $payload)) {
+            throw new \InvalidArgumentException('Parallel group failure policy requires a recorded group path.');
         }
 
         $metadata = self::singleMetadataFromPayload($payload);
@@ -1072,7 +1085,8 @@ final class ParallelChildGroup
             ? $payload['parallel_group_kind']
             : self::kindFromGroupId($groupId);
         $mode = self::stringValue($payload['parallel_group_mode'] ?? null)
-            ?? self::modeFromGroupId($groupId);
+            ?? self::modeFromGroupId($groupId)
+            ?? 'all';
         $baseSequence = is_int($payload['parallel_group_base_sequence'] ?? null)
             ? $payload['parallel_group_base_sequence']
             : null;
@@ -1091,11 +1105,16 @@ final class ParallelChildGroup
         if ($mode === 'select' && ! self::validSelectionKey($selectionMemberKey)) {
             return null;
         }
+        if (array_key_exists('parallel_group_policy', $payload)
+            && ($mode !== 'all' || $payload['parallel_group_policy'] !== AllCall::PROPAGATE)) {
+            throw new \InvalidArgumentException('Unsupported parallel group failure policy in history.');
+        }
 
         return array_filter([
             'parallel_group_id' => $groupId,
             'parallel_group_kind' => $kind,
             'parallel_group_mode' => $mode === 'select' ? $mode : null,
+            'parallel_group_policy' => $payload['parallel_group_policy'] ?? null,
             'parallel_group_base_sequence' => $baseSequence,
             'parallel_group_size' => $size,
             'parallel_group_index' => $index,

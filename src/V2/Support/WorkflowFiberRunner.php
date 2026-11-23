@@ -1600,12 +1600,26 @@ final class WorkflowFiberRunner
     private static function historyEventModel(array $event): WorkflowHistoryEvent
     {
         $payload = is_array($event['payload'] ?? null) ? $event['payload'] : [];
+        $sequence = self::eventSequence($event, $payload);
+        if (($payload['parallel_group_policy'] ?? null) === AllCall::PROPAGATE) {
+            // Explicit groups compare the history ordinal. The payload sequence
+            // still identifies the authored operation.
+            $ordinal = self::intValue($event['sequence'] ?? null);
+            if ($ordinal === null || $ordinal < 1) {
+                throw new HistoryEventShapeMismatchException(
+                    $sequence ?? 0,
+                    'a durable event sequence for an explicit parallel group',
+                    [self::eventType($event) ?? 'unknown'],
+                );
+            }
+            $sequence = $ordinal;
+        }
 
         /** @var WorkflowHistoryEvent $model */
         $model = new WorkflowHistoryEvent();
         $model->forceFill(array_filter([
             'id' => self::stringValue($event['id'] ?? null),
-            'sequence' => self::eventSequence($event, $payload),
+            'sequence' => $sequence,
             'event_type' => self::eventType($event),
             'payload' => $payload,
             'recorded_at' => self::eventRecordedAt($event, $payload),

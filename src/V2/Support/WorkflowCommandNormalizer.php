@@ -255,6 +255,7 @@ final class WorkflowCommandNormalizer
         'parallel_group_id',
         'parallel_group_kind',
         'parallel_group_mode',
+        'parallel_group_policy',
         'parallel_group_base_sequence',
         'parallel_group_size',
         'parallel_group_index',
@@ -354,6 +355,7 @@ final class WorkflowCommandNormalizer
             'commands.*.parallel_group_id' => ['nullable', 'string'],
             'commands.*.parallel_group_kind' => ['nullable', 'string'],
             'commands.*.parallel_group_mode' => ['nullable', 'string'],
+            'commands.*.parallel_group_policy' => ['missing'],
             'commands.*.parallel_group_base_sequence' => ['nullable', 'integer', 'min:1'],
             'commands.*.parallel_group_size' => ['nullable', 'integer', 'min:1'],
             'commands.*.parallel_group_index' => ['nullable', 'integer', 'min:0'],
@@ -366,6 +368,7 @@ final class WorkflowCommandNormalizer
             'commands.*.parallel_group_path.*.parallel_group_id' => ['required', 'string'],
             'commands.*.parallel_group_path.*.parallel_group_kind' => ['required', 'string'],
             'commands.*.parallel_group_path.*.parallel_group_mode' => ['nullable', 'string'],
+            'commands.*.parallel_group_path.*.parallel_group_policy' => ['missing'],
             'commands.*.parallel_group_path.*.parallel_group_base_sequence' => ['required', 'integer', 'min:1'],
             'commands.*.parallel_group_path.*.parallel_group_size' => ['required', 'integer', 'min:1'],
             'commands.*.parallel_group_path.*.parallel_group_index' => ['required', 'integer', 'min:0'],
@@ -2033,6 +2036,9 @@ final class WorkflowCommandNormalizer
      */
     private static function parallelMetadataEntry(array $value, string $leafKind): ?array
     {
+        if (array_key_exists('parallel_group_policy', $value)) {
+            return null;
+        }
         $id = $value['parallel_group_id'] ?? null;
         $kind = $value['parallel_group_kind'] ?? null;
         $base = $value['parallel_group_base_sequence'] ?? null;

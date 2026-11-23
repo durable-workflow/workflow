@@ -761,6 +761,7 @@ final class QueryStateReplayer
                 $results = [];
                 $failure = null;
                 $failures = [];
+                $propagate = $current->failurePolicy === AllCall::PROPAGATE;
 
                 WorkflowStepHistory::assertParallelGroupCompatible($run, $historySequence, $leafDescriptors);
 
@@ -802,13 +803,18 @@ final class QueryStateReplayer
                                 continue;
                             }
 
-                            $failure = ParallelFailureSelector::select(
+                            if ($propagate && ClosingRunOpenWork::settledAtClose($activityCompletion)) {
+                                $pending = true;
+
+                                continue;
+                            }
+
+                            $failure = ParallelFailureSelector::selectRecorded(
                                 $failure,
                                 $offset,
                                 $this->activityException($activityCompletion, null, $run),
-                                $activityCompletion->recorded_at?->getTimestampMs()
-                                    ?? $activityCompletion->created_at?->getTimestampMs()
-                                    ?? PHP_INT_MAX,
+                                $activityCompletion,
+                                $propagate,
                             );
                             $failures[$offset] = $this->activityException($activityCompletion, null, $run);
 
@@ -853,6 +859,11 @@ final class QueryStateReplayer
 
                         if ($execution->status === ActivityStatus::Completed) {
                             $results[$offset] = $execution->activityResult();
+
+                            continue;
+                        }
+                        if ($propagate) {
+                            $pending = true;
 
                             continue;
                         }
@@ -930,13 +941,18 @@ final class QueryStateReplayer
                             continue;
                         }
 
-                        $failure = ParallelFailureSelector::select(
+                        if ($propagate && ClosingRunOpenWork::settledAtClose($resolutionEvent)) {
+                            $pending = true;
+
+                            continue;
+                        }
+
+                        $failure = ParallelFailureSelector::selectRecorded(
                             $failure,
                             $offset,
                             ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun),
-                            $resolutionEvent->recorded_at?->getTimestampMs()
-                                ?? $resolutionEvent->created_at?->getTimestampMs()
-                                ?? PHP_INT_MAX,
+                            $resolutionEvent,
+                            $propagate,
                         );
                         $failures[$offset] = ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun);
 
@@ -966,6 +982,11 @@ final class QueryStateReplayer
 
                         if ($childStatus === RunStatus::Completed) {
                             $results[$offset] = ChildRunHistory::outputForChildRun($childRun);
+
+                            continue;
+                        }
+                        if ($propagate) {
+                            $pending = true;
 
                             continue;
                         }

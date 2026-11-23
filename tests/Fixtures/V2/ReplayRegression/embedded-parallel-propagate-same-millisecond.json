@@ -1,0 +1,153 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "embedded-parallel-propagate-same-millisecond",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner",
+    "query-state-replayer",
+    "workflow-executor"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestParallelMultipleActivityFailureWorkflow",
+    "arguments": [
+      "propagate"
+    ],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-04-09T12:00:00.000000Z"
+    },
+    {
+      "sequence": 2,
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "01J00000000000000000000001",
+        "activity_class": "Tests\\Fixtures\\V2\\TestNamedFailingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestNamedFailingActivity",
+        "parallel_group_id": "parallel-activities:1:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_policy": "propagate",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_policy": "propagate",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0
+          }
+        ]
+      },
+      "recorded_at": "2026-04-09T12:00:01.000000Z"
+    },
+    {
+      "sequence": 3,
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 2,
+        "activity_execution_id": "01J00000000000000000000002",
+        "activity_class": "Tests\\Fixtures\\V2\\TestNamedFailingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestNamedFailingActivity",
+        "parallel_group_id": "parallel-activities:1:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_policy": "propagate",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_policy": "propagate",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1
+          }
+        ]
+      },
+      "recorded_at": "2026-04-09T12:00:01.000000Z"
+    },
+    {
+      "sequence": 4,
+      "event_type": "ActivityFailed",
+      "payload": {
+        "sequence": 2,
+        "activity_execution_id": "01J00000000000000000000002",
+        "activity_class": "Tests\\Fixtures\\V2\\TestNamedFailingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestNamedFailingActivity",
+        "parallel_group_id": "parallel-activities:1:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_policy": "propagate",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 1,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_policy": "propagate",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 1
+          }
+        ],
+        "exception_class": "RuntimeException",
+        "message": "second failure"
+      },
+      "recorded_at": "2026-04-09T12:00:02.000000Z"
+    },
+    {
+      "sequence": 5,
+      "event_type": "ActivityFailed",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "01J00000000000000000000001",
+        "activity_class": "Tests\\Fixtures\\V2\\TestNamedFailingActivity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestNamedFailingActivity",
+        "parallel_group_id": "parallel-activities:1:2",
+        "parallel_group_kind": "activity",
+        "parallel_group_policy": "propagate",
+        "parallel_group_base_sequence": 1,
+        "parallel_group_size": 2,
+        "parallel_group_index": 0,
+        "parallel_group_path": [
+          {
+            "parallel_group_id": "parallel-activities:1:2",
+            "parallel_group_kind": "activity",
+            "parallel_group_policy": "propagate",
+            "parallel_group_base_sequence": 1,
+            "parallel_group_size": 2,
+            "parallel_group_index": 0
+          }
+        ],
+        "exception_class": "RuntimeException",
+        "message": "first failure"
+      },
+      "recorded_at": "2026-04-09T12:00:02.000000Z"
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "stage": "caught-activity-failure",
+      "message": "second failure"
+    },
+    "commands": [
+      {
+        "type": "complete_workflow"
+      }
+    ]
+  }
+}

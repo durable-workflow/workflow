@@ -12,8 +12,9 @@ final class HistoryEventPayloadContract
     /**
      * @var list<string>
      */
-    private const SELECTION_GROUP_KEYS = [
+    private const PARALLEL_GROUP_KEYS = [
         'parallel_group_mode',
+        'parallel_group_policy',
         'selection_member_key',
         'selection_member_index',
         'selection_member_base_sequence',
@@ -1158,7 +1159,7 @@ final class HistoryEventPayloadContract
 
         foreach ($keys as &$eventKeys) {
             if (in_array('parallel_group_path', $eventKeys, true)) {
-                $eventKeys = array_values(array_unique([...$eventKeys, ...self::SELECTION_GROUP_KEYS]));
+                $eventKeys = array_values(array_unique([...$eventKeys, ...self::PARALLEL_GROUP_KEYS]));
             }
         }
         unset($eventKeys);

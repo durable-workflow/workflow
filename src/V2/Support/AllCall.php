@@ -9,6 +9,8 @@ use Workflow\V2\Contracts\YieldedCommand;
 
 class AllCall implements YieldedCommand
 {
+    public const PROPAGATE = 'propagate';
+
     /**
      * @var list<ActivityCall|ChildWorkflowCall|TimerCall|SignalCall|AwaitCall|AwaitWithTimeoutCall|AllCall>
      */
@@ -26,10 +28,16 @@ class AllCall implements YieldedCommand
     /**
      * @param iterable<int|string, mixed> $calls
      */
-    public function __construct(iterable $calls, string $mode = 'all')
-    {
+    public function __construct(
+        iterable $calls,
+        string $mode = 'all',
+        public readonly ?string $failurePolicy = null,
+    ) {
         if (! in_array($mode, ['all', 'select'], true)) {
             throw new LogicException(sprintf('Unsupported durable group mode [%s].', $mode));
+        }
+        if ($failurePolicy !== null && ($mode !== 'all' || $failurePolicy !== self::PROPAGATE)) {
+            throw new LogicException('The embedded all() failure policy must be propagate.');
         }
 
         $normalized = [];
@@ -70,6 +78,9 @@ class AllCall implements YieldedCommand
                 throw new LogicException(
                     'Nested select() groups are not supported; select a nested all()/parallel() barrier instead.'
                 );
+            }
+            if ($call instanceof self && $call->failurePolicy !== $failurePolicy) {
+                throw new LogicException('Nested all() frames must use the same failure policy.');
             }
 
             $normalized[] = $call;
@@ -215,6 +226,7 @@ class AllCall implements YieldedCommand
                 $this->mode === 'select' ? $baseSequence + $cursor : null,
                 $this->mode === 'select' ? $memberSize : null,
                 $this->mode === 'select' ? $memberKind : null,
+                $this->failurePolicy,
             );
 
             if (! $call instanceof self) {
@@ -243,6 +255,7 @@ class AllCall implements YieldedCommand
                     $this->mode === 'select' ? $baseSequence + $cursor : null,
                     $this->mode === 'select' ? $memberSize : null,
                     $this->mode === 'select' ? $memberKind : null,
+                    $this->failurePolicy,
                 );
                 $descriptors[] = [
                     'call' => $descriptor['call'],

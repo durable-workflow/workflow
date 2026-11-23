@@ -6468,6 +6468,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'parallel_group_id',
             'parallel_group_kind',
             'parallel_group_mode',
+            'parallel_group_policy',
             'parallel_group_base_sequence',
             'parallel_group_size',
             'parallel_group_index',
@@ -6518,6 +6519,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
      */
     private static function normalizeParallelCommandEntry(array $value, string $leafKind): ?array
     {
+        if (array_key_exists('parallel_group_policy', $value)) {
+            return null;
+        }
         $id = $value['parallel_group_id'] ?? null;
         $kind = $value['parallel_group_kind'] ?? null;
         $base = $value['parallel_group_base_sequence'] ?? null;
