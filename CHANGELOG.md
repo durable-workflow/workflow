@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 2.37.0 - 2026-11-23
+
 - External workers using the embedded Workflow task bridge can request
   `await: "started"` on a child command. The committed start supplies a fresh
   parent turn with the child's recorded identity. (#989)
