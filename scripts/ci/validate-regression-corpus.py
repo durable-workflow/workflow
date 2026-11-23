@@ -250,7 +250,7 @@ REPLAY_EVENT_PAYLOAD_FIELDS = {
         "signal_wait_id",
         "value",
     },
-    "ChildWorkflowScheduled": set(),
+    "ChildWorkflowScheduled": {"requested_child_id"},
     "ChildRunStarted": set(),
     "ChildRunCompleted": {"output", "payload_codec"},
     "ChildRunFailed": set(),

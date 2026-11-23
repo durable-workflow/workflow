@@ -656,6 +656,7 @@ final class HistoryEventPayloadContract
         ],
         'ChildWorkflowScheduled' => [
             'sequence',
+            'requested_child_id',
             'child_completion_mode',
             'child_reservation',
             'workflow_link_id',

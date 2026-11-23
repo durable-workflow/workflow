@@ -1522,14 +1522,26 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertCount($admission['pending_count_queries'], $pendingCounts);
     }
 
-    public function testServiceChildStartCorpusReopensTheParentFromCommittedHistory(): void
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function serviceChildStartCorpus(): iterable
     {
-        $path = self::FIXTURE_DIR . '/service-child-start-turn-cold-replay.json';
-        if (! is_file($path)) {
-            $this->markTestSkipped('The service child-start evidence is absent.');
-        }
+        yield 'generated identity' => ['service-child-start-turn-cold-replay'];
 
-        $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        // The counterfactual gate first runs the consumer without new evidence.
+        $explicit = 'service-child-explicit-id-cold-replay';
+        if (is_file(self::FIXTURE_DIR . '/' . $explicit . '.json')) {
+            yield 'explicit identity' => [$explicit];
+        }
+    }
+
+    #[DataProvider('serviceChildStartCorpus')]
+    public function testServiceChildStartCorpusReopensTheParentFromCommittedHistory(string $evidence): void
+    {
+        $json = file_get_contents(self::FIXTURE_DIR . '/' . $evidence . '.json');
+        $this->assertIsString($json);
+        $fixture = json_decode($json, true, flags: JSON_THROW_ON_ERROR);
         $workflow = $fixture['workflow'];
         $scenario = $fixture['service_child_start_turn'];
         self::stopWorkers();
@@ -1561,6 +1573,9 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $result = $bridge->complete($initial->id, [[
             ...$step->commands[0],
             'await' => $scenario['await'],
+            ...(isset($scenario['workflow_id']) ? [
+                'workflow_id' => $scenario['workflow_id'],
+            ] : []),
         ]]);
         $this->assertTrue($result['completed'], $result['reason'] ?? '');
         $this->assertSame(1, (clone $tasks)->where('status', TaskStatus::Ready)->count());
@@ -1578,6 +1593,18 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $start = $events[array_key_last($events)]['payload'];
         $this->assertSame($turn->payload['child_call_id'], $start['child_call_id']);
         $this->assertSame($turn->payload['child_workflow_run_id'], $start['child_workflow_run_id']);
+        $scheduled = $events[array_key_last($events) - 1]['payload'];
+        if (isset($scenario['workflow_id'])) {
+            $this->assertSame(
+                $fixture['history'][2]['payload']['requested_child_id'],
+                $scheduled['requested_child_id']
+            );
+            $this->assertSame($scenario['workflow_id'], $scheduled['child_workflow_instance_id']);
+            $this->assertSame($scenario['workflow_id'], $start['child_workflow_instance_id']);
+        } else {
+            $this->assertArrayNotHasKey('requested_child_id', $scheduled);
+        }
+        $this->assertSame(1, WorkflowLink::query()->where('parent_workflow_run_id', $runId)->count());
         $replay = WorkflowFiberRunner::forClass(
             $workflow['type'],
             $replacement['workflow_instance_id'],

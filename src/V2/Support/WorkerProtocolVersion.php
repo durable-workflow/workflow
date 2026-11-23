@@ -34,6 +34,8 @@ final class WorkerProtocolVersion
 
     public const CAPABILITY_CHILD_WORKFLOW_START_TURN = 'child_workflow_start_turn';
 
+    public const CAPABILITY_CHILD_WORKFLOW_EXPLICIT_ID = 'child_workflow_explicit_id';
+
     /**
      * Worker registration capability for server-routed workflow query
      * tasks. Workers that advertise this capability may receive query work
@@ -250,12 +252,13 @@ final class WorkerProtocolVersion
     }
 
     /**
-     * @return array{child_workflow_start_turn: true}
+     * @return array{child_workflow_start_turn: true, child_workflow_explicit_id: true}
      */
     public static function serverCapabilities(): array
     {
         return [
             self::CAPABILITY_CHILD_WORKFLOW_START_TURN => true,
+            self::CAPABILITY_CHILD_WORKFLOW_EXPLICIT_ID => true,
         ];
     }
 
@@ -504,7 +507,7 @@ final class WorkerProtocolVersion
      *     activity_task_verbs: list<string>,
      *     query_task_verbs: list<string>,
      *     worker_capabilities: list<string>,
-     *     server_capabilities: array{child_workflow_start_turn: true},
+     *     server_capabilities: array{child_workflow_start_turn: true, child_workflow_explicit_id: true},
      *     workflow_task_command_payload_envelope_fields: array<string, list<string>>,
      *     non_terminal_command_types: list<string>,
      *     terminal_command_types: list<string>,

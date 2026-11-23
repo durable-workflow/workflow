@@ -16,6 +16,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Models\WorkflowChildCall;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
@@ -174,6 +175,128 @@ final class DefaultWorkflowTaskBridgeChildResumeTest extends TestCase
             ->where('task_type', TaskType::Workflow->value)->where('status', TaskStatus::Ready->value)->sole();
         $this->assertSame('child', $resultTurn->payload['workflow_wait_kind']);
         $this->assertSame($first['child_call_id'], $resultTurn->payload['child_call_id']);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function childRunReplacements(): iterable
+    {
+        yield 'continue-as-new' => ['continue_as_new'];
+        yield 'retry' => ['fail_workflow'];
+    }
+
+    #[DataProvider('childRunReplacements')]
+    public function testExplicitChildIdSurvivesDuplicateCompletionAndRunReplacement(string $terminalCommand): void
+    {
+        $parent = $this->createWaitingRun('orders');
+        $task = $this->createLeasedTask($parent);
+        $instanceId = 'order:104-shipment_1';
+        $command = [
+            ...$this->childStartCommand('shipment'),
+            'workflow_id' => $instanceId,
+            'retry_policy' => [
+                'max_attempts' => 2,
+                'backoff_seconds' => [0],
+            ],
+        ];
+
+        $receipt = $this->bridge->complete($task->id, [$command]);
+        $this->assertTrue($receipt['completed'], json_encode($receipt, JSON_THROW_ON_ERROR));
+        $duplicate = $this->bridge->complete($task->id, [[
+            ...$command,
+            'workflow_id' => 'different-child',
+        ]]);
+        $this->assertSame('task_not_leased', $duplicate['reason']);
+        $this->assertFalse(WorkflowInstance::query()->whereKey('different-child')->exists());
+
+        $scheduled = $parent->historyEvents()
+            ->where('event_type', HistoryEventType::ChildWorkflowScheduled)->sole();
+        $this->assertSame($instanceId, $scheduled->payload['requested_child_id']);
+        $this->assertSame($instanceId, $scheduled->payload['child_workflow_instance_id']);
+        $childCall = WorkflowChildCall::query()->where('parent_workflow_run_id', $parent->id)->sole();
+        $this->assertSame($instanceId, $childCall->requested_child_id);
+        $instance = WorkflowInstance::query()->findOrFail($instanceId);
+        $this->assertSame($parent->namespace, $instance->namespace);
+        $initial = $instance->runs()
+            ->sole();
+        $this->assertNotSame($instanceId, $initial->id);
+        $this->assertNotSame($instanceId, $scheduled->payload['child_call_id']);
+        $this->assertSame($initial->id, $scheduled->payload['child_workflow_run_id']);
+
+        $parentTurn = WorkflowTask::query()->where('workflow_run_id', $parent->id)
+            ->where('status', TaskStatus::Ready)->sole();
+        $this->assertTrue($this->bridge->claimStatus($parentTurn->id, 'replacement-parent')['claimed']);
+        $history = $this->bridge->historyPayload($parentTurn->id)['history_events'];
+        $this->assertSame($instanceId, $history[0]['payload']['requested_child_id']);
+        $this->assertSame($scheduled->payload['child_call_id'], $history[1]['payload']['child_call_id']);
+        $this->assertTrue($this->bridge->complete($parentTurn->id, [[
+            'type' => 'start_timer',
+            'delay_seconds' => 3600,
+        ]])['completed']);
+
+        $childTask = WorkflowTask::query()->where('workflow_run_id', $initial->id)->sole();
+        $this->assertTrue($this->bridge->claimStatus($childTask->id, 'child-worker')['claimed']);
+        $outcome = $this->bridge->complete($childTask->id, [[
+            'type' => $terminalCommand,
+            ...match ($terminalCommand) {
+                'continue_as_new' => [
+                    'arguments' => Serializer::serialize(['next-shipment']),
+                ],
+                'fail_workflow' => [
+                    'message' => 'retry shipment',
+                    'failure_type' => 'ShipmentUnavailable',
+                ],
+            },
+        ]]);
+        $this->assertTrue($outcome['completed'], json_encode($outcome, JSON_THROW_ON_ERROR));
+        $replacement = $instance->runs()
+            ->where('run_number', 2)
+            ->sole();
+        $this->assertSame($instanceId, $replacement->workflow_instance_id);
+        $this->assertNotSame($initial->id, $replacement->id);
+        $this->assertSame($replacement->id, $instance->fresh()->current_run_id);
+        $this->assertSame($initial->id, $scheduled->fresh()->payload['child_workflow_run_id']);
+    }
+
+    public function testExplicitChildIdCollisionRollsBackEarlierCommandsAndKeepsTheLease(): void
+    {
+        $winner = $this->createWaitingRun('unrelated-namespace');
+        $winningTask = $this->createLeasedTask($winner);
+        $id = 'reserved-shipment';
+        $command = [
+            ...$this->childStartCommand('shipment', 'result'),
+            'workflow_id' => $id,
+        ];
+        $this->assertTrue($this->bridge->complete($winningTask->id, [$command])['completed']);
+        $child = WorkflowInstance::query()->findOrFail($id);
+        $childTask = WorkflowTask::query()->where('workflow_run_id', $child->current_run_id)->sole();
+        $this->assertTrue($this->bridge->claimStatus($childTask->id, 'child-worker')['claimed']);
+        $this->assertTrue($this->bridge->complete($childTask->id, [[
+            'type' => 'complete_workflow',
+            'result' => Serializer::serialize('fulfilled'),
+        ]])['completed']);
+
+        foreach (['unrelated-namespace', 'orders'] as $namespace) {
+            $parent = $this->createWaitingRun($namespace);
+            $losingTask = $this->createLeasedTask($parent);
+            $commands = [[
+                ...$command,
+                'workflow_id' => 'rollback-me',
+            ], $command];
+
+            $receipt = $this->bridge->complete($losingTask->id, $commands);
+            $this->assertSame('child_workflow_id_unavailable', $receipt['reason']);
+            $this->assertSame([], $receipt['created_task_ids']);
+            $this->assertSame(TaskStatus::Leased, $losingTask->fresh()->status);
+            $this->assertFalse(WorkflowInstance::query()->whereKey('rollback-me')->exists());
+            $this->assertSame(0, $parent->historyEvents()->count());
+            $this->assertSame(0, WorkflowLink::query()->where('parent_workflow_run_id', $parent->id)->count());
+            $this->assertSame(0, WorkflowChildCall::query()->where('parent_workflow_run_id', $parent->id)->count());
+        }
+
+        $this->assertSame($childTask->workflow_run_id, $child->fresh()->current_run_id);
+        $this->assertSame(1, $child->runs()->count());
     }
 
     /**

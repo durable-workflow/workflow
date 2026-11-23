@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
@@ -39,6 +40,7 @@ use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Enums\TimerStatus;
 use Workflow\V2\Enums\UpdateStatus;
 use Workflow\V2\Exceptions\ActivityTimeoutException;
+use Workflow\V2\Exceptions\ChildWorkflowIdUnavailable;
 use Workflow\V2\Exceptions\ConditionOccurrenceDeadlineConflict;
 use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Exceptions\HistoryTransactionLimitExceededException;
@@ -1550,7 +1552,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                     'reason' => null,
                 ];
             });
-        } catch (ServiceOperationAuthorizationException|ConditionOccurrenceDeadlineConflict $refusal) {
+        } catch (ServiceOperationAuthorizationException|ConditionOccurrenceDeadlineConflict|ChildWorkflowIdUnavailable $refusal) {
             return [
                 'completed' => false,
                 'task_id' => $taskId,
@@ -1942,7 +1944,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                     'reason' => null,
                 ];
             }, 5);
-        } catch (ServiceOperationAuthorizationException|ConditionOccurrenceDeadlineConflict $refusal) {
+        } catch (ServiceOperationAuthorizationException|ConditionOccurrenceDeadlineConflict|ChildWorkflowIdUnavailable $refusal) {
             return $refused($refusal->getMessage());
         } catch (HistoryTransactionLimitExceededException $refusal) {
             return $refused(self::meterRefusalReason($refusal));
@@ -4643,15 +4645,31 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         );
         $timeoutPolicy = ChildWorkflowRetryPolicy::timeoutSnapshot($executionTimeoutSeconds, $runTimeoutSeconds);
 
-        /** @var WorkflowInstance $childInstance */
-        $childInstance = WorkflowInstance::query()->create([
+        $workflowId = $command['workflow_id'] ?? null;
+        $attributes = [
             'workflow_class' => $workflowType,
             'workflow_type' => $workflowType,
             'namespace' => $run->namespace,
             'reserved_at' => $now,
             'started_at' => $now,
             'run_count' => 1,
-        ]);
+        ];
+        if ($workflowId !== null) {
+            $attributes['id'] = $workflowId;
+        }
+
+        try {
+            /** @var WorkflowInstance $childInstance */
+            $childInstance = WorkflowInstance::query()->create($attributes);
+        } catch (UniqueConstraintViolationException $exception) {
+            if ($workflowId === null) {
+                throw $exception;
+            }
+
+            // Let the uniqueness constraint arbitrate concurrent starts. A
+            // uniform refusal avoids looking up or describing the other owner.
+            throw new ChildWorkflowIdUnavailable('child_workflow_id_unavailable', previous: $exception);
+        }
 
         /** @var WorkflowRun $childRun */
         $childRun = WorkflowRun::query()->create([
@@ -4694,6 +4712,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'sequence' => $sequence,
             'child_workflow_type' => $workflowType,
             'child_workflow_class' => $workflowType,
+            'requested_child_id' => $workflowId,
             'parent_close_policy' => $parentClosePolicy,
             'connection' => $connection,
             'queue' => $queue,
@@ -4733,6 +4752,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
 
         WorkflowHistoryEvent::record($run, HistoryEventType::ChildWorkflowScheduled, [
             'sequence' => $sequence,
+            ...($workflowId === null ? [] : [
+                'requested_child_id' => $workflowId,
+            ]),
             'workflow_link_id' => $link->id,
             'child_call_id' => $childCallId,
             'child_workflow_instance_id' => $childInstance->id,
@@ -6006,7 +6028,8 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
     {
         $type = is_string($command['type'] ?? null) ? $command['type'] : null;
 
-        if ($type === null || ($type !== 'start_child_workflow' && array_key_exists('await', $command))) {
+        if ($type === null || ($type !== 'start_child_workflow'
+            && (array_key_exists('await', $command) || array_key_exists('workflow_id', $command)))) {
             return null;
         }
 
@@ -6431,6 +6454,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
      * @return array{
      *     type: string,
      *     workflow_type: string,
+     *     workflow_id?: string,
      *     arguments?: string|null,
      *     payload_codec?: string|null,
      *     connection?: string|null,
@@ -6444,6 +6468,12 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
      */
     private static function normalizeStartChildWorkflowCommand(array $command): ?array
     {
+        $workflowId = $command['workflow_id'] ?? null;
+        if (array_key_exists('workflow_id', $command)
+            && (! is_string($workflowId) || ! WorkflowInstanceId::isValidWorkerChildId($workflowId))) {
+            return null;
+        }
+
         $await = $command['await'] ?? null;
         if (array_key_exists('await', $command) && ! in_array($await, ['result', 'started'], true)) {
             return null;
@@ -6492,6 +6522,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         return array_filter([
             'type' => 'start_child_workflow',
             'workflow_type' => $workflowType,
+            'workflow_id' => $workflowId,
             'arguments' => $arguments['payload'],
             'payload_codec' => $arguments['payload_codec'],
             'connection' => self::normalizeOptionalString($command['connection'] ?? null),
