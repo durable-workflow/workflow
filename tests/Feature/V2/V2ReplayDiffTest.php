@@ -7,12 +7,15 @@ namespace Tests\Feature\V2;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
+use ReflectionMethod;
 use RuntimeException;
 use Tests\Fixtures\V2\TestFailingWorkflow;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestHandleFailureThenThrowWorkflow;
 use Tests\Fixtures\V2\TestImmediateFailureWorkflow;
+use Tests\Fixtures\V2\TestReorderedReplayWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Jobs\RunActivityTask;
@@ -22,6 +25,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\ReplayDiff;
+use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\WorkflowStub;
 
 final class V2ReplayDiffTest extends TestCase
@@ -128,6 +132,65 @@ final class V2ReplayDiffTest extends TestCase
         $this->assertSame(1, $report['divergence']['workflow_sequence']);
         $this->assertContains('TimerFired', $report['divergence']['recorded_event_types']);
         $this->assertNull($report['error']);
+    }
+
+    public function testAReorderedWorkflowPointsToItsAuthoredCallInReplayAndInTheBlockedTask(): void
+    {
+        config()->set('queue.default', 'redis');
+        config()
+            ->set('queue.connections.redis.driver', 'redis');
+        Queue::fake();
+        TestReorderedReplayWorkflow::$timerFirst = true;
+        try {
+            $workflow = WorkflowStub::make(TestReorderedReplayWorkflow::class, 'replay-diff-authored-location');
+            $workflow->start();
+            $runId = $workflow->runId();
+            $this->assertNotNull($runId);
+            $this->runReadyTaskForRun($runId, TaskType::Workflow);
+            $this->travel(16)
+                ->seconds();
+            $this->runReadyTaskForRun($runId, TaskType::Timer);
+            TestReorderedReplayWorkflow::$timerFirst = false;
+
+            $method = new ReflectionMethod(TestReorderedReplayWorkflow::class, 'greet');
+            $source = [
+                'function' => TestReorderedReplayWorkflow::class . '::greet',
+                'file' => 'TestReorderedReplayWorkflow.php',
+                'line' => (int) $method->getStartLine() + 2,
+            ];
+            $site = sprintf('%s (%s:%d)', $source['function'], $source['file'], $source['line']);
+            $bundle = HistoryExport::forRun(WorkflowRun::query()->findOrFail($runId));
+            $report = (new ReplayDiff())->diffExport($bundle);
+            $this->assertSame(ReplayDiff::STATUS_DRIFTED, $report['status']);
+            $this->assertSame(1, $report['divergence']['workflow_sequence']);
+            $this->assertContains('TimerFired', $report['divergence']['recorded_event_types']);
+            $this->assertSame($source, $report['divergence']['workflow_source']);
+            $this->assertStringContainsString($site, $report['divergence']['message']);
+            $this->assertStringNotContainsString(dirname(__DIR__, 3), $report['divergence']['message']);
+
+            $this->runReadyTaskForRun($runId, TaskType::Workflow);
+            $task = WorkflowTask::query()->where('workflow_run_id', $runId)
+                ->where('task_type', TaskType::Workflow->value)
+                ->where('status', TaskStatus::Failed->value)
+                ->firstOrFail();
+            $this->assertTrue($task->payload['replay_blocked']);
+            $storedSource = $task->payload['replay_blocked_workflow_source'];
+            foreach ($source as $field => $value) {
+                $this->assertSame($value, $storedSource[$field]);
+            }
+            $this->assertStringContainsString($site, (string) $task->last_error);
+            $this->assertStringNotContainsString(dirname(__DIR__, 3), (string) $task->last_error);
+            $detail = RunDetailView::forRun(WorkflowRun::query()->with('summary')->findOrFail($runId));
+            $taskView = collect($detail['tasks'])->firstWhere('id', $task->id);
+            $this->assertSame('workflow_replay_blocked', $detail['liveness_state']);
+            $this->assertStringContainsString($site, $taskView['last_error']);
+            $this->assertDatabaseMissing('workflow_history_events', [
+                'workflow_run_id' => $runId,
+                'event_type' => HistoryEventType::WorkflowFailed->value,
+            ]);
+        } finally {
+            TestReorderedReplayWorkflow::$timerFirst = true;
+        }
     }
 
     public function testReplayDiffSurfacesSameShapeActivityTypeDrift(): void

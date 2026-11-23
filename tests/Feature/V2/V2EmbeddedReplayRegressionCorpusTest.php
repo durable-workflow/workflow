@@ -31,6 +31,7 @@ use Tests\Fixtures\V2\TestParallelGreetingChildrenWorkflow;
 use Tests\Fixtures\V2\TestParallelMultipleActivityFailureWorkflow;
 use Tests\Fixtures\V2\TestQueryReplayGuardActivity;
 use Tests\Fixtures\V2\TestRedriveFractionalClockWorkflow;
+use Tests\Fixtures\V2\TestReorderedReplayWorkflow;
 use Tests\Fixtures\V2\TestRepeatedPatchClockWorkflow;
 use Tests\Fixtures\V2\TestSinglePatchReplayWorkflow;
 use Tests\Fixtures\V2\TestTimerWorkflow;
@@ -2444,6 +2445,36 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertSame($scenario['different_message'], $different['error']['recorded_failure']['message'] ?? null);
     }
 
+    public function testAuthoredSourceReplayCorpusReportsTheSuspendedCall(): void
+    {
+        $fixture = json_decode(
+            (string) file_get_contents(self::FIXTURE_DIR . '/authored-call-step-reorder.json'),
+            true,
+            flags: JSON_THROW_ON_ERROR,
+        );
+        self::stopWorkers();
+        Queue::fake();
+        config([
+            'queue.default' => 'database',
+        ]);
+        $this->clearWorkflowState();
+        $run = $this->createRunFromFixture($fixture);
+
+        TestReorderedReplayWorkflow::$timerFirst = false;
+        try {
+            $report = (new ReplayDiff())->diffRun($run->fresh());
+        } finally {
+            TestReorderedReplayWorkflow::$timerFirst = true;
+        }
+        $expected = $fixture['authored_replay_source'];
+        $this->assertSame($expected['status'], $report['status']);
+        $this->assertSame($expected['workflow_sequence'], $report['divergence']['workflow_sequence']);
+        $location = $report['divergence']['workflow_source'];
+        $this->assertSame($expected['workflow_source']['function'], $location['function']);
+        $this->assertSame($expected['workflow_source']['file'], $location['file']);
+        $this->assertGreaterThan(0, $location['line']);
+    }
+
     public function testLateChildResumeCorpusCreatesDeliveryAfterALeasedParentWaits(): void
     {
         $path = self::FIXTURE_DIR . '/late-child-resolution-during-parent-lease.json';
@@ -2929,6 +2960,9 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
         foreach ($this->fixtures() as $fixture) {
             $this->executeColdReplayFixture($fixture);
+            if ($fixture['id'] === 'embedded-authored-call-step-reorder') {
+                continue; // The offline replay report is asserted in the dedicated corpus test.
+            }
 
             if ($fixture['id'] === 'embedded-parallel-propagate-same-millisecond') {
                 $this->assertEmbeddedParallelPropagateReplay($fixture);

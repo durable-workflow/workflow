@@ -9,6 +9,11 @@ use LogicException;
 final class HistoryEventShapeMismatchException extends LogicException
 {
     /**
+     * @var array{function: string, file: string, line: int}|null
+     */
+    private ?array $workflowSource = null;
+
+    /**
      * @param list<string> $recordedEventTypes
      */
     public function __construct(
@@ -28,5 +33,26 @@ final class HistoryEventShapeMismatchException extends LogicException
             $expectedHistoryShape,
             $detail,
         ));
+    }
+
+    /**
+     * @return array{function: string, file: string, line: int}|null
+     */
+    public function workflowSource(): ?array
+    {
+        return $this->workflowSource;
+    }
+
+    /**
+     * @param array{function: string, file: string, line: int} $source
+     */
+    public function recordWorkflowSource(array $source): void
+    {
+        if ($this->workflowSource !== null) {
+            return;
+        }
+
+        $this->workflowSource = $source;
+        $this->message .= sprintf(' Authored at %s (%s:%d).', $source['function'], $source['file'], $source['line']);
     }
 }

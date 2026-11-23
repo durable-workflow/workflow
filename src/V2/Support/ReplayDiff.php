@@ -107,6 +107,8 @@ final class ReplayDiff
         try {
             $state = $this->replayer->replay($run);
         } catch (HistoryEventShapeMismatchException $mismatch) {
+            $source = $mismatch->workflowSource();
+
             return $this->report(
                 status: self::STATUS_DRIFTED,
                 reason: self::REASON_SHAPE_MISMATCH,
@@ -116,6 +118,9 @@ final class ReplayDiff
                     'expected_shape' => $mismatch->expectedHistoryShape,
                     'recorded_event_types' => $mismatch->recordedEventTypes,
                     'message' => $mismatch->getMessage(),
+                    ...($source === null ? [] : [
+                        'workflow_source' => $source,
+                    ]),
                 ],
             );
         } catch (Throwable $exception) {

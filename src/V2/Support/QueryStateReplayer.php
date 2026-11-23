@@ -65,6 +65,25 @@ final class QueryStateReplayer
             RedriveReplayClock::startedAt($run),
             WorkflowDefinitionFingerprint::versionForRun($run),
         );
+        $comparingCall = false;
+        try {
+            return $this->replaySuspended($run, $workflow, $workflowExecution, $versionDecisions, $comparingCall);
+        } catch (HistoryEventShapeMismatchException $mismatch) {
+            if ($comparingCall) {
+                $workflowExecution->recordMismatchSource($mismatch);
+            }
+
+            throw $mismatch;
+        }
+    }
+
+    private function replaySuspended(
+        WorkflowRun $run,
+        Workflow $workflow,
+        WorkflowExecution $workflowExecution,
+        VersionDecisions $versionDecisions,
+        bool &$comparingCall,
+    ): ReplayState {
         $historySequencesByPosition = $this->historySequencesByReplayPosition($run);
         $deliveredCancellations = $this->indexDeliveredCancellations($run);
 
@@ -77,6 +96,7 @@ final class QueryStateReplayer
         $sequence = 1;
 
         while (true) {
+            $comparingCall = false;
             while (($duplicate = $versionDecisions->duplicateAt(
                 $this->historySequenceForReplayPosition($historySequencesByPosition, $sequence),
                 $current instanceof VersionCall ? $current : null,
@@ -95,6 +115,7 @@ final class QueryStateReplayer
                 return new ReplayState($workflow, $sequence, null);
             }
 
+            $comparingCall = true;
             ActivityReplayIdentity::assertCall(
                 $run,
                 $current,

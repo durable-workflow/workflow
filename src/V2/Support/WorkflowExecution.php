@@ -7,8 +7,10 @@ namespace Workflow\V2\Support;
 use Carbon\CarbonInterface;
 use Fiber;
 use LogicException;
+use ReflectionFiber;
 use Throwable;
 use WeakReference;
+use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Exceptions\StraightLineWorkflowRequiredException;
 use Workflow\V2\Exceptions\WorkflowCancellationRequestedException;
 use Workflow\V2\Exceptions\WorkflowFiberDiscardedException;
@@ -104,6 +106,50 @@ final class WorkflowExecution
     public function fiber(): ?Fiber
     {
         return $this->fiber;
+    }
+
+    public function recordMismatchSource(HistoryEventShapeMismatchException $mismatch): void
+    {
+        if ($this->fiber === null || ! $this->fiber->isSuspended() || $mismatch->workflowSource() !== null) {
+            return;
+        }
+
+        $trace = (new ReflectionFiber($this->fiber))->getTrace(DEBUG_BACKTRACE_IGNORE_ARGS);
+        $runtimeDirectory = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR;
+        foreach ($trace as $index => $frame) {
+            $file = $frame['file'] ?? null;
+            $line = $frame['line'] ?? 0;
+            if (! is_string($file) || str_starts_with($file, $runtimeDirectory) || ! is_int($line) || $line < 1) {
+                continue;
+            }
+
+            // Each trace frame gives the call site's file and line and the
+            // callee's name. The next frame identifies the authored caller.
+            $caller = $trace[$index + 1] ?? [];
+            $function = $caller['function'] ?? '';
+            if (! is_string($function) || $function === '') {
+                continue;
+            }
+            if (str_contains($function, '{closure')) {
+                $function = strstr($function, '{closure', true) . '{closure}';
+            }
+            $class = $caller['class'] ?? '';
+            if (str_contains($class, '@anonymous')) {
+                $class = '{anonymous class}';
+            }
+            $file = basename(str_replace('\\', '/', $file));
+            if (! str_ends_with($file, '.php') || preg_match('/[[:cntrl:]]/', $file) !== 0) {
+                continue;
+            }
+
+            $mismatch->recordWorkflowSource([
+                'function' => $class === '' ? $function : $class . '::' . $function,
+                'file' => $file,
+                'line' => $line,
+            ]);
+
+            return;
+        }
     }
 
     public function valid(): bool

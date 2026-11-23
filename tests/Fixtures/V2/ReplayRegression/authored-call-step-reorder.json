@@ -1,0 +1,58 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "embedded-authored-call-step-reorder",
+  "protocol_version": "1.0",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestReorderedReplayWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {}
+    },
+    {
+      "sequence": 2,
+      "event_type": "TimerScheduled",
+      "payload": {
+        "sequence": 1,
+        "timer_kind": "durable_timer",
+        "timer_id": "01j00000000000000000000001",
+        "delay_seconds": 15,
+        "fire_at": "2026-11-23T01:00:15+00:00"
+      }
+    },
+    {
+      "sequence": 3,
+      "event_type": "TimerFired",
+      "payload": {
+        "sequence": 1,
+        "timer_kind": "durable_timer",
+        "timer_id": "01j00000000000000000000001",
+        "fired_at": "2026-11-23T01:00:15+00:00"
+      }
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {
+        "type": "schedule_activity",
+        "activity_type": "Tests\\Fixtures\\V2\\TestGreetingActivity"
+      }
+    ]
+  },
+  "authored_replay_source": {
+    "status": "drifted",
+    "workflow_sequence": 1,
+    "workflow_source": {
+      "function": "Tests\\Fixtures\\V2\\TestReorderedReplayWorkflow::greet",
+      "file": "TestReorderedReplayWorkflow.php"
+    }
+  }
+}

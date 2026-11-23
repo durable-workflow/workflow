@@ -611,6 +611,7 @@ final class WorkflowExecutor
     {
         $run = $state->run;
         $frame = $state->frame;
+        $comparingCall = false;
         try {
             while (($duplicate = $state->versionDecisions->duplicateAt(
                 $frame->sequence,
@@ -623,9 +624,17 @@ final class WorkflowExecutor
                 ++$frame->sequence;
                 $this->syncWorkflowCursor($frame->workflow, $frame->sequence);
             }
+            $comparingCall = true;
             ActivityReplayIdentity::assertCall($run, $frame->current, $frame->sequence);
         } catch (Throwable $throwable) {
-            $this->failRun($run, $state->task, $throwable, 'workflow_run', $run->id);
+            $this->failRun(
+                $run,
+                $state->task,
+                $throwable,
+                'workflow_run',
+                $run->id,
+                replayExecution: $comparingCall ? $frame->execution : null,
+            );
             return false;
         }
 
@@ -850,9 +859,16 @@ final class WorkflowExecutor
         if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
             return $this->restartAfterPendingUpdateFailure($run, $task);
         }
-        if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::LOCAL_ACTIVITY, [
-            'activity_type' => $current->activity,
-        ])) {
+        if (! $this->ensureStepHistoryCompatible(
+            $run,
+            $task,
+            $frame->execution,
+            $sequence,
+            WorkflowStepHistory::LOCAL_ACTIVITY,
+            [
+                'activity_type' => $current->activity,
+            ]
+        )) {
             return null;
         }
         if ($this->activityHistoryEvent($run, $sequence) === null) {
@@ -934,9 +950,16 @@ final class WorkflowExecutor
         if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
             return $this->restartAfterPendingUpdateFailure($run, $task);
         }
-        if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::ACTIVITY, [
-            'activity_type' => $current->activity,
-        ])) {
+        if (! $this->ensureStepHistoryCompatible(
+            $run,
+            $task,
+            $frame->execution,
+            $sequence,
+            WorkflowStepHistory::ACTIVITY,
+            [
+                'activity_type' => $current->activity,
+            ]
+        )) {
             return null;
         }
         $activityCompletion = $this->activityCompletionEvent($run, $sequence);
@@ -968,13 +991,25 @@ final class WorkflowExecutor
             return $this->scheduleActivityOrFailRun($run, $task, $sequence, $current);
         }
         if (in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)) {
-            if (! $this->ensureTypedStepHistoryRecorded($run, $task, $sequence, WorkflowStepHistory::ACTIVITY)) {
+            if (! $this->ensureTypedStepHistoryRecorded(
+                $run,
+                $task,
+                $frame->execution,
+                $sequence,
+                WorkflowStepHistory::ACTIVITY
+            )) {
                 return null;
             }
             $this->syncWorkflowCursor($workflow, $sequence + 1);
             return $this->waitForNextResumeSource($run, $task);
         }
-        if (! $this->ensureTypedStepHistoryRecorded($run, $task, $sequence, WorkflowStepHistory::ACTIVITY)) {
+        if (! $this->ensureTypedStepHistoryRecorded(
+            $run,
+            $task,
+            $frame->execution,
+            $sequence,
+            WorkflowStepHistory::ACTIVITY
+        )) {
             return null;
         }
         return $this->resumeActivityExecution($run, $task, $frame, $execution);
@@ -1312,7 +1347,13 @@ final class WorkflowExecutor
         if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
             return $this->restartAfterPendingUpdateFailure($run, $task);
         }
-        if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::SIDE_EFFECT)) {
+        if (! $this->ensureStepHistoryCompatible(
+            $run,
+            $task,
+            $frame->execution,
+            $sequence,
+            WorkflowStepHistory::SIDE_EFFECT
+        )) {
             return null;
         }
         $sideEffectEvent = $this->sideEffectEvent($run, $sequence);
@@ -1368,6 +1409,7 @@ final class WorkflowExecutor
         if ($resolution->advancesSequence && ! $this->ensureStepHistoryCompatible(
             $run,
             $task,
+            $frame->execution,
             $sequence,
             WorkflowStepHistory::VERSION_MARKER,
             [
@@ -1418,6 +1460,7 @@ final class WorkflowExecutor
         if (! $this->ensureStepHistoryCompatible(
             $run,
             $task,
+            $frame->execution,
             $sequence,
             WorkflowStepHistory::SEARCH_ATTRIBUTES_UPSERT
         )) {
@@ -1437,7 +1480,7 @@ final class WorkflowExecutor
                 advanceCancellationTime: false,
             );
         } catch (Throwable $throwable) {
-            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id, replayExecution: $workflowExecution);
             return null;
         }
         ++$sequence;
@@ -1459,7 +1502,13 @@ final class WorkflowExecutor
         if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
             return $this->restartAfterPendingUpdateFailure($run, $task);
         }
-        if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::MEMO_UPSERT)) {
+        if (! $this->ensureStepHistoryCompatible(
+            $run,
+            $task,
+            $frame->execution,
+            $sequence,
+            WorkflowStepHistory::MEMO_UPSERT
+        )) {
             return null;
         }
         $memoEvent = $this->memoUpsertedEvent($run, $sequence);
@@ -1480,7 +1529,7 @@ final class WorkflowExecutor
                 advanceCancellationTime: false,
             );
         } catch (Throwable $throwable) {
-            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id, replayExecution: $workflowExecution);
             return null;
         }
         ++$sequence;
@@ -1511,7 +1560,13 @@ final class WorkflowExecutor
         if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
             return $this->restartAfterPendingUpdateFailure($run, $task);
         }
-        if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::EXTERNAL_SIGNAL)) {
+        if (! $this->ensureStepHistoryCompatible(
+            $run,
+            $task,
+            $frame->execution,
+            $sequence,
+            WorkflowStepHistory::EXTERNAL_SIGNAL
+        )) {
             return null;
         }
         try {
@@ -1642,7 +1697,13 @@ final class WorkflowExecutor
         if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
             return $this->restartAfterPendingUpdateFailure($run, $task);
         }
-        if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::TIMER)) {
+        if (! $this->ensureStepHistoryCompatible(
+            $run,
+            $task,
+            $frame->execution,
+            $sequence,
+            WorkflowStepHistory::TIMER
+        )) {
             return null;
         }
         $timerFired = $this->timerFiredEvent($run, $sequence);
@@ -1678,13 +1739,25 @@ final class WorkflowExecutor
             return $this->scheduleTimer($run, $task, $sequence, $current);
         }
         if ($timer->status === TimerStatus::Pending) {
-            if (! $this->ensureTypedStepHistoryRecorded($run, $task, $sequence, WorkflowStepHistory::TIMER)) {
+            if (! $this->ensureTypedStepHistoryRecorded(
+                $run,
+                $task,
+                $frame->execution,
+                $sequence,
+                WorkflowStepHistory::TIMER
+            )) {
                 return null;
             }
             $this->syncWorkflowCursor($workflow, $sequence + 1);
             return $this->waitForNextResumeSource($run, $task);
         }
-        if (! $this->ensureTypedStepHistoryRecorded($run, $task, $sequence, WorkflowStepHistory::TIMER)) {
+        if (! $this->ensureTypedStepHistoryRecorded(
+            $run,
+            $task,
+            $frame->execution,
+            $sequence,
+            WorkflowStepHistory::TIMER
+        )) {
             return null;
         }
         return $this->resumeTimer($run, $task, $frame, $timer);
@@ -1729,9 +1802,16 @@ final class WorkflowExecutor
         if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
             return $this->restartAfterPendingUpdateFailure($run, $task);
         }
-        if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::SIGNAL_WAIT, [
-            'signal_name' => $current->name,
-        ])) {
+        if (! $this->ensureStepHistoryCompatible(
+            $run,
+            $task,
+            $frame->execution,
+            $sequence,
+            WorkflowStepHistory::SIGNAL_WAIT,
+            [
+                'signal_name' => $current->name,
+            ]
+        )) {
             return null;
         }
         $signalEvent = $this->appliedSignalEvent($run, $sequence, $current);
@@ -1899,9 +1979,16 @@ final class WorkflowExecutor
         if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
             return $this->restartAfterPendingUpdateFailure($run, $task);
         }
-        if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::SERVICE_OPERATION, [
-            'operation_name' => $current->operationName,
-        ])) {
+        if (! $this->ensureStepHistoryCompatible(
+            $run,
+            $task,
+            $frame->execution,
+            $sequence,
+            WorkflowStepHistory::SERVICE_OPERATION,
+            [
+                'operation_name' => $current->operationName,
+            ]
+        )) {
             return null;
         }
         $serviceEvent = $this->serviceOperationEvent($run, $sequence);
@@ -1990,10 +2077,17 @@ final class WorkflowExecutor
         if (! $this->applyRecordedUpdates($run, $frame->workflow, $sequence, $task)) {
             return $this->restartAfterPendingUpdateFailure($run, $task);
         }
-        if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::CHILD_WORKFLOW, [
-            'child_workflow_type' => $call->child->workflow,
-            'child_completion_mode' => 'started',
-        ])) {
+        if (! $this->ensureStepHistoryCompatible(
+            $run,
+            $task,
+            $frame->execution,
+            $sequence,
+            WorkflowStepHistory::CHILD_WORKFLOW,
+            [
+                'child_workflow_type' => $call->child->workflow,
+                'child_completion_mode' => 'started',
+            ]
+        )) {
             return null;
         }
         try {
@@ -2056,7 +2150,13 @@ final class WorkflowExecutor
         if (! $this->applyRecordedUpdates($run, $frame->workflow, $sequence, $task)) {
             return $this->restartAfterPendingUpdateFailure($run, $task);
         }
-        if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::CHILD_WORKFLOW_AWAIT)) {
+        if (! $this->ensureStepHistoryCompatible(
+            $run,
+            $task,
+            $frame->execution,
+            $sequence,
+            WorkflowStepHistory::CHILD_WORKFLOW_AWAIT
+        )) {
             return null;
         }
         try {
@@ -2123,10 +2223,17 @@ final class WorkflowExecutor
         if (! $this->applyRecordedUpdates($run, $workflow, $sequence, $task)) {
             return $this->restartAfterPendingUpdateFailure($run, $task);
         }
-        if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::CHILD_WORKFLOW, [
-            'child_workflow_type' => $current->workflow,
-            'child_completion_mode' => 'result',
-        ])) {
+        if (! $this->ensureStepHistoryCompatible(
+            $run,
+            $task,
+            $frame->execution,
+            $sequence,
+            WorkflowStepHistory::CHILD_WORKFLOW,
+            [
+                'child_workflow_type' => $current->workflow,
+                'child_completion_mode' => 'result',
+            ]
+        )) {
             return null;
         }
         $resolutionEvent = ChildRunHistory::resolutionEventForSequence($run, $sequence);
@@ -2161,13 +2268,25 @@ final class WorkflowExecutor
         }
         $childStatus = ChildRunHistory::resolvedStatus(null, $childRun);
         if (in_array($childStatus, [RunStatus::Pending, RunStatus::Running, RunStatus::Waiting], true)) {
-            if (! $this->ensureTypedStepHistoryRecorded($run, $task, $sequence, WorkflowStepHistory::CHILD_WORKFLOW)) {
+            if (! $this->ensureTypedStepHistoryRecorded(
+                $run,
+                $task,
+                $frame->execution,
+                $sequence,
+                WorkflowStepHistory::CHILD_WORKFLOW
+            )) {
                 return null;
             }
             $this->syncWorkflowCursor($workflow, $sequence + 1);
             return $this->waitForNextResumeSource($run, $task);
         }
-        if (! $this->ensureTypedStepHistoryRecorded($run, $task, $sequence, WorkflowStepHistory::CHILD_WORKFLOW)) {
+        if (! $this->ensureTypedStepHistoryRecorded(
+            $run,
+            $task,
+            $frame->execution,
+            $sequence,
+            WorkflowStepHistory::CHILD_WORKFLOW
+        )) {
             return null;
         }
         $resolutionEvent = $this->recordChildResolution($run, $task, $sequence, $childRun);
@@ -2252,7 +2371,7 @@ final class WorkflowExecutor
         foreach ($leafDescriptors as $descriptor) {
             $call = $descriptor['call'];
             $itemSequence = $sequence + $descriptor['offset'];
-            if (! $this->ensureStepHistoryCompatible($run, $task, $itemSequence, match (true) {
+            if (! $this->ensureStepHistoryCompatible($run, $task, $frame->execution, $itemSequence, match (true) {
                 $call instanceof ActivityCall => WorkflowStepHistory::ACTIVITY,
                 $call instanceof TimerCall => WorkflowStepHistory::TIMER,
                 $call instanceof SignalCall => WorkflowStepHistory::SIGNAL_WAIT,
@@ -2262,7 +2381,13 @@ final class WorkflowExecutor
                 return null;
             }
         }
-        if (! $this->ensureParallelGroupHistoryCompatible($run, $task, $sequence, $leafDescriptors)) {
+        if (! $this->ensureParallelGroupHistoryCompatible(
+            $run,
+            $task,
+            $frame->execution,
+            $sequence,
+            $leafDescriptors
+        )) {
             return null;
         }
         $groupResolution = $this->parallelResolutionEvent($run, $current, $sequence, $leafDescriptors);
@@ -2301,7 +2426,11 @@ final class WorkflowExecutor
             $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
             return null;
         }
-        $group = new WorkflowParallelDispatch($sequence, $current->failurePolicy === AllCall::PROPAGATE);
+        $group = new WorkflowParallelDispatch(
+            $sequence,
+            $current->failurePolicy === AllCall::PROPAGATE,
+            $workflowExecution,
+        );
         $group->conditionInputOrder = $conditionInputOrder;
         foreach ($dispatchDescriptors as $descriptor) {
             if (! $this->dispatchParallelMember($run, $task, $descriptor, $group)) {
@@ -2643,13 +2772,25 @@ final class WorkflowExecutor
             return true;
         }
         if (in_array($execution->status, [ActivityStatus::Pending, ActivityStatus::Running], true)) {
-            if (! $this->ensureTypedStepHistoryRecorded($run, $task, $itemSequence, WorkflowStepHistory::ACTIVITY)) {
+            if (! $this->ensureTypedStepHistoryRecorded(
+                $run,
+                $task,
+                $group->execution,
+                $itemSequence,
+                WorkflowStepHistory::ACTIVITY
+            )) {
                 return false;
             }
             $group->pending = true;
             return true;
         }
-        if (! $this->ensureTypedStepHistoryRecorded($run, $task, $itemSequence, WorkflowStepHistory::ACTIVITY)) {
+        if (! $this->ensureTypedStepHistoryRecorded(
+            $run,
+            $task,
+            $group->execution,
+            $itemSequence,
+            WorkflowStepHistory::ACTIVITY
+        )) {
             return false;
         }
         if ($execution->status === ActivityStatus::Completed) {
@@ -3010,6 +3151,7 @@ final class WorkflowExecutor
                 if (! $this->ensureTypedStepHistoryRecorded(
                     $run,
                     $task,
+                    $group->execution,
                     $itemSequence,
                     WorkflowStepHistory::CHILD_WORKFLOW
                 )) {
@@ -3040,6 +3182,7 @@ final class WorkflowExecutor
             if (! $this->ensureTypedStepHistoryRecorded(
                 $run,
                 $task,
+                $group->execution,
                 $itemSequence,
                 WorkflowStepHistory::CHILD_WORKFLOW
             )) {
@@ -3048,7 +3191,13 @@ final class WorkflowExecutor
             $group->pending = true;
             return true;
         }
-        if (! $this->ensureTypedStepHistoryRecorded($run, $task, $itemSequence, WorkflowStepHistory::CHILD_WORKFLOW)) {
+        if (! $this->ensureTypedStepHistoryRecorded(
+            $run,
+            $task,
+            $group->execution,
+            $itemSequence,
+            WorkflowStepHistory::CHILD_WORKFLOW
+        )) {
             return false;
         }
         return $this->resolveParallelChildRun($childRun, $childStatus, $offset, $group);
@@ -3175,7 +3324,13 @@ final class WorkflowExecutor
         $current = &$frame->current;
         $sequence = &$frame->sequence;
 
-        if (! $this->ensureStepHistoryCompatible($run, $task, $sequence, WorkflowStepHistory::CONTINUE_AS_NEW)) {
+        if (! $this->ensureStepHistoryCompatible(
+            $run,
+            $task,
+            $frame->execution,
+            $sequence,
+            WorkflowStepHistory::CONTINUE_AS_NEW
+        )) {
             return null;
         }
         try {
@@ -5260,6 +5415,7 @@ final class WorkflowExecutor
         string $sourceKind,
         string $sourceId,
         ?int $failedStepSequence = null,
+        ?WorkflowExecution $replayExecution = null,
     ): void {
         if ($throwable instanceof WorkflowCancellationRequestedException
             && is_string($run->cancellation_request_command_id)) {
@@ -5297,6 +5453,7 @@ final class WorkflowExecutor
         }
 
         if ($throwable instanceof HistoryEventShapeMismatchException) {
+            $replayExecution?->recordMismatchSource($throwable);
             $this->blockReplayUntilCompatibleHistoryShape($run, $task, $throwable);
 
             return;
@@ -5436,6 +5593,7 @@ final class WorkflowExecutor
     private function ensureStepHistoryCompatible(
         WorkflowRun $run,
         WorkflowTask $task,
+        WorkflowExecution $execution,
         int $sequence,
         string $expectedShape,
         array $expectedDetails = [],
@@ -5445,7 +5603,7 @@ final class WorkflowExecutor
 
             return true;
         } catch (Throwable $throwable) {
-            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id, replayExecution: $execution);
 
             return false;
         }
@@ -5457,6 +5615,7 @@ final class WorkflowExecutor
     private function ensureParallelGroupHistoryCompatible(
         WorkflowRun $run,
         WorkflowTask $task,
+        WorkflowExecution $execution,
         int $sequence,
         array $leafDescriptors,
     ): bool {
@@ -5465,7 +5624,7 @@ final class WorkflowExecutor
 
             return true;
         } catch (Throwable $throwable) {
-            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id, replayExecution: $execution);
 
             return false;
         }
@@ -5474,6 +5633,7 @@ final class WorkflowExecutor
     private function ensureTypedStepHistoryRecorded(
         WorkflowRun $run,
         WorkflowTask $task,
+        WorkflowExecution $execution,
         int $sequence,
         string $expectedShape,
     ): bool {
@@ -5482,7 +5642,7 @@ final class WorkflowExecutor
 
             return true;
         } catch (Throwable $throwable) {
-            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
+            $this->failRun($run, $task, $throwable, 'workflow_run', $run->id, replayExecution: $execution);
 
             return false;
         }
@@ -5626,6 +5786,12 @@ final class WorkflowExecutor
         $payload['replay_blocked_workflow_sequence'] = $throwable->workflowSequence;
         $payload['replay_blocked_expected_history_shape'] = $throwable->expectedHistoryShape;
         $payload['replay_blocked_recorded_event_types'] = $throwable->recordedEventTypes;
+        $workflowSource = $throwable->workflowSource();
+        if ($workflowSource !== null) {
+            $payload['replay_blocked_workflow_source'] = $workflowSource;
+        } else {
+            unset($payload['replay_blocked_workflow_source']);
+        }
 
         $task->forceFill([
             'status' => TaskStatus::Failed,
