@@ -1264,14 +1264,14 @@ final class WorkflowCommandNormalizerTest extends NonDatabaseTestCase
         ]], $out);
     }
 
-    public function testExplicitChildWorkflowIdUsesTopLevelStartValidation(): void
+    public function testExplicitChildWorkflowIdUsesPortableStartValidation(): void
     {
         $child = [
             'type' => 'start_child_workflow',
             'workflow_type' => 'Child',
         ];
         $this->assertSame([$child], WorkflowCommandNormalizer::normalize([$child]));
-        foreach (['order-42.shipment_1:express', str_repeat('x', 191)] as $id) {
+        foreach (['order-42.shipment_1:express', str_repeat('x', 128)] as $id) {
             $this->assertSame(
                 $id,
                 WorkflowCommandNormalizer::normalize([[
@@ -1281,7 +1281,7 @@ final class WorkflowCommandNormalizerTest extends NonDatabaseTestCase
             );
         }
 
-        foreach (['', ' child', 'child/next', str_repeat('x', 192), null, 23] as $id) {
+        foreach (['', ' child', 'child/next', str_repeat('x', 129), null, 23] as $id) {
             try {
                 WorkflowCommandNormalizer::normalize([[
                     ...$child,

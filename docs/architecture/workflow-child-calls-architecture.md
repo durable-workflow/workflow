@@ -346,8 +346,8 @@ when the serving host advertises `child_workflow_start_turn`.
 ## Explicit child identity for external workers
 
 The default embedded task bridge accepts an optional `workflow_id` on
-`start_child_workflow`. Use the same URL-safe identifier accepted by a
-top-level start. The child inherits the parent's namespace. Omit the field
+`start_child_workflow`. Use the HTTP start identifier format with at most
+128 URL-safe characters. The child inherits the parent's namespace. Omit the field
 to keep a generated instance ID. The child call and each child run have
 separate runtime-generated IDs.
 

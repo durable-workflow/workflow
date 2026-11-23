@@ -784,8 +784,10 @@ final class WorkflowCommandNormalizer
 
                 $workflowId = $command['workflow_id'] ?? null;
                 if (array_key_exists('workflow_id', $command)
-                    && (! is_string($workflowId) || ! WorkflowInstanceId::isValid($workflowId))) {
-                    $errors["commands.{$index}.workflow_id"] = [WorkflowInstanceId::validationMessage()];
+                    && (! is_string($workflowId) || ! WorkflowInstanceId::isValidWorkerChildId($workflowId))) {
+                    $errors["commands.{$index}.workflow_id"] = [
+                        WorkflowInstanceId::validationMessage(maxLength: WorkflowInstanceId::WORKER_CHILD_MAX_LENGTH),
+                    ];
 
                     continue;
                 }

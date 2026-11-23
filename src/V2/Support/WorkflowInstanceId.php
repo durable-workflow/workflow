@@ -10,6 +10,8 @@ final class WorkflowInstanceId
 {
     public const MAX_LENGTH = 191;
 
+    public const WORKER_CHILD_MAX_LENGTH = 128;
+
     private const PATTERN = '/\A[A-Za-z0-9._:-]+\z/';
 
     public static function assertValid(string $instanceId): void
@@ -26,6 +28,11 @@ final class WorkflowInstanceId
             && preg_match(self::PATTERN, $instanceId) === 1;
     }
 
+    public static function isValidWorkerChildId(string $instanceId): bool
+    {
+        return strlen($instanceId) <= self::WORKER_CHILD_MAX_LENGTH && self::isValid($instanceId);
+    }
+
     public static function requirementMessage(): string
     {
         return sprintf(
@@ -34,12 +41,12 @@ final class WorkflowInstanceId
         );
     }
 
-    public static function validationMessage(string $field = 'workflow_id'): string
+    public static function validationMessage(string $field = 'workflow_id', int $maxLength = self::MAX_LENGTH): string
     {
         return sprintf(
             'The %s field must be a non-empty URL-safe string up to %d characters using only letters, numbers, ".", "_", "-", and ":".',
             $field,
-            self::MAX_LENGTH,
+            $maxLength,
         );
     }
 }

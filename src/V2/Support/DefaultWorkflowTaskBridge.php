@@ -6470,7 +6470,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
     {
         $workflowId = $command['workflow_id'] ?? null;
         if (array_key_exists('workflow_id', $command)
-            && (! is_string($workflowId) || ! WorkflowInstanceId::isValid($workflowId))) {
+            && (! is_string($workflowId) || ! WorkflowInstanceId::isValidWorkerChildId($workflowId))) {
             return null;
         }
 
