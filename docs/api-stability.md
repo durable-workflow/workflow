@@ -487,6 +487,23 @@ shows both exceptions. A run whose history did not fail reports the exception
 as before. These fields are additive, and the replay-diff reason set is
 unchanged.
 
+### Locate an authored replay mismatch
+
+When a suspended workflow call disagrees with history, the replay verifier
+reports its function or method, source filename, and exact line. Inspect this
+location alongside the workflow sequence and the recorded event types.
+
+```bash
+php artisan workflow:v2:replay-verify history.json --json \
+  | jq '.replay_diff.divergence.workflow_source // empty'
+```
+
+For example, `ApproveOrder::reserve (ApproveOrder.php:42)` identifies the
+authored operation to inspect. A replay-blocked embedded task carries the
+same location in its failure message. Reports expose the filename without
+its directory. The location is optional and appears when a suspended authored
+call can be identified.
+
 ### Workflow command grammar ownership
 
 `Workflow\V2\Support\WorkflowCommandNormalizer` is the single source of

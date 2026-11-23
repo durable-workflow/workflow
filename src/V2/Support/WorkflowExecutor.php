@@ -12,6 +12,7 @@ use LogicException;
 use ReflectionMethod;
 use RuntimeException;
 use Throwable;
+use WeakMap;
 use Workflow\Serializers\AvroValueJsonProjection;
 use Workflow\Serializers\CodecRegistry;
 use Workflow\Serializers\Serializer;
@@ -81,6 +82,11 @@ final class WorkflowExecutor
      * without an activity step, its cursor is the step where it failed.
      */
     private ?Workflow $taskWorkflow = null;
+
+    /**
+     * @var WeakMap<WorkflowTask, WorkflowExecution>|null
+     */
+    private ?WeakMap $dispatchedExecutions = null;
 
     public function run(
         WorkflowRun $run,
@@ -600,9 +606,12 @@ final class WorkflowExecutor
         }
 
         $sample = WorkflowExecutionProfile::begin('durable_call_dispatch');
+        $executions = $this->dispatchedExecutions ??= new WeakMap();
+        $executions[$state->task] = $frame->execution;
         try {
             return $this->executeCurrentCall($state);
         } finally {
+            unset($executions[$state->task]);
             WorkflowExecutionProfile::finish($sample);
         }
     }
@@ -611,6 +620,7 @@ final class WorkflowExecutor
     {
         $run = $state->run;
         $frame = $state->frame;
+        $comparingCall = false;
         try {
             while (($duplicate = $state->versionDecisions->duplicateAt(
                 $frame->sequence,
@@ -623,8 +633,12 @@ final class WorkflowExecutor
                 ++$frame->sequence;
                 $this->syncWorkflowCursor($frame->workflow, $frame->sequence);
             }
+            $comparingCall = true;
             ActivityReplayIdentity::assertCall($run, $frame->current, $frame->sequence);
         } catch (Throwable $throwable) {
+            if ($comparingCall && $throwable instanceof HistoryEventShapeMismatchException) {
+                $frame->execution->recordMismatchSource($throwable);
+            }
             $this->failRun($run, $state->task, $throwable, 'workflow_run', $run->id);
             return false;
         }
@@ -5297,6 +5311,7 @@ final class WorkflowExecutor
         }
 
         if ($throwable instanceof HistoryEventShapeMismatchException) {
+            ($this->dispatchedExecutions[$task] ?? null)?->recordMismatchSource($throwable);
             $this->blockReplayUntilCompatibleHistoryShape($run, $task, $throwable);
 
             return;
@@ -5626,6 +5641,12 @@ final class WorkflowExecutor
         $payload['replay_blocked_workflow_sequence'] = $throwable->workflowSequence;
         $payload['replay_blocked_expected_history_shape'] = $throwable->expectedHistoryShape;
         $payload['replay_blocked_recorded_event_types'] = $throwable->recordedEventTypes;
+        $workflowSource = $throwable->workflowSource();
+        if ($workflowSource !== null) {
+            $payload['replay_blocked_workflow_source'] = $workflowSource;
+        } else {
+            unset($payload['replay_blocked_workflow_source']);
+        }
 
         $task->forceFill([
             'status' => TaskStatus::Failed,

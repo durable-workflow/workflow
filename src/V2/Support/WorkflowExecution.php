@@ -7,8 +7,10 @@ namespace Workflow\V2\Support;
 use Carbon\CarbonInterface;
 use Fiber;
 use LogicException;
+use ReflectionFiber;
 use Throwable;
 use WeakReference;
+use Workflow\V2\Exceptions\HistoryEventShapeMismatchException;
 use Workflow\V2\Exceptions\StraightLineWorkflowRequiredException;
 use Workflow\V2\Exceptions\WorkflowCancellationRequestedException;
 use Workflow\V2\Exceptions\WorkflowFiberDiscardedException;
@@ -106,6 +108,25 @@ final class WorkflowExecution
         return $this->fiber;
     }
 
+    public function recordMismatchSource(HistoryEventShapeMismatchException $mismatch): void
+    {
+        if ($this->fiber === null || ! $this->fiber->isSuspended() || $mismatch->workflowSource() !== null) {
+            return;
+        }
+
+        $trace = (new ReflectionFiber($this->fiber))->getTrace(DEBUG_BACKTRACE_IGNORE_ARGS);
+        $runtimeDirectory = str_replace('\\', '/', dirname(__DIR__, 2)) . '/';
+        foreach ($trace as $index => $frame) {
+            // A frame gives the location of the call. The next frame names its caller.
+            $source = self::sourceFromFrame($frame, $trace[$index + 1] ?? [], $runtimeDirectory);
+            if ($source !== null) {
+                $mismatch->recordWorkflowSource($source);
+
+                return;
+            }
+        }
+    }
+
     public function valid(): bool
     {
         if ($this->fiber instanceof Fiber) {
@@ -191,6 +212,46 @@ final class WorkflowExecution
     public function getReturn(): mixed
     {
         return $this->return;
+    }
+
+    /**
+     * @param array<string, mixed> $frame
+     * @param array<string, mixed> $caller
+     * @return array{function: string, file: string, line: int}|null
+     */
+    private static function sourceFromFrame(array $frame, array $caller, string $runtimeDirectory): ?array
+    {
+        $file = $frame['file'] ?? null;
+        $line = $frame['line'] ?? 0;
+        if (! is_string($file) || ! is_int($line) || $line < 1) {
+            return null;
+        }
+        $file = str_replace('\\', '/', $file);
+        if (str_starts_with($file, $runtimeDirectory)) {
+            return null;
+        }
+        $file = basename($file);
+        if (! str_ends_with($file, '.php') || preg_match('/[[:cntrl:]]/', $file) !== 0) {
+            return null;
+        }
+
+        $function = $caller['function'] ?? '';
+        if (! is_string($function) || $function === '') {
+            return null;
+        }
+        if (str_contains($function, '{closure')) {
+            $function = strstr($function, '{closure', true) . '{closure}';
+        }
+        $class = $caller['class'] ?? '';
+        if (! is_string($class) || str_contains($class, '@anonymous')) {
+            $class = '{anonymous class}';
+        }
+
+        return [
+            'function' => $class === '' ? $function : $class . '::' . $function,
+            'file' => $file,
+            'line' => $line,
+        ];
     }
 
     /**
