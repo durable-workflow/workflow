@@ -115,40 +115,15 @@ final class WorkflowExecution
         }
 
         $trace = (new ReflectionFiber($this->fiber))->getTrace(DEBUG_BACKTRACE_IGNORE_ARGS);
-        $runtimeDirectory = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR;
+        $runtimeDirectory = str_replace('\\', '/', dirname(__DIR__, 2)) . '/';
         foreach ($trace as $index => $frame) {
-            $file = $frame['file'] ?? null;
-            $line = $frame['line'] ?? 0;
-            if (! is_string($file) || str_starts_with($file, $runtimeDirectory) || ! is_int($line) || $line < 1) {
-                continue;
-            }
+            // A frame gives the location of the call. The next frame names its caller.
+            $source = self::sourceFromFrame($frame, $trace[$index + 1] ?? [], $runtimeDirectory);
+            if ($source !== null) {
+                $mismatch->recordWorkflowSource($source);
 
-            // Each trace frame gives the call site's file and line and the
-            // callee's name. The next frame identifies the authored caller.
-            $caller = $trace[$index + 1] ?? [];
-            $function = $caller['function'] ?? '';
-            if (! is_string($function) || $function === '') {
-                continue;
+                return;
             }
-            if (str_contains($function, '{closure')) {
-                $function = strstr($function, '{closure', true) . '{closure}';
-            }
-            $class = $caller['class'] ?? '';
-            if (str_contains($class, '@anonymous')) {
-                $class = '{anonymous class}';
-            }
-            $file = basename(str_replace('\\', '/', $file));
-            if (! str_ends_with($file, '.php') || preg_match('/[[:cntrl:]]/', $file) !== 0) {
-                continue;
-            }
-
-            $mismatch->recordWorkflowSource([
-                'function' => $class === '' ? $function : $class . '::' . $function,
-                'file' => $file,
-                'line' => $line,
-            ]);
-
-            return;
         }
     }
 
@@ -237,6 +212,46 @@ final class WorkflowExecution
     public function getReturn(): mixed
     {
         return $this->return;
+    }
+
+    /**
+     * @param array<string, mixed> $frame
+     * @param array<string, mixed> $caller
+     * @return array{function: string, file: string, line: int}|null
+     */
+    private static function sourceFromFrame(array $frame, array $caller, string $runtimeDirectory): ?array
+    {
+        $file = $frame['file'] ?? null;
+        $line = $frame['line'] ?? 0;
+        if (! is_string($file) || ! is_int($line) || $line < 1) {
+            return null;
+        }
+        $file = str_replace('\\', '/', $file);
+        if (str_starts_with($file, $runtimeDirectory)) {
+            return null;
+        }
+        $file = basename($file);
+        if (! str_ends_with($file, '.php') || preg_match('/[[:cntrl:]]/', $file) !== 0) {
+            return null;
+        }
+
+        $function = $caller['function'] ?? '';
+        if (! is_string($function) || $function === '') {
+            return null;
+        }
+        if (str_contains($function, '{closure')) {
+            $function = strstr($function, '{closure', true) . '{closure}';
+        }
+        $class = $caller['class'] ?? '';
+        if (! is_string($class) || str_contains($class, '@anonymous')) {
+            $class = '{anonymous class}';
+        }
+
+        return [
+            'function' => $class === '' ? $function : $class . '::' . $function,
+            'file' => $file,
+            'line' => $line,
+        ];
     }
 
     /**
