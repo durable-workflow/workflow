@@ -333,8 +333,9 @@ embedded task bridge commits one fresh parent task alongside the child start.
 The worker reads the initial child and call IDs from `ChildRunStarted` in
 canonical history. The later child result still has its usual delivery turn.
 
-Multiple starts in one completion share one parent task. An existing ready
-or leased parent task can deliver the same history. A completion that closes
+Multiple starts in one completion share one parent task. A ready parent
+replay can carry the committed start. A leased task may have already read
+history, and an update task runs its update handler. A completion that closes
 the parent needs no start turn, and retained-claim checkpoints refuse
 `await: "started"`.
 

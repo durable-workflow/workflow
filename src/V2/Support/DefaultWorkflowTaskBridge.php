@@ -2277,7 +2277,14 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             $createdTaskIds[] = $replayTask->id;
         }
 
-        if ($childStartTurn !== null && ! self::hasOpenWorkflowTask($run->id)) {
+        // A ready root task can read the new history. A leased task may
+        // have already read history, and an update task executes its handler.
+        if ($childStartTurn !== null && ! ConfiguredV2Models::query('task_model', WorkflowTask::class)
+            ->where('workflow_run_id', $run->id)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->whereNull('payload->workflow_update_id')
+            ->exists()) {
             $startTask = ConfiguredV2Models::query('task_model', WorkflowTask::class)->create([
                 'workflow_run_id' => $run->id,
                 'namespace' => $run->namespace,

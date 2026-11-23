@@ -1522,6 +1522,73 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertCount($admission['pending_count_queries'], $pendingCounts);
     }
 
+    public function testServiceChildStartCorpusReopensTheParentFromCommittedHistory(): void
+    {
+        $path = self::FIXTURE_DIR . '/service-child-start-turn-cold-replay.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The service child-start evidence is absent.');
+        }
+
+        $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $workflow = $fixture['workflow'];
+        $scenario = $fixture['service_child_start_turn'];
+        self::stopWorkers();
+        $this->clearWorkflowState();
+        config([
+            'queue.default' => 'database',
+        ]);
+        Queue::fake();
+
+        $parent = WorkflowStub::make($workflow['type'], $fixture['id']);
+        $parent->start(...$workflow['arguments']);
+        $runId = $parent->runId();
+        $tasks = WorkflowTask::query()->where('workflow_run_id', $runId)->where('task_type', TaskType::Workflow);
+        $initial = (clone $tasks)->sole();
+        $bridge = $this->app->make(WorkflowTaskBridge::class);
+        $this->assertTrue($bridge->claimStatus($initial->id, 'service-child-start-worker')['claimed']);
+        $history = $bridge->historyPayload($initial->id);
+        $this->assertNotNull($history);
+        $step = WorkflowFiberRunner::forClass(
+            $workflow['type'],
+            $history['workflow_instance_id'],
+            $runId,
+            $workflow['arguments'],
+            $workflow['payload_codec'],
+            $history['history_events'],
+        )->step();
+        $this->assertCount(1, $step->commands);
+        $this->assertSame('start_child_workflow', $step->commands[0]['type']);
+        $result = $bridge->complete($initial->id, [[
+            ...$step->commands[0],
+            'await' => $scenario['await'],
+        ]]);
+        $this->assertTrue($result['completed'], $result['reason'] ?? '');
+        $this->assertSame(1, (clone $tasks)->where('status', TaskStatus::Ready)->count());
+        $turn = $tasks->where('status', TaskStatus::Ready)->sole();
+        $this->assertSame($scenario['wait_kind'], $turn->payload['workflow_wait_kind']);
+        $this->assertFalse(
+            WorkflowRun::query()->findOrFail($turn->payload['child_workflow_run_id'])->status->isTerminal()
+        );
+
+        $this->assertTrue($bridge->claimStatus($turn->id, 'service-child-start-replacement')['claimed']);
+        $replacement = $bridge->historyPayload($turn->id);
+        $this->assertNotNull($replacement);
+        $events = $replacement['history_events'];
+        $this->assertSame(array_column($fixture['history'], 'event_type'), array_column($events, 'event_type'));
+        $start = $events[array_key_last($events)]['payload'];
+        $this->assertSame($turn->payload['child_call_id'], $start['child_call_id']);
+        $this->assertSame($turn->payload['child_workflow_run_id'], $start['child_workflow_run_id']);
+        $replay = WorkflowFiberRunner::forClass(
+            $workflow['type'],
+            $replacement['workflow_instance_id'],
+            $runId,
+            $workflow['arguments'],
+            $workflow['payload_codec'],
+            $events,
+        )->step();
+        $this->assertStepMatches($fixture['expected'], $replay, $fixture['id']);
+    }
+
     public function testServiceParentCloseCorpusKeepsReceiptsAcrossChildLinkPages(): void
     {
         $path = self::FIXTURE_DIR . '/service-parent-close-across-child-link-pages.json';
