@@ -1,0 +1,34 @@
+{
+  "protocol_version": "1.20",
+  "cases": {
+    "started": {
+      "await": "started",
+      "children": 1,
+      "close_parent": false,
+      "parent_start_turns": 1
+    },
+    "two-children": {
+      "await": "started",
+      "children": 2,
+      "close_parent": false,
+      "parent_start_turns": 1
+    },
+    "default-result": {
+      "children": 1,
+      "close_parent": false,
+      "parent_start_turns": 0
+    },
+    "explicit-result": {
+      "await": "result",
+      "children": 1,
+      "close_parent": false,
+      "parent_start_turns": 0
+    },
+    "parent-closes": {
+      "await": "started",
+      "children": 1,
+      "close_parent": true,
+      "parent_start_turns": 0
+    }
+  }
+}

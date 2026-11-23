@@ -39,23 +39,82 @@ final class DefaultWorkflowTaskBridgeChildResumeTest extends TestCase
         $this->bridge = $this->app->make(WorkflowTaskBridge::class);
     }
 
-    public function testChildStartTurnUsesCommittedHistoryAcrossWorkerReplacement(): void
+    /**
+     * @return iterable<string, array{string, ?string, positive-int, bool, int}>
+     */
+    public static function childStartTurnCases(): iterable
     {
+        $fixture = file_get_contents(__DIR__ . '/../../Fixtures/V2/WorkerProtocol/child-start-turn.json');
+        self::assertIsString($fixture);
+
+        /** @var array{protocol_version: string, cases: array<string, array{await?: string, children: positive-int, close_parent: bool, parent_start_turns: int}>} $shared */
+        $shared = json_decode($fixture, true, flags: JSON_THROW_ON_ERROR);
+        self::assertNotEmpty($shared['cases']);
+        foreach ($shared['cases'] as $name => $case) {
+            yield $name => [
+                $shared['protocol_version'],
+                $case['await'] ?? null,
+                $case['children'],
+                $case['close_parent'],
+                $case['parent_start_turns'],
+            ];
+        }
+    }
+
+    #[DataProvider('childStartTurnCases')]
+    public function testSharedChildStartTurnContract(
+        string $protocolVersion,
+        ?string $await,
+        int $children,
+        bool $closeParent,
+        int $startTurns,
+    ): void {
         $parent = $this->createWaitingRun();
         $original = $this->createLeasedTask($parent);
-        $commands = WorkflowCommandNormalizer::normalize([
-            $this->childStartCommand('first'),
-            $this->childStartCommand('second'),
-        ], '1.20');
-        $receipt = $this->bridge->completeForProtocol($original->id, $commands, '1.20');
+        $commands = [];
+        for ($index = 1; $index <= $children; $index++) {
+            $commands[] = $this->childStartCommand('child-' . $index, $await);
+        }
+        if ($closeParent) {
+            $commands[] = [
+                'type' => 'complete_workflow',
+                'result' => Serializer::serialize('closed'),
+            ];
+        }
+        $commands = WorkflowCommandNormalizer::normalize($commands, $protocolVersion);
+
+        $receipt = $this->bridge->completeForProtocol($original->id, $commands, $protocolVersion);
         $this->assertTrue($receipt['completed']);
-        $this->assertCount(3, $receipt['created_task_ids']);
-        $this->assertSame('task_not_leased', $this->bridge->complete($original->id, $commands)['reason']);
+        $this->assertCount($children + $startTurns, $receipt['created_task_ids']);
+        $this->assertSame($closeParent ? 'completed' : 'waiting', $receipt['run_status']);
+        $redelivery = $this->bridge->completeForProtocol($original->id, $commands, $protocolVersion);
+        $this->assertFalse($redelivery['completed']);
+        $this->assertSame('task_not_leased', $redelivery['reason']);
+        $this->assertSame([], $redelivery['created_task_ids']);
+        $this->assertSame($startTurns, $this->openParentTaskCount($parent));
+        $this->assertSame($children, WorkflowLink::query()->where('parent_workflow_run_id', $parent->id)->count());
 
         $starts = WorkflowHistoryEvent::query()->where('workflow_run_id', $parent->id)
             ->where('event_type', HistoryEventType::ChildRunStarted->value)->orderBy('sequence')->get();
-        $this->assertCount(2, $starts);
+        $this->assertCount($children, $starts);
         $first = $starts[0]->payload;
+        if ($startTurns === 0) {
+            if (! $closeParent) {
+                $child = WorkflowTask::query()->where('workflow_run_id', $first['child_workflow_run_id'])->sole();
+                $this->assertTrue($this->bridge->claimStatus($child->id, 'child-worker')['claimed']);
+                $this->assertTrue($this->bridge->completeForProtocol($child->id, [[
+                    'type' => 'complete_workflow',
+                    'result' => Serializer::serialize('child-result'),
+                ]], $protocolVersion)['completed']);
+
+                $resumed = WorkflowTask::query()->where('workflow_run_id', $parent->id)
+                    ->where('task_type', TaskType::Workflow)->where('status', TaskStatus::Ready)->sole();
+                $this->assertSame('child', $resumed->payload['workflow_wait_kind']);
+                $this->assertSame($first['child_call_id'], $resumed->payload['child_call_id']);
+            }
+            return;
+        }
+
         $startTurn = WorkflowTask::query()->where('workflow_run_id', $parent->id)
             ->where('status', TaskStatus::Ready->value)->sole();
         $this->assertContains($startTurn->id, $receipt['created_task_ids']);
@@ -75,9 +134,10 @@ final class DefaultWorkflowTaskBridgeChildResumeTest extends TestCase
 
         $this->assertTrue($this->bridge->claimStatus($startTurn->id, 'parent-first-worker')['claimed']);
         $history = $this->bridge->historyPayload($startTurn->id)['history_events'];
-        $this->assertSame([
-            'ChildWorkflowScheduled', 'ChildRunStarted', 'ChildWorkflowScheduled', 'ChildRunStarted',
-        ], array_column($history, 'event_type'));
+        $this->assertSame(
+            array_merge(...array_fill(0, $children, ['ChildWorkflowScheduled', 'ChildRunStarted'])),
+            array_column($history, 'event_type'),
+        );
 
         $startTurn->refresh()
             ->forceFill([
@@ -87,7 +147,7 @@ final class DefaultWorkflowTaskBridgeChildResumeTest extends TestCase
         TaskWatchdog::runPass(respectThrottle: false, runIds: [$parent->id]);
         $this->assertTrue($this->bridge->claimStatus($startTurn->id, 'parent-replacement-worker')['claimed']);
         $this->assertSame($history, $this->bridge->historyPayload($startTurn->id)['history_events']);
-        $this->assertSame(2, WorkflowLink::query()->where('parent_workflow_run_id', $parent->id)->count());
+        $this->assertSame($children, WorkflowLink::query()->where('parent_workflow_run_id', $parent->id)->count());
 
         // Continuing the child keeps the original identity in the start turn.
         $this->assertTrue($this->bridge->complete($startTurn->id, [[
@@ -160,33 +220,22 @@ final class DefaultWorkflowTaskBridgeChildResumeTest extends TestCase
         ], array_column($this->bridge->historyPayload($turn->id)['history_events'], 'event_type'));
     }
 
-    public function testResultAwaitAndClosingParentTurnsDoNotCreateAStartTurn(): void
+    public function testOtherClosingParentTurnsDoNotCreateAStartTurn(): void
     {
-        foreach ([null, 'result', 'complete_workflow', 'fail_workflow', 'continue_as_new'] as $case) {
+        foreach (['fail_workflow', 'continue_as_new'] as $close) {
             $parent = $this->createWaitingRun();
             $task = $this->createLeasedTask($parent);
-            $command = $this->childStartCommand('child');
-            $commands = [$command];
-            if ($case === null) {
-                unset($commands[0]['await']);
-            } elseif ($case === 'result') {
-                $commands[0]['await'] = 'result';
-            } else {
-                $commands[] = [
-                    'type' => $case,
-                    ...match ($case) {
-                        'complete_workflow' => [
-                            'result' => Serializer::serialize('closed'),
-                        ],
-                        'fail_workflow' => [
-                            'message' => 'closed',
-                        ],
-                        'continue_as_new' => [
-                            'arguments' => Serializer::serialize(['continued']),
-                        ],
-                    },
-                ];
-            }
+            $commands = [$this->childStartCommand('child'), [
+                'type' => $close,
+                ...match ($close) {
+                    'fail_workflow' => [
+                        'message' => 'closed',
+                    ],
+                    'continue_as_new' => [
+                        'arguments' => Serializer::serialize(['continued']),
+                    ],
+                },
+            ]];
 
             $completed = $this->bridge->complete($task->id, $commands);
             $this->assertTrue($completed['completed'], json_encode($completed, JSON_THROW_ON_ERROR));
@@ -487,16 +536,20 @@ final class DefaultWorkflowTaskBridgeChildResumeTest extends TestCase
     }
 
     /**
-     * @return array{type: string, workflow_type: string, arguments: string, await: string}
+     * @return array{type: string, workflow_type: string, arguments: string, await?: string}
      */
-    private function childStartCommand(string $name): array
+    private function childStartCommand(string $name, ?string $await = 'started'): array
     {
-        return [
+        $command = [
             'type' => 'start_child_workflow',
             'workflow_type' => 'test-greeting-workflow',
             'arguments' => Serializer::serialize([$name]),
-            'await' => 'started',
         ];
+        if ($await !== null) {
+            $command['await'] = $await;
+        }
+
+        return $command;
     }
 
     private function openParentTaskCount(WorkflowRun $run): int
