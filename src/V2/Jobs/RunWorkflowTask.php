@@ -340,7 +340,7 @@ final class RunWorkflowTask implements ShouldQueue
             // The logical task ID is reused as owner; the attempt fences this claim.
             $claimedAttempt = (int) $task->attempt_count + 1;
             $claimReset = [];
-            $payload = $task->payload ?? [];
+            $payload = $task->last_error !== null ? ($task->payload ?? []) : [];
             if (array_key_exists(ContinueAsNewTaskRefusal::KEY, $payload)) {
                 unset($payload[ContinueAsNewTaskRefusal::KEY]);
                 $claimReset = [

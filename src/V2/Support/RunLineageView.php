@@ -595,7 +595,9 @@ final class RunLineageView
         $closedReason = self::stringValue($metadata['closed_reason'] ?? null)
             ?? $summary?->closed_reason
             ?? $relatedRun?->closed_reason;
-        $buildTransition = ContinueAsNewBuildTransition::read($metadata[ContinueAsNewBuildTransition::KEY] ?? null);
+        $buildTransition = $linkType === 'continue_as_new'
+            ? ContinueAsNewBuildTransition::read($metadata[ContinueAsNewBuildTransition::KEY] ?? null)
+            : null;
 
         return [
             'id' => $id,

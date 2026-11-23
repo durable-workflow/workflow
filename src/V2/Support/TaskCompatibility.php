@@ -37,7 +37,9 @@ final class TaskCompatibility
 
     public static function supported(WorkflowTask $task, ?WorkflowRun $run = null): bool
     {
-        return self::mismatchReason($task, $run) === null;
+        $required = self::resolve($task, $run);
+
+        return WorkerCompatibility::supports($required) && ! self::currentBuildMismatch($task, $required);
     }
 
     public static function supportedInFleet(WorkflowTask $task, ?WorkflowRun $run = null): bool
@@ -52,8 +54,7 @@ final class TaskCompatibility
     public static function mismatchReason(WorkflowTask $task, ?WorkflowRun $run = null): ?string
     {
         $required = self::resolve($task, $run);
-        if (($task->payload[self::REQUIRE_CURRENT_BUILD] ?? null) === true
-            && $required !== null && WorkerCompatibility::current() !== $required) {
+        if (self::currentBuildMismatch($task, $required)) {
             return sprintf('The first task after a promoted continuation requires worker build [%s].', $required);
         }
 
@@ -67,6 +68,12 @@ final class TaskCompatibility
             $task->connection ?? $run?->connection,
             $task->queue ?? $run?->queue,
         );
+    }
+
+    private static function currentBuildMismatch(WorkflowTask $task, ?string $required): bool
+    {
+        return $required !== null && WorkerCompatibility::current() !== $required
+            && ($task->payload[self::REQUIRE_CURRENT_BUILD] ?? null) === true;
     }
 
     private static function normalize(mixed $value): ?string
