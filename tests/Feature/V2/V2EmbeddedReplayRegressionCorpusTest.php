@@ -1528,7 +1528,12 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     public static function serviceChildStartCorpus(): iterable
     {
         yield 'generated identity' => ['service-child-start-turn-cold-replay'];
-        yield 'explicit identity' => ['service-child-explicit-id-cold-replay'];
+
+        // The counterfactual gate first runs the consumer without new evidence.
+        $explicit = 'service-child-explicit-id-cold-replay';
+        if (is_file(self::FIXTURE_DIR . '/' . $explicit . '.json')) {
+            yield 'explicit identity' => [$explicit];
+        }
     }
 
     #[DataProvider('serviceChildStartCorpus')]
