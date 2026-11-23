@@ -28,6 +28,7 @@ use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
 use Tests\Fixtures\V2\TestLocalActivityWorkflow;
 use Tests\Fixtures\V2\TestParallelGreetingChildrenWorkflow;
+use Tests\Fixtures\V2\TestParallelMultipleActivityFailureWorkflow;
 use Tests\Fixtures\V2\TestQueryReplayGuardActivity;
 use Tests\Fixtures\V2\TestRedriveFractionalClockWorkflow;
 use Tests\Fixtures\V2\TestRepeatedPatchClockWorkflow;
@@ -2928,6 +2929,11 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
         foreach ($this->fixtures() as $fixture) {
             $this->executeColdReplayFixture($fixture);
+
+            if ($fixture['id'] === 'embedded-parallel-propagate-same-millisecond') {
+                $this->assertEmbeddedParallelPropagateReplay($fixture);
+                continue;
+            }
 
             if ($fixture['id'] === 'signal-timeout-before-later-cancellation') {
                 $this->assertSignalTimeoutSurvivesLaterCancellation($fixture);
@@ -6780,6 +6786,28 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             }
 
             $this->assertSame($expectedValue, $actual[$key], "{$context}.{$key} mismatch.");
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $fixture
+     */
+    private function assertEmbeddedParallelPropagateReplay(array $fixture): void
+    {
+        $previousNow = Carbon::getTestNow();
+        $last = $fixture['history'][array_key_last($fixture['history'])];
+        Carbon::setTestNow(Carbon::parse($last['recorded_at']));
+        try {
+            $run = $this->createRunFromFixture($fixture);
+            $workflow = (new QueryStateReplayer())->replay($run->fresh(['historyEvents']));
+            $this->assertInstanceOf(TestParallelMultipleActivityFailureWorkflow::class, $workflow);
+            $this->assertSame($fixture['expected']['result'], $workflow->currentState());
+
+            $this->runReadyWorkflowTask($run);
+            $this->assertSame(RunStatus::Completed, $run->refresh()->status);
+            $this->assertSame($fixture['expected']['result'], $run->workflowOutput());
+        } finally {
+            Carbon::setTestNow($previousNow);
         }
     }
 
