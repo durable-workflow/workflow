@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowSignal;
@@ -68,6 +69,27 @@ final class WorkflowTaskPayload
             'workflow_sequence' => $sequence,
             'workflow_event_type' => $event->event_type?->value,
         ], static fn (mixed $value): bool => $value !== null);
+    }
+
+    /**
+     * Use the initial run in ChildRunStarted, including after a child retries
+     * or continues as new. A start turn never represents a resolved wait.
+     *
+     * @return array<string, mixed>
+     */
+    public static function forChildStart(WorkflowHistoryEvent $event): array
+    {
+        $payload = $event->payload;
+
+        return [
+            'workflow_wait_kind' => 'child_started',
+            'child_call_id' => $payload['child_call_id'],
+            'child_workflow_run_id' => $payload['child_workflow_run_id'],
+            'resume_source_kind' => 'child_workflow_run',
+            'resume_source_id' => $payload['child_workflow_run_id'],
+            'workflow_sequence' => $payload['sequence'],
+            'workflow_event_type' => HistoryEventType::ChildRunStarted->value,
+        ];
     }
 
     /**

@@ -17,11 +17,17 @@ final class WorkerProtocolVersionTest extends NonDatabaseTestCase
         $this->assertMatchesRegularExpression('/^\d+\.\d+$/', WorkerProtocolVersion::VERSION);
     }
 
-    public function testVersionTracksServiceOperationCommandShape(): void
+    public function testVersionAdvertisesTheChildStartTurn(): void
     {
-        $this->assertSame('1.22', WorkerProtocolVersion::VERSION);
+        $this->assertSame('1.23', WorkerProtocolVersion::VERSION);
         $this->assertContains('start_service_operation', WorkerProtocolVersion::nonTerminalCommandTypes());
         $this->assertSame(0, WorkerProtocolVersion::longPollSemantics()['min_timeout_seconds']);
+        $this->assertSame(
+            [
+                'child_workflow_start_turn' => true,
+            ],
+            WorkerProtocolVersion::describe()['server_capabilities'],
+        );
     }
 
     public function testDurableServiceSchedulerIsAvailableOnlyFromProtocol121(): void
@@ -40,7 +46,8 @@ final class WorkerProtocolVersionTest extends NonDatabaseTestCase
         $this->assertTrue(WorkerProtocolVersion::isSupportedRequestVersion('1.20'));
         $this->assertTrue(WorkerProtocolVersion::isSupportedRequestVersion('1.21'));
         $this->assertTrue(WorkerProtocolVersion::isSupportedRequestVersion('1.22'));
-        $this->assertFalse(WorkerProtocolVersion::isSupportedRequestVersion('1.23'));
+        $this->assertTrue(WorkerProtocolVersion::isSupportedRequestVersion('1.23'));
+        $this->assertFalse(WorkerProtocolVersion::isSupportedRequestVersion('1.24'));
         $this->assertFalse(WorkerProtocolVersion::isSupportedRequestVersion('2.0'));
         $this->assertFalse(WorkerProtocolVersion::isSupportedRequestVersion('1.21.0'));
         $this->assertFalse(WorkerProtocolVersion::isSupportedRequestVersion('01.21'));

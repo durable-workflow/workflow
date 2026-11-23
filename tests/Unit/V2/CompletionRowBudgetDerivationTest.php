@@ -248,6 +248,11 @@ final class CompletionRowBudgetDerivationTest extends TestCase
                 'delay_seconds' => 60,
             ])],
             'child' => [$none, $many($this->childCommand())],
+            'children sharing a parent start turn' => [
+                $none, $many([
+                    ...$this->childCommand(),
+                    'await' => 'started',
+                ])],
             'child inheriting 100 memos and 100 search attributes' => [
                 function (WorkflowRun $run, int $count): void {
                     $this->seedFullMetadata($run);

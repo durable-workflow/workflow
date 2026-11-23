@@ -166,6 +166,10 @@ final class WorkflowCommandNormalizer
             'allowed' => ['fail_workflow'],
             'guidance' => 'failed_activity_execution_id identifies an uncaught activity failure and only applies to a fail_workflow command.',
         ],
+        'await' => [
+            'allowed' => ['start_child_workflow'],
+            'guidance' => 'await only applies to start_child_workflow.',
+        ],
         'parent_close_policy' => [
             'allowed' => ['start_child_workflow'],
             'guidance' => 'parent_close_policy declares how a child workflow reacts when its parent closes and only applies to a start_child_workflow command.',
@@ -774,6 +778,13 @@ final class WorkflowCommandNormalizer
                     continue;
                 }
 
+                $await = $command['await'] ?? null;
+                if (array_key_exists('await', $command) && ! in_array($await, ['result', 'started'], true)) {
+                    $errors["commands.{$index}.await"] = ['await must be result or started.'];
+
+                    continue;
+                }
+
                 $parentClosePolicy = self::optionalCommandString($command, 'parent_close_policy', $index, $errors);
                 $cancellationPolicy = self::optionalCommandString($command, 'cancellation_policy', $index, $errors);
                 $retryPolicy = self::optionalRetryPolicy($command, $index, $errors, 'Child workflow');
@@ -837,6 +848,7 @@ final class WorkflowCommandNormalizer
                     'connection' => self::optionalCommandString($command, 'connection', $index, $errors),
                     'queue' => self::optionalCommandString($command, 'queue', $index, $errors),
                     'parent_close_policy' => $parentClosePolicy,
+                    'await' => $await === 'started' ? $await : null,
                     'cancellation_policy' => $cancellationPolicy,
                     'retry_policy' => $retryPolicy,
                     'execution_timeout_seconds' => $executionTimeout,

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "service-child-start-turn-cold-replay",
+  "protocol_version": "1.23",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestAwaitedChildThenSignalWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "service_child_start_turn": {
+    "await": "started",
+    "wait_kind": "child_started"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "StartAccepted",
+      "payload": {},
+      "recorded_at": "2026-11-23T08:00:00Z"
+    },
+    {
+      "sequence": 2,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-23T08:00:00Z"
+    },
+    {
+      "sequence": 3,
+      "event_type": "ChildWorkflowScheduled",
+      "payload": {
+        "sequence": 1,
+        "child_workflow_type": "test-watchdog-noop-child-workflow",
+        "child_workflow_class": "Tests\\Fixtures\\V2\\TestWatchdogNoopChildWorkflow",
+        "child_call_id": "01M7D2CWXDFD34QJJ6TBQ01WGW",
+        "child_workflow_instance_id": "01m7d2cwsxcx1kfrvjnrpp3ax8",
+        "child_workflow_run_id": "01m7d2cwvta6j04m7hdkmte8pw"
+      },
+      "recorded_at": "2026-11-23T08:00:01Z"
+    },
+    {
+      "sequence": 4,
+      "event_type": "ChildRunStarted",
+      "payload": {
+        "sequence": 1,
+        "child_workflow_type": "test-watchdog-noop-child-workflow",
+        "child_workflow_class": "Tests\\Fixtures\\V2\\TestWatchdogNoopChildWorkflow",
+        "child_call_id": "01M7D2CWXDFD34QJJ6TBQ01WGW",
+        "child_workflow_instance_id": "01m7d2cwsxcx1kfrvjnrpp3ax8",
+        "child_workflow_run_id": "01m7d2cwvta6j04m7hdkmte8pw",
+        "child_run_number": 1
+      },
+      "recorded_at": "2026-11-23T08:00:01Z"
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": []
+  }
+}
