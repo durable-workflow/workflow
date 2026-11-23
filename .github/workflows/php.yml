@@ -507,6 +507,19 @@ jobs:
         vendor/bin/phpunit tests/Unit/V2/CancellationHistoryTimelineTest.php
         --fail-on-warning --log-junit build/test-results/pr-cancellation-timeline.xml
 
+  native-child-start-turn:
+    name: Native child-start turn contract
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      with:
+        persist-credentials: false
+
+    - name: Run the shared worker-protocol cases against the published Server
+      run: python3 -I -B scripts/ci/test-child-start-turn-native.py
+
   # Runs the same unit suite as coverage-unit, without coverage, so a pull
   # request cannot merge a unit test that only fails after merge.
   pr-unit:
@@ -1742,6 +1755,7 @@ jobs:
     - regression-corpus
     - quality
     - tracing-http
+    - native-child-start-turn
     - pr-unit-contracts
     - pr-unit
     - pr-tracing
@@ -1767,6 +1781,9 @@ jobs:
 
     - name: Require the actual HTTP tracing consumer
       run: test "${{ needs.tracing-http.result }}" = "success"
+
+    - name: Require published native child-start turn conformance
+      run: test "${{ needs.native-child-start-turn.result }}" = "success"
 
     - name: Check pull-request gate
       if: ${{ github.event_name == 'pull_request' }}
