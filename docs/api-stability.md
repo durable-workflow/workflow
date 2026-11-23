@@ -743,7 +743,7 @@ preference; both produce identical `Support\*` Call value objects or
 deterministic workflow-time values, and both route metadata upserts through
 the same command path.
 
-The embedded helpers `Workflow\\V2\\all()` and `Workflow\\V2\\parallel()` accept
+The embedded helpers `Workflow\V2\all()` and `Workflow\V2\parallel()` accept
 `failurePolicy: 'propagate'` to raise the first member failure in durable
 history order. The policy is recorded
 with the group, including each nested frame. Use the same explicit policy on
