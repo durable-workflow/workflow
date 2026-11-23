@@ -1425,6 +1425,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
 
                 $sequence = WorkflowStepHistory::nextDurableCommandSequence($run);
                 $createdTaskIds = [];
+                $childStartTurn = null;
                 $serviceError = $this->serviceOperationAuthorityError($run, $parsed['non_terminal'], $sequence);
                 if ($serviceError !== null) {
                     return [
@@ -1497,6 +1498,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                         $sequence,
                         $createdTaskIds,
                         $protocolVersion,
+                        $childStartTurn,
                     );
                 }
 
@@ -1535,6 +1537,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                         $parsed['non_terminal'],
                         $createdTaskIds,
                         $conditionSelectionResolution,
+                        $childStartTurn,
                     );
                 }
 
@@ -1686,6 +1689,9 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             return $refused('invalid_' . $checkpointName . '_checkpoint_commands');
         }
         foreach ($parsed['non_terminal'] as $command) {
+            if (($command['await'] ?? null) === 'started') {
+                return $refused('child_start_turn_not_at_checkpoint');
+            }
             if (isset($command['cancellation_scope_id'])
                 && ! WorkerProtocolVersion::supportsCancellationScopeMembership($protocolVersion)) {
                 return $refused('operation_scope_requires_protocol_1_20');
@@ -2230,6 +2236,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         array $nonTerminalCommands,
         array &$createdTaskIds,
         ?WorkflowHistoryEvent $conditionSelectionResolution = null,
+        ?WorkflowHistoryEvent $childStartTurn = null,
     ): void {
         $run->forceFill([
             'status' => RunStatus::Waiting,
@@ -2268,6 +2275,21 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                 'compatibility' => $run->compatibility,
             ]);
             $createdTaskIds[] = $replayTask->id;
+        }
+
+        if ($childStartTurn !== null && ! self::hasOpenWorkflowTask($run->id)) {
+            $startTask = ConfiguredV2Models::query('task_model', WorkflowTask::class)->create([
+                'workflow_run_id' => $run->id,
+                'namespace' => $run->namespace,
+                'task_type' => TaskType::Workflow->value,
+                'status' => TaskStatus::Ready->value,
+                'available_at' => now(),
+                'payload' => WorkflowTaskPayload::forChildStart($childStartTurn),
+                'connection' => $run->connection,
+                'queue' => $run->queue,
+                'compatibility' => $run->compatibility,
+            ]);
+            $createdTaskIds[] = $startTask->id;
         }
 
         if (self::commandsIncludeChildWorkflowStart($nonTerminalCommands)) {
@@ -2731,12 +2753,20 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         int $sequence,
         array &$createdTaskIds,
         string $protocolVersion,
+        ?WorkflowHistoryEvent &$childStartTurn = null,
     ): int {
         return match ($command['type']) {
             'cancel_selection_operation' => $this->applyCancelSelectionOperation($run, $task, $command, $sequence),
             'schedule_activity' => $this->applyScheduleActivity($run, $task, $command, $sequence, $createdTaskIds),
             'start_timer' => $this->applyStartTimer($run, $task, $command, $sequence, $createdTaskIds),
-            'start_child_workflow' => $this->applyStartChildWorkflow($run, $task, $command, $sequence, $createdTaskIds),
+            'start_child_workflow' => $this->applyStartChildWorkflow(
+                $run,
+                $task,
+                $command,
+                $sequence,
+                $createdTaskIds,
+                $childStartTurn,
+            ),
             'start_service_operation' => $this->applyStartServiceOperation(
                 $run,
                 $task,
@@ -4576,6 +4606,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         array $command,
         int $sequence,
         array &$createdTaskIds,
+        ?WorkflowHistoryEvent &$childStartTurn,
     ): int {
         StructuralLimits::guardPendingChildren($run);
         $workflowType = $command['workflow_type'];
@@ -4709,7 +4740,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             ...self::parallelMetadataForCommand($command),
         ], $task);
 
-        WorkflowHistoryEvent::record($run, HistoryEventType::ChildRunStarted, [
+        $started = WorkflowHistoryEvent::record($run, HistoryEventType::ChildRunStarted, [
             'sequence' => $sequence,
             'workflow_link_id' => $link->id,
             'child_call_id' => $childCallId,
@@ -4729,6 +4760,10 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'run_deadline_at' => $runDeadlineAt?->toIso8601String(),
             ...self::parallelMetadataForCommand($command),
         ], $task);
+
+        if (($command['await'] ?? null) === 'started') {
+            $childStartTurn ??= $started;
+        }
 
         WorkflowHistoryEvent::record($childRun, HistoryEventType::WorkflowStarted, [
             'workflow_class' => $workflowType,
@@ -5964,7 +5999,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
     {
         $type = is_string($command['type'] ?? null) ? $command['type'] : null;
 
-        if ($type === null) {
+        if ($type === null || ($type !== 'start_child_workflow' && array_key_exists('await', $command))) {
             return null;
         }
 
@@ -6402,6 +6437,11 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
      */
     private static function normalizeStartChildWorkflowCommand(array $command): ?array
     {
+        $await = $command['await'] ?? null;
+        if (array_key_exists('await', $command) && ! in_array($await, ['result', 'started'], true)) {
+            return null;
+        }
+
         $workflowType = self::normalizeRequiredString($command['workflow_type'] ?? null);
         $retryPolicy = self::normalizeActivityRetryPolicy($command['retry_policy'] ?? null);
         $executionTimeoutSeconds = self::normalizePositiveInt($command['execution_timeout_seconds'] ?? null);
@@ -6450,6 +6490,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             'connection' => self::normalizeOptionalString($command['connection'] ?? null),
             'queue' => self::normalizeOptionalString($command['queue'] ?? null),
             'parent_close_policy' => self::normalizeOptionalString($command['parent_close_policy'] ?? null),
+            'await' => $await === 'started' ? $await : null,
             'cancellation_policy' => $cancellationPolicy,
             'retry_policy' => $retryPolicy,
             'execution_timeout_seconds' => $executionTimeoutSeconds,

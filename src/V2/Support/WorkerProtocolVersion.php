@@ -30,7 +30,9 @@ final class WorkerProtocolVersion
      * pagination semantics). Bump the minor for additive changes (new
      * optional fields, new non-terminal command types).
      */
-    public const VERSION = '1.22';
+    public const VERSION = '1.23';
+
+    public const CAPABILITY_CHILD_WORKFLOW_START_TURN = 'child_workflow_start_turn';
 
     /**
      * Worker registration capability for server-routed workflow query
@@ -245,6 +247,16 @@ final class WorkerProtocolVersion
     public static function workerCapabilities(): array
     {
         return self::workerCapabilitiesForVersion(self::VERSION);
+    }
+
+    /**
+     * @return array{child_workflow_start_turn: true}
+     */
+    public static function serverCapabilities(): array
+    {
+        return [
+            self::CAPABILITY_CHILD_WORKFLOW_START_TURN => true,
+        ];
     }
 
     /**
@@ -492,6 +504,7 @@ final class WorkerProtocolVersion
      *     activity_task_verbs: list<string>,
      *     query_task_verbs: list<string>,
      *     worker_capabilities: list<string>,
+     *     server_capabilities: array{child_workflow_start_turn: true},
      *     workflow_task_command_payload_envelope_fields: array<string, list<string>>,
      *     non_terminal_command_types: list<string>,
      *     terminal_command_types: list<string>,
@@ -522,6 +535,7 @@ final class WorkerProtocolVersion
             'activity_task_verbs' => self::activityTaskVerbs(),
             'query_task_verbs' => self::queryTaskVerbs(),
             'worker_capabilities' => self::workerCapabilities(),
+            'server_capabilities' => self::serverCapabilities(),
             'workflow_task_command_payload_envelope_fields' => WorkflowCommandNormalizer::payloadEnvelopeFields(),
             'non_terminal_command_types' => self::nonTerminalCommandTypes(),
             'terminal_command_types' => self::terminalCommandTypes(),

@@ -325,6 +325,23 @@ After child starts executing:
 - Resolution happens asynchronously after parent schedules child
 - Enables tracking of "scheduled but not started" children
 
+## External worker start turn
+
+`start_child_workflow` accepts an optional `await` field. The default,
+`result`, resumes the parent when the child resolves. With `started`, the
+embedded task bridge commits one fresh parent task alongside the child start.
+The worker reads the initial child and call IDs from `ChildRunStarted` in
+canonical history. The later child result still has its usual delivery turn.
+
+Multiple starts in one completion share one parent task. An existing ready
+or leased parent task can deliver the same history. A completion that closes
+the parent needs no start turn, and retained-claim checkpoints refuse
+`await: "started"`.
+
+Hosts can publish `WorkerProtocolVersion::serverCapabilities()` through cluster
+discovery and their worker response envelopes. Workers select `started` only
+when the serving host advertises `child_workflow_start_turn`.
+
 ## Service API
 
 ### `ChildCallService`

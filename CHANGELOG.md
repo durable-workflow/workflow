@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- External workers using the embedded Workflow task bridge can request
+  `await: "started"` on a child command. The committed start supplies a fresh
+  parent turn with the child's recorded identity. (#989)
+
 ## 2.35.6 - 2026-11-22
 
 - Parent-close policies load child links, runs and instances in pages. In

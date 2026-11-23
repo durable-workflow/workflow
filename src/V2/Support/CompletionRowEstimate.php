@@ -78,6 +78,7 @@ final class CompletionRowEstimate
     public static function rows(WorkflowRun $run, array $commands): int
     {
         $rows = self::COMPLETION_ROWS;
+        $needsChildStartTurn = false;
         $inherited = null;
         // Keys written earlier in this completion: a later delete of one
         // removes a row even though the run does not hold it yet.
@@ -88,6 +89,8 @@ final class CompletionRowEstimate
                 continue;
             }
             $type = $command['type'] ?? null;
+            $needsChildStartTurn = $needsChildStartTurn
+                || ($type === 'start_child_workflow' && ($command['await'] ?? null) === 'started');
             $cost = match ($type) {
                 'record_local_activity' => self::localActivityRows($command),
                 'upsert_memo' => self::METADATA_UPSERT_ROWS + self::memoRows($run, $command, $writtenMemos),
@@ -109,7 +112,7 @@ final class CompletionRowEstimate
             $rows = HistoryTransactionMeter::checkedAdd($rows, $cost);
         }
 
-        return $rows;
+        return HistoryTransactionMeter::checkedAdd($rows, $needsChildStartTurn ? 1 : 0);
     }
 
     /**
