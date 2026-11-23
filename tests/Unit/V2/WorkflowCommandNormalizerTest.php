@@ -1264,6 +1264,47 @@ final class WorkflowCommandNormalizerTest extends NonDatabaseTestCase
         ]], $out);
     }
 
+    public function testExplicitChildWorkflowIdUsesTopLevelStartValidation(): void
+    {
+        $child = [
+            'type' => 'start_child_workflow',
+            'workflow_type' => 'Child',
+        ];
+        $this->assertSame([$child], WorkflowCommandNormalizer::normalize([$child]));
+        foreach (['order-42.shipment_1:express', str_repeat('x', 191)] as $id) {
+            $this->assertSame(
+                $id,
+                WorkflowCommandNormalizer::normalize([[
+                    ...$child,
+                    'workflow_id' => $id,
+                ]])[0]['workflow_id'],
+            );
+        }
+
+        foreach (['', ' child', 'child/next', str_repeat('x', 192), null, 23] as $id) {
+            try {
+                WorkflowCommandNormalizer::normalize([[
+                    ...$child,
+                    'workflow_id' => $id,
+                ]]);
+                $this->fail('Expected an invalid child ID to be refused.');
+            } catch (ValidationException $exception) {
+                $this->assertArrayHasKey('commands.0.workflow_id', $exception->errors());
+            }
+        }
+
+        try {
+            WorkflowCommandNormalizer::normalize([[
+                'type' => 'start_timer',
+                'delay_seconds' => 2,
+                'workflow_id' => 'child',
+            ]]);
+            $this->fail('Expected a child ID on a timer command to be refused.');
+        } catch (ValidationException $exception) {
+            $this->assertArrayHasKey('commands.0.workflow_id', $exception->errors());
+        }
+    }
+
     public function testCooperativeChildPoliciesSurviveNormalizationAtTheirProtocolFloor(): void
     {
         foreach (['try_cancel', 'wait_cancellation_completed', 'abandon'] as $policy) {

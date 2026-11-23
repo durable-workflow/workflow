@@ -343,6 +343,30 @@ Hosts can publish `WorkerProtocolVersion::serverCapabilities()` through cluster
 discovery and their worker response envelopes. Workers select `started` only
 when the serving host advertises `child_workflow_start_turn`.
 
+## Explicit child identity for external workers
+
+The default embedded task bridge accepts an optional `workflow_id` on
+`start_child_workflow`. Use the same URL-safe identifier accepted by a
+top-level start. The child inherits the parent's namespace. Omit the field
+to keep a generated instance ID. The child call and each child run have
+separate runtime-generated IDs.
+
+The completion reserves the instance ID atomically with the child start.
+An existing instance makes the whole completion return
+`child_workflow_id_unavailable` without consuming the lease. This response
+covers closed instances and gives the worker no details about the owner.
+Submitting the same completion again cannot start another child. Retry and
+continue-as-new retain the instance ID.
+
+The canonical `ChildWorkflowScheduled` event records the explicit value in
+`requested_child_id` and the admitted identity in
+`child_workflow_instance_id`. Compare the requested ID with the authored
+value during replay, then use the recorded run and call IDs.
+
+Clients should send the field only after the serving host advertises
+`child_workflow_explicit_id`. Custom bridges should advertise that capability
+only if they implement admission and preserve the requested ID in history.
+
 ## Service API
 
 ### `ChildCallService`

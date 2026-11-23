@@ -166,6 +166,10 @@ final class WorkflowCommandNormalizer
             'allowed' => ['fail_workflow'],
             'guidance' => 'failed_activity_execution_id identifies an uncaught activity failure and only applies to a fail_workflow command.',
         ],
+        'workflow_id' => [
+            'allowed' => ['start_child_workflow'],
+            'guidance' => 'workflow_id names a child workflow instance and only applies to start_child_workflow.',
+        ],
         'await' => [
             'allowed' => ['start_child_workflow'],
             'guidance' => 'await only applies to start_child_workflow.',
@@ -778,6 +782,14 @@ final class WorkflowCommandNormalizer
                     continue;
                 }
 
+                $workflowId = $command['workflow_id'] ?? null;
+                if (array_key_exists('workflow_id', $command)
+                    && (! is_string($workflowId) || ! WorkflowInstanceId::isValid($workflowId))) {
+                    $errors["commands.{$index}.workflow_id"] = [WorkflowInstanceId::validationMessage()];
+
+                    continue;
+                }
+
                 $await = $command['await'] ?? null;
                 if (array_key_exists('await', $command) && ! in_array($await, ['result', 'started'], true)) {
                     $errors["commands.{$index}.await"] = ['await must be result or started.'];
@@ -843,6 +855,7 @@ final class WorkflowCommandNormalizer
                 $normalized[] = array_filter([
                     'type' => $type,
                     'workflow_type' => trim($command['workflow_type']),
+                    'workflow_id' => $workflowId,
                     'arguments' => $arguments['payload'],
                     'payload_codec' => $arguments['payload'] !== null ? $payloadCodec : null,
                     'connection' => self::optionalCommandString($command, 'connection', $index, $errors),
@@ -2701,8 +2714,8 @@ final class WorkflowCommandNormalizer
 
     /**
      * Reject retry/timeout/failure fields that have been placed on a command
-     * type that does not accept them. The check fires only when the field is
-     * populated (non-null and present), so omitting fields stays valid.
+     * type that does not accept them. Fields with a legacy null form are
+     * checked only when populated. An explicit workflow_id must be valid.
      *
      * @param  array<string, mixed>  $command
      * @param  array<string, list<string>>  $errors
@@ -2710,7 +2723,7 @@ final class WorkflowCommandNormalizer
     private static function assertCommandFieldScope(string $type, array $command, int $index, array &$errors): void
     {
         foreach (self::FIELD_SCOPES as $field => $scope) {
-            if (! array_key_exists($field, $command) || $command[$field] === null) {
+            if (! array_key_exists($field, $command) || ($field !== 'workflow_id' && $command[$field] === null)) {
                 continue;
             }
 

@@ -17,7 +17,7 @@ final class WorkerProtocolVersionTest extends NonDatabaseTestCase
         $this->assertMatchesRegularExpression('/^\d+\.\d+$/', WorkerProtocolVersion::VERSION);
     }
 
-    public function testVersionAdvertisesTheChildStartTurn(): void
+    public function testVersionAdvertisesChildWorkflowCapabilities(): void
     {
         $this->assertSame('1.23', WorkerProtocolVersion::VERSION);
         $this->assertContains('start_service_operation', WorkerProtocolVersion::nonTerminalCommandTypes());
@@ -25,6 +25,7 @@ final class WorkerProtocolVersionTest extends NonDatabaseTestCase
         $this->assertSame(
             [
                 'child_workflow_start_turn' => true,
+                'child_workflow_explicit_id' => true,
             ],
             WorkerProtocolVersion::describe()['server_capabilities'],
         );
