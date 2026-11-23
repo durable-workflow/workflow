@@ -64,6 +64,8 @@ final class QueryStateReplayer
             $arguments,
             RedriveReplayClock::startedAt($run),
             WorkflowDefinitionFingerprint::versionForRun($run),
+            allowContinueAsNewTarget: EmbeddedWorkflowHeartbeat::enabled()
+                || ContinueAsNewBuildTransition::recorded($run) !== null,
         );
         $historySequencesByPosition = $this->historySequencesByReplayPosition($run);
         $deliveredCancellations = $this->indexDeliveredCancellations($run);
@@ -1087,6 +1089,10 @@ final class QueryStateReplayer
 
                 if ($current instanceof ContinueAsNewCall) {
                     WorkflowStepHistory::assertCompatible($run, $sequence, WorkflowStepHistory::CONTINUE_AS_NEW);
+                    $recordedTransition = ContinueAsNewBuildTransition::recorded($run, $sequence);
+                    if ($recordedTransition !== null) {
+                        ContinueAsNewBuildTransition::assertReplay($recordedTransition, $current, $sequence);
+                    }
 
                     $this->syncWorkflowCursor($workflow, $sequence);
                     return new ReplayState($workflow, $sequence, $current);

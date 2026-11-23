@@ -537,6 +537,7 @@ final class WorkflowExecutor
                     $arguments,
                     RedriveReplayClock::startedAt($run),
                     WorkflowDefinitionFingerprint::versionForRun($run),
+                    allowContinueAsNewTarget: EmbeddedWorkflowHeartbeat::enabled(),
                 );
                 $frame = new WorkflowContinuation($workflow, $execution, $execution->current());
             }
@@ -3193,7 +3194,15 @@ final class WorkflowExecutor
             return null;
         }
         try {
+            $recorded = ContinueAsNewBuildTransition::recorded($run, $sequence);
+            if ($recorded !== null) {
+                ContinueAsNewBuildTransition::assertReplay($recorded, $current, $sequence);
+                return null;
+            }
             return $this->continueAsNew($run, $task, $sequence, $current, $workflowClass);
+        } catch (HistoryEventShapeMismatchException $mismatch) {
+            $this->failRun($run, $task, $mismatch, 'workflow_run', $run->id);
+            return null;
         } catch (StructuralLimitExceededException $limitExceeded) {
             $this->failRun($run, $task, $limitExceeded, 'workflow_run', $run->id);
             return null;
@@ -4455,7 +4464,18 @@ final class WorkflowExecutor
         string $workflowClass,
     ): WorkflowTask {
         $now = now();
-        $commandContract = RunCommandContract::snapshot($workflowClass);
+        $target = $continueAsNew->target ?? \Workflow\V2\Enums\ContinueAsNewTarget::Inherited;
+        $promoted = $target === \Workflow\V2\Enums\ContinueAsNewTarget::Promoted
+            ? EmbeddedWorkflowHeartbeat::promotedDefinition($run)
+                ?? throw new \Workflow\V2\Exceptions\PromotedBuildUnavailableException()
+            : null;
+        $workflowClass = $promoted['workflow_class'] ?? $workflowClass;
+        $compatibility = $promoted['build'] ?? $run->compatibility;
+        $commandContract = $promoted['command_contract'] ?? RunCommandContract::snapshot($workflowClass);
+        $fingerprint = $promoted['fingerprint'] ?? WorkflowDefinition::fingerprint($workflowClass);
+        $buildTransition = EmbeddedWorkflowHeartbeat::enabled()
+            ? ContinueAsNewBuildTransition::payload($run->compatibility, $compatibility, $target)
+            : null;
         /** @var WorkflowInstance $instance */
         $instance = WorkflowInstance::query()
             ->lockForUpdate()
@@ -4516,7 +4536,7 @@ final class WorkflowExecutor
                 'timeout_cleanup_work_deadline_at' => $timeoutCleanupWorkDeadline,
             ]),
             'status' => RunStatus::Pending->value,
-            'compatibility' => $run->compatibility,
+            'compatibility' => $compatibility,
             'payload_codec' => $run->payload_codec,
             'arguments' => $storedContinueAsNewArguments,
             'connection' => $run->connection,
@@ -4699,7 +4719,7 @@ final class WorkflowExecutor
             'visibility_labels' => $continuedRun->visibility_labels,
             'memo' => $continuedMemo,
             'search_attributes' => $continuedSearchAttributes,
-            'workflow_definition_fingerprint' => WorkflowDefinition::fingerprint($continuedRun->workflow_class),
+            'workflow_definition_fingerprint' => $fingerprint,
             ...(($timeoutCleanup = TimeoutCleanup::startedPayload(
                 $timeoutCleanupAllowance,
                 $executionDeadlineAt,
@@ -4708,6 +4728,9 @@ final class WorkflowExecutor
                 TimeoutCleanup::STARTED_KEY => $timeoutCleanup,
             ]),
             'continued_from_run_id' => $run->id,
+            ...($buildTransition === null ? [] : [
+                ContinueAsNewBuildTransition::KEY => $buildTransition,
+            ]),
             'workflow_link_id' => $link->id,
             'child_call_id' => $childCallId,
             'declared_queries' => $commandContract['queries'],
@@ -4737,7 +4760,15 @@ final class WorkflowExecutor
             WorkflowHistoryEvent::record($continuedRun, HistoryEventType::ScheduleTriggered, $scheduleOrigin->payload);
         }
 
-        ContinuedRunMessageHandoff::closePredecessor($run, $continuedRun, $task, $sequence, $link->id, $now);
+        ContinuedRunMessageHandoff::closePredecessor(
+            $run,
+            $continuedRun,
+            $task,
+            $sequence,
+            $link->id,
+            $now,
+            $buildTransition
+        );
 
         /** @var WorkflowTask $continuedTask */
         $continuedTask = WorkflowTask::query()->create([
@@ -4746,7 +4777,9 @@ final class WorkflowExecutor
             'task_type' => TaskType::Workflow->value,
             'status' => TaskStatus::Ready->value,
             'available_at' => $now,
-            'payload' => [],
+            'payload' => $promoted === null ? [] : [
+                TaskCompatibility::REQUIRE_CURRENT_BUILD => true,
+            ],
             'connection' => $continuedRun->connection,
             'queue' => $continuedRun->queue,
             'compatibility' => $continuedRun->compatibility,

@@ -9,6 +9,7 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunLineageEntry;
 use Workflow\V2\Models\WorkflowRunSummary;
 
 final class RunObservation
@@ -60,6 +61,24 @@ final class RunObservation
             ->where('event_type', HistoryEventType::WorkflowStarted->value)
             ->orderBy('sequence')
             ->first(['id', 'workflow_run_id', 'sequence', 'event_type', 'payload']);
+        $buildTransitions = ContinueAsNewBuildTransition::observe($started, null);
+        if ($run->closed_reason === 'continued') {
+            /** @var class-string<WorkflowRunLineageEntry> $lineageModel */
+            $lineageModel = ConfiguredV2Models::resolve('run_lineage_entry_model', WorkflowRunLineageEntry::class);
+            $continued = (new $lineageModel())->setConnection($run->getConnectionName())
+                ->newQuery()
+                ->setEagerLoads([])->where('workflow_run_id', $run->id)
+                ->where('direction', 'child')
+                ->where('position', 0)
+                ->where('link_type', 'continue_as_new')
+                ->first(['related_workflow_run_id', 'payload']);
+            if (($continued?->payload['history_authority'] ?? null) === ChildRunHistory::HISTORY_AUTHORITY_TYPED) {
+                $buildTransitions['to_successor'] = ContinueAsNewBuildTransition::linkedObservation(
+                    $continued->related_workflow_run_id,
+                    $continued->payload[ContinueAsNewBuildTransition::KEY] ?? null,
+                );
+            }
+        }
         // These helpers need only WorkflowStarted. Keep its partial relation on
         // a private clone so canonical readers never mistake it for all history.
         $contractRun = clone $run;
@@ -81,6 +100,10 @@ final class RunObservation
             'business_key' => $run->business_key,
             'visibility_labels' => $run->visibility_labels ?? [],
             'compatibility' => $run->compatibility,
+            'continue_as_new_build_transitions' => $buildTransitions,
+            ...(EmbeddedWorkflowHeartbeat::enabled() ? [
+                ContinueAsNewTaskRefusal::KEY => ContinueAsNewTaskRefusal::forRun($run),
+            ] : []),
             'connection' => $run->connection,
             'queue' => $run->queue,
             'started_at' => $run->started_at?->toIso8601String(),

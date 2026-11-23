@@ -685,6 +685,14 @@ abstract class Workflow
     }
 
     /**
+     * @see continueAsNewWithTarget()
+     */
+    public static function continueAsNewWithTarget(mixed $target, mixed ...$arguments): mixed
+    {
+        return continueAsNewWithTarget($target, ...$arguments);
+    }
+
+    /**
      * Declare a workflow-code versioning change and receive the negotiated
      * version for the current run.
      *

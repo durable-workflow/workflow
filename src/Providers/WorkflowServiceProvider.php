@@ -70,6 +70,7 @@ use Workflow\V2\Support\DefaultServiceControlPlane;
 use Workflow\V2\Support\DefaultWorkflowControlPlane;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\DenyWorkflowServiceOperationAuthorizer;
+use Workflow\V2\Support\EmbeddedWorkflowHeartbeat;
 use Workflow\V2\Support\ExecutionTracing;
 use Workflow\V2\Support\HistoryProjectionMaintenanceFallback;
 use Workflow\V2\Support\InMemoryTaskFairnessState;
@@ -124,6 +125,7 @@ final class WorkflowServiceProvider extends ServiceProvider
 
         $this->app->singleton(WorkflowTaskBridge::class, DefaultWorkflowTaskBridge::class);
         $this->registerContinuationCache();
+        $this->registerEmbeddedWorkflowHeartbeats();
         $this->app->alias(WorkflowTaskBridge::class, CooperativeWorkflowTaskBridge::class);
         $this->app->alias(WorkflowTaskBridge::class, PreparedLocalActivityTaskBridge::class);
         $this->app->alias(WorkflowTaskBridge::class, PreparedLocalActivityGroupTaskBridge::class);
@@ -264,6 +266,22 @@ final class WorkflowServiceProvider extends ServiceProvider
 
             if (config('workflows.v2.matching_role.queue_wake_enabled', true)) {
                 app(MatchingRole::class)->wake($event->connectionName, $event->queue);
+            }
+        });
+    }
+
+    private function registerEmbeddedWorkflowHeartbeats(): void
+    {
+        $this->app->singleton(EmbeddedWorkflowHeartbeat::class);
+        $this->app['events']->listen(Looping::class, function (Looping $event): void {
+            if (EmbeddedWorkflowHeartbeat::enabled()
+                && is_string($event->connectionName) && is_string($event->queue)) {
+                $this->app->make(EmbeddedWorkflowHeartbeat::class)->record($event->connectionName, $event->queue);
+            }
+        });
+        $this->app['events']->listen(\Illuminate\Queue\Events\WorkerStopping::class, function (): void {
+            if ($this->app->resolved(EmbeddedWorkflowHeartbeat::class)) {
+                $this->app->make(EmbeddedWorkflowHeartbeat::class)->forget();
             }
         });
     }

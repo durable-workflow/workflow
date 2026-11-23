@@ -20,6 +20,9 @@ use Workflow\V2\Models\WorkflowUpdate;
 
 final class ContinuedRunMessageHandoff
 {
+    /**
+     * @param array{from_compatibility: ?string, to_compatibility: ?string, resolution: string}|null $buildTransition
+     */
     public static function closePredecessor(
         WorkflowRun $closingRun,
         WorkflowRun $continuedRun,
@@ -27,6 +30,7 @@ final class ContinuedRunMessageHandoff
         int $sequence,
         string $linkId,
         CarbonInterface $closedAt,
+        ?array $buildTransition = null,
     ): void {
         self::transferInstanceScoped($closingRun, $continuedRun);
         // Activities and timers the closing run never awaited are settled
@@ -44,6 +48,9 @@ final class ContinuedRunMessageHandoff
             'continued_to_run_number' => $continuedRun->run_number,
             'workflow_link_id' => $linkId,
             'closed_reason' => 'continued',
+            ...($buildTransition === null ? [] : [
+                ContinueAsNewBuildTransition::KEY => $buildTransition,
+            ]),
             ...($abandonedActivities === [] ? [] : [
                 ClosingRunOpenWork::ABANDONED_ACTIVITIES => $abandonedActivities,
             ]),

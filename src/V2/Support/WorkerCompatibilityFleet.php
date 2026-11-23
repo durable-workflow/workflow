@@ -279,6 +279,14 @@ final class WorkerCompatibilityFleet
     }
 
     /**
+     * @internal
+     */
+    public static function heartbeatTtlSeconds(): int
+    {
+        return max(1, (int) config('workflows.v2.compatibility.heartbeat_ttl_seconds', 30));
+    }
+
+    /**
      * @param list<string> $supported
      */
     private static function recordInNamespace(
@@ -312,7 +320,7 @@ final class WorkerCompatibilityFleet
 
             $now = now();
             $expiresAt = $now->copy()
-                ->addSeconds(self::ttlSeconds());
+                ->addSeconds(self::heartbeatTtlSeconds());
             $rows = collect($queues === [] ? [null] : $queues)
                 ->map(static function (?string $scopeQueue) use (
                     $workerId,
@@ -391,7 +399,7 @@ final class WorkerCompatibilityFleet
     ): void {
         $now = now()
             ->getTimestamp();
-        $expiresAt = $now + self::ttlSeconds();
+        $expiresAt = $now + self::heartbeatTtlSeconds();
         $fleet = Cache::get(self::LEGACY_CACHE_KEY);
         $fleet = is_array($fleet) ? $fleet : [];
 
@@ -404,7 +412,7 @@ final class WorkerCompatibilityFleet
             'expires_at' => $expiresAt,
         ];
 
-        Cache::put(self::LEGACY_CACHE_KEY, $fleet, self::ttlSeconds());
+        Cache::put(self::LEGACY_CACHE_KEY, $fleet, self::heartbeatTtlSeconds());
         self::rememberRecorded($workerId, $supported, $namespace, $connection, $queues, self::SOURCE_CACHE, $now);
         self::forgetSnapshotCache();
     }
@@ -508,7 +516,7 @@ final class WorkerCompatibilityFleet
 
     private static function writeIntervalSeconds(): int
     {
-        return max(1, (int) floor(self::ttlSeconds() / 3));
+        return max(1, (int) floor(self::heartbeatTtlSeconds() / 3));
     }
 
     private static function pruneExpired(): void
@@ -601,7 +609,7 @@ final class WorkerCompatibilityFleet
             return;
         }
 
-        Cache::put(self::LEGACY_CACHE_KEY, $fleet, self::ttlSeconds());
+        Cache::put(self::LEGACY_CACHE_KEY, $fleet, self::heartbeatTtlSeconds());
     }
 
     private static function hostName(): ?string
@@ -637,11 +645,6 @@ final class WorkerCompatibilityFleet
             (string) getmypid(),
             (string) Str::ulid(),
         );
-    }
-
-    private static function ttlSeconds(): int
-    {
-        return max(1, (int) config('workflows.v2.compatibility.heartbeat_ttl_seconds', 30));
     }
 
     /**

@@ -118,6 +118,7 @@ final class RunLineageView
                         'workflow_type' => $run->workflow_type,
                         'workflow_class' => $run->workflow_class,
                         'run_number' => self::intValue($continuedEvent->payload['continued_to_run_number'] ?? null),
+                        ContinueAsNewBuildTransition::KEY => $continuedEvent->payload[ContinueAsNewBuildTransition::KEY] ?? null,
                     ],
                     historyAuthority: ChildRunHistory::HISTORY_AUTHORITY_TYPED,
                 );
@@ -286,6 +287,10 @@ final class RunLineageView
                 runId: $continuedFromRunId,
                 createdAt: self::workflowStartedEvent($run)?->recorded_at
                     ?? self::workflowStartedEvent($run)?->created_at,
+                metadata: [
+                    ContinueAsNewBuildTransition::KEY =>
+                        self::workflowStartedEvent($run)?->payload[ContinueAsNewBuildTransition::KEY] ?? null,
+                ],
                 historyAuthority: ChildRunHistory::HISTORY_AUTHORITY_TYPED,
             );
         }
@@ -590,6 +595,9 @@ final class RunLineageView
         $closedReason = self::stringValue($metadata['closed_reason'] ?? null)
             ?? $summary?->closed_reason
             ?? $relatedRun?->closed_reason;
+        $buildTransition = $linkType === 'continue_as_new'
+            ? ContinueAsNewBuildTransition::read($metadata[ContinueAsNewBuildTransition::KEY] ?? null)
+            : null;
 
         return [
             'id' => $id,
@@ -613,6 +621,9 @@ final class RunLineageView
             'created_at' => self::timestamp($createdAt),
             'history_authority' => $historyAuthority,
             'diagnostic_only' => $diagnosticOnly,
+            ...($buildTransition === null ? [] : [
+                ContinueAsNewBuildTransition::KEY => $buildTransition,
+            ]),
             'parent_close_policy' => $parentClosePolicy['parent_close_policy'] ?? null,
             'parent_close_policy_outcome' => $parentClosePolicy['parent_close_policy_outcome'] ?? null,
             'parent_close_policy_reason' => $parentClosePolicy['parent_close_policy_reason'] ?? null,

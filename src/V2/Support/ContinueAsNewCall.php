@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Workflow\V2\Contracts\YieldedCommand;
+use Workflow\V2\Enums\ContinueAsNewTarget;
 
 final class ContinueAsNewCall implements YieldedCommand
 {
@@ -13,6 +14,7 @@ final class ContinueAsNewCall implements YieldedCommand
      */
     public function __construct(
         public readonly array $arguments,
+        public readonly ?ContinueAsNewTarget $target = null,
     ) {
     }
 }

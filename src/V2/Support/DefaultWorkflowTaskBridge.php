@@ -1275,6 +1275,25 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
             ];
         }
 
+        foreach ($commands as $command) {
+            if (is_array($command) && ($command['type'] ?? null) === 'continue_as_new'
+                && array_key_exists('target_build', $command)) {
+                $target = $command['target_build'];
+                return [
+                    'completed' => false,
+                    'task_id' => $taskId,
+                    'workflow_run_id' => null,
+                    'run_status' => null,
+                    'created_task_ids' => [],
+                    'reason' => is_string($target) && \Workflow\V2\Enums\ContinueAsNewTarget::tryFrom($target) !== null
+                        ? 'unsupported_target_build'
+                        : 'invalid_target_build',
+                    'retryable' => false,
+                    'request_admitted' => false,
+                ];
+            }
+        }
+
         $parsed = self::parseCommands($commands);
 
         if ($parsed === null && $commands !== []) {

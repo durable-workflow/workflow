@@ -191,6 +191,7 @@ OFFICIAL_BINDING_CONSUMER_SUPPORT = {
         "tests/Fixtures/V2/TestRepeatedSignalSelectionWorkflow.php",
         "tests/Fixtures/V2/TestOversizedFanOutMemberWorkflow.php",
         "tests/Fixtures/V2/TestCommentOnlyFingerprintWorkflow.php",
+        "tests/Fixtures/V2/TestPromotedContinueWorkflow.php",
         "tests/Support/NexusCallerDeliveryScenario.php",
         "tests/Unit/V2/ReplayRegressionCorpusTest.php",
     ),

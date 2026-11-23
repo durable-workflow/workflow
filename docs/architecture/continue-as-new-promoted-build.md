@@ -22,8 +22,8 @@ The continue-as-new request carries a target:
   namespace, task queue and workflow type, resolved at admission.
 
 ```php
-// Embedded (proposed)
-return continueAsNew($state)->onPromotedBuild();
+// Embedded
+return continueAsNewWithTarget('promoted', $state);
 ```
 
 ```json
@@ -52,7 +52,7 @@ non-retryable and is distinct from `promoted_build_unavailable`:
 
 - service mode returns HTTP 422 with `reason: invalid_target_build`,
   `retryable: false` and `request_admitted: false`;
-- embedded `continueAsNew()` raises the same reason at the authoring call
+- embedded `continueAsNewWithTarget()` raises the same reason at the authoring call
   before the task completes.
 
 An invalid target is never reported as a promotion refusal. It records no
@@ -80,9 +80,9 @@ gate:
   command carrying the field with HTTP 422 `reason: unsupported_target_build`,
   `retryable: false`, `request_admitted: false`. It must not ignore the field
   or fall back to `inherited`.
-- Embedded: `onPromotedBuild()` exists only in package versions that implement
-  this contract. If the embedded runtime has the opt-in disabled, the call
-  raises `unsupported_target_build`; it never continues on the inherited build.
+- Embedded `continueAsNewWithTarget()` checks support in the executing workflow.
+  When the embedded opt-in is disabled, the call raises `unsupported_target_build`
+  before it yields a command.
 
 This capability check happens before, and is separate from, the
 promoted-build eligibility check in the next section.
@@ -107,7 +107,14 @@ creates the successor, under the same run lock:
   status authority. A marker-bearing heartbeat alone cannot prove type
   eligibility. Missing or unsupported eligibility evidence refuses admission.
   A later slice can replace the config with a promotion row the deploy step
-  writes.
+  writes. After migrating the application, set `DW_V2_CONTINUE_AS_NEW_TARGET_BUILD`
+  to true on the embedded worker fleet. List the worker's served namespaces
+  and register each eligible type under `workflows.v2.types.workflows`.
+  Laravel queue workers publish their loaded definition fingerprint and
+  command contract for each exact queue they consume. Stopping a worker
+  withdraws its evidence, and the existing heartbeat TTL limits crash or
+  pause evidence. The successor starts with the recorded definition from
+  the selected build.
 
 Promoted resolution uses the same selectable-for-new-starts predicate that a
 start uses. A cohort that start would not select, such as one that is drained,
@@ -228,16 +235,16 @@ rollback after the transition doesn't move an already started successor.
 
 | # | Setup | Action | Expected |
 | --- | --- | --- | --- |
-| 1 | Chain on A, promoted B serves the exact type; embedded has eligible live B workers | `continueAsNew()->onPromotedBuild()` | Successor `compatibility: B`; both events record `{from: A, to: B, resolution: promoted}`; the successor's first task is claimed only by B workers |
+| 1 | Chain on A, promoted B serves the exact type; embedded has eligible live B workers | `continueAsNewWithTarget('promoted', …)` | Successor `compatibility: B`; both events record `{from: A, to: B, resolution: promoted}`; the successor's first task is claimed only by B workers |
 | 2 | Same | Plain `continueAsNew()` | Successor on A, `resolution: inherited` (or no field without the opt-in protocol) |
-| 3 | Chain on A, no promoted build | `onPromotedBuild()` | Admission refuses with `promoted_build_unavailable`; predecessor, history and lease unchanged; no successor or transition writes. A separately fenced failure report may record the refusal and normal retry bookkeeping |
-| 4 | Embedded, promoted B configured, no live B heartbeat | `onPromotedBuild()` | Same refusal as #3 |
+| 3 | Chain on A, no promoted build | `continueAsNewWithTarget('promoted', …)` | Admission refuses with `promoted_build_unavailable`; predecessor, history and lease unchanged; no successor or transition writes. A separately fenced failure report may record the refusal and normal retry bookkeeping |
+| 4 | Embedded, promoted B configured, no live B heartbeat | `continueAsNewWithTarget('promoted', …)` | Same refusal as #3 |
 | 5 | Run 1 continued from A to B (recorded) | Cold replay of run 1 and run 2 after promotion moves to C | Run 1 replays to `ContinueAsNewCall`; run 2 replays on its recorded B; nothing reads C |
 | 6 | Promotion A→B commits while the continue-as-new transaction runs | — | The successor is on exactly A or B, recorded; no successor on an unrecorded build |
-| 7 | Chain on A with an open request-cancel child | `onPromotedBuild()` | Child handed over ([workflow issue 868](https://github.com/durable-workflow/workflow/issues/868); native [server PR 1246](https://github.com/durable-workflow/server/pull/1246)) on its own build; successor on B |
+| 7 | Chain on A with an open request-cancel child | `continueAsNewWithTarget('promoted', …)` | Child handed over ([workflow issue 868](https://github.com/durable-workflow/workflow/issues/868); native [server PR 1246](https://github.com/durable-workflow/server/pull/1246)) on its own build; successor on B |
 | 8 | History recorded before this contract shipped | Replay | No `build_transition` field, treated as `inherited` |
-| 9 | Native promoted B serves the type, no live B worker | `onPromotedBuild()` | Admission succeeds on durable promotion; worker restart does not require a new transition |
-| 10 | Promoted B has only a wrong-type, stale or otherwise ineligible embedded heartbeat | `onPromotedBuild()` | Refused before transition writes; marker presence alone is insufficient |
+| 9 | Native promoted B serves the type, no live B worker | `continueAsNewWithTarget('promoted', …)` | Admission succeeds on durable promotion; worker restart does not require a new transition |
+| 10 | Promoted B has only a wrong-type, stale or otherwise ineligible embedded heartbeat | `continueAsNewWithTarget('promoted', …)` | Refused before transition writes; marker presence alone is insufficient |
 | 11 | Current refusal recorded, then a new claim or successful retry | Run-detail refresh and delayed old failure report | Current refusal clears under the claim fence; old report cannot restore it; retained failure remains historical |
 | 12 | Unpinned predecessor, recorded transition has a null marker | Replay and run-detail rendering | Preserve nullable marker and exact lineage; no invented build or live promotion lookup |
 | 13 | Exhausted or terminal task retains `available_at` | Bounded run-detail refresh | Report the actual task status and no scheduled retry; the retained timestamp does not create a countdown |
@@ -254,8 +261,8 @@ history, successor and transition writes, no promotion lookup, no
 | 17 | Same | Field absent | Accepted as `inherited` (vector 2), proving that only absence selects the default |
 | 18 | SDK connected to a runtime that does not advertise `continue_as_new_target_build` | Author calls the promoted-build option | SDK raises `unsupported_target_build` locally; no command is sent |
 | 19 | Runtime recognises the field, opt-in not active | `target_build: "promoted"` or `"inherited"` | 422 `unsupported_target_build`, `retryable: false`, `request_admitted: false`; never inherited |
-| 20 | Embedded runtime with the opt-in disabled | `continueAsNew()->onPromotedBuild()` | Raises `unsupported_target_build` at the authoring call; the task does not complete on the inherited build |
-| 21 | Promoted cohort B is drained, draining or retired | `onPromotedBuild()` | Treated as unavailable: `promoted_build_unavailable` (vector 3), never a successor on B |
+| 20 | Embedded runtime with the opt-in disabled | `continueAsNewWithTarget('promoted', …)` | Raises `unsupported_target_build` at the authoring call; the task does not complete on the inherited build |
+| 21 | Promoted cohort B is drained, draining or retired | `continueAsNewWithTarget('promoted', …)` | Treated as unavailable: `promoted_build_unavailable` (vector 3), never a successor on B |
 | 22 | Native retirement of A races a promoted transition off A | — | Serialized: either retirement sees the open predecessor and returns `live_dependencies`, or it runs after the commit and does not count the chain against A |
 
 Vectors 21 and 22 are the eligibility and retirement cases; unlike 14 to 20 they

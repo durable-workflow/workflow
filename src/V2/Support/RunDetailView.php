@@ -7,6 +7,7 @@ namespace Workflow\V2\Support;
 use Throwable;
 use Workflow\Serializers\AvroValueJsonProjection;
 use Workflow\V2\Enums\CommandStatus;
+use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowRun;
@@ -170,6 +171,13 @@ final class RunDetailView
             'workflow_determinism_source' => $determinismDiagnostics['source'],
             'workflow_determinism_findings' => $determinismDiagnostics['findings'],
             'compatibility' => $summary?->compatibility ?? $run->compatibility,
+            'continue_as_new_build_transitions' => ContinueAsNewBuildTransition::observe(
+                $run->historyEvents->firstWhere('event_type', HistoryEventType::WorkflowStarted),
+                ContinueAsNewBuildTransition::recorded($run),
+            ),
+            ...(EmbeddedWorkflowHeartbeat::enabled() ? [
+                ContinueAsNewTaskRefusal::KEY => ContinueAsNewTaskRefusal::forRun($run),
+            ] : []),
             'compatibility_namespace' => WorkerCompatibilityFleet::scopeNamespace(),
             'compatibility_supported' => WorkerCompatibility::supports($run->compatibility),
             'compatibility_reason' => WorkerCompatibility::mismatchReason($run->compatibility),

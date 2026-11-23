@@ -357,6 +357,31 @@ if (! function_exists(__NAMESPACE__ . '\\continueAsNew')) {
     }
 }
 
+if (! function_exists(__NAMESPACE__ . '\\continueAsNewWithTarget')) {
+    /**
+     * Continue on the explicit inherited or promoted build. The successor's
+     * workflow code must be able to decode and accept the supplied arguments.
+     */
+    function continueAsNewWithTarget(mixed $target, mixed ...$arguments): mixed
+    {
+        $target = is_string($target) ? Enums\ContinueAsNewTarget::tryFrom($target) : null;
+        if ($target === null) {
+            throw new Exceptions\ContinueAsNewTargetException(
+                'invalid_target_build',
+                'Use the exact string inherited or promoted.'
+            );
+        }
+        if (! WorkflowFiberContext::supportsContinueAsNewTargets()) {
+            throw new Exceptions\ContinueAsNewTargetException(
+                'unsupported_target_build',
+                'The current workflow runtime has not enabled explicit build targets.',
+            );
+        }
+
+        return WorkflowFiberContext::suspend(new ContinueAsNewCall($arguments, $target));
+    }
+}
+
 if (! function_exists(__NAMESPACE__ . '\\upsertMemo')) {
     /**
      * Upsert non-indexed memo metadata on the current workflow run.

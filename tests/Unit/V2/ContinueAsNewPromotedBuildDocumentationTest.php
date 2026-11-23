@@ -6,9 +6,11 @@ namespace Tests\Unit\V2;
 
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
-use ReflectionMethod;
+use function Workflow\V2\continueAsNewWithTarget;
+use Workflow\V2\Exceptions\ContinueAsNewTargetException;
 use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\WorkerProtocolVersion;
+use Workflow\V2\Support\WorkflowExecutor;
 
 /**
  * Keeps the continue-as-new promoted-build contract discoverable and pins its
@@ -41,24 +43,59 @@ final class ContinueAsNewPromotedBuildDocumentationTest extends TestCase
         );
     }
 
-    public function testContinueAsNewCommandDoesNotCarryATargetBuildYet(): void
+    public function testStandaloneBridgeRefusesAnExplicitTargetBeforeAdmission(): void
     {
-        $normalize = new ReflectionMethod(DefaultWorkflowTaskBridge::class, 'normalizeContinueAsNewCommand');
-
-        foreach (['promoted', 'inherited'] as $target) {
-            $command = $normalize->invoke(null, [
+        $bridge = new DefaultWorkflowTaskBridge(new WorkflowExecutor());
+        foreach ([
+            'promoted',
+            'inherited',
+            null,
+            true,
+            false,
+            0,
+            1,
+            [],
+            new \stdClass(),
+            '',
+            'Promoted',
+            'latest',
+            'promoted ',
+        ] as $target) {
+            $result = $bridge->completeForProtocol('never-load-task', [[
                 'type' => 'continue_as_new',
                 'arguments' => null,
                 'target_build' => $target,
-            ]);
-
-            $this->assertIsArray($command);
-            $this->assertArrayNotHasKey(
-                'target_build',
-                $command,
-                'Accepting target_build requires the closed-enum validation and capability gate in '
-                . self::DOCUMENT . '; replace this guard with those tests.',
+            ]], WorkerProtocolVersion::VERSION);
+            $this->assertSame(
+                in_array(
+                    $target,
+                    ['promoted', 'inherited'],
+                    true
+                ) ? 'unsupported_target_build' : 'invalid_target_build',
+                $result['reason'],
             );
+            $this->assertFalse($result['completed']);
+            $this->assertFalse($result['retryable']);
+            $this->assertFalse($result['request_admitted']);
+        }
+    }
+
+    public function testAuthoringFailsBeforeSuspendingForInvalidOrUnnegotiatedTargets(): void
+    {
+        foreach (['promoted', 'inherited', null, true, 0, [], new \stdClass(), 'Promoted', 'promoted '] as $target) {
+            try {
+                continueAsNewWithTarget($target, 'state');
+                $this->fail('Unnegotiated continuation was authored.');
+            } catch (ContinueAsNewTargetException $exception) {
+                $this->assertSame(
+                    in_array(
+                        $target,
+                        ['promoted', 'inherited'],
+                        true
+                    ) ? 'unsupported_target_build' : 'invalid_target_build',
+                    $exception->reason,
+                );
+            }
         }
     }
 }
