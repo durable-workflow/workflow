@@ -3949,6 +3949,54 @@ final class V2WorkflowTest extends TestCase
         }
     }
 
+    public function testExplicitParallelPropagateUsesDurableFailureOrderForExecutionAndQueryReplay(): void
+    {
+        Queue::fake();
+
+        Carbon::setTestNow(Carbon::parse('2026-04-09 12:00:00'));
+
+        try {
+            $workflow = WorkflowStub::make(
+                TestParallelMultipleActivityFailureWorkflow::class,
+                'parallel-propagate-order',
+            );
+            $workflow->start('propagate');
+            $parentRunId = $workflow->runId();
+            $this->assertNotNull($parentRunId);
+
+            $this->runNextReadyTask();
+            $this->runReadyActivityTaskForSequence($parentRunId, 2);
+            $this->runReadyActivityTaskForSequence($parentRunId, 1);
+
+            $history = WorkflowHistoryEvent::query()->where('workflow_run_id', $parentRunId)->orderBy(
+                'sequence'
+            )->get();
+            $scheduled = $history->where('event_type', HistoryEventType::ActivityScheduled);
+            $this->assertCount(2, $scheduled);
+            foreach ($scheduled as $event) {
+                $this->assertSame('propagate', $event->payload['parallel_group_policy']);
+                $this->assertSame('propagate', $event->payload['parallel_group_path'][0]['parallel_group_policy']);
+            }
+
+            $failures = $history->where('event_type', HistoryEventType::ActivityFailed)->values();
+            $this->assertSame([2, 1], $failures->pluck('payload.sequence')->all());
+            $this->assertSame(['propagate', 'propagate'], $failures->pluck('payload.parallel_group_policy')->all());
+            $this->assertSame($failures[0]->recorded_at->getTimestampMs(), $failures[1]->recorded_at->getTimestampMs());
+
+            $expected = [
+                'stage' => 'caught-activity-failure',
+                'message' => 'second failure',
+            ];
+            $this->assertSame($expected, $workflow->currentState());
+
+            $this->runReadyTaskForRun($parentRunId, TaskType::Workflow);
+            $this->assertTrue($workflow->refresh()->completed());
+            $this->assertSame($expected, $workflow->output());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
     public function testAsyncHelperRunsStraightLineClosureAsDurableChildWorkflow(): void
     {
         config()->set('queue.default', 'redis');

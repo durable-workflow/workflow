@@ -2301,7 +2301,7 @@ final class WorkflowExecutor
             $this->failRun($run, $task, $throwable, 'workflow_run', $run->id);
             return null;
         }
-        $group = new WorkflowParallelDispatch($sequence);
+        $group = new WorkflowParallelDispatch($sequence, $current->failurePolicy === AllCall::PROPAGATE);
         $group->conditionInputOrder = $conditionInputOrder;
         foreach ($dispatchDescriptors as $descriptor) {
             if (! $this->dispatchParallelMember($run, $task, $descriptor, $group)) {
@@ -2602,15 +2602,20 @@ final class WorkflowExecutor
                 );
                 return true;
             }
-            $group->failure = ParallelFailureSelector::select(
+            if ($group->propagate && ClosingRunOpenWork::settledAtClose($activityCompletion)) {
+                $group->pending = true;
+                return true;
+            }
+            $group->failure = ParallelFailureSelector::selectRecorded(
                 $group->failure,
                 $offset,
                 $this->activityException($activityCompletion, null, $run),
-                $activityCompletion->recorded_at?->getTimestampMs() ?? $activityCompletion->created_at?->getTimestampMs() ?? PHP_INT_MAX,
+                $activityCompletion,
+                $group->propagate,
                 is_string(
                     $activityCompletion->payload['failure_id'] ?? null
                 ) ? $activityCompletion->payload['failure_id'] : null,
-                $activityCompletion->payload
+                $activityCompletion->payload,
             );
             $group->failures[$offset] = $this->activityException($activityCompletion, null, $run);
             return true;
@@ -2653,6 +2658,10 @@ final class WorkflowExecutor
                 $group->successTime,
                 $execution->closed_at ?? $execution->updated_at ?? $execution->created_at
             );
+            return true;
+        }
+        if ($group->propagate) {
+            $group->pending = true;
             return true;
         }
         /** @var WorkflowFailure|null $activityFailure */
@@ -3059,6 +3068,10 @@ final class WorkflowExecutor
             );
             return true;
         }
+        if ($group->propagate) {
+            $group->pending = true;
+            return true;
+        }
         $group->failure = ParallelFailureSelector::select(
             $group->failure,
             $offset,
@@ -3083,13 +3096,18 @@ final class WorkflowExecutor
             );
             return true;
         }
-        $group->failure = ParallelFailureSelector::select(
+        if ($group->propagate && ClosingRunOpenWork::settledAtClose($resolutionEvent)) {
+            $group->pending = true;
+            return true;
+        }
+        $group->failure = ParallelFailureSelector::selectRecorded(
             $group->failure,
             $offset,
             ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun),
-            $resolutionEvent->recorded_at?->getTimestampMs() ?? $resolutionEvent->created_at?->getTimestampMs() ?? PHP_INT_MAX,
+            $resolutionEvent,
+            $group->propagate,
             is_string($resolutionEvent->payload['failure_id'] ?? null) ? $resolutionEvent->payload['failure_id'] : null,
-            $this->childFailureHandledPayload($resolutionEvent)
+            $this->childFailureHandledPayload($resolutionEvent),
         );
         $group->failures[$offset] = ChildRunHistory::exceptionForResolution($resolutionEvent, $childRun);
         return true;
@@ -6365,7 +6383,8 @@ final class WorkflowExecutor
             $itemSequence = $baseSequence + $descriptor['offset'];
             $event = $this->waitResolutionEvent($run, $call, $itemSequence);
 
-            if (! $event instanceof WorkflowHistoryEvent) {
+            if (! $event instanceof WorkflowHistoryEvent
+                || ($group->failurePolicy === AllCall::PROPAGATE && ClosingRunOpenWork::settledAtClose($event))) {
                 $allResolved = false;
 
                 continue;

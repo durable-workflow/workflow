@@ -26,9 +26,20 @@ use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\SelectCall;
 use Workflow\V2\Support\SignalCall;
 use Workflow\V2\Support\TimerCall;
+use Workflow\V2\Support\WorkflowStep;
 
 final class ParallelChildGroupTest extends TestCase
 {
+    public function testEmbeddedPropagateCannotBeEmittedAsPortableCommands(): void
+    {
+        $group = new AllCall([new TimerCall(1)], failurePolicy: AllCall::PROPAGATE);
+
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage('Explicit all() failure policy requires embedded execution.');
+
+        WorkflowStep::group($group, 1);
+    }
+
     public function testMetadataRoundTripsNestedSelectionPathsAndFindsDurableIdentities(): void
     {
         $outer = ParallelChildGroup::groupEntry(10, 3, 0, 'mixed', 'select', 'nested', 0, 10, 2, 'group');

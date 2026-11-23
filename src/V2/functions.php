@@ -191,7 +191,7 @@ if (! function_exists(__NAMESPACE__ . '\\async')) {
 }
 
 if (! function_exists(__NAMESPACE__ . '\\all')) {
-    function all(iterable $calls): mixed
+    function all(iterable $calls, ?string $failurePolicy = null): mixed
     {
         $resolved = [];
 
@@ -203,14 +203,14 @@ if (! function_exists(__NAMESPACE__ . '\\all')) {
             }
         }
 
-        return WorkflowFiberContext::suspend(new AllCall($resolved));
+        return WorkflowFiberContext::suspend(new AllCall($resolved, failurePolicy: $failurePolicy));
     }
 }
 
 if (! function_exists(__NAMESPACE__ . '\\parallel')) {
-    function parallel(iterable $calls): mixed
+    function parallel(iterable $calls, ?string $failurePolicy = null): mixed
     {
-        return all($calls);
+        return all($calls, $failurePolicy);
     }
 }
 

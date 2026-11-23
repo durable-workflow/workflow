@@ -743,6 +743,17 @@ preference; both produce identical `Support\*` Call value objects or
 deterministic workflow-time values, and both route metadata upserts through
 the same command path.
 
+The embedded helpers `Workflow\\V2\\all()` and `Workflow\\V2\\parallel()` accept
+`failurePolicy: 'propagate'` to raise the first member failure in durable
+history order. The policy is recorded
+with the group, including each nested frame. Use the same explicit policy on
+every nested `all()` or `parallel()` call. Open siblings keep their existing
+cancellation and run-close policies.
+When the argument is omitted, embedded replay uses the earliest recorded
+failure timestamp in milliseconds and breaks ties by leaf index. Keep that
+argument omitted on code paths that replay groups originally recorded
+without a policy.
+
 Durable calls in `try`/`finally` follow normal workflow control flow: cleanup
 can suspend for activities, timers, and memo writes after success or a handled
 failure, and those commands are reconstructed from history on replay. Disposing

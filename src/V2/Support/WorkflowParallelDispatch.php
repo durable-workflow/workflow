@@ -37,7 +37,8 @@ final class WorkflowParallelDispatch
     public ?ConditionWaitInputOrder $conditionInputOrder = null;
 
     public function __construct(
-        public readonly int $baseSequence
+        public readonly int $baseSequence,
+        public readonly bool $propagate,
     ) {
     }
 }

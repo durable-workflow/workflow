@@ -88,6 +88,10 @@ final class ParallelMetadataValidationTest extends NonDatabaseTestCase
             ...self::timerEntry(),
             'parallel_group_index' => 2,
         ]], 'parallel_group_path', self::MISMATCH];
+        yield 'embedded failure policy in a portable frame' => [[[
+            ...self::timerEntry(),
+            'parallel_group_policy' => 'propagate',
+        ]], 'parallel_group_path.0', self::INVALID_ENTRY];
     }
 
     #[DataProvider('invalidPaths')]

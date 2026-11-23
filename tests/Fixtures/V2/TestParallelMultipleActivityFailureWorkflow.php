@@ -18,7 +18,7 @@ final class TestParallelMultipleActivityFailureWorkflow extends Workflow
 
     private string $message = '';
 
-    public function handle(): array
+    public function handle(?string $failurePolicy = null): array
     {
         $this->stage = 'waiting-for-activities';
 
@@ -26,7 +26,7 @@ final class TestParallelMultipleActivityFailureWorkflow extends Workflow
             all([
                 static fn () => activity(TestNamedFailingActivity::class, 'first failure'),
                 static fn () => activity(TestNamedFailingActivity::class, 'second failure'),
-            ]);
+            ], failurePolicy: $failurePolicy);
 
             $this->stage = 'unexpected-success';
         } catch (Throwable $throwable) {

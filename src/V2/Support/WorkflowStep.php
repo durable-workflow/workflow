@@ -99,6 +99,9 @@ final class WorkflowStep
 
     public static function group(AllCall $group, int $baseSequence, string $payloadCodec = 'avro'): self
     {
+        if ($group->failurePolicy !== null) {
+            throw new \LogicException('Explicit all() failure policy requires embedded execution.');
+        }
         $commands = [];
 
         foreach ($group->leafDescriptors($baseSequence) as $descriptor) {
