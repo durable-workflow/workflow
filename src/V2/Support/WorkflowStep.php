@@ -189,6 +189,11 @@ final class WorkflowStep
                 'attributes' => $yielded->attributes,
                 'attribute_types' => SearchAttributeUpsertService::canonicalTypes($yielded),
             ],
+            $yielded instanceof ContinueAsNewCall && $yielded->target !== null =>
+                throw new \Workflow\V2\Exceptions\ContinueAsNewTargetException(
+                    'unsupported_target_build',
+                    'The standalone workflow runner has not negotiated explicit build targets.',
+                ),
             $yielded instanceof ContinueAsNewCall => [
                 'type' => 'continue_as_new',
                 'arguments' => self::serializePayload($yielded->arguments, $payloadCodec),

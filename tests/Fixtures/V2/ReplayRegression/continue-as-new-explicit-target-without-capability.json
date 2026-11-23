@@ -1,0 +1,20 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "continue-as-new-explicit-target-without-capability",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestPromotedContinueWorkflow",
+    "arguments": ["check-service-gate"],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {"sequence": 1, "event_type": "WorkflowStarted", "payload": {}}
+  ],
+  "expected": {
+    "completed": true,
+    "result": "unsupported_target_build",
+    "commands": [{"type": "complete_workflow"}]
+  }
+}

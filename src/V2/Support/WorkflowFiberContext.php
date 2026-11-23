@@ -8,6 +8,7 @@ use Carbon\CarbonInterface;
 use Fiber;
 use FiberError;
 use LogicException;
+use WeakMap;
 use Workflow\V2\Exceptions\WorkflowFiberDiscardedException;
 
 final class WorkflowFiberContext
@@ -53,6 +54,27 @@ final class WorkflowFiberContext
      * @var array<int, int>
      */
     private static array $definitionFingerprintVersions = [];
+
+    /**
+     * @var WeakMap<Fiber, true>|null
+     */
+    private static ?WeakMap $continueAsNewTargets = null;
+
+    /**
+     * @internal
+     */
+    public static function enableContinueAsNewTargets(Fiber $fiber): void
+    {
+        $targets = self::$continueAsNewTargets ??= new WeakMap();
+        $targets[$fiber] = true;
+    }
+
+    public static function supportsContinueAsNewTargets(): bool
+    {
+        $fiber = Fiber::getCurrent();
+
+        return $fiber instanceof Fiber && isset(self::$continueAsNewTargets[$fiber]);
+    }
 
     public static function enter(): void
     {

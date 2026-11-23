@@ -9,6 +9,11 @@ use Workflow\V2\Models\WorkflowTask;
 
 final class TaskCompatibility
 {
+    /**
+     * @internal The first task on a promoted successor requires the exact build.
+     */
+    public const REQUIRE_CURRENT_BUILD = 'continue_as_new_requires_current_build';
+
     public static function resolve(WorkflowTask $task, ?WorkflowRun $run = null): ?string
     {
         return self::normalize($task->compatibility)
@@ -32,7 +37,7 @@ final class TaskCompatibility
 
     public static function supported(WorkflowTask $task, ?WorkflowRun $run = null): bool
     {
-        return WorkerCompatibility::supports(self::resolve($task, $run));
+        return self::mismatchReason($task, $run) === null;
     }
 
     public static function supportedInFleet(WorkflowTask $task, ?WorkflowRun $run = null): bool
@@ -46,7 +51,13 @@ final class TaskCompatibility
 
     public static function mismatchReason(WorkflowTask $task, ?WorkflowRun $run = null): ?string
     {
-        return WorkerCompatibility::mismatchReason(self::resolve($task, $run));
+        $required = self::resolve($task, $run);
+        if (($task->payload[self::REQUIRE_CURRENT_BUILD] ?? null) === true
+            && $required !== null && WorkerCompatibility::current() !== $required) {
+            return sprintf('The first task after a promoted continuation requires worker build [%s].', $required);
+        }
+
+        return WorkerCompatibility::mismatchReason($required);
     }
 
     public static function fleetMismatchReason(WorkflowTask $task, ?WorkflowRun $run = null): ?string

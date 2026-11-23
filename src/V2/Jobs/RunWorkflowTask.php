@@ -13,9 +13,11 @@ use Throwable;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\PromotedBuildUnavailableException;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\ContinueAsNewTaskRefusal;
 use Workflow\V2\Support\DeferredEntityReferenceResolution;
 use Workflow\V2\Support\EmbeddedLocalActivityScope;
 use Workflow\V2\Support\ExecutionTracing;
@@ -28,6 +30,7 @@ use Workflow\V2\Support\TaskBackendCapabilities;
 use Workflow\V2\Support\TaskCompatibility;
 use Workflow\V2\Support\TaskDispatcher;
 use Workflow\V2\Support\TaskOutcomeCarrier;
+use Workflow\V2\Support\TaskRepairPolicy;
 use Workflow\V2\Support\TaskScopeMemo;
 use Workflow\V2\Support\TaskTraceTimings;
 use Workflow\V2\Support\TraceCarrier;
@@ -206,6 +209,9 @@ final class RunWorkflowTask implements ShouldQueue
 
                 return $nextTask;
             });
+        } catch (PromotedBuildUnavailableException $refusal) {
+            $continuation?->disable(PromotedBuildUnavailableException::REASON);
+            $nextTask = $this->recordPromotedBuildRefusal($refusal);
         } catch (Throwable $throwable) {
             $continuation?->disable('transaction_failure');
             SqliteTransaction::forTask($this->taskId, function () use ($throwable): void {
@@ -238,6 +244,49 @@ final class RunWorkflowTask implements ShouldQueue
             TaskDispatcher::dispatch($nextTask);
         }
         return $deferred;
+    }
+
+    private function recordPromotedBuildRefusal(PromotedBuildUnavailableException $refusal): ?WorkflowTask
+    {
+        return SqliteTransaction::forTask($this->taskId, function () use ($refusal): ?WorkflowTask {
+            /** @var WorkflowTask|null $task */
+            $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+                ->lockForUpdate()
+                ->find($this->taskId);
+            if ($task === null || ! EmbeddedLocalActivityScope::owns($task)) {
+                return null;
+            }
+
+            /** @var WorkflowRun $run */
+            $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+                ->lockForUpdate()
+                ->findOrFail($task->workflow_run_id);
+            if ($run->status->isTerminal()) {
+                return null;
+            }
+
+            $now = now();
+            $task->forceFill([
+                'status' => TaskStatus::Ready,
+                'leased_at' => null,
+                'lease_owner' => null,
+                'lease_expires_at' => null,
+                'last_error' => $refusal->getMessage(),
+                'repair_count' => (int) $task->repair_count + 1,
+                'available_at' => TaskRepairPolicy::repairAvailableAtAfterFailure($task, $now),
+                'payload' => [
+                    ...($task->payload ?? []),
+                    ContinueAsNewTaskRefusal::KEY => [
+                        'reason' => PromotedBuildUnavailableException::REASON,
+                        'workflow_task_attempt' => (int) $task->attempt_count,
+                        'recorded_at' => $now->toIso8601String(),
+                    ],
+                ],
+            ])->save();
+            $this->projectRun($run->fresh(['instance', 'tasks', 'activityExecutions', 'failures']));
+
+            return $task;
+        });
     }
 
     private function settleTerminalTask(WorkflowTask $task, WorkflowRun $run): void
@@ -290,6 +339,15 @@ final class RunWorkflowTask implements ShouldQueue
 
             // The logical task ID is reused as owner; the attempt fences this claim.
             $claimedAttempt = (int) $task->attempt_count + 1;
+            $claimReset = [];
+            $payload = $task->payload ?? [];
+            if (array_key_exists(ContinueAsNewTaskRefusal::KEY, $payload)) {
+                unset($payload[ContinueAsNewTaskRefusal::KEY]);
+                $claimReset = [
+                    'payload' => $payload,
+                    'last_error' => null,
+                ];
+            }
             $task->forceFill([
                 'status' => TaskStatus::Leased,
                 'leased_at' => now(),
@@ -300,6 +358,7 @@ final class RunWorkflowTask implements ShouldQueue
                 'sticky_claimed_at' => now(),
                 'last_claim_failed_at' => null,
                 'last_claim_error' => null,
+                ...$claimReset,
             ])->save();
 
             ServiceCallWorkflowDelivery::recordForClaim($task, $run);

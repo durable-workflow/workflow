@@ -164,6 +164,8 @@ return [
             'current' => Env::dw('DW_V2_CURRENT_COMPATIBILITY', 'WORKFLOW_V2_CURRENT_COMPATIBILITY', null),
             'supported' => Env::dw('DW_V2_SUPPORTED_COMPATIBILITIES', 'WORKFLOW_V2_SUPPORTED_COMPATIBILITIES', null),
             'namespace' => Env::dw('DW_V2_COMPATIBILITY_NAMESPACE', 'WORKFLOW_V2_COMPATIBILITY_NAMESPACE', null),
+            'continue_as_new_target_build' => (bool) env('DW_V2_CONTINUE_AS_NEW_TARGET_BUILD', false),
+            'promoted' => env('DW_V2_PROMOTED_COMPATIBILITY'),
             'heartbeat_ttl_seconds' => (int) Env::dw(
                 'DW_V2_COMPATIBILITY_HEARTBEAT_TTL',
                 'WORKFLOW_V2_COMPATIBILITY_HEARTBEAT_TTL',

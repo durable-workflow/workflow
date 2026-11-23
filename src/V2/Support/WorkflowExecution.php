@@ -33,6 +33,7 @@ final class WorkflowExecution
         array $arguments,
         ?CarbonInterface $eventTime = null,
         ?int $definitionFingerprintVersion = null,
+        bool $allowContinueAsNewTarget = false,
     ): self {
         $entryMethod = EntryMethod::forWorkflow($workflow);
         WorkflowEntryArguments::assertInvocation($workflow, $entryMethod, $arguments);
@@ -42,6 +43,7 @@ final class WorkflowExecution
             straightLineError: StraightLineWorkflowRequiredException::forWorkflow($workflow::class),
             eventTime: $eventTime,
             definitionFingerprintVersion: $definitionFingerprintVersion,
+            allowContinueAsNewTarget: $allowContinueAsNewTarget,
         );
     }
 
@@ -54,6 +56,7 @@ final class WorkflowExecution
         ?StraightLineWorkflowRequiredException $straightLineError = null,
         ?CarbonInterface $eventTime = null,
         ?int $definitionFingerprintVersion = null,
+        bool $allowContinueAsNewTarget = false,
     ): self {
         $callback = ExecutionTracing::bind($callback);
         $fiber = new Fiber(static function () use ($callback, $arguments): mixed {
@@ -71,6 +74,9 @@ final class WorkflowExecution
 
         if ($eventTime !== null) {
             WorkflowFiberContext::setTime($eventTime, $fiber);
+        }
+        if ($allowContinueAsNewTarget) {
+            WorkflowFiberContext::enableContinueAsNewTargets($fiber);
         }
 
         WorkflowFiberContext::setDefinitionFingerprintVersion(
