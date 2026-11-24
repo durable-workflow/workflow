@@ -68,6 +68,18 @@ final class V2ParallelGroupAdmissionTest extends TestCase
         $this->assertSame(0, WorkflowLink::query()->count());
     }
 
+    public function testGroupAboveThePendingChildLimitWritesNoMember(): void
+    {
+        config([
+            'workflows.v2.structural_limits.pending_child_count' => 10,
+        ]);
+
+        $run = $this->runFirstTask('admission-child-count', 11, -1, 0, 'child');
+
+        $this->assertRefusedBeforeFirstWrite($run, 'pending_child_count');
+        $this->assertSame(0, WorkflowLink::query()->count());
+    }
+
     public function testOversizedMemberAfterSignalTimerAndConditionMembersWritesNoMember(): void
     {
         config([

@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
+use RuntimeException;
 use Tests\Support\FanOutWidthProbe;
 use Tests\TestCase;
 
@@ -114,6 +116,28 @@ final class V2FanOutWidthScalingTest extends TestCase
                 "The {$phase} phase exceeded the fan-out growth allowance.\n{$report}",
             );
         }
+    }
+
+    public function testChildFanOutCompletesWhenTheStructuralWarningSinkFails(): void
+    {
+        Queue::fake();
+        config([
+            'workflows.v2.structural_limits.pending_child_count' => 10,
+            'workflows.v2.structural_limits.warning_threshold_percent' => 80,
+        ]);
+        Log::partialMock()->shouldReceive('warning')->withArgs(
+            static fn (string $message, array $context): bool => ($context['limit_kind'] ?? null) === 'pending_child_count',
+        )->atLeast()
+            ->once()
+            ->andThrow(new RuntimeException('The warning sink is unavailable.'));
+
+        $result = (new FanOutWidthProbe($this->app))->run('child', 10, self::PAYLOAD_BYTES, 'fan-out-warning');
+
+        $this->assertSame([
+            'members' => 10,
+            'total_bytes' => 10 * self::PAYLOAD_BYTES,
+        ], $result['output']);
+        $this->assertSame(10, $result['members']['tasks']);
     }
 
     protected function startQueueWorkersAutomatically(): bool
