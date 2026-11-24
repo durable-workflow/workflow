@@ -8,6 +8,8 @@ use Illuminate\Support\Facades\Queue;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\V2\TestTimeoutCleanupWorkflow;
 use Tests\TestCase;
+use Workflow\V2\Contracts\OperatorObservabilityRepository;
+use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
@@ -85,6 +87,7 @@ final class V2TimeoutCleanupTest extends TestCase
         $this->assertSame($outcome, $terminal->payload['timeout_cleanup']['outcome']);
         $this->assertSame('execution_timeout', $terminal->payload['timeout_kind']);
         $this->assertSame('timeout', $terminal->payload['failure_category']);
+        $this->assertVisibleTimeoutCleanup($run, $terminal->payload['timeout_cleanup']);
         if ($outcome === 'failed') {
             $this->assertIsString($terminal->payload['timeout_cleanup']['failure_id'] ?? null);
         }
@@ -120,7 +123,9 @@ final class V2TimeoutCleanupTest extends TestCase
         )->firstOrFail();
         $this->assertSame(HistoryEventType::WorkflowTerminated, $terminal->event_type);
         $this->assertSame('preempted', $terminal->payload['timeout_cleanup']['outcome'] ?? null);
-        $this->assertSame(RunStatus::Terminated, WorkflowRun::query()->findOrFail($runId)->status);
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $this->assertSame(RunStatus::Terminated, $run->status);
+        $this->assertVisibleTimeoutCleanup($run, $terminal->payload['timeout_cleanup']);
     }
 
     public function testWithoutTheOptionTheHardTimeoutIsUnchanged(): void
@@ -149,6 +154,7 @@ final class V2TimeoutCleanupTest extends TestCase
         $this->assertNull($events->firstWhere('event_type', HistoryEventType::WorkflowTimeoutCleanupStarted));
         $this->assertSame(HistoryEventType::WorkflowTimedOut, $events->last()->event_type);
         $this->assertArrayNotHasKey('timeout_cleanup', $events->last()->payload);
+        $this->assertVisibleTimeoutCleanup(WorkflowRun::query()->findOrFail($runId), null);
     }
 
     public function testTaskCompletionAtTheHardDeadlineRecordsExpiredCleanup(): void
@@ -235,6 +241,15 @@ final class V2TimeoutCleanupTest extends TestCase
         $this->assertSame(now()->toIso8601String(), $started->payload['detected_at']);
         $this->assertSame($run->execution_deadline_at->toIso8601String(), $started->payload['cleanup_deadline_at']);
         $deadline = $run->cancellation_deadline_at;
+        $visible = [
+            'outcome' => 'running',
+            'cause' => 'timeout',
+            'timeout_kind' => 'execution',
+            'started_at' => $started->payload['detected_at'],
+            'work_deadline_at' => $started->payload['work_deadline_at'],
+            'cleanup_deadline_at' => $started->payload['cleanup_deadline_at'],
+        ];
+        $this->assertVisibleTimeoutCleanup($run, $visible);
 
         $this->newResumeTask($run);
         $this->runReadyWorkflowTask($run->id);
@@ -242,6 +257,7 @@ final class V2TimeoutCleanupTest extends TestCase
         $this->assertSame(1, WorkflowHistoryEvent::query()->where('workflow_run_id', $run->id)
             ->where('event_type', HistoryEventType::WorkflowTimeoutCleanupStarted->value)->count());
         $this->assertTrue($run->refresh()->cancellation_deadline_at->equalTo($deadline));
+        $this->assertVisibleTimeoutCleanup($run, $visible);
     }
 
     public function testTheEarliestHardDeadlineOwnsCleanup(): void
@@ -282,6 +298,7 @@ final class V2TimeoutCleanupTest extends TestCase
         )->firstOrFail();
         $this->assertSame(HistoryEventType::WorkflowCancelled, $terminal->event_type);
         $this->assertSame('preempted', $terminal->payload['timeout_cleanup']['outcome'] ?? null);
+        $this->assertVisibleTimeoutCleanup($run->refresh(), $terminal->payload['timeout_cleanup']);
     }
 
     public function testEarlierCooperativeCancellationIsPreemptedWhenTheHardDeadlineWins(): void
@@ -470,9 +487,34 @@ final class V2TimeoutCleanupTest extends TestCase
         )->firstOrFail();
         $this->assertSame(HistoryEventType::WorkflowTimedOut, $terminal->event_type);
         $this->assertSame('expired', $terminal->payload['timeout_cleanup']['outcome'] ?? null);
+        $this->assertVisibleTimeoutCleanup(
+            WorkflowRun::query()->findOrFail($runId),
+            $terminal->payload['timeout_cleanup']
+        );
         $count = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->count();
         TaskWatchdog::runPass(runIds: [$runId]);
         $this->assertSame($count, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->count());
+    }
+
+    /**
+     * @param array<string, string>|null $expected
+     */
+    private function assertVisibleTimeoutCleanup(WorkflowRun $run, ?array $expected): void
+    {
+        $controlPlane = $this->app->make(WorkflowControlPlane::class);
+        $observer = $this->app->make(OperatorObservabilityRepository::class);
+        $description = $controlPlane->describe($run->workflow_instance_id, [
+            'run_id' => $run->id,
+        ]);
+        $this->assertTrue($description['found']);
+
+        foreach ([$description['run'], $observer->runObservation($run), $observer->runDetail($run)] as $surface) {
+            if ($expected === null) {
+                $this->assertArrayNotHasKey('timeout_cleanup', $surface);
+            } else {
+                $this->assertSame($expected, $surface['timeout_cleanup'] ?? null);
+            }
+        }
     }
 
     /**

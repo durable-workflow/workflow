@@ -129,9 +129,14 @@ outcome:
 An unavailable worker can't guarantee cleanup. If no worker runs the cleanup
 turn before the cleanup deadline, the outcome is `expired`.
 
-Run detail, describe, Waterline and history export show the cleanup state. While
-it is open, the liveness state is the existing `cancellation_cleanup_running`
-with `cause: timeout`. After that, they show the recorded outcome.
+Describe returns the state under `run.timeout_cleanup`. Run detail and the
+bounded operator observation used by Waterline return `timeout_cleanup` at
+the top level. While cleanup is open, the field contains `outcome: running`,
+`cause: timeout`, and the start and deadlines from the recorded cleanup event.
+After closure, it contains the terminal outcome retained in history and
+history export. When no cleanup was recorded, the response omits the field.
+An expired outcome can omit `started_at` if the first detection was already
+past the hard deadline.
 
 ## Defaults and compatibility
 
