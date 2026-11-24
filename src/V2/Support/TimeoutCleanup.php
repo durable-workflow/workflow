@@ -14,6 +14,7 @@ use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandStatus;
 use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
@@ -195,6 +196,67 @@ final class TimeoutCleanup
             'preempted' => 'Timeout cleanup was preempted.',
             default => null,
         };
+    }
+
+    /**
+     * Read the cleanup state from retained history for operator diagnostics.
+     * Ordinary runs and opted-in runs that have yet to enter cleanup need
+     * no additional history query.
+     *
+     * @return array<string, string>|null
+     */
+    public static function observe(WorkflowRun $run, mixed $startedPayload): ?array
+    {
+        if ($run->timeout_cleanup_work_deadline_at === null
+            && ! (is_array($startedPayload) && is_array($startedPayload[self::STARTED_KEY] ?? null))) {
+            return null;
+        }
+
+        $type = match ($run->status) {
+            RunStatus::Failed => HistoryEventType::WorkflowTimedOut,
+            RunStatus::Cancelled => HistoryEventType::WorkflowCancelled,
+            RunStatus::Terminated => HistoryEventType::WorkflowTerminated,
+            RunStatus::Completed => null,
+            default => is_string($run->cancellation_request_command_id) || $run->import_source !== null
+                ? HistoryEventType::WorkflowTimeoutCleanupStarted
+                : null,
+        };
+        if ($type === null) {
+            return null;
+        }
+
+        $event = $run->relationLoaded('historyEvents')
+            ? $run->historyEvents->last(static fn (WorkflowHistoryEvent $event): bool => $event->event_type === $type)
+            : null;
+        $event ??= $run->historyEvents()
+            ->setEagerLoads([])
+            ->where('event_type', $type->value)
+            ->reorder('sequence', 'desc')
+            ->first(['id', 'workflow_run_id', 'sequence', 'event_type', 'payload']);
+        $payload = $event?->payload;
+        if (! is_array($payload)) {
+            return null;
+        }
+
+        if ($type === HistoryEventType::WorkflowTimeoutCleanupStarted) {
+            return array_filter([
+                'outcome' => 'running',
+                'cause' => CancellationContext::CAUSE_TIMEOUT,
+                'timeout_kind' => $payload['timeout_kind'] ?? null,
+                'started_at' => $payload['detected_at'] ?? null,
+                'work_deadline_at' => $payload['work_deadline_at'] ?? null,
+                'cleanup_deadline_at' => $payload['cleanup_deadline_at'] ?? null,
+            ], is_string(...));
+        }
+
+        $recorded = $payload[self::STARTED_KEY] ?? null;
+        if (! is_array($recorded) || self::summary($recorded) === null) {
+            return null;
+        }
+
+        return array_filter(array_intersect_key($recorded, array_flip([
+            'outcome', 'timeout_kind', 'started_at', 'cleanup_deadline_at', 'finished_at', 'failure_id',
+        ])), is_string(...));
     }
 
     /**

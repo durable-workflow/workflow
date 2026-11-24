@@ -44,6 +44,7 @@ use Workflow\Serializers\Serializer;
 use Workflow\V2\Activity;
 use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\HistoryProjectionRole;
+use Workflow\V2\Contracts\OperatorObservabilityRepository;
 use Workflow\V2\Contracts\ProtocolAwareWorkflowTaskBridge;
 use Workflow\V2\Contracts\ServiceControlPlane;
 use Workflow\V2\Contracts\WorkflowControlPlane;
@@ -444,6 +445,52 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 ->where('event_type', HistoryEventType::WorkflowTimeoutCleanupStarted->value)
                 ->exists(), $mode);
         }
+    }
+
+    public function testTimeoutCleanupObservationCorpusKeepsTheRecordedClockAndOutcome(): void
+    {
+        $path = self::FIXTURE_DIR . '/timeout-cleanup-observation-preempted.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The timeout cleanup observation evidence is absent.');
+        }
+        $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['observation'];
+        config([
+            'queue.default' => 'database',
+        ]);
+        Queue::fake();
+        $this->travelTo(Carbon::parse($fixture['history'][0]['recorded_at']));
+        $stub = WorkflowStub::make($fixture['workflow']['type'], $fixture['id']);
+        $stub->start($fixture['workflow']['arguments'][0], new StartOptions(
+            executionTimeoutSeconds: $scenario['execution_timeout_seconds'],
+            runTimeoutSeconds: $scenario['run_timeout_seconds'],
+            timeoutCleanupSeconds: $scenario['timeout_cleanup_seconds'],
+        ));
+        $runId = $stub->runId();
+        $this->runReadyTaskOfType($runId, TaskType::Workflow);
+
+        $this->travel($scenario['detect_after_seconds'])->seconds();
+        TaskWatchdog::runPass(runIds: [$runId]);
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $observer = $this->app->make(OperatorObservabilityRepository::class);
+        $controlPlane = $this->app->make(WorkflowControlPlane::class);
+        $description = $controlPlane->describe($run->workflow_instance_id, [
+            'run_id' => $runId,
+        ]);
+        $this->assertSame($scenario['running'], $description['run']['timeout_cleanup'] ?? null);
+        $this->assertSame($scenario['running'], $observer->runObservation($run)['timeout_cleanup'] ?? null);
+
+        $this->travel(1)
+            ->seconds();
+        $stub->refresh()
+            ->terminate('Operator stopped cleanup');
+        $run->refresh();
+        $this->assertSame(RunStatus::Terminated, $run->status);
+        $description = $controlPlane->describe($run->workflow_instance_id, [
+            'run_id' => $runId,
+        ]);
+        $this->assertEquals($scenario['terminal'], $description['run']['timeout_cleanup'] ?? null);
+        $this->assertEquals($scenario['terminal'], $observer->runDetail($run)['timeout_cleanup'] ?? null);
     }
 
     public function testTimeoutCleanupTaskExpiryCorpusKeepsTheOutcome(): void
@@ -3146,6 +3193,11 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
             if ($fixture['id'] === 'workflow-failure-pending-update-history-budget') {
                 // The live refusal and retry are covered by the dedicated corpus test.
+                continue;
+            }
+
+            if ($fixture['id'] === 'timeout-cleanup-observation-preempted') {
+                // The live timeout and terminal readback run in the dedicated corpus test.
                 continue;
             }
 

@@ -62,6 +62,7 @@ final class RunObservation
             ->orderBy('sequence')
             ->first(['id', 'workflow_run_id', 'sequence', 'event_type', 'payload']);
         $buildTransitions = ContinueAsNewBuildTransition::observe($started, null);
+        $timeoutCleanup = TimeoutCleanup::observe($run, $started?->payload);
         if ($run->closed_reason === 'continued') {
             /** @var class-string<WorkflowRunLineageEntry> $lineageModel */
             $lineageModel = ConfiguredV2Models::resolve('run_lineage_entry_model', WorkflowRunLineageEntry::class);
@@ -114,6 +115,9 @@ final class RunObservation
             'updated_at' => $run->updated_at?->toIso8601String(),
             'execution_deadline_at' => $run->execution_deadline_at?->toIso8601String(),
             'run_deadline_at' => $run->run_deadline_at?->toIso8601String(),
+            ...($timeoutCleanup === null ? [] : [
+                'timeout_cleanup' => $timeoutCleanup,
+            ]),
             'current_run_id' => $current?->id,
             'current_run_status' => $current?->status?->value,
             'is_current_run' => $current === null ? null : $current->id === $run->id,

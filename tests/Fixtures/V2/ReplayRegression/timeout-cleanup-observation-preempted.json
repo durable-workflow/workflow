@@ -1,0 +1,57 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "timeout-cleanup-observation-preempted",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestTimeoutCleanupWorkflow",
+    "arguments": ["expire"],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {
+        "timeout_cleanup": {
+          "allowance_seconds": 10,
+          "work_deadlines": {
+            "execution": "2026-11-24T00:01:00+00:00",
+            "run": "2026-11-24T00:00:30+00:00"
+          }
+        }
+      },
+      "recorded_at": "2026-11-24T00:00:00.000000Z"
+    },
+    {
+      "sequence": 2,
+      "event_type": "TimerScheduled",
+      "payload": {"timer_id": "timeout-cleanup-observation-timer", "sequence": 1, "delay_seconds": 3600},
+      "recorded_at": "2026-11-24T00:00:00.000000Z"
+    }
+  ],
+  "expected": {"completed": false, "result": null, "commands": []},
+  "observation": {
+    "execution_timeout_seconds": 70,
+    "run_timeout_seconds": 40,
+    "timeout_cleanup_seconds": 10,
+    "detect_after_seconds": 35,
+    "running": {
+      "outcome": "running",
+      "cause": "timeout",
+      "timeout_kind": "run",
+      "started_at": "2026-11-24T00:00:35+00:00",
+      "work_deadline_at": "2026-11-24T00:00:30+00:00",
+      "cleanup_deadline_at": "2026-11-24T00:00:40+00:00"
+    },
+    "terminal": {
+      "outcome": "preempted",
+      "timeout_kind": "run",
+      "started_at": "2026-11-24T00:00:35+00:00",
+      "cleanup_deadline_at": "2026-11-24T00:00:40+00:00",
+      "finished_at": "2026-11-24T00:00:36+00:00"
+    }
+  }
+}
