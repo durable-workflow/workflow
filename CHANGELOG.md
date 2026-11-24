@@ -6,6 +6,9 @@
 
 - Workflows within their structural limits continue when Laravel cannot write
   a limit warning. The warning falls back to the PHP error log. (#1280)
+- Starting a parallel group of child workflows and closing service-mode
+  children under a parent-close policy use fewer storage reads. Legacy
+  histories and commands retain their ordering. (#1238)
 
 ## 2.39.0 - 2026-11-23
 
