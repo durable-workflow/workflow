@@ -478,7 +478,12 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             'run_id' => $runId,
         ]);
         $this->assertSame($scenario['running'], $description['run']['timeout_cleanup'] ?? null);
-        $this->assertSame($scenario['running'], $observer->runObservation($run)['timeout_cleanup'] ?? null);
+        // The bounded Waterline endpoint selects identity, status and ordinary deadlines only.
+        $partialRun = WorkflowRun::query()->findOrFail($runId, [
+            'id', 'workflow_instance_id', 'namespace', 'workflow_type', 'workflow_class', 'run_number', 'status',
+            'execution_deadline_at', 'run_deadline_at',
+        ]);
+        $this->assertSame($scenario['running'], $observer->runObservation($partialRun)['timeout_cleanup'] ?? null);
 
         $this->travel(1)
             ->seconds();

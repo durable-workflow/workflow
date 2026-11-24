@@ -200,14 +200,14 @@ final class TimeoutCleanup
 
     /**
      * Read the cleanup state from retained history for operator diagnostics.
-     * Ordinary runs and opted-in runs that have yet to enter cleanup need
-     * no additional history query.
+     * Ordinary runs need no additional history query. Bounded readers may
+     * only have the policy on WorkflowStarted and the selected run's status.
      *
      * @return array<string, string>|null
      */
     public static function observe(WorkflowRun $run, mixed $startedPayload): ?array
     {
-        if ($run->timeout_cleanup_work_deadline_at === null
+        if ($run->getRawOriginal('timeout_cleanup_work_deadline_at') === null
             && ! (is_array($startedPayload) && is_array($startedPayload[self::STARTED_KEY] ?? null))) {
             return null;
         }
@@ -217,9 +217,7 @@ final class TimeoutCleanup
             RunStatus::Cancelled => HistoryEventType::WorkflowCancelled,
             RunStatus::Terminated => HistoryEventType::WorkflowTerminated,
             RunStatus::Completed => null,
-            default => is_string($run->cancellation_request_command_id) || $run->import_source !== null
-                ? HistoryEventType::WorkflowTimeoutCleanupStarted
-                : null,
+            default => HistoryEventType::WorkflowTimeoutCleanupStarted,
         };
         if ($type === null) {
             return null;
