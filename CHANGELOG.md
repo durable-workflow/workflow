@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 2.39.1 - 2026-11-24
+
+- Workflows within their structural limits continue when Laravel cannot write
+  a limit warning. The warning falls back to the PHP error log. (#1280)
+
 ## 2.39.0 - 2026-11-23
 
 - Embedded workflows can use `continueAsNewWithTarget('promoted', ...)` when
