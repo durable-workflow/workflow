@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Contracts\Bus\Dispatcher as BusDispatcher;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Mockery\MockInterface;
@@ -37,6 +39,7 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Support\CacheLongPollWakeStore;
 use Workflow\V2\Support\DefaultHistoryProjectionRole;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\LocalActivityRuntime;
@@ -48,6 +51,37 @@ use Workflow\V2\TaskWatchdog;
 
 final class V2TaskDispatchTest extends TestCase
 {
+    public function testLegacyTaskWakesItsInstanceNamespaceWithOneLookup(): void
+    {
+        $run = $this->createWaitingRun('legacy-task-wake');
+        $run->instance->forceFill([
+            'namespace' => 'alpha',
+        ])->save();
+        $task = new WorkflowTask([
+            'workflow_run_id' => $run->id,
+            'task_type' => TaskType::Workflow,
+            'connection' => 'redis',
+            'queue' => 'orders',
+        ]);
+        $store = new CacheLongPollWakeStore(Cache::store('array'));
+        $channels = array_filter(
+            $store->workflowTaskPollChannels('alpha', 'redis', 'orders'),
+            static fn (string $channel): bool => str_contains($channel, ':namespace:alpha:'),
+        );
+        $snapshot = $store->snapshot($channels);
+        $lookups = 0;
+        DB::listen(static function (QueryExecuted $query) use (&$lookups): void {
+            if (str_contains($query->sql, 'workflow_instances') || str_contains($query->sql, 'workflow_runs')) {
+                ++$lookups;
+            }
+        });
+
+        $store->signalTask($task);
+
+        self::assertTrue($store->changed($snapshot));
+        self::assertSame(1, $lookups);
+    }
+
     public static function databaseQueueDeliveries(): array
     {
         $cases = [];

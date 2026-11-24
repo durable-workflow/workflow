@@ -210,6 +210,9 @@ final class SearchAttributeUpsertService
         ): void {
             $parentAttributes = WorkflowSearchAttribute::where('workflow_run_id', $parentRun->id)
                 ->get();
+            if ($parentAttributes->isEmpty()) {
+                return;
+            }
 
             foreach ($parentAttributes as $parentAttr) {
                 $childAttr = new WorkflowSearchAttribute([
