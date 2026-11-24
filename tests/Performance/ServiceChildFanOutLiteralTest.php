@@ -23,6 +23,17 @@ use Workflow\V2\Models\WorkflowTask;
 
 final class ServiceChildFanOutLiteralTest extends TestCase
 {
+    /**
+     * About 58 at start and 63 at close on MySQL 26.10 and SQLite in November 2026.
+     */
+    private const STATEMENTS_PER_CHILD = 72;
+
+    private int $statements = 0;
+
+    private float $sqlMilliseconds = 0.0;
+
+    private bool $measuring = false;
+
     public function testLiteralServiceCompletionStartsAndClosesOneThousandChildren(): void
     {
         if (getenv('FANOUT_LITERAL') !== '1') {
@@ -48,6 +59,13 @@ final class ServiceChildFanOutLiteralTest extends TestCase
             }
         });
 
+        DB::listen(function (QueryExecuted $query): void {
+            if ($this->measuring) {
+                ++$this->statements;
+                $this->sqlMilliseconds += $query->time;
+            }
+        });
+
         $this->measure($bridge, 3);
         $reference = $this->measure($bridge, 100);
         $literal = $this->measure($bridge, 1_000);
@@ -56,13 +74,28 @@ final class ServiceChildFanOutLiteralTest extends TestCase
         $this->assertGreaterThan(0, $largestParentClosePage);
         $this->assertLessThanOrEqual(100, $largestParentClosePage, 'Parent close loads child links in bounded pages.');
 
+        // Hosted runners vary by more than 2x in speed, so wall-clock time is
+        // judged against the 100-child reference from this same process.
+        // Linear per-child cost gives about 10x; a per-child rescan gives about
+        // 100x. The statement budget is deterministic and catches a
+        // constant-factor increase in per-child storage work, which the ratio
+        // cannot see. The absolute ceiling only catches hangs.
         foreach (['start', 'close'] as $phase) {
-            $this->assertLessThan(
-                60.0,
+            $this->assertLessThanOrEqual(
+                25.0 * max(0.25, $reference[$phase]),
                 $literal[$phase],
-                "The 1,000-child service completion took too long to {$phase}."
+                "The 1,000-child service completion scaled worse than linearly to {$phase}."
             );
-            $this->assertLessThanOrEqual(25.0 * max(0.25, $reference[$phase]), $literal[$phase]);
+            $this->assertLessThanOrEqual(
+                self::STATEMENTS_PER_CHILD * 1_000,
+                $literal["{$phase}Statements"],
+                "The 1,000-child service completion issued too many statements to {$phase}."
+            );
+            $this->assertLessThan(
+                180.0,
+                $literal[$phase],
+                "The 1,000-child service completion did not {$phase} within the hang ceiling."
+            );
         }
     }
 
@@ -72,7 +105,7 @@ final class ServiceChildFanOutLiteralTest extends TestCase
     }
 
     /**
-     * @return array{start: float, close: float}
+     * @return array{start: float, close: float, startStatements: int, closeStatements: int, startSqlSeconds: float, closeSqlSeconds: float}
      */
     private function measure(WorkflowTaskBridge $bridge, int $width): array
     {
@@ -119,8 +152,14 @@ final class ServiceChildFanOutLiteralTest extends TestCase
         }
 
         $task = self::lease($run);
+        $this->statements = 0;
+        $this->sqlMilliseconds = 0.0;
+        $this->measuring = true;
         $started = hrtime(true);
         $result = $bridge->complete($task->id, $commands);
+        $this->measuring = false;
+        $startStatements = $this->statements;
+        $startSqlSeconds = $this->sqlMilliseconds / 1_000;
         $start = (hrtime(true) - $started) / 1_000_000_000;
         $this->assertTrue($result['completed'], $result['reason'] ?? '');
         $this->assertSame(RunStatus::Waiting->value, $result['run_status']);
@@ -137,11 +176,17 @@ final class ServiceChildFanOutLiteralTest extends TestCase
             ->where('status', TaskStatus::Ready)->count());
 
         $task = self::lease($run);
+        $this->statements = 0;
+        $this->sqlMilliseconds = 0.0;
+        $this->measuring = true;
         $started = hrtime(true);
         $result = $bridge->complete($task->id, [[
             'type' => 'complete_workflow',
             'result' => Serializer::serialize('finished'),
         ]]);
+        $this->measuring = false;
+        $closeStatements = $this->statements;
+        $closeSqlSeconds = $this->sqlMilliseconds / 1_000;
         $close = (hrtime(true) - $started) / 1_000_000_000;
         $this->assertTrue($result['completed'], $result['reason'] ?? '');
         $this->assertSame(RunStatus::Completed->value, $result['run_status']);
@@ -155,7 +200,7 @@ final class ServiceChildFanOutLiteralTest extends TestCase
             WorkflowRun::query()->whereKey($links)->where('status', RunStatus::Terminated)->count()
         );
 
-        return compact('start', 'close');
+        return compact('start', 'close', 'startStatements', 'closeStatements', 'startSqlSeconds', 'closeSqlSeconds');
     }
 
     private static function lease(WorkflowRun $run): WorkflowTask
