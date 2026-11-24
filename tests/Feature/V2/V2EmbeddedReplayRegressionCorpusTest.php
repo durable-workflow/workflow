@@ -3607,6 +3607,60 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             ->output());
     }
 
+    public function testChildStartCorpusAppendsOrderedHistoryWithoutSeparatePositionReads(): void
+    {
+        $path = self::FIXTURE_DIR . '/child-start-bounded-history-position-reads.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The child start history position evidence is absent from the baseline.');
+        }
+        $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $workflow = $fixture['workflow'];
+        $scenario = $fixture['child_start'];
+        config([
+            'queue.default' => 'database',
+        ]);
+        Queue::fake();
+
+        $parent = WorkflowStub::make($workflow['type'], $fixture['id']);
+        $parent->start(...$workflow['arguments']);
+        $measuring = true;
+        $separateReads = [];
+        DB::listen(static function (QueryExecuted $query) use (&$measuring, &$separateReads): void {
+            $sql = strtolower(str_replace(['"', '`'], '', $query->sql));
+            if ($measuring && str_starts_with($sql, 'select max(sequence) as aggregate from workflow_history_events')) {
+                $runId = (string) $query->bindings[0];
+                $separateReads[$runId] = ($separateReads[$runId] ?? 0) + 1;
+            }
+        });
+        try {
+            $this->runReadyTaskOfType($parent->runId(), TaskType::Workflow);
+        } finally {
+            $measuring = false;
+        }
+
+        $children = WorkflowLink::query()->where('parent_workflow_run_id', $parent->runId())
+            ->where('link_type', 'child_workflow')
+            ->orderBy('sequence')
+            ->pluck('child_workflow_run_id');
+        $this->assertCount($scenario['parent_result']['members'], $children);
+        foreach ($children as $child) {
+            $events = WorkflowHistoryEvent::query()->where('workflow_run_id', $child)->orderBy('sequence')->get();
+            $this->assertSame([1, 2], $events->pluck('sequence')->all());
+            $this->assertSame($scenario['initial_events'], $events->map(
+                static fn (WorkflowHistoryEvent $event): string => $event->event_type->value
+            )->all());
+            $this->assertLessThanOrEqual(
+                $scenario['max_separate_history_position_reads_per_child'],
+                $separateReads[$child] ?? 0,
+                'A child start read the history maximum separately from the locked run.'
+            );
+            $this->runReadyTaskOfType($child, TaskType::Workflow);
+        }
+
+        $this->runReadyTaskOfType($parent->runId(), TaskType::Workflow);
+        $this->assertSame($scenario['parent_result'], $parent->refresh()->output());
+    }
+
     public function testChildClosureCorpusReadsEachSiblingRunABoundedNumberOfTimes(): void
     {
         $fixturePath = self::FIXTURE_DIR . '/child-closure-sibling-run-rows-bound.json';
