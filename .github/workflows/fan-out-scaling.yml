@@ -41,7 +41,9 @@ jobs:
 
     services:
       mysql:
-        image: mysql
+        # Pinned so timings compare across runs: MySQL 26.10.0, used by every
+        # hosted run from November 22 to 24.
+        image: mysql@sha256:9092489f49fb59c4ba6c1425c6a59f71f864f24bf4339a5a26b718adc7a8b343
         env:
           MYSQL_ROOT_PASSWORD: password
         options: >-
@@ -50,7 +52,7 @@ jobs:
         - 3306
 
       redis:
-        image: redis
+        image: redis@sha256:ace7d4c03a63942082252ac7fbcd507d3e76347a79ea1dbc754894beedc5fc21
         ports:
         - 6379
 
