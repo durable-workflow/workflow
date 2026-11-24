@@ -1105,6 +1105,7 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
         $startedPayload = $startedEvent instanceof WorkflowHistoryEvent && is_array($startedEvent->payload)
             ? $startedEvent->payload
             : [];
+        $timeoutCleanup = TimeoutCleanup::observe($run, $startedPayload);
         $redriveBlockedReason = FailedRunRedriveEligibility::blockedReason($run, $currentRun);
 
         return [
@@ -1145,6 +1146,9 @@ final class DefaultWorkflowControlPlane implements RuntimeSignalControlPlane, Wo
                     : null,
                 'execution_deadline_at' => $run->execution_deadline_at?->toIso8601String(),
                 'run_deadline_at' => $run->run_deadline_at?->toIso8601String(),
+                ...($timeoutCleanup === null ? [] : [
+                    'timeout_cleanup' => $timeoutCleanup,
+                ]),
                 'started_at' => $run->started_at?->toIso8601String(),
                 'closed_at' => $run->closed_at?->toIso8601String(),
                 'last_progress_at' => $run->last_progress_at?->toIso8601String(),

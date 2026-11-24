@@ -137,6 +137,8 @@ final class RunDetailView
         $timelineSnapshot = $selectedRun['timeline'];
         $timerSnapshot = $selectedRun['timers'];
         $lineageSnapshot = $selectedRun['lineage'];
+        $started = $run->historyEvents->firstWhere('event_type', HistoryEventType::WorkflowStarted);
+        $timeoutCleanup = TimeoutCleanup::observe($run, $started?->payload);
 
         return [
             'id' => $run->id,
@@ -172,7 +174,7 @@ final class RunDetailView
             'workflow_determinism_findings' => $determinismDiagnostics['findings'],
             'compatibility' => $summary?->compatibility ?? $run->compatibility,
             'continue_as_new_build_transitions' => ContinueAsNewBuildTransition::observe(
-                $run->historyEvents->firstWhere('event_type', HistoryEventType::WorkflowStarted),
+                $started,
                 ContinueAsNewBuildTransition::recorded($run),
             ),
             ...(EmbeddedWorkflowHeartbeat::enabled() ? [
@@ -195,6 +197,9 @@ final class RunDetailView
                 : null,
             'execution_deadline_at' => $run->execution_deadline_at?->toIso8601String(),
             'run_deadline_at' => $run->run_deadline_at?->toIso8601String(),
+            ...($timeoutCleanup === null ? [] : [
+                'timeout_cleanup' => $timeoutCleanup,
+            ]),
             'output_payload_codec' => $run->output !== null ? $run->outputPayloadCodec() : null,
             'output' => self::workflowOutput($run),
             'status' => $run->status->value,
