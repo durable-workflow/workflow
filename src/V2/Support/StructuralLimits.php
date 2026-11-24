@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Workflow\V2\Support;
 
 use Illuminate\Support\Facades\Log;
+use Throwable;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\SignalStatus;
@@ -694,20 +695,31 @@ final class StructuralLimits
             return;
         }
 
-        Log::warning(sprintf(
+        $message = sprintf(
             '[Durable Workflow] Approaching structural limit [%s]: %d / %d (%d%% utilization, warning at %d%%).',
             $warning['limit_kind'],
             $warning['current'],
             $warning['limit'],
             $warning['utilization_percent'],
             $warning['threshold_percent'],
-        ), array_merge([
-            'limit_kind' => $warning['limit_kind'],
-            'current' => $warning['current'],
-            'limit' => $warning['limit'],
-            'utilization_percent' => $warning['utilization_percent'],
-            'threshold_percent' => $warning['threshold_percent'],
-        ], $context));
+        );
+
+        try {
+            Log::warning($message, array_merge([
+                'limit_kind' => $warning['limit_kind'],
+                'current' => $warning['current'],
+                'limit' => $warning['limit'],
+                'utilization_percent' => $warning['utilization_percent'],
+                'threshold_percent' => $warning['threshold_percent'],
+            ], $context));
+        } catch (Throwable) {
+            // Diagnostics cannot turn an admissible operation into a failed workflow.
+            try {
+                error_log($message);
+            } catch (Throwable) {
+                // The PHP error log can be unavailable too.
+            }
+        }
     }
 
     /**
