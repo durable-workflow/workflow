@@ -10,6 +10,7 @@ use Tests\Fixtures\V2\TestParentWithClosePolicyContinuingChildWorkflow;
 use Tests\Fixtures\V2\TestParentWithClosePolicyWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\ChildCallStatus;
+use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
@@ -38,6 +39,43 @@ final class V2ParentClosePolicyTest extends TestCase
         config()
             ->set('queue.connections.redis.driver', 'redis');
         Queue::fake();
+    }
+
+    public function testTerminationAppendsAfterLegacyHistoryAndBackfillsCommandSequence(): void
+    {
+        $workflow = WorkflowStub::make(TestParentWithClosePolicyWorkflow::class, 'policy-legacy-sequences');
+        $workflow->start('terminate');
+        $run = WorkflowRun::query()->findOrFail($workflow->runId());
+        $legacySequence = (int) $run->last_history_sequence + 1;
+        $start = $run->commands()
+            ->where('command_type', CommandType::Start->value)
+            ->sole();
+        $start->forceFill([
+            'command_sequence' => null,
+        ])->save();
+        WorkflowHistoryEvent::query()->create([
+            'workflow_run_id' => $run->id,
+            'sequence' => $legacySequence,
+            'event_type' => HistoryEventType::SideEffectRecorded->value,
+            'payload' => [
+                'sequence' => 1,
+            ],
+            'recorded_at' => now(),
+        ]);
+
+        $workflow->terminate('terminate after an older history writer');
+
+        $events = $run->historyEvents()
+            ->where('sequence', '>', $legacySequence)
+            ->pluck('sequence', 'event_type');
+        $this->assertSame($legacySequence + 1, (int) $events[HistoryEventType::TerminateRequested->value]);
+        $this->assertSame($legacySequence + 2, (int) $events[HistoryEventType::WorkflowTerminated->value]);
+        $this->assertSame($legacySequence + 2, (int) $run->refresh()->last_history_sequence);
+        $this->assertSame(1, $start->refresh()->command_sequence);
+        $terminate = $run->commands()
+            ->where('command_type', CommandType::Terminate->value)
+            ->sole();
+        $this->assertSame(2, $terminate->command_sequence);
     }
 
     public function testChildLinkRecordsParentClosePolicyInHistoryAndRow(): void

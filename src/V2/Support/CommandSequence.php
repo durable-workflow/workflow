@@ -32,15 +32,16 @@ final class CommandSequence
         $commandQuery = self::commandsTable()
             ->where('workflow_run_id', $run->id);
 
-        $maxSequence = (int) ($commandQuery->max('command_sequence') ?? 0);
-        $hasLegacySequenceGaps = (clone $commandQuery)
-            ->whereNull('command_sequence')
-            ->exists();
-
-        if ($hasLegacySequenceGaps) {
+        // Both lookups can use the sequence index independently.
+        $summary = $commandQuery->newQuery()
+            ->selectSub((clone $commandQuery)->selectRaw('MAX(command_sequence)'), 'max_sequence')
+            ->selectSub((clone $commandQuery)->whereNull('command_sequence')->selectRaw('1')->limit(1), 'has_gap')
+            ->first();
+        if ($summary?->has_gap !== null) {
             return self::backfill($run);
         }
 
+        $maxSequence = (int) ($summary?->max_sequence ?? 0);
         if ($maxSequence > (int) $run->last_command_sequence) {
             $run->forceFill([
                 'last_command_sequence' => $maxSequence,
