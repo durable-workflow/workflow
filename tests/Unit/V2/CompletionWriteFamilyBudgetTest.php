@@ -162,6 +162,41 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
     }
 
     /**
+     * @return iterable<string, array{string, int}>
+     */
+    public static function pendingFailureUpdateBudgets(): iterable
+    {
+        // The failure event and three update outcomes, each followed by a cursor advance.
+        yield 'events' => [HistoryTransactionMeter::EVENTS, 7];
+        yield 'history rows' => [HistoryTransactionMeter::ROWS, 14];
+    }
+
+    #[DataProvider('pendingFailureUpdateBudgets')]
+    public function testFailureBudgetIncludesPendingUpdatesBeforeAnyWrite(string $dimension, int $exact): void
+    {
+        Queue::fake();
+        config([
+            'workflows.v2.structural_limits.history_transaction_size' => 0,
+            'workflows.v2.structural_limits.history_transaction_rows' => 0,
+            "workflows.v2.structural_limits.{$dimension}" => $exact,
+        ]);
+
+        $admitted = $this->completeFamily('workflow failure with accepted updates', null);
+        $this->assertTrue($admitted['result']['completed'], json_encode($admitted['result'], JSON_THROW_ON_ERROR));
+        $this->assertSame($exact, HistoryTransactionMeter::lastUsed()[$dimension]);
+
+        config([
+            "workflows.v2.structural_limits.{$dimension}" => $exact - 1,
+        ]);
+        $refused = $this->completeFamily('workflow failure with accepted updates', null);
+        $this->assertFalse($refused['result']['completed']);
+        $this->assertSame('history_transaction_limit_exceeded', $refused['result']['reason']);
+        $this->assertSame($dimension, $refused['result']['limit']);
+        $this->assertSame([], $refused['writes']);
+        $this->assertSame($refused['before'], $this->databaseSnapshot());
+    }
+
+    /**
      * An over-limit completion is refused before any statement writes: the
      * estimate is computed from the command list after the locks are taken.
      */

@@ -103,6 +103,7 @@ use Workflow\V2\Support\DefaultWorkflowTaskBridge;
 use Workflow\V2\Support\EmbeddedV2HistoryImport;
 use Workflow\V2\Support\HistoryExport;
 use Workflow\V2\Support\MemoPayload;
+use Workflow\V2\Support\MessageStreamCursor;
 use Workflow\V2\Support\ParallelChildGroup;
 use Workflow\V2\Support\QueryStateReplayer;
 use Workflow\V2\Support\ReplayDiff;
@@ -1378,6 +1379,72 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertSame($scenario['result'], $stub->refresh()->inspectUpdate($updateId)->result());
         $this->assertTrue($stub->refresh()->completed());
         $this->assertSame($scenario['output'], $stub->output());
+    }
+
+    public function testWorkflowFailureBudgetCorpusKeepsTheLeaseAndAcceptedUpdates(): void
+    {
+        $path = self::FIXTURE_DIR . '/workflow-failure-pending-update-history-budget.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The workflow failure budget evidence is absent.');
+        }
+        $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['failure_budget'];
+        self::stopWorkers();
+        config([
+            'queue.default' => 'database',
+        ]);
+        Queue::fake();
+
+        $stub = WorkflowStub::make($fixture['workflow']['type'], $fixture['id']);
+        $stub->start(...$fixture['workflow']['arguments']);
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $task = $run->tasks()
+            ->where('task_type', TaskType::Workflow)->sole();
+        $bridge = $this->app->make(WorkflowTaskBridge::class);
+        $this->assertNotNull($bridge->claim($task->id, 'workflow-failure-corpus-worker'));
+        $leasedTask = $task->fresh()
+            ->getRawOriginal();
+
+        $updateIds = [];
+        foreach ($scenario['update_arguments'] as $arguments) {
+            $updateIds[] = $stub->submitUpdate($scenario['update'], ...$arguments)->updateId();
+        }
+        // Simulate a retained cursor that has already passed the first update.
+        $first = WorkflowUpdate::query()->findOrFail($updateIds[0]);
+        $command = WorkflowCommand::query()->findOrFail($first->workflow_command_id);
+        MessageStreamCursor::advanceCursor($run->fresh(), (int) $command->message_sequence);
+
+        config([
+            'workflows.v2.structural_limits.history_transaction_size' => $scenario['refusal_limit'],
+        ]);
+        $measuring = true;
+        $writes = 0;
+        DB::listen(static function (QueryExecuted $query) use (&$measuring, &$writes): void {
+            if ($measuring && preg_match('/^\s*(?:insert|update|delete)\b/i', $query->sql) === 1) {
+                ++$writes;
+            }
+        });
+        try {
+            $refusal = $bridge->complete($task->id, [$scenario['command']]);
+        } finally {
+            $measuring = false;
+        }
+        $this->assertFalse($refusal['completed']);
+        $this->assertSame($scenario['refusal'], $refusal['reason']);
+        $this->assertSame('history_transaction_size', $refusal['limit']);
+        $this->assertSame($scenario['refusal_writes'], $writes);
+        $this->assertSame($leasedTask, $task->fresh()->getRawOriginal());
+
+        config([
+            'workflows.v2.structural_limits.history_transaction_size' => $scenario['admission_limit'],
+        ]);
+        $this->assertTrue($bridge->complete($task->id, [$scenario['command']])['completed']);
+        $this->assertSame(RunStatus::Failed, $run->fresh()->status);
+        $this->assertSame(TaskStatus::Failed, $task->fresh()->status);
+        $this->assertSame(
+            count($updateIds),
+            WorkflowUpdate::query()->whereKey($updateIds)->where('status', 'failed')->count()
+        );
     }
 
     public function testActivityAttemptBudgetCorpusRefusesNewBudgetsBelowOne(): void
@@ -3074,6 +3141,11 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
             if ($fixture['id'] === 'selection-child-await-history') {
                 // The live park and resume records are covered by the dedicated test.
+                continue;
+            }
+
+            if ($fixture['id'] === 'workflow-failure-pending-update-history-budget') {
+                // The live refusal and retry are covered by the dedicated corpus test.
                 continue;
             }
 
