@@ -222,13 +222,15 @@ class CacheLongPollWakeStore implements LongPollWakeStore
             return null;
         }
 
-        $workflowId = WorkflowRun::query()
+        $instanceId = WorkflowRun::query()
+            ->select('workflow_instance_id')
             ->whereKey($task->workflow_run_id)
-            ->value('workflow_instance_id');
+            ->where('workflow_instance_id', '!=', '');
+        $namespace = WorkflowInstance::query()
+            ->where('id', '=', $instanceId)
+            ->value('namespace');
 
-        return is_string($workflowId) && $workflowId !== ''
-            ? $this->namespaceForWorkflow($workflowId)
-            : null;
+        return is_string($namespace) && $namespace !== '' ? $namespace : null;
     }
 
     private function namespaceForWorkflow(string $workflowId): ?string

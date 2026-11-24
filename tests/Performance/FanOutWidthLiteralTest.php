@@ -59,20 +59,29 @@ final class FanOutWidthLiteralTest extends TestCase
 
         Queue::fake();
         $probe = new FanOutWidthProbe($this->app);
-        $probe->run($kind, 3, self::PAYLOAD_BYTES, "literal-warmup-{$kind}", refreshMemberProjections: false);
+        // The live child projector advances the parent after each member.
+        // Deferring those projections makes each later child read stale state.
+        $refreshMemberProjections = $kind === 'child';
+        $probe->run(
+            $kind,
+            3,
+            self::PAYLOAD_BYTES,
+            "literal-warmup-{$kind}",
+            refreshMemberProjections: $refreshMemberProjections
+        );
         $reference = $probe->run(
             $kind,
             self::REFERENCE_WIDTH,
             self::PAYLOAD_BYTES,
             "literal-reference-{$kind}",
-            refreshMemberProjections: false
+            refreshMemberProjections: $refreshMemberProjections
         );
         $literal = $probe->run(
             $kind,
             self::LITERAL_WIDTH,
             self::PAYLOAD_BYTES,
             "literal-{$kind}",
-            refreshMemberProjections: false
+            refreshMemberProjections: $refreshMemberProjections
         );
         $report = json_encode([
             'kind' => $kind,

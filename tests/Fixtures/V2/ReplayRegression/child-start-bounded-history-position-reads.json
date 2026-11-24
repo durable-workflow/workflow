@@ -1,0 +1,35 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "child-start-bounded-history-position-reads",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestFanOutPayloadChildWorkflow",
+    "arguments": [3, 57],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-24T00:00:00.000000Z"
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {"type": "start_child_workflow", "parallel_group_index": 0},
+      {"type": "start_child_workflow", "parallel_group_index": 1},
+      {"type": "start_child_workflow", "parallel_group_index": 2}
+    ]
+  },
+  "child_start": {
+    "max_separate_history_position_reads_per_child": 0,
+    "initial_events": ["StartAccepted", "WorkflowStarted"],
+    "parent_result": {"members": 3, "total_bytes": 171}
+  }
+}
