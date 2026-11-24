@@ -23,11 +23,15 @@ use Workflow\V2\Models\WorkflowTask;
 
 final class ServiceChildFanOutLiteralTest extends TestCase
 {
-    /** About 58 at start and 63 at close on MySQL 26.10 and SQLite in November 2026. */
+    /**
+     * About 58 at start and 63 at close on MySQL 26.10 and SQLite in November 2026.
+     */
     private const STATEMENTS_PER_CHILD = 72;
 
     private int $statements = 0;
+
     private float $sqlMilliseconds = 0.0;
+
     private bool $measuring = false;
 
     public function testLiteralServiceCompletionStartsAndClosesOneThousandChildren(): void
