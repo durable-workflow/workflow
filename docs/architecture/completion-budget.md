@@ -67,6 +67,17 @@ before a single write statement runs, while it holds only the task and run
 locks it took to read them, and the worker keeps its lease. The meter below
 stays the exact backstop.
 
+For a standalone `fail_workflow` using the standard models, the bridge also
+checks history for accepted updates before the close writes when the task
+has no signal resume or cooperative cancellation. It reserves one
+`WorkflowFailed` event and counts one `UpdateCompleted` per accepted update.
+In acceptance order it adds one `MessageCursorAdvanced` for each command
+that advances the run's current cursor. The read selects at most the remaining
+event budget plus one accepted update. Each event also counts as two rows
+against `history_transaction_rows`. A refusal returns
+`history_transaction_limit_exceeded` and preserves the task lease. The meter
+also charges all of these writes when the completion proceeds.
+
 ## The history transaction meter
 
 `HistoryTransactionMeter` is the authority. `complete()` and the checkpointed
@@ -242,9 +253,12 @@ to learn its exact total. They then show that a limit equal to it admits the
 completion, and a limit one lower refuses it. For a command family, the
 refusal is the early `completion_budget_exceeded`, with no write statement
 run. For the state-driven family (a terminal command failing accepted
-updates), it is the meter's `history_transaction_limit_exceeded`. Either way,
-executions, attempts, history, projections and receipts stay unchanged, and
-the task keeps its lease.
+updates), the total `completion_rows` limit still uses the meter's
+`history_transaction_limit_exceeded`. Separate cases verify that when those
+updates exceed the event or legacy history-row limit during a standalone
+failure, the bridge returns the same reason before any write. Refused
+completions preserve executions, attempts, history, projections, receipts,
+and the task lease.
 
 ## A run's deadline close
 

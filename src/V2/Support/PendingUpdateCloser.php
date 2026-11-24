@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Support;
 
+use Illuminate\Database\Eloquent\Builder;
 use RuntimeException;
 use Workflow\V2\Enums\CommandOutcome;
 use Workflow\V2\Enums\CommandType;
 use Workflow\V2\Enums\FailureCategory;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\UpdateStatus;
+use Workflow\V2\Exceptions\HistoryTransactionLimitExceededException;
 use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
@@ -44,11 +46,8 @@ final class PendingUpdateCloser
             /** @var WorkflowCommand|null $command */
             $command = $update->workflow_command_id === null
                 ? null
-                : ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+                : self::updateCommands($run)
                     ->lockForUpdate()
-                    ->where('workflow_instance_id', $run->workflow_instance_id)
-                    ->where('workflow_run_id', $run->id)
-                    ->where('command_type', CommandType::Update->value)
                     ->find($update->workflow_command_id);
             $message = sprintf(
                 'Workflow run closed as %s before accepted update %s could be applied.',
@@ -126,6 +125,84 @@ final class PendingUpdateCloser
     public static function hasAccepted(WorkflowRun $run): bool
     {
         return self::acceptedQuery($run)->exists();
+    }
+
+    /**
+     * Check the history needed by an ordinary failure and its accepted updates
+     * while the caller holds the run lock and before it starts the close.
+     *
+     * @internal
+     */
+    public static function guardFailureHistoryBudget(WorkflowRun $run): void
+    {
+        $eventLimit = StructuralLimits::historyTransactionSizeLimit();
+        $rowLimit = StructuralLimits::historyTransactionRowsLimit();
+        if (($eventLimit === 0 && $rowLimit === 0)
+            || $run::class !== WorkflowRun::class
+            || ConfiguredV2Models::resolve('update_model', WorkflowUpdate::class) !== WorkflowUpdate::class
+            || ConfiguredV2Models::resolve('command_model', WorkflowCommand::class) !== WorkflowCommand::class
+            || WorkflowUpdate::getEventDispatcher()?->hasListeners('eloquent.retrieved: ' . WorkflowUpdate::class)
+            || WorkflowCommand::getEventDispatcher()?->hasListeners('eloquent.retrieved: ' . WorkflowCommand::class)) {
+            return;
+        }
+
+        // Reserve the WorkflowFailed event. Each event charges two legacy history rows.
+        $eventRoom = $eventLimit > 0 ? $eventLimit - 1 : PHP_INT_MAX;
+        $rowRoom = $rowLimit > 0 ? intdiv($rowLimit - 2, 2) : PHP_INT_MAX;
+        $room = min($eventRoom, $rowRoom);
+
+        $commandIds = self::acceptedQuery($run)
+            ->toBase()
+            ->lockForUpdate()
+            ->limit($room + 1)
+            ->pluck('workflow_command_id');
+        $events = $commandIds->count();
+        if ($events <= intdiv($room, 2)) {
+            // An outcome and at most one cursor event fit for every update.
+            return;
+        }
+        if ($events <= $room) {
+            $cursor = MessageStreamCursor::positionForRun($run);
+            foreach ($commandIds->chunk(500) as $batch) {
+                $sequences = self::updateCommands($run)
+                    ->toBase()
+                    ->lockForUpdate()
+                    ->whereIn('id', $batch->filter()->unique()->values()->all())
+                    ->pluck('message_sequence', 'id');
+
+                foreach ($batch as $commandId) {
+                    $sequence = $commandId === null ? null : $sequences->get($commandId);
+                    if ($sequence !== null && (int) $sequence > $cursor) {
+                        $cursor = (int) $sequence;
+                        if (++$events > $room) {
+                            break 2;
+                        }
+                    }
+                }
+            }
+        }
+
+        if ($events > $room) {
+            $dimension = $eventRoom <= $rowRoom ? HistoryTransactionMeter::EVENTS : HistoryTransactionMeter::ROWS;
+            $limit = $dimension === HistoryTransactionMeter::EVENTS ? $eventLimit : $rowLimit;
+
+            throw HistoryTransactionLimitExceededException::over(
+                $dimension,
+                $limit < PHP_INT_MAX ? $limit + 1 : $limit,
+                $limit,
+            );
+        }
+    }
+
+    /**
+     * @return Builder<WorkflowCommand>
+     */
+    private static function updateCommands(WorkflowRun $run): Builder
+    {
+        return ConfiguredV2Models::query('command_model', WorkflowCommand::class)
+            ->where('workflow_instance_id', $run->workflow_instance_id)
+            ->where('workflow_run_id', $run->id)
+            ->where('command_type', CommandType::Update->value);
     }
 
     private static function acceptedQuery(WorkflowRun $run)

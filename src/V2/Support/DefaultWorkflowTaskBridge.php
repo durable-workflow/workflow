@@ -1504,6 +1504,13 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
                     ];
                 }
 
+                if (($parsed['terminal']['type'] ?? null) === 'fail_workflow'
+                    && $parsed['non_terminal'] === []
+                    && ! is_string($run->cancellation_request_command_id)
+                    && self::workflowSignalIdForTask($task) === null) {
+                    PendingUpdateCloser::guardFailureHistoryBudget($run);
+                }
+
                 $this->recordAppliedSignalForSignalResume($run, $task);
                 $conditionSelectionResolution = $this->recordSatisfiedConditionWaitForSignalResume(
                     $run,
