@@ -3618,16 +3618,16 @@ final class WorkflowExecutor
             'cancellation_policy' => $cancellationPolicy->value,
         ], $parallelMetadata ?? []), $task);
 
-        WorkflowHistoryEvent::record($childRun, HistoryEventType::StartAccepted, [
+        WorkflowHistoryEvent::recordWhileRunLocked($childRun, HistoryEventType::StartAccepted, [
             'workflow_command_id' => $startCommand->id,
             'workflow_instance_id' => $childRun->workflow_instance_id,
             'workflow_run_id' => $childRun->id,
             'workflow_class' => $childRun->workflow_class,
             'workflow_type' => $childRun->workflow_type,
             'outcome' => $startCommand->outcome?->value,
-        ], null, $startCommand);
+        ], $startCommand);
 
-        WorkflowHistoryEvent::record($childRun, HistoryEventType::WorkflowStarted, [
+        WorkflowHistoryEvent::recordWhileRunLocked($childRun, HistoryEventType::WorkflowStarted, [
             'workflow_class' => $childRun->workflow_class,
             'workflow_type' => $childRun->workflow_type,
             'workflow_instance_id' => $childRun->workflow_instance_id,
@@ -3648,7 +3648,7 @@ final class WorkflowExecutor
             'declared_entry_method' => $commandContract['entry_method'],
             'declared_entry_mode' => $commandContract['entry_mode'],
             'declared_entry_declaring_class' => $commandContract['entry_declaring_class'],
-        ], null, $startCommand);
+        ], $startCommand);
 
         /** @var WorkflowTask $childTask */
         $childTask = WorkflowTask::query()->create([

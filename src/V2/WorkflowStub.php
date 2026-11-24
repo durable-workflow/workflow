@@ -4405,11 +4405,10 @@ final class WorkflowStub
                 $requestedHistoryPayload['reason'] = $reason;
             }
 
-            $requestedHistoryEvent = WorkflowHistoryEvent::record(
+            $requestedHistoryEvent = WorkflowHistoryEvent::recordWhileRunLocked(
                 $run,
                 $requestedEventType,
                 $requestedHistoryPayload,
-                null,
                 $command
             );
 
@@ -4534,7 +4533,7 @@ final class WorkflowStub
                 $terminalHistoryPayload[TimeoutCleanup::STARTED_KEY] = TimeoutCleanup::outcome($run, 'preempted');
             }
 
-            WorkflowHistoryEvent::record($run, $terminalEventType, $terminalHistoryPayload, null, $command);
+            WorkflowHistoryEvent::recordWhileRunLocked($run, $terminalEventType, $terminalHistoryPayload, $command);
 
             PendingUpdateCloser::closeForTerminalRun($run);
 

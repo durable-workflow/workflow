@@ -26,6 +26,7 @@ use Workflow\V2\Support\OpenActivityHistoryIndex;
 use Workflow\V2\Support\PendingSignalCloser;
 use Workflow\V2\Support\ServiceCallWorkflowDelivery;
 use Workflow\V2\Support\TerminalCancellationHistory;
+use Workflow\V2\Support\WorkflowSignalReadScope;
 
 class WorkflowHistoryEvent extends Model
 {
@@ -175,7 +176,27 @@ class WorkflowHistoryEvent extends Model
         WorkflowTask|string|null $task = null,
         WorkflowCommand|string|null $command = null,
     ): self {
-        return self::recordEvent($run, $eventType, $payload, $task, $command, null);
+        $runLockHeld = in_array(
+            $eventType,
+            [HistoryEventType::ChildWorkflowScheduled, HistoryEventType::ChildRunStarted],
+            true
+        )
+            && WorkflowSignalReadScope::allowsConsistentRead($run, $run->getConnection());
+
+        return self::recordEvent($run, $eventType, $payload, $task, $command, null, $runLockHeld);
+    }
+
+    /**
+     * @internal The caller holds the run's write lock on the history connection.
+     * @param array<string, mixed> $payload
+     */
+    public static function recordWhileRunLocked(
+        WorkflowRun $run,
+        HistoryEventType $eventType,
+        array $payload,
+        ?WorkflowCommand $command = null,
+    ): self {
+        return self::recordEvent($run, $eventType, $payload, null, $command, null, runLockHeld: true);
     }
 
     /**
@@ -272,6 +293,7 @@ class WorkflowHistoryEvent extends Model
         WorkflowTask|string|null $task,
         WorkflowCommand|string|null $command,
         ?TerminalCancellationHistory $terminalHistory,
+        bool $runLockHeld = false,
     ): self {
         if ($eventType === HistoryEventType::MemoUpserted) {
             foreach (['entries', 'merged'] as $field) {
@@ -307,13 +329,10 @@ class WorkflowHistoryEvent extends Model
                 $taskId,
                 $commandId,
                 $terminalHistory,
+                $runLockHeld,
             ): self {
-                /** @var WorkflowRun $lockedRun */
-                $lockedRun = ConfiguredV2Models::query('run_model', WorkflowRun::class)
-                    ->lockForUpdate()
-                    ->findOrFail($run->id);
+                [$lockedRun, $sequence] = self::readAppendPosition($run, $runLockHeld);
                 $now = now();
-                $sequence = self::nextSequenceForRun($lockedRun);
                 $storedPayload = self::snapshotPayload($payload, $taskModel, $commandModel, $terminalHistory);
                 // A metered completion (#930) charges the event as stored,
                 // and the run row whose history position it advances.
@@ -406,13 +425,44 @@ class WorkflowHistoryEvent extends Model
             ? false : $activityId;
     }
 
-    private static function nextSequenceForRun(WorkflowRun $run): int
+    /**
+     * @return array{WorkflowRun, int}
+     */
+    private static function readAppendPosition(WorkflowRun $run, bool $runLockHeld): array
     {
-        $storedMax = (int) (ConfiguredV2Models::query('history_event_model', self::class)
-            ->where('workflow_run_id', $run->id)
-            ->max('sequence') ?? 0);
+        $runs = ConfiguredV2Models::query('run_model', WorkflowRun::class)->lockForUpdate();
+        $history = ConfiguredV2Models::query('history_event_model', self::class)
+            ->where('workflow_run_id', $run->id);
+        $runModel = $runs->getModel();
+        $historyModel = $history->getModel();
+        $connection = $historyModel->getConnection();
 
-        return max((int) ($run->last_history_sequence ?? 0), $storedMax) + 1;
+        if ($runLockHeld && $runModel::class === WorkflowRun::class && $historyModel::class === self::class
+            && $runModel->getConnection() === $connection && $run->getConnection() === $connection
+            && $connection->transactionLevel() > 1
+            && $runModel->getGlobalScopes() === [] && $historyModel->getGlobalScopes() === []) {
+            // The lock was acquired before this statement, so the history
+            // maximum cannot be evaluated ahead of waiting for another writer.
+            $row = (clone $runs)->whereKey($run->id)
+                ->select($runModel->qualifyColumn('*'))
+                ->selectSub((clone $history)->selectRaw('MAX(sequence)'), 'stored_history_head')
+                ->toBase()
+                ->first();
+            if ($row !== null) {
+                $attributes = (array) $row;
+                $storedMax = (int) $attributes['stored_history_head'];
+                unset($attributes['stored_history_head']);
+                $lockedRun = $runModel->newFromBuilder($attributes);
+
+                return [$lockedRun, max((int) $lockedRun->last_history_sequence, $storedMax) + 1];
+            }
+        }
+
+        /** @var WorkflowRun $lockedRun */
+        $lockedRun = $runs->findOrFail($run->id);
+        $storedMax = (int) $history->max('sequence');
+
+        return [$lockedRun, max((int) $lockedRun->last_history_sequence, $storedMax) + 1];
     }
 
     /**

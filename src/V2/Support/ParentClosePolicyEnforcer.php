@@ -152,7 +152,7 @@ final class ParentClosePolicyEnforcer
                     'cancellation' => $result->cancellationContext()?->toArray(),
                 ];
                 if (! $result->accepted()) {
-                    WorkflowHistoryEvent::record($run, HistoryEventType::ParentClosePolicyFailed, array_merge([
+                    $failure = [
                         'child_instance_id' => $childInstanceId,
                         'child_run_id' => $childRun->id,
                         'policy' => $policy->value,
@@ -162,7 +162,12 @@ final class ParentClosePolicyEnforcer
                             'existing_request_id', 'existing_root_request_id', 'existing_cleanup_deadline_at',
                             'incoming_root_request_id', 'incoming_cleanup_deadline_at',
                         ]),
-                    ], $cancellation));
+                    ];
+                    WorkflowHistoryEvent::recordWhileRunLocked(
+                        $run,
+                        HistoryEventType::ParentClosePolicyFailed,
+                        array_merge($failure, $cancellation)
+                    );
 
                     return false;
                 }
@@ -175,7 +180,7 @@ final class ParentClosePolicyEnforcer
 
             self::markChildCallForPolicy($run, $target, $policy);
 
-            WorkflowHistoryEvent::record($run, HistoryEventType::ParentClosePolicyApplied, array_merge([
+            WorkflowHistoryEvent::recordWhileRunLocked($run, HistoryEventType::ParentClosePolicyApplied, array_merge([
                 'child_instance_id' => $childInstanceId,
                 'child_run_id' => $childRun->id,
                 'policy' => $policy->value,
@@ -188,7 +193,7 @@ final class ParentClosePolicyEnforcer
             // is rejected (already terminal), continue with the remaining
             // children. Record the failure so operators can distinguish
             // "policy applied" from "policy failed silently".
-            WorkflowHistoryEvent::record($run, HistoryEventType::ParentClosePolicyFailed, [
+            WorkflowHistoryEvent::recordWhileRunLocked($run, HistoryEventType::ParentClosePolicyFailed, [
                 'child_instance_id' => $childInstanceId,
                 'child_run_id' => $childRun->id,
                 'policy' => $policy->value,

@@ -74,6 +74,9 @@ class MemoUpsertService
         int $childStartSequence,
     ): void {
         $parentMemos = WorkflowMemo::where('workflow_run_id', $parentRun->id)->get();
+        if ($parentMemos->isEmpty()) {
+            return;
+        }
 
         ConfiguredV2Models::connection()->transaction(static function () use (
             $parentMemos,
@@ -94,11 +97,8 @@ class MemoUpsertService
                 $childMemo->save();
             }
 
-            // Validate after inheritance
-            if ($parentMemos->isNotEmpty()) {
-                WorkflowMemo::validateTotalSize($childRun->id);
-                WorkflowMemo::validateCount($childRun->id);
-            }
+            WorkflowMemo::validateTotalSize($childRun->id);
+            WorkflowMemo::validateCount($childRun->id);
         });
     }
 
