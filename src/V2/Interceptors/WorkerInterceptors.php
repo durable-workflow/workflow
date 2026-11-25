@@ -108,9 +108,16 @@ final class WorkerInterceptors
                 throw $failure;
             }
             $state->completed = true;
-            $state->committed = self::fingerprint($run, $task, $state->result);
+            try {
+                $state->committed = self::fingerprint($run, $task, $state->result);
 
-            return self::outcome($run, $before, $state->result);
+                return self::outcome($run, $before, $state->result);
+            } catch (Throwable $failure) {
+                // Engine reads are not interceptor faults; keep the transaction-failure path.
+                $state->coreFailure = $failure;
+
+                throw $failure;
+            }
         };
 
         try {
