@@ -22,7 +22,7 @@ use Workflow\Providers\WorkflowServiceProvider;
 require_once __DIR__ . '/../../examples/provider-state-machines/bootstrap.php';
 
 /**
- * A fresh worker for the common payment-first checkout; see WorkerLossDriver for the crash and resume phases.
+ * A fresh worker for the common checkout (payment-first unless the input selects a recipe); see WorkerLossDriver for the crash and resume phases.
  */
 final class CheckoutProcessLossProcessTest extends TestCase
 {
@@ -74,7 +74,7 @@ final class CheckoutProcessLossProcessTest extends TestCase
         $provider = new Journal($db, 'shop-a');
         $key = $input['key'];
         $authority = new Authority(DB::connection(), 'provider-worker', [$key], [
-            $key => Catalogue::PAYMENT_FIRST,
+            $key => $input['recipe'] ?? Catalogue::PAYMENT_FIRST,
         ], unitAmounts: [
             $key => $input['unitAmounts'],
         ], stockPolicies: [
