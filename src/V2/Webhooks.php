@@ -22,6 +22,7 @@ use Workflow\V2\Enums\DuplicateStartPolicy;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Exceptions\InvalidCommandRequestIdException;
+use Workflow\V2\Exceptions\UpdateValidationFailedException;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\CommandResponse;
 use Workflow\V2\Support\ConfiguredV2Models;
@@ -331,9 +332,13 @@ final class Webhooks
             $stub = $submitAcceptedOnly
                 ? $stub
                 : $stub->withUpdateWaitTimeout(self::resolveUpdateWaitTimeout($request->all()));
-            $result = $submitAcceptedOnly
-                ? $stub->submitUpdateWithArguments($update, self::resolveUpdateArguments($request->all()))
-                : $stub->attemptUpdateWithArguments($update, self::resolveUpdateArguments($request->all()));
+            try {
+                $result = $submitAcceptedOnly
+                    ? $stub->submitUpdateWithArguments($update, self::resolveUpdateArguments($request->all()))
+                    : $stub->attemptUpdateWithArguments($update, self::resolveUpdateArguments($request->all()));
+            } catch (UpdateValidationFailedException $exception) {
+                return self::updateValidationFailedResponse($exception);
+            }
 
             return self::commandResponse($result, match (true) {
                 $result->outcome() === CommandOutcome::RejectedUnknownUpdate
@@ -360,9 +365,13 @@ final class Webhooks
             $stub = $submitAcceptedOnly
                 ? $stub
                 : $stub->withUpdateWaitTimeout(self::resolveUpdateWaitTimeout($request->all()));
-            $result = $submitAcceptedOnly
-                ? $stub->submitUpdateWithArguments($update, self::resolveUpdateArguments($request->all()))
-                : $stub->attemptUpdateWithArguments($update, self::resolveUpdateArguments($request->all()));
+            try {
+                $result = $submitAcceptedOnly
+                    ? $stub->submitUpdateWithArguments($update, self::resolveUpdateArguments($request->all()))
+                    : $stub->attemptUpdateWithArguments($update, self::resolveUpdateArguments($request->all()));
+            } catch (UpdateValidationFailedException $exception) {
+                return self::updateValidationFailedResponse($exception);
+            }
 
             return self::commandResponse($result, match (true) {
                 $result->outcome() === CommandOutcome::RejectedUnknownUpdate
@@ -929,6 +938,24 @@ final class Webhooks
      * refused with 422 before anything is read or written. Other invalid keys
      * keep their existing behavior.
      */
+    /**
+     * The update validator could not be evaluated; nothing was recorded, so the
+     * caller may retry (the Server answers the same case with
+     * `update_validation_failed`).
+     */
+    private static function updateValidationFailedResponse(UpdateValidationFailedException $exception)
+    {
+        return response()->json([
+            'workflow_id' => $exception->workflowInstanceId(),
+            'run_id' => $exception->workflowRunId(),
+            'update_name' => $exception->updateName(),
+            'outcome' => 'update_validation_failed',
+            'reason' => 'update_validation_failed',
+            'message' => $exception->getMessage(),
+            'retryable' => true,
+        ], 503);
+    }
+
     private static function reservedRequestIdResponse(InvalidCommandRequestIdException $exception)
     {
         if ($exception->reason() !== InvalidCommandRequestIdException::REASON_RESERVED) {

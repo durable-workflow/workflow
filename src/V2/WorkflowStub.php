@@ -7,12 +7,15 @@ namespace Workflow\V2;
 use BadMethodCallException;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Illuminate\Support\Testing\Fakes\QueueFake;
+use Illuminate\Validation\ValidationException;
 use LogicException;
+use PDOException;
 use Throwable;
 use Workflow\Serializers\AvroValueJsonProjection;
 use Workflow\Serializers\CodecRegistry;
@@ -39,7 +42,10 @@ use Workflow\V2\Enums\UpdateStatus;
 use Workflow\V2\Exceptions\InvalidCommandRequestIdException;
 use Workflow\V2\Exceptions\InvalidQueryArgumentsException;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
+use Workflow\V2\Exceptions\UpdateValidationFailedException;
 use Workflow\V2\Exceptions\WorkflowExecutionUnavailableException;
+use Workflow\V2\Interceptors\QueryTaskInterceptorContext;
+use Workflow\V2\Interceptors\WorkerInterceptors;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
@@ -103,7 +109,9 @@ use Workflow\V2\Support\UpsertMemosCall;
 use Workflow\V2\Support\UpsertSearchAttributesCall;
 use Workflow\V2\Support\WorkerCompatibility;
 use Workflow\V2\Support\WorkflowDefinition;
+use Workflow\V2\Support\WorkflowDefinitionFingerprint;
 use Workflow\V2\Support\WorkflowExecutionGate;
+use Workflow\V2\Support\WorkflowFiberContext;
 use Workflow\V2\Support\WorkflowInstanceId;
 use Workflow\V2\Support\WorkflowQueryContract;
 use Workflow\V2\Support\WorkflowStartGate;
@@ -115,6 +123,11 @@ final class WorkflowStub
     public const MESSAGE_STREAM_RUNTIME_SIGNAL = '__durable_workflow_message_stream';
 
     public const DEFAULT_VERSION = -1;
+
+    /**
+     * Rejection reason recorded when an update's validator refuses it.
+     */
+    public const UPDATE_VALIDATOR_REJECTED = 'update_validator_rejected';
 
     private const DISPATCHED_LIST = 'workflow.v2.dispatched';
 
@@ -866,10 +879,34 @@ final class WorkflowStub
             );
         }
 
-        return (new QueryStateReplayer())->query(
-            $this->run,
-            $resolvedTarget['method'],
-            $validatedArguments['arguments']
+        $run = $this->run;
+
+        return WorkerInterceptors::queryTask(
+            static fn (): QueryTaskInterceptorContext => QueryTaskInterceptorContext::forRun(
+                $run,
+                $resolvedTarget['name'],
+                $validatedArguments['arguments'],
+            ),
+            $validatedArguments['arguments'],
+            static function (array $arguments) use ($run, $resolvedTarget, $validatedArguments): mixed {
+                // Arguments an interceptor rewrote go through the same query contract.
+                if ($arguments !== $validatedArguments['arguments']) {
+                    $revalidated = WorkflowQueryContract::validatedArgumentsForRun(
+                        $run,
+                        $resolvedTarget['name'],
+                        $arguments
+                    );
+                    if ($revalidated['validation_errors'] !== []) {
+                        throw new InvalidQueryArgumentsException(
+                            $resolvedTarget['name'],
+                            $revalidated['validation_errors']
+                        );
+                    }
+                    $arguments = $revalidated['arguments'];
+                }
+
+                return (new QueryStateReplayer())->query($run, $resolvedTarget['method'], $arguments);
+            },
         );
     }
 
@@ -1181,11 +1218,14 @@ final class WorkflowStub
         $result = $this->attemptUpdate($method, ...$arguments);
 
         if ($result->rejected()) {
+            $rejectionMessage = $result->rejectionMessage();
+
             throw new LogicException(sprintf(
-                'Workflow instance [%s] cannot apply update [%s]: %s.',
+                'Workflow instance [%s] cannot apply update [%s]: %s%s.',
                 $this->instance->id,
                 $method,
                 $result->rejectionReason() ?? 'unknown',
+                $rejectionMessage === null ? '' : sprintf(' (%s)', rtrim($rejectionMessage, '.')),
             ));
         }
 
@@ -3061,6 +3101,44 @@ final class WorkflowStub
                 return;
             }
 
+            $validatorRejection = $this->updateValidatorRejection(
+                $run,
+                $updateName,
+                $updateCodec,
+                $serializedUpdateArguments,
+            );
+
+            if ($validatorRejection !== null) {
+                $updateCommandAttributes = array_merge(
+                    $this->updateCommandPayloadAttributes(
+                        $updateName,
+                        $arguments,
+                        $validatorRejection['validation_errors'],
+                        [
+                            'rejection_message' => $validatorRejection['message'],
+                            'rejection_exception_type' => $validatorRejection['exception_type'],
+                        ],
+                    ),
+                    [
+                        'intent_digest' => $updateCommandAttributes['intent_digest'] ?? null,
+                    ],
+                );
+
+                [$command, $update] = $this->rejectUpdateCommand(
+                    $instance,
+                    $run,
+                    $updateName,
+                    $arguments,
+                    self::UPDATE_VALIDATOR_REJECTED,
+                    $this->commandTargetScope(),
+                    $updateCommandAttributes,
+                    $validatorRejection['validation_errors'],
+                    $validatorRejection['message'],
+                );
+
+                return;
+            }
+
             /** @var WorkflowCommand $command */
             $command = WorkflowCommand::record($instance, $run, $this->commandAttributes(array_merge([
                 'command_type' => CommandType::Update->value,
@@ -4626,6 +4704,128 @@ final class WorkflowStub
     }
 
     /**
+     * Run the update's pre-acceptance validator against replayed state.
+     *
+     * Returns null when the update declares no validator or the validator
+     * approves. An application exception (or `false`) is a rejection. When the
+     * validator cannot be evaluated at all, nothing is recorded and a typed
+     * {@see UpdateValidationFailedException} is thrown instead.
+     *
+     * @return array{message: string, exception_type: string, validation_errors: array<string, list<string>>}|null
+     */
+    private function updateValidatorRejection(
+        WorkflowRun $run,
+        string $updateName,
+        string $codec,
+        string $serializedArguments,
+    ): ?array {
+        try {
+            $workflowClass = WorkflowDefinitionFingerprint::resolveClassForRun($run);
+        } catch (Throwable) {
+            // An unloadable definition is refused by the execution gate; no
+            // validator can be declared by a class that cannot be loaded.
+            return null;
+        }
+
+        $validatorMethod = WorkflowDefinition::updateValidator($workflowClass, $updateName);
+
+        if ($validatorMethod === null) {
+            return null;
+        }
+
+        try {
+            $workflow = (new QueryStateReplayer())->replay($run);
+            $workflow->setCommandDispatchEnabled(false);
+            $arguments = Serializer::unserializeWithCodec($codec, $serializedArguments);
+            $parameters = $workflow->resolveMethodDependencies(
+                is_array($arguments) ? array_values($arguments) : [],
+                new \ReflectionMethod($workflow, $validatorMethod),
+            );
+        } catch (Throwable $exception) {
+            throw new UpdateValidationFailedException(
+                $run->workflow_instance_id,
+                $run->id,
+                $updateName,
+                sprintf('workflow state could not be replayed before update validation: %s', $exception->getMessage()),
+                $exception,
+            );
+        }
+
+        try {
+            $result = WorkflowFiberContext::validatingUpdate(
+                $updateName,
+                static fn (): mixed => $workflow->{$validatorMethod}(...$parameters),
+            );
+        } catch (QueryException|PDOException $exception) {
+            // A storage failure is not the validator's decision; the admission
+            // transaction may already be aborted, so record nothing.
+            throw new UpdateValidationFailedException(
+                $run->workflow_instance_id,
+                $run->id,
+                $updateName,
+                sprintf('the update validator hit a storage error: %s', $exception->getMessage()),
+                $exception,
+            );
+        } catch (Throwable $exception) {
+            return [
+                'message' => $exception->getMessage() !== ''
+                    ? $exception->getMessage()
+                    : sprintf('Update validator for [%s] rejected the update.', $updateName),
+                'exception_type' => $exception::class,
+                'validation_errors' => self::validatorValidationErrors($exception),
+            ];
+        }
+
+        if ($result === false) {
+            return [
+                'message' => sprintf('Update validator for [%s] returned false.', $updateName),
+                'exception_type' => 'false',
+                'validation_errors' => [],
+            ];
+        }
+
+        if ($result instanceof \Generator) {
+            // A generator body never ran; validators must run synchronously.
+            return [
+                'message' => sprintf(
+                    'Update validator for [%s] is a generator; update validators must run synchronously.',
+                    $updateName,
+                ),
+                'exception_type' => \Generator::class,
+                'validation_errors' => [],
+            ];
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array<string, list<string>>
+     */
+    private static function validatorValidationErrors(Throwable $exception): array
+    {
+        if (! $exception instanceof ValidationException) {
+            return [];
+        }
+
+        $errors = $exception->errors();
+        $normalized = [];
+
+        foreach ($errors as $field => $messages) {
+            $messages = array_values(array_filter(
+                is_array($messages) ? $messages : [$messages],
+                static fn (mixed $message): bool => is_string($message) && $message !== '',
+            ));
+
+            if (is_string($field) && $messages !== []) {
+                $normalized[$field] = $messages;
+            }
+        }
+
+        return $normalized;
+    }
+
+    /**
      * @param array<int|string, mixed> $arguments
      * @param array<string, mixed> $commandAttributes
      * @param array<string, list<string>> $validationErrors
@@ -4640,6 +4840,7 @@ final class WorkflowStub
         string $targetScope = 'instance',
         array $commandAttributes = [],
         array $validationErrors = [],
+        ?string $rejectionMessage = null,
     ): array {
         /** @var WorkflowCommand $command */
         $command = WorkflowCommand::record($instance, $run, $this->commandAttributes(array_merge([
@@ -4671,6 +4872,7 @@ final class WorkflowStub
             ),
             'validation_errors' => $validationErrors,
             'rejection_reason' => $reason,
+            'failure_message' => $rejectionMessage,
             'rejected_at' => $command->rejected_at,
             'closed_at' => $command->rejected_at,
         ]);
@@ -4804,6 +5006,7 @@ final class WorkflowStub
     private function rejectionOutcome(string $reason): ?string
     {
         return match ($reason) {
+            self::UPDATE_VALIDATOR_REJECTED => CommandOutcome::RejectedInvalidArguments->value,
             'instance_not_started' => CommandOutcome::RejectedNotStarted->value,
             'run_not_active' => CommandOutcome::RejectedNotActive->value,
             'selected_run_not_current' => CommandOutcome::RejectedNotCurrent->value,

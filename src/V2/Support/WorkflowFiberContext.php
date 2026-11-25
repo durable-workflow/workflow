@@ -9,6 +9,7 @@ use Fiber;
 use FiberError;
 use LogicException;
 use WeakMap;
+use Workflow\V2\Exceptions\UpdateValidatorCommandException;
 use Workflow\V2\Exceptions\WorkflowFiberDiscardedException;
 
 final class WorkflowFiberContext
@@ -59,6 +60,11 @@ final class WorkflowFiberContext
      * @var WeakMap<Fiber, true>|null
      */
     private static ?WeakMap $continueAsNewTargets = null;
+
+    /**
+     * The update whose validator is running, while one is.
+     */
+    private static ?string $validatingUpdate = null;
 
     /**
      * @internal
@@ -258,6 +264,13 @@ final class WorkflowFiberContext
 
     public static function suspend(mixed $call): mixed
     {
+        if (self::$validatingUpdate !== null) {
+            throw new UpdateValidatorCommandException(
+                self::$validatingUpdate,
+                is_object($call) ? (new \ReflectionClass($call))->getShortName() : get_debug_type($call),
+            );
+        }
+
         if (! self::active()) {
             return $call;
         }
@@ -279,6 +292,23 @@ final class WorkflowFiberContext
             }
 
             throw new WorkflowFiberDiscardedException(previous: $error);
+        }
+    }
+
+    /**
+     * Run an update validator so any durable workflow call it makes throws.
+     *
+     * @internal
+     */
+    public static function validatingUpdate(string $updateName, callable $validator): mixed
+    {
+        $previous = self::$validatingUpdate;
+        self::$validatingUpdate = $updateName;
+
+        try {
+            return $validator();
+        } finally {
+            self::$validatingUpdate = $previous;
         }
     }
 
