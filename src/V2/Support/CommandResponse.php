@@ -95,6 +95,10 @@ final class CommandResponse
             $payload['wait_for'] = $result->waitFor();
             $payload['wait_timed_out'] = $result->waitTimedOut();
             $payload['wait_timeout_seconds'] = $result->waitTimeoutSeconds();
+
+            if ($result->rejectionMessage() !== null) {
+                $payload['rejection_message'] = $result->rejectionMessage();
+            }
         }
 
         return $payload;
