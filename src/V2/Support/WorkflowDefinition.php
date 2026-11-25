@@ -9,6 +9,7 @@ use ReflectionClass;
 use ReflectionMethod;
 use Workflow\QueryMethod;
 use Workflow\UpdateMethod;
+use Workflow\UpdateValidator;
 use Workflow\V2\Attributes\Signal;
 use Workflow\V2\Workflow;
 
@@ -97,6 +98,11 @@ final class WorkflowDefinition
      * @var array<class-string, list<array{name: string, parameters: list<array{name: string, position: int, required: bool, variadic: bool, default_available: bool, default: mixed, type: ?string, allows_null: bool}>}>>
      */
     private static array $updateContracts = [];
+
+    /**
+     * @var array<class-string, array<string, string>>
+     */
+    private static array $updateValidators = [];
 
     /**
      * @var array<class-string, array{
@@ -301,6 +307,9 @@ final class WorkflowDefinition
     public static function commandContract(string $class): array
     {
         $entryContract = self::entryContract($class);
+
+        // A validator for an undeclared update is a definition error at start.
+        self::updateValidators($class);
 
         return [
             'queries' => self::queryMethods($class),
@@ -698,6 +707,82 @@ final class WorkflowDefinition
         }
 
         return null;
+    }
+
+    /**
+     * Pre-acceptance update validators, keyed by durable update name.
+     *
+     * @param class-string $class
+     * @return array<string, string> update name => validator method
+     */
+    public static function updateValidators(string $class): array
+    {
+        if (! self::isWorkflowClass($class)) {
+            return [];
+        }
+
+        if (! array_key_exists($class, self::$updateValidators)) {
+            $validators = [];
+
+            foreach ((new ReflectionClass($class))->getMethods() as $method) {
+                $attributes = $method->getAttributes(UpdateValidator::class);
+
+                if ($attributes === []) {
+                    continue;
+                }
+
+                /** @var UpdateValidator $attribute */
+                $attribute = $attributes[0]->newInstance();
+                $resolved = self::resolveUpdateTarget($class, $attribute->update);
+
+                if ($resolved === null) {
+                    throw new LogicException(sprintf(
+                        'Workflow [%s] declares update validator [%s] for undeclared update [%s].',
+                        $class,
+                        $method->getName(),
+                        $attribute->update,
+                    ));
+                }
+
+                if ($resolved['method'] === $method->getName()) {
+                    throw new LogicException(sprintf(
+                        'Workflow [%s] method [%s] cannot be both update [%s] and its validator.',
+                        $class,
+                        $method->getName(),
+                        $resolved['name'],
+                    ));
+                }
+
+                if (
+                    array_key_exists($resolved['name'], $validators)
+                    && $validators[$resolved['name']] !== $method->getName()
+                ) {
+                    throw new LogicException(sprintf(
+                        'Workflow [%s] declares duplicate validators for update [%s] on methods [%s] and [%s].',
+                        $class,
+                        $resolved['name'],
+                        $validators[$resolved['name']],
+                        $method->getName(),
+                    ));
+                }
+
+                $validators[$resolved['name']] = $method->getName();
+            }
+
+            ksort($validators);
+
+            self::$updateValidators[$class] = $validators;
+        }
+
+        return self::$updateValidators[$class];
+    }
+
+    /**
+     * @param class-string $class
+     */
+    public static function updateValidator(string $class, string $updateName): ?string
+    {
+        return self::updateValidators($class)[$updateName] ?? null;
     }
 
     /**
