@@ -130,7 +130,29 @@ Use the repository's normal development dependencies and test database setup:
 
 ```shell
 vendor/bin/phpunit tests/Feature/V2/V2ConfiguredStateMachineExampleTest.php
+vendor/bin/phpunit tests/Feature/V2/V2ConfiguredChildCompletionRaceTest.php
 ```
+
+`V2ConfiguredChildCompletionRaceTest` covers TECH-03 when a business cancellation
+races the completion of the Shipment that the Order is awaiting:
+
+- **Completion first.** The cancellation is accepted after the Shipment commits
+  `completed`, after the Order verifies that outcome, or while the Order's own
+  completion commit is already scheduled. That scheduled commit is refused with
+  `cancellation_requested`. The Shipment's completion stays historical. Its
+  retained scope compensates `deliver` before the Order undoes `prepare` and
+  `reserve`.
+- **Cancellation first.** The cancellation is accepted after `deliver` is active
+  and while the Shipment's completion commit is scheduled. That commit is refused
+  with `cancellation_requested`, and the child is resolved by compensation.
+- **Worker loss.** A real worker dies by `SIGKILL` after the `deliver` effect
+  commits and before DW records it. The cancellation is accepted while no worker
+  is alive. A fresh process reconciles that same operation and compensates it
+  once.
+
+Each case ends with one Shipment run, one binding and one compensation of each
+original effect. `cancelled` is committed only by the finalizer after the root
+scope verifies.
 
 The example uses its own disposable application tables, created by the shared
 SQL-example schemas followed by `schema.php` in this directory. These are not DW
