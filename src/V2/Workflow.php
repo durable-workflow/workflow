@@ -431,6 +431,8 @@ abstract class Workflow
 
         $connection = \Workflow\V2\Support\ConfiguredV2Models::connection();
 
+        // Embedded workflow tasks run inside a transaction; outside one there
+        // is nothing to wait for, so the line is written at once.
         if ($connection->transactionLevel() === 0) {
             $write();
 

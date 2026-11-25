@@ -616,8 +616,10 @@ final class WorkflowExecutor
             }
             $continuation = null;
             if ($resumed) {
-                // The warm frame already ran the code before its current call.
-                $this->replayFloor = $frame->sequence;
+                // The warm frame ran the code before its current call; the cold
+                // rerun owns the code at that call, so drop the warm lines there.
+                $frame->workflow->cancelPendingWorkflowLogs($frame->sequence);
+                $this->replayFloor = $frame->sequence - 1;
 
                 return $this->run($state->run, $state->task);
             }
