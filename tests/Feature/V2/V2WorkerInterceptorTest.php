@@ -277,8 +277,8 @@ final class V2WorkerInterceptorTest extends TestCase
         $injected = false;
         // Fail the integrity read that runs after the core, and only that read.
         DB::listen(static function ($query) use (&$injected): void {
-            if (! $injected && str_contains($query->sql, 'last_history_sequence') && str_contains($query->sql, 'status')
-                && preg_match('/^select\s+["`]?last_history_sequence["`]?,\s*["`]?status["`]?\s+from/i', $query->sql) === 1) {
+            $integrityRead = '/^select\s+["`]?last_history_sequence["`]?,\s*["`]?status["`]?\s+from/i';
+            if (! $injected && preg_match($integrityRead, $query->sql) === 1) {
                 $injected = true;
 
                 throw new RuntimeException('injected engine read failure');
@@ -318,8 +318,15 @@ final class V2WorkerInterceptorTest extends TestCase
         );
 
         $this->configure([new QueryArgumentInterceptor()]);
-        $this->expectException(InvalidQueryArgumentsException::class);
-        $stub->query('greeting', 'greeting');
+        try {
+            $stub->query('greeting', 'greeting');
+            self::fail('A rewritten query argument bypassed validation.');
+        } catch (InvalidQueryArgumentsException $failure) {
+            self::assertStringContainsString(
+                'must be of type string',
+                json_encode($failure->validationErrors(), JSON_THROW_ON_ERROR)
+            );
+        }
     }
 
     public function testInterceptorClassNamesResolveFromTheContainer(): void
