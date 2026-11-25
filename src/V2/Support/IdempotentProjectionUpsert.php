@@ -68,6 +68,8 @@ final class IdempotentProjectionUpsert
                 // Keep native creation hooks without repeating the page's
                 // missing-row lookup. A savepoint keeps a duplicate insert from
                 // poisoning an outer PostgreSQL transaction before fallback.
+                // MySQL, MariaDB, SQLite and SQL Server roll back only the
+                // failed statement, so they skip the savepoint's round trips.
                 $query = $model::query();
                 if ($query::class !== Builder::class) {
                     return $query->updateOrCreate($key, $values);
@@ -86,7 +88,9 @@ final class IdempotentProjectionUpsert
                 $connection = $query->getModel()
                     ->getConnection();
                 /** @var TModel $row */
-                $row = $connection->transactionLevel() > 0 ? $connection->transaction($create) : $create();
+                $row = $connection->transactionLevel() > 0 && $connection->getDriverName() === 'pgsql'
+                    ? $connection->transaction($create)
+                    : $create();
 
                 return $row;
             }

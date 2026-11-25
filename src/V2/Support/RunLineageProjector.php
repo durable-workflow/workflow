@@ -43,15 +43,17 @@ final class RunLineageProjector
             ->get()
             ->keyBy('id');
 
+        $written = [];
+
         foreach (array_values($parents) as $position => $entry) {
-            $row = self::projectEntry($lineageModel, $run, $entry, 'parent', $position, $seen, $existing);
+            $row = self::projectEntry($lineageModel, $run, $entry, 'parent', $position, $seen, $existing, $written);
             if ($collectRows && $row !== null) {
                 $projected[] = $row;
             }
         }
 
         foreach (array_values($continuedWorkflows) as $position => $entry) {
-            $row = self::projectEntry($lineageModel, $run, $entry, 'child', $position, $seen, $existing);
+            $row = self::projectEntry($lineageModel, $run, $entry, 'child', $position, $seen, $existing, $written);
             if ($collectRows && $row !== null) {
                 $projected[] = $row;
             }
@@ -274,6 +276,7 @@ final class RunLineageProjector
         int $position,
         array &$seen,
         ?EloquentCollection $existing = null,
+        ?array &$written = null,
     ): ?WorkflowRunLineageEntry {
         $lineageId = self::stringValue($entry['id'] ?? null);
 
@@ -283,6 +286,17 @@ final class RunLineageProjector
 
         $projectionId = self::projectionId($run->id, $direction, $lineageId);
         $seen[] = $projectionId;
+        // With $written, $existing holds every row the run had when this pass
+        // started, so a key absent from both was observed missing. A wide
+        // fan-out then inserts each new row without a lookup first (#1286).
+        $knownMissing = $written !== null
+            && $lineageModel === WorkflowRunLineageEntry::class
+            && $existing !== null
+            && ! $existing->has($projectionId)
+            && ! isset($written[$projectionId]);
+        if ($written !== null) {
+            $written[$projectionId] = true;
+        }
 
         $instanceId = self::stringValue($entry['workflow_instance_id'] ?? null);
         $runId = self::stringValue($entry['workflow_run_id'] ?? null);
@@ -315,6 +329,7 @@ final class RunLineageProjector
                 'payload' => self::normalizedPayload($entry),
             ],
             $existing?->pull($projectionId),
+            $knownMissing,
         );
 
         return $row;

@@ -782,7 +782,10 @@ final class StructuralLimits
      * later guard check adds the one member scheduled since; members that
      * close meanwhile only lower the stored count, so the running value is an
      * upper bound. Below $decisionAt the bound decides like the stored count;
-     * at or above it the rows are counted again and that count is returned.
+     * at or above it a guard counts the rows again and returns that count.
+     * An advisory check ($advance false) only logs, so it reports the bound
+     * without counting again. Recounting for every member past the warning
+     * threshold scanned the open children once per member (#1286).
      *
      * @param 'activities'|'children' $kind
      * @param \Closure(): int $countRows
@@ -800,7 +803,7 @@ final class StructuralLimits
         if (is_int($remembered)) {
             $bound = $remembered + ($advance ? 1 : 0);
 
-            if ($bound < $decisionAt) {
+            if ($bound < $decisionAt || ! $advance) {
                 TaskScopeMemo::put($key, $bound);
 
                 return $bound;

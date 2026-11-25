@@ -56,6 +56,13 @@ class WorkflowCommand extends Model
     ];
 
     /**
+     * The last inline payload this instance decoded, with its codec.
+     *
+     * @var array{string, ?string, array<string, mixed>|null}|null
+     */
+    private ?array $decodedInlinePayload = null;
+
+    /**
      * @param array<string, mixed> $attributes
      */
     public static function record(WorkflowInstance $instance, ?WorkflowRun $run, array $attributes): self
@@ -587,13 +594,23 @@ class WorkflowCommand extends Model
         // Inline bytes do not consult namespace storage policy. Timeline
         // projection can read the same command for thousands of events.
         // Configured models and payload casts retain their original read path.
-        if ($this->workflow_run_id !== null && (static::class !== self::class
-            || array_key_exists('payload', $this->getCasts())
-            || ExternalPayloads::isStoredReference($this->payload))) {
+        $inline = static::class === self::class
+            && ! array_key_exists('payload', $this->getCasts())
+            && ! ExternalPayloads::isStoredReference($this->payload);
+        if (! $inline && $this->workflow_run_id !== null) {
             $namespace = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                 ->whereKey($this->workflow_run_id)
                 ->value('namespace');
             $namespace = is_string($namespace) ? $namespace : null;
+        }
+
+        // Each history event that snapshots this command reads its target
+        // name. A child start snapshots its start command twice (#1286).
+        $inline = $inline && is_string($this->payload);
+        if ($inline && $this->decodedInlinePayload !== null
+            && $this->decodedInlinePayload[0] === $this->payload
+            && $this->decodedInlinePayload[1] === $codec) {
+            return $this->decodedInlinePayload[2];
         }
 
         $blob = ExternalPayloads::resolveStoredPayload($this->payload, $codec, $namespace);
@@ -601,9 +618,14 @@ class WorkflowCommand extends Model
         $payload = $codec !== null
             ? Serializer::unserializeWithCodec($codec, $blob)
             : Serializer::unserializeWithCodec('avro', $blob);
-
-        return is_array($payload)
+        $payload = is_array($payload)
             ? $payload
             : null;
+
+        if ($inline) {
+            $this->decodedInlinePayload = [$this->payload, $codec, $payload];
+        }
+
+        return $payload;
     }
 }
