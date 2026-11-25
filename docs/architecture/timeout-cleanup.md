@@ -129,6 +129,23 @@ outcome:
 An unavailable worker can't guarantee cleanup. If no worker runs the cleanup
 turn before the cleanup deadline, the outcome is `expired`.
 
+In service mode, a worker reports an uncaught or rethrown interruption with
+`fail_workflow.failure.interruption: "timeout_cleanup"`. It marks only the
+delivered interruption for the run's root request: the exception or error the
+worker delivered for the engine's timeout request, whose context has
+`cause: timeout`, no parent request and no scope. Nothing else is marked, so
+these record `failed`:
+
+- an exception the application constructs, even with a copied context
+- a wrapped interruption
+- a compensation failure
+- an ordinary or explicit `cause: cancellation` request
+- a scoped child of the timeout request that escapes
+
+The marker never starts cleanup. Server accepts it only while the run's
+engine-owned timeout request is active, and refuses an unknown or malformed
+marker before it writes anything.
+
 Describe returns the state under `run.timeout_cleanup`. Run detail and the
 bounded operator observation used by Waterline return `timeout_cleanup` at
 the top level. While cleanup is open, the field contains `outcome: running`,
@@ -156,7 +173,12 @@ past the hard deadline.
   advertises it only when its SDK delivers the typed timeout interruption.
   The check happens at admission only: Server refuses a start that asks for
   timeout cleanup on a task queue with no worker that advertises it, with a
-  typed reason, and never silently falls back to a hard timeout. Delivery
+  typed reason, and never silently falls back to a hard timeout.
+  Every worker on a queue that admits timeout cleanup should advertise the
+  capability. Admission only needs one live worker that does, so a worker that
+  does not deliver the typed interruption can still claim the cleanup turn.
+  The outcome is then `failed` or `expired`, never a false `completed`. Roll a
+  queue's workers to a supporting SDK before starting opted-in runs on it. Delivery
   reuses the cooperative-cancellation delivery with the added cause and
   deadline fields; there is no new route.
 
@@ -202,6 +224,12 @@ tail and outcome. `T` is the start time.
   export and the failure list say "cleanup failed" plainly, so an operator
   doesn't read it as a clean timeout. Redrive eligibility follows the
   timeout category.
+
+- **General (2026-11-25, after [server issue 1201](https://github.com/durable-workflow/server/issues/1201) installed acceptance):**
+  a worker marks only the delivered interruption for the run's root request
+  (no parent, no scope), and an escaped scoped child of the timeout request
+  records `failed`. Every worker on an opted-in queue should advertise the
+  capability; admission stays a single-worker check.
 
 All open questions are decided. The embedded implementation follows this
 contract; native and the SDKs follow through the `timeout_cleanup` capability.
