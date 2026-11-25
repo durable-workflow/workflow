@@ -26,17 +26,31 @@ final readonly class StockPolicy
         private array $policies,
     ) {
         foreach ($policies as $key => $policy) {
-            if (! is_string($key) || ! $authority->unitMoney->selected($key)
-                || $authority->recipe($key) !== Catalogue::PAYMENT_FIRST || ! in_array(
-                    $policy,
-                    [StockAllocation::PARTIAL, StockAllocation::WAIT, StockAllocation::CANCEL],
-                    true
-                )) {
+            if (! is_string($key) || ! $authority->unitMoney->selected($key) || ! in_array(
+                $policy,
+                self::policies($authority->recipe($key)),
+                true
+            )) {
                 throw new LogicException(
                     'Partial-stock selection needs a payment-first unit-money grant and one explicit policy.'
+                    . ' Before payment, reserve-first-common accepts only wait-complete or cancel-all.'
                 );
             }
         }
+    }
+
+    /**
+     * Policies a recipe can apply. Reserve-first plans before capture: no money exists to repay a
+     * shortage, and capturing less than the original quote is not a defined policy, so it has no
+     * fulfill-partial.
+     */
+    public static function policies(string $recipe): array
+    {
+        return match ($recipe) {
+            Catalogue::PAYMENT_FIRST => [StockAllocation::PARTIAL, StockAllocation::WAIT, StockAllocation::CANCEL],
+            Catalogue::COMMON_RESERVE_FIRST => [StockAllocation::WAIT, StockAllocation::CANCEL],
+            default => [],
+        };
     }
 
     public function selected(string $key): bool

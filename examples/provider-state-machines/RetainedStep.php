@@ -82,13 +82,10 @@ final class RetainedStep extends AssessedTransitionStep
             $next = match ($action) {
                 'payment' => $this->executeChild($context, 'payment')
 ->operations,
-                'reserve' => [$this->reserveOriginal($reservation)],
+                'reserve' => [$this->reserveOriginal($reservation), ...$this->selectStock()],
                 default => throw new LogicException('The pinned checkout action is unavailable.'),
             };
             $operations = [...$operations, ...$next];
-        }
-        if (isset($this->initialization['stockPolicy'])) {
-            $operations = [...$operations, ...$this->selectStock()];
         }
         return new ExecutionReceipt($context->execution(), $operations);
     }
@@ -99,6 +96,11 @@ final class RetainedStep extends AssessedTransitionStep
      */
     private function selectStock(): array
     {
+        // The plan follows the confirmed reservation: after capture on payment-first, before it on
+        // reserve-first. A cancel plan before capture leaves no money to settle.
+        if (! isset($this->initialization['stockPolicy'])) {
+            return [];
+        }
         $plan = StockSelectionWait::plan($this->initialization['fulfillmentDeadline'] ?? null);
         return [
             'original-stock-plan:' . $plan['reservationFingerprint'] . ':' . $plan['allocationRevision'],

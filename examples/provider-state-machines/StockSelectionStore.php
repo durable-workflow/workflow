@@ -74,6 +74,10 @@ final readonly class StockSelectionStore
                 'reason' => 'complete-order-deadline-expired',
             ];
         }
+        if ($this->authority->recipe($key) === Catalogue::COMMON_RESERVE_FIRST) {
+            // Reserve-first plans before capture: there is no paid unit to repay.
+            $decision['requiredRefundUnits'] = [];
+        }
         return $this->requestCancellation($key, $plan->rootRun, $this->record($key, $actual, $decision));
     }
 
