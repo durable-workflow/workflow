@@ -47,4 +47,22 @@ interface WorkerInterceptor
      * @param callable(QueryTaskInterceptorContext): mixed $next
      */
     public function executeQueryTask(QueryTaskInterceptorContext $context, callable $next): mixed;
+
+    /**
+     * Wrap one update validation: the replay of committed state and the
+     * validator call, before the update is accepted.
+     *
+     * Hooks observe the decision; they cannot change it. The engine acts on
+     * the validator's outcome whatever the hook returns. The hook runs while
+     * the update's admission holds the run's locks, so keep it fast. Throwing,
+     * or returning without calling `$next`, refuses the update with
+     * {@see \Workflow\V2\Exceptions\UpdateValidationFailedException} and
+     * records nothing.
+     *
+     * @param callable(UpdateValidationInterceptorContext): UpdateValidationOutcome $next
+     */
+    public function executeUpdateValidation(
+        UpdateValidationInterceptorContext $context,
+        callable $next,
+    ): UpdateValidationOutcome;
 }

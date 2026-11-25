@@ -213,6 +213,92 @@ final class WorkerInterceptors
     }
 
     /**
+     * Run one update validation through the configured hooks.
+     *
+     * The hooks observe the validator's outcome; the engine acts on the
+     * outcome `$core` produced. A hook that throws, calls `$next` more than
+     * once or returns without calling it refuses the update through `$fail`,
+     * so nothing is recorded.
+     *
+     * @param Closure(): UpdateValidationInterceptorContext $context
+     * @param Closure(): (array{message: string, exception_type: string, validation_errors: array<string, list<string>>}|null) $core
+     * @param Closure(string, ?Throwable): Throwable $fail
+     * @return array{message: string, exception_type: string, validation_errors: array<string, list<string>>}|null
+     */
+    public static function updateValidation(Closure $context, Closure $core, Closure $fail): ?array
+    {
+        try {
+            $interceptors = self::resolve();
+        } catch (Throwable $failure) {
+            throw $fail('the update-validation interceptors could not be resolved', $failure);
+        }
+        if ($interceptors === []) {
+            return $core();
+        }
+
+        $state = new class() {
+            public int $calls = 0;
+
+            public bool $completed = false;
+
+            /**
+             * @var array{message: string, exception_type: string, validation_errors: array<string, list<string>>}|null
+             */
+            public ?array $result = null;
+
+            public ?Throwable $coreFailure = null;
+
+            public ?string $violation = null;
+        };
+        $terminal = static function () use ($core, $state): UpdateValidationOutcome {
+            if (++$state->calls > 1) {
+                $state->violation ??= 'an update-validation interceptor called $next more than once';
+
+                throw new \LogicException($state->violation);
+            }
+            try {
+                $state->result = $core();
+            } catch (Throwable $failure) {
+                $state->coreFailure = $failure;
+
+                throw $failure;
+            }
+            $state->completed = true;
+
+            return UpdateValidationOutcome::fromRejection($state->result);
+        };
+
+        try {
+            $handler = static fn (UpdateValidationInterceptorContext $ctx): UpdateValidationOutcome => $terminal();
+            foreach (array_reverse($interceptors) as $interceptor) {
+                $next = $handler;
+                $handler = static fn (UpdateValidationInterceptorContext $ctx): UpdateValidationOutcome => $interceptor->executeUpdateValidation(
+                    $ctx,
+                    $next,
+                );
+            }
+            $handler($context());
+        } catch (Throwable $failure) {
+            if ($state->coreFailure !== null) {
+                throw $state->coreFailure;
+            }
+
+            throw $fail($state->violation ?? 'an update-validation interceptor threw', $failure);
+        }
+        if ($state->coreFailure !== null) {
+            throw $state->coreFailure;
+        }
+        if ($state->violation !== null) {
+            throw $fail($state->violation, null);
+        }
+        if (! $state->completed) {
+            throw $fail('an update-validation interceptor returned without calling $next', null);
+        }
+
+        return $state->result;
+    }
+
+    /**
      * Release a workflow task whose interceptor failed, so it is retried with
      * repair backoff. The failed attempt's transaction already rolled back.
      */

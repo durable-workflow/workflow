@@ -20,6 +20,8 @@ use Workflow\V2\Exceptions\InvalidQueryArgumentsException;
 use Workflow\V2\Interceptors\ActivityInterceptorContext;
 use Workflow\V2\Interceptors\PassthroughWorkerInterceptor;
 use Workflow\V2\Interceptors\QueryTaskInterceptorContext;
+use Workflow\V2\Interceptors\UpdateValidationInterceptorContext;
+use Workflow\V2\Interceptors\UpdateValidationOutcome;
 use Workflow\V2\Interceptors\WorkerInterceptor;
 use Workflow\V2\Interceptors\WorkerInterceptors;
 use Workflow\V2\Interceptors\WorkflowTaskInterceptorContext;
@@ -544,6 +546,13 @@ final class AuditingInterceptor implements WorkerInterceptor
         InterceptorAudit::$queryContexts[] = $context;
 
         return $this->around('query', static fn (): mixed => $next($context));
+    }
+
+    public function executeUpdateValidation(
+        UpdateValidationInterceptorContext $context,
+        callable $next,
+    ): UpdateValidationOutcome {
+        return $this->around('update-validation', static fn (): UpdateValidationOutcome => $next($context));
     }
 
     private function around(string $kind, \Closure $next): mixed

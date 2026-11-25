@@ -1,7 +1,8 @@
 # Worker interceptors
 
 Embedded Durable Workflow runs ordered worker interceptors around the workflow
-tasks, activities and queries it executes in your application's processes.
+tasks, activities, queries and update validations it executes in your
+application's processes.
 Use them for audit logging, metric tags, tenant context or tracing that you want
 to write once instead of in every workflow and activity. The hook shape matches
 the Python, PHP and Rust SDK interceptors.
@@ -81,10 +82,11 @@ singleton when it must keep state between tasks.
 | `executeWorkflowTask($context, $next)` | `workerId`, `connection`, `taskQueue`, `namespace`, `task`, `taskId`, `workflowType`, `workflowId`, `runId`, `workflowTaskAttempt`, `historyLength`, `replaying` | `WorkflowTaskOutcome` with `historyEventTypes`, `runStatus`, `nextTaskId` |
 | `executeActivity($context, $next)` | `workerId`, `connection`, `taskQueue`, `namespace`, `task`, `activityType`, `activityClass`, `arguments`, `attemptNumber`, `taskId`, `activityExecutionId`, `activityAttemptId`, `workflowId`, `runId`, `local`, `activity` | the activity result |
 | `executeQueryTask($context, $next)` | `workerId` (always null), `connection`, `taskQueue`, `namespace`, `task`, `queryName`, `workflowType`, `workflowId`, `runId`, `arguments` | the query result |
+| `executeUpdateValidation($context, $next)` | `workerId` (always null), `connection`, `taskQueue`, `namespace`, `updateName`, `workflowType`, `workflowId`, `runId`, `arguments` | `UpdateValidationOutcome` with `approved`, `rejectionMessage`, `exceptionType`, `validationErrors` |
 
 `task` is an array snapshot of the claimed task row, never the model itself.
 `workerId` identifies the queue worker process by host and process ID. Queries
-run in the calling process, so their `workerId` is null.
+and update validations run in the calling process, so their `workerId` is null.
 
 ## Determinism
 
@@ -120,6 +122,23 @@ Workflow-task interceptors cannot change what a workflow records:
 - A workflow that resolves deferred entity references outside the task
   transaction runs the task in phases. The hook then runs once per phase, and
   the earlier phases see the internal deferral as an exception from `$next`.
+
+Update-validation interceptors wrap the replay and the validator call that run
+before an update with an [`#[UpdateValidator]`](https://durable-workflow.com/docs/features/updates#validate-updates-before-acceptance)
+is accepted. Updates without a validator don't run the hook. The hooks observe
+the decision; they cannot change it:
+
+- The engine acts on the validator's own outcome. Returning a different
+  `UpdateValidationOutcome`, or passing different arguments to `$next`,
+  changes nothing; the validator always receives the update's arguments.
+- If a hook throws, skips `$next` or calls it more than once, the update is
+  refused with `UpdateValidationFailedException` and nothing is recorded, so
+  a hook can never let an update through unvalidated.
+- The hook runs inside the update's admission transaction, while the run's
+  rows are locked, so keep it short. Defer side effects with
+  `DB::afterCommit()`; writes a hook makes commit or roll back with the
+  admission. Hook code runs outside the workflow fiber, so it cannot schedule
+  durable work for the run.
 
 Activity and query interceptors may change arguments with
 `$context->withArguments(...)` and may change the returned value, because an

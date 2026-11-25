@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Worker interceptors also wrap update validation. The new
+  `executeUpdateValidation($context, $next)` hook (passthrough in
+  `PassthroughWorkerInterceptor`) sees the update name, run and arguments,
+  and the validator's `UpdateValidationOutcome`. Hooks observe the decision
+  but cannot change it. A hook that throws, skips `$next` or calls it twice
+  refuses the update with `UpdateValidationFailedException`, and nothing is
+  recorded. The hook runs inside the admission transaction while the run is
+  locked. Classes that implement `WorkerInterceptor` directly must add the
+  method. (durable-workflow/.github#226, #234)
+
 - Workflow code can log without repeating itself. `$this->logger()` returns a
   PSR-3 logger that writes through the Laravel logger (or the channel you
   pass) only when the code runs for the first time. The engine replays a
