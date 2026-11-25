@@ -64,6 +64,28 @@ final class UpdateResult extends CommandResult
         return $this->failure?->message;
     }
 
+    /**
+     * The validator's message when an update validator rejected the update.
+     */
+    public function rejectionMessage(): ?string
+    {
+        if (! $this->rejected()) {
+            return null;
+        }
+
+        $message = $this->update?->failure_message;
+
+        return is_string($message) && $message !== '' ? $message : null;
+    }
+
+    /**
+     * True when the update's validator refused it before acceptance.
+     */
+    public function rejectedByValidator(): bool
+    {
+        return $this->rejectionReason() === WorkflowStub::UPDATE_VALIDATOR_REJECTED;
+    }
+
     public function failureId(): ?string
     {
         return $this->failure?->id;
