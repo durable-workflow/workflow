@@ -40,6 +40,8 @@ use Workflow\V2\Exceptions\InvalidCommandRequestIdException;
 use Workflow\V2\Exceptions\InvalidQueryArgumentsException;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Exceptions\WorkflowExecutionUnavailableException;
+use Workflow\V2\Interceptors\QueryTaskInterceptorContext;
+use Workflow\V2\Interceptors\WorkerInterceptors;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowCommand;
@@ -866,10 +868,34 @@ final class WorkflowStub
             );
         }
 
-        return (new QueryStateReplayer())->query(
-            $this->run,
-            $resolvedTarget['method'],
-            $validatedArguments['arguments']
+        $run = $this->run;
+
+        return WorkerInterceptors::queryTask(
+            static fn (): QueryTaskInterceptorContext => QueryTaskInterceptorContext::forRun(
+                $run,
+                $resolvedTarget['name'],
+                $validatedArguments['arguments'],
+            ),
+            $validatedArguments['arguments'],
+            static function (array $arguments) use ($run, $resolvedTarget, $validatedArguments): mixed {
+                // Arguments an interceptor rewrote go through the same query contract.
+                if ($arguments !== $validatedArguments['arguments']) {
+                    $revalidated = WorkflowQueryContract::validatedArgumentsForRun(
+                        $run,
+                        $resolvedTarget['name'],
+                        $arguments
+                    );
+                    if ($revalidated['validation_errors'] !== []) {
+                        throw new InvalidQueryArgumentsException(
+                            $resolvedTarget['name'],
+                            $revalidated['validation_errors']
+                        );
+                    }
+                    $arguments = $revalidated['arguments'];
+                }
+
+                return (new QueryStateReplayer())->query($run, $resolvedTarget['method'], $arguments);
+            },
         );
     }
 

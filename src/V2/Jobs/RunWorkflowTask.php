@@ -14,6 +14,8 @@ use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
 use Workflow\V2\Exceptions\PromotedBuildUnavailableException;
+use Workflow\V2\Interceptors\WorkerInterceptors;
+use Workflow\V2\Interceptors\WorkflowTaskInterceptorFailed;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ConfiguredV2Models;
@@ -198,7 +200,11 @@ final class RunWorkflowTask implements ShouldQueue
                 try {
                     $nextTask = WorkflowSignalReadScope::forLockedRun(
                         $run,
-                        static fn (): ?WorkflowTask => $executor->run($run, $task, $continuation),
+                        static fn (): ?WorkflowTask => WorkerInterceptors::workflowTask(
+                            $run,
+                            $task,
+                            static fn (): ?WorkflowTask => $executor->run($run, $task, $continuation),
+                        ),
                     );
                 } catch (DeferredEntityReferenceResolution $resolution) {
                     $continuation?->disable('entity_reference_resolution');
@@ -212,6 +218,9 @@ final class RunWorkflowTask implements ShouldQueue
         } catch (PromotedBuildUnavailableException $refusal) {
             $continuation?->disable(PromotedBuildUnavailableException::REASON);
             $nextTask = $this->recordPromotedBuildRefusal($refusal);
+        } catch (WorkflowTaskInterceptorFailed $failure) {
+            $continuation?->disable('workflow_task_interceptor_failed');
+            $nextTask = WorkerInterceptors::releaseFailedTask($this->taskId, $failure);
         } catch (Throwable $throwable) {
             $continuation?->disable('transaction_failure');
             SqliteTransaction::forTask($this->taskId, function () use ($throwable): void {
