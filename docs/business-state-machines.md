@@ -120,9 +120,11 @@ $catalog->assertBinding($parentProfile, $binding, $childProfile);
 | `InvalidMachineCatalog` `state_machine_definition_duplicate` | The same machine and version is registered twice. |
 | `InvalidMachineCatalog` `state_machine_child_definition_unregistered` | A slot names a child machine/version the catalog does not register. |
 | `InvalidMachineCatalog` `state_machine_child_binding_cycle` | A machine identity recurs along a slot route, including a slot hosting its own machine or the same machine under another version. |
-| `ResourceLimitExceeded` `state_machine_child_depth_limit_exceeded` | The optional `maxChildDepth` is below the deepest slot route. `0` allows no slots. |
+| `ResourceLimitExceeded` with dimension `child_depth` and reason `state_machine_child_depth_limit_exceeded` | The optional `maxChildDepth` is below the deepest slot route, which `observed` reports. `0` allows no slots. |
 
 `InvalidMachineCatalog::$path` lists the route in declaration order: the first definition as `machine@version`, then each slot as `slot:machine@version`, for example `orders@1 -> shipment:shipments@1 -> parent:orders@1`. The same child definition may be declared by several parents or hosting states; only recursion is refused. Each definition is expanded once, so shared subtrees do not multiply the work. The catalog holds at most 1,024 definitions and a depth limit of at most 64.
+
+The catalog is opt-in: native child start, reservations and `MachineDefinition::assertBinding()` do not consult it. Build it once from trusted configuration and call `$catalog->assertBinding()` in the host's binding authorization, as the configured example does. Retained compensation supports one child level, because `DurableScope` refuses a nested child scope at runtime, so use `maxChildDepth: 1` when children participate in retained scopes.
 
 `$catalog->assertBinding()` requires a definition-bound parent profile whose definition is the registered one, and a child profile bound to the slot's exact registered child definition. It then applies `MachineDefinition::assertBinding()`. Validation is pure: it does not authorize the binding, start a child or prove its outcome. A catalog is configuration. Each execution still pins its own definition and profile fingerprints, and replacing the catalog does not migrate an existing run. Retained compensation separately refuses shared, cyclic or nested child scopes at runtime.
 

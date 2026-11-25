@@ -125,8 +125,13 @@ final class MachineCatalogTest extends TestCase
             $this->assertSame(1, $refusal->limit);
             $this->assertSame('state_machine_child_depth_limit_exceeded', $refusal->reason());
         }
-        $this->expectException(ResourceLimitExceeded::class);
-        new MachineCatalog([self::machine('parcels', '1'), $definitions[1]], maxChildDepth: 0);
+        try {
+            // The first registered definition is only one level deep; the refusal reports the deepest.
+            new MachineCatalog([$definitions[1], $definitions[0], $definitions[2]], maxChildDepth: 0);
+            $this->fail('Child slots were accepted under a zero depth limit.');
+        } catch (ResourceLimitExceeded $refusal) {
+            $this->assertSame([2, 0], [$refusal->observed, $refusal->limit]);
+        }
     }
 
     public function testEachDefinitionIsAnalysedOnceWhenSubtreesAreShared(): void

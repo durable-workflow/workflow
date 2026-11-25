@@ -86,12 +86,9 @@ final readonly class MachineCatalog
             );
         }
         $heights = array_map(static fn (array $node): int => $node['height'], $analysis);
-        if ($maxChildDepth !== null) {
-            foreach (array_keys($registered) as $key) {
-                if ($heights[$key] > $maxChildDepth) {
-                    throw new ResourceLimitExceeded('child_depth', $heights[$key], $maxChildDepth);
-                }
-            }
+        $deepest = max($heights);
+        if ($maxChildDepth !== null && $deepest > $maxChildDepth) {
+            throw new ResourceLimitExceeded('child_depth', $deepest, $maxChildDepth);
         }
         $this->definitions = array_values($registered);
         $this->registered = $registered;
@@ -157,7 +154,7 @@ final readonly class MachineCatalog
      *
      * @param array<string, MachineDefinition> $registered
      * @param non-empty-list<string> $path Display labels from the root to this node.
-     * @param list<string> $ancestors Machine identities above this node.
+     * @param array<string, true> $ancestors Machine identities above this node.
      * @param array<string, array{machines: array<string, true>, height: int}> $analysis
      */
     private static function visit(
@@ -170,7 +167,7 @@ final readonly class MachineCatalog
         $key = self::key($node->machine, $node->version);
         if (isset($analysis[$key])) {
             foreach (array_keys($analysis[$key]['machines']) as $machine) {
-                if (in_array((string) $machine, $ancestors, true)) {
+                if (isset($ancestors[(string) $machine])) {
                     throw new InvalidMachineCatalog(
                         InvalidMachineCatalog::CHILD_BINDING_CYCLE,
                         [...$path, ...self::route($registered, $analysis, $node, (string) $machine)]
@@ -179,14 +176,16 @@ final readonly class MachineCatalog
             }
             return;
         }
-        $lineage = [...$ancestors, $node->machine];
+        $lineage = $ancestors + [
+            $node->machine => true,
+        ];
         $machines = [
             $node->machine => true,
         ];
         $height = 0;
         foreach ($node->slots as $slot) {
             $label = self::label($slot);
-            if (in_array($slot->childMachine, $lineage, true)) {
+            if (isset($lineage[$slot->childMachine])) {
                 throw new InvalidMachineCatalog(InvalidMachineCatalog::CHILD_BINDING_CYCLE, [...$path, $label]);
             }
             $childKey = self::key($slot->childMachine, $slot->childDefinitionVersion);
