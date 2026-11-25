@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## 2.40.0 - 2026-11-25
+
+- Workflow describe, full run detail and the bounded operator observation
+  that Waterline reads report recorded timeout cleanup. Active cleanup shows
+  the original work deadline, the detection time and the cleanup deadline. A
+  closed run shows the completed, failed, expired or preempted outcome, and
+  failed cleanup keeps its failure ID. (#863)
+- Scheduling a parallel group of child workflows writes about a third fewer
+  statements per child. Each child start shares one history append per run,
+  and the new child run starts at its first command sequence. On MySQL a
+  1,000-child group was scheduled in about 22 s instead of 31 s. History and
+  replay are unchanged. (#1286)
+- A standalone `fail_workflow` checks the accepted updates it closes, and their
+  message cursor advances, against the history event and row limits before
+  its first write. Over a limit it is refused, and the task keeps its lease.
+  (#1116)
+- Tests and documentation: the completion budget guide names every
+  state-driven write family, each of which now has exact-limit and one-over
+  tests (#1116, #1287). The 1,000-child fan-out gates judge each run against
+  its own reference and use pinned MySQL and Redis images (#1285).
+
 ## 2.39.1 - 2026-11-24
 
 - Workflows within their structural limits continue when Laravel cannot write
