@@ -114,6 +114,7 @@ final class WorkflowExecutor
         try {
             return $this->runTask($run, $task, $continuation);
         } finally {
+            $this->replayFloor = null;
             WorkflowExecutionProfile::finish($sample);
         }
     }
@@ -851,7 +852,7 @@ final class WorkflowExecutor
         if ($cancellationDelivery === CancellationDeliveryState::Waiting) {
             SelectionChildAwaitHistory::park($run, $task, $current, $sequence);
             // Parked without a recorded step: this code runs again (#227).
-            $workflow->cancelPendingWorkflowLogs();
+            $workflow->cancelPendingWorkflowLogs($sequence);
             return $this->waitForNextResumeSource($run, $task);
         }
         if ($cancellationDelivery === CancellationDeliveryState::Delivered) {
@@ -861,7 +862,7 @@ final class WorkflowExecutor
         if (! $resolution['resolved']) {
             SelectionChildAwaitHistory::park($run, $task, $current, $sequence);
             // Parked without a recorded step: this code runs again (#227).
-            $workflow->cancelPendingWorkflowLogs();
+            $workflow->cancelPendingWorkflowLogs($sequence);
             $this->syncWorkflowCursor($workflow, $sequence);
             return $this->waitForNextResumeSource($run, $task, true);
         }
@@ -7559,7 +7560,9 @@ final class WorkflowExecutor
     private function restartAfterPendingUpdateFailure(WorkflowRun $run, WorkflowTask $task): WorkflowTask
     {
         // The next task re-runs the code this one reached without a new step.
-        $this->taskWorkflow?->cancelPendingWorkflowLogs();
+        if ($this->taskWorkflow !== null) {
+            $this->taskWorkflow->cancelPendingWorkflowLogs($this->taskWorkflow->executionCursor());
+        }
 
         $run->forceFill([
             'status' => RunStatus::Waiting,

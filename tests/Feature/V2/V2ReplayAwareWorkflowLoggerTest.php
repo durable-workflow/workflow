@@ -15,6 +15,7 @@ use Psr\Log\LoggerTrait;
 use RuntimeException;
 use Tests\Fixtures\V2\TestLiveLoggingWorkflow;
 use Tests\Fixtures\V2\TestLoggedSelectionWorkflow;
+use Tests\Fixtures\V2\TestLoggedTwoHandleWorkflow;
 use Tests\Fixtures\V2\TestReplayAwareLoggingWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\TaskStatus;
@@ -68,10 +69,7 @@ final class V2ReplayAwareWorkflowLoggerTest extends TestCase
                 'context' => $event->context,
             ];
 
-            if (str_starts_with($event->message, 'logging workflow') || str_starts_with(
-                $event->message,
-                'selection '
-            )) {
+            if (preg_match('/^(logging workflow|selection |two handles)/', $event->message) === 1) {
                 $this->logged[] = [
                     'message' => $event->message,
                     'context' => $event->context,
@@ -267,6 +265,30 @@ final class V2ReplayAwareWorkflowLoggerTest extends TestCase
         );
         $this->assertSame('deadline', $this->logged[1]['context']['winner']);
         $this->assertSame('Hello, Taylor!', $this->logged[2]['context']['work']);
+    }
+
+    public function testAResolvedHandleBeforeAParkedOneLogsEachLineOnce(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestLoggedTwoHandleWorkflow::class, 'replay-aware-logging-two-handles');
+        $workflow->start();
+        $runId = $workflow->runId();
+
+        $this->runReadyTaskOfType($runId, TaskType::Workflow);
+        $this->runReadyTaskOfType($runId, TaskType::Activity);
+        // The first handle resolves and the second parks in the same task.
+        $this->runReadyTaskOfType($runId, TaskType::Workflow);
+        $this->assertSame(['two handles started'], array_column($this->logged, 'message'));
+
+        $this->runReadyTaskOfType($runId, TaskType::Activity);
+        $this->runReadyTaskOfType($runId, TaskType::Workflow);
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame(
+            ['two handles started', 'two handles awaiting', 'two handles first done', 'two handles second done'],
+            array_column($this->logged, 'message'),
+        );
     }
 
     public function testRolledBackTaskWritesNothing(): void

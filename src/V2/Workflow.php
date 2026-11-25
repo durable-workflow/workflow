@@ -80,13 +80,11 @@ abstract class Workflow
     private bool $replayOnly = false;
 
     /**
-     * Deferred log writes from the code since the engine last resumed it.
+     * Log writes this workflow task deferred until its transaction commits.
      *
      * @var list<\stdClass>
      */
     private array $pendingLogWrites = [];
-
-    private ?\Fiber $logFiber = null;
 
     private ?MessageReplayLedger $messageReplayLedger = null;
 
@@ -416,23 +414,19 @@ abstract class Workflow
     /**
      * Write a workflow log line once the workflow task's transaction commits.
      *
-     * A rolled-back task writes nothing. The engine cancels the lines written
-     * since its last resume when the code parks without recording a step, so
-     * they are written by the task that runs them for the last time.
+     * A rolled-back task writes nothing. When the code parks without recording
+     * a step, the engine cancels the lines from that step on, so the task that
+     * moves past it writes them.
      *
      * @internal
      */
     public function deferWorkflowLog(\Closure $write): void
     {
-        $this->logFiber = \Fiber::getCurrent();
-        $epoch = WorkflowFiberContext::resumeEpoch($this->logFiber);
         $pending = new \stdClass();
         $pending->cancelled = false;
-        $pending->epoch = $epoch;
-        $this->pendingLogWrites = array_values(array_filter(
-            $this->pendingLogWrites,
-            static fn (\stdClass $write): bool => $write->epoch === $epoch,
-        ));
+        // The step this code reaches next; an update handler's lines commit with its UpdateApplied.
+        $pending->sequence = $this->visibleSequence;
+        $pending->live = $this->runningLiveUpdate;
         $this->pendingLogWrites[] = $pending;
 
         $connection = \Workflow\V2\Support\ConfiguredV2Models::connection();
@@ -451,22 +445,19 @@ abstract class Workflow
     }
 
     /**
-     * Drop the log lines written since the last resume: the code parked
-     * without recording a step, so it runs again in a later task.
+     * Drop the log lines from code at or past this step: the code parked
+     * without recording a step there, so it runs again in a later task.
      *
      * @internal
      */
-    public function cancelPendingWorkflowLogs(): void
+    public function cancelPendingWorkflowLogs(int $fromSequence): void
     {
-        $epoch = WorkflowFiberContext::resumeEpoch($this->logFiber);
-
+        // Lines at an earlier step have a recorded step after them and stand.
         foreach ($this->pendingLogWrites as $pending) {
-            if ($pending->epoch === $epoch) {
+            if (! $pending->live && $pending->sequence >= $fromSequence) {
                 $pending->cancelled = true;
             }
         }
-
-        $this->pendingLogWrites = [];
     }
 
     /**
@@ -476,6 +467,7 @@ abstract class Workflow
      */
     public function beginReplayRegion(int $committedSequence): void
     {
+        $this->pendingLogWrites = [];
         $this->replayBoundary = max(0, $committedSequence);
     }
 
