@@ -275,7 +275,7 @@ before the early check. A budget refusal therefore never prevents a close.
 The close is bounded instead. Each of its transactions may write at most the
 completion budget's history events (`history_transaction_size`) and rows
 (`completion_rows`). Every kind of work is charged what it writes, including
-its projections (`DeadlineCloseBudget`; #1290):
+its projections (`DeadlineCloseBudget`):
 
 | Work | Events | Rows |
 | --- | ---: | ---: |
@@ -366,7 +366,7 @@ records the error as that workflow task's `last_error`, adds one to its
 `available_at` out by the settlement's backoff (10 seconds, doubling per
 failure up to an hour). The watchdog does not select the run again until the
 task is due. Closes that keep failing therefore no longer stay at the front of
-the oldest-deadline scan and starve the other expired runs in scope (#1290).
+the oldest-deadline scan and starve the other expired runs in scope.
 The run stays open and expired, and an expired run accepts no workflow
 command, so the backoff only spaces out the retries. A task held for a
 settlement or under a live lease is never changed.
