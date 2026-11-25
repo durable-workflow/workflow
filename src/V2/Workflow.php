@@ -9,6 +9,7 @@ use Illuminate\Container\Container;
 use Throwable;
 use Workflow\Traits\ResolvesMethodDependencies;
 use Workflow\V2\Enums\HistoryEventType;
+use Workflow\V2\Enums\WorkflowReplayState;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Support\ChildWorkflowHandles;
 use Workflow\V2\Support\HistoryBudget;
@@ -21,6 +22,7 @@ use Workflow\V2\Support\UpdateMessageReceives;
 use Workflow\V2\Support\WorkerSession;
 use Workflow\V2\Support\WorkerSessionOptions;
 use Workflow\V2\Support\WorkflowFiberContext;
+use Workflow\V2\Support\WorkflowLogger;
 
 /**
  * Base class for v2 workflows.
@@ -65,6 +67,17 @@ abstract class Workflow
     private int $visibleSequence = 1;
 
     private bool $commandDispatchEnabled = true;
+
+    /**
+     * The last step committed history records, set by the engine for each
+     * workflow task. Null when no engine tracks this instance's replay.
+     */
+    private ?int $replayBoundary = null;
+
+    /**
+     * True for an instance rebuilt only to answer a query or validator.
+     */
+    private bool $replayOnly = false;
 
     private ?MessageReplayLedger $messageReplayLedger = null;
 
@@ -339,6 +352,76 @@ abstract class Workflow
         }
 
         $this->runCompensations();
+    }
+
+    /**
+     * Where this code runs relative to the run's committed history.
+     *
+     * Use it for logging and diagnostics only. Never branch durable workflow
+     * commands on it.
+     */
+    public function replayState(): WorkflowReplayState
+    {
+        if ($this->replayOnly) {
+            return WorkflowReplayState::Replaying;
+        }
+
+        if ($this->runningLiveUpdate) {
+            return WorkflowReplayState::Executing;
+        }
+
+        if ($this->replayBoundary === null) {
+            return WorkflowReplayState::Unavailable;
+        }
+
+        // Update handlers re-applied from history run with commands disabled.
+        if (! $this->commandDispatchEnabled) {
+            return WorkflowReplayState::Replaying;
+        }
+
+        return $this->visibleSequence <= $this->replayBoundary
+            ? WorkflowReplayState::Replaying
+            : WorkflowReplayState::Executing;
+    }
+
+    /**
+     * True while this code is being replayed rather than run for the first time.
+     */
+    public function isReplaying(): bool
+    {
+        return $this->replayState() === WorkflowReplayState::Replaying;
+    }
+
+    /**
+     * A PSR-3 logger that writes through the Laravel logger only when this
+     * code runs for the first time, adding the run's identity to each line.
+     *
+     * Ordinary `Log::info()` calls in workflow code repeat on every wake-up,
+     * because the engine replays the workflow from its history.
+     */
+    public function logger(?string $channel = null): WorkflowLogger
+    {
+        return new WorkflowLogger($this, $channel);
+    }
+
+    /**
+     * Start a workflow task whose committed history ends at this step.
+     *
+     * @internal
+     */
+    public function beginReplayRegion(int $committedSequence): void
+    {
+        $this->replayBoundary = max(0, $committedSequence);
+    }
+
+    /**
+     * Mark an instance rebuilt only to answer a query or validator.
+     *
+     * @internal
+     */
+    public function markReplayOnly(): void
+    {
+        $this->replayOnly = true;
     }
 
     public function syncExecutionCursor(int $visibleSequence): void

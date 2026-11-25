@@ -55,6 +55,7 @@ final class QueryStateReplayer
 
         $workflowClass = WorkflowDefinitionFingerprint::resolveClassForRun($run);
         $workflow = RuntimeObjectFactory::workflow($workflowClass, $run);
+        $workflow->markReplayOnly();
         $this->syncWorkflowCursor($workflow, 1);
         $entryMethod = EntryMethod::forWorkflow($workflow);
         $arguments = WorkflowEntryArguments::resolve($workflow, $run->workflowArguments(), $entryMethod);

@@ -525,6 +525,7 @@ final class WorkflowExecutor
         $workflow = $frame?->workflow ?? RuntimeObjectFactory::workflow($workflowClass, $run);
         $this->taskWorkflow = $workflow;
         $run = $workflow->run;
+        $workflow->beginReplayRegion(WorkflowReplayBoundary::committedSequence($run));
         $arguments = [];
         if ($frame === null) {
             $entryMethod = EntryMethod::forWorkflow($workflow);
