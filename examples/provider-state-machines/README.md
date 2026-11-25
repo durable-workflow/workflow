@@ -494,12 +494,15 @@ cancellation would either leave compensation unknown or pay a second remedy.
 The refusal keeps every payout single. A customer who no longer wants a
 delivered replacement needs a separate return policy.
 
-`V2TransitIncidentMachineTest`, `V2TransitIncidentCancellationTest` and
-`V2TransitIncidentFallbackTest` cover (split so each fits one CI shard):
+`V2TransitIncidentMachineTest`, `V2TransitIncidentCancellationTest`,
+`V2TransitIncidentDamageReplacementTest` and `V2TransitIncidentFallbackTest`
+cover (split so each fits one CI shard):
 - both loss policies, unavailable replacement, and damage with recovery;
+- damage with a delivered replacement, a separate rejected claim and an
+  inspected recovery restocking only saleable units;
 - a tracking delay and a refused claim;
-- cancellation refused during a pending replacement, during a processing
-  refund and after settlement;
+- cancellation refused during a pending loss or damage replacement, during a
+  processing refund, during a pending damage recovery and after settlement;
 - a refused replacement booking and a failed replacement delivery;
 - the unresolved-replacement and refused-refund owed outcomes;
 - a refund still processing when the bounded wait ends (`refund-unresolved`),
@@ -509,8 +512,9 @@ delivered replacement needs a separate return policy.
 
 `V2TransitIncidentProcessLossTest` kills real workers after each of these
 commits: the refund, claim, recovery, restock, replacement reservation and
-replacement booking, and the release and fallback refund after a refused
-booking. A fresh process recovers each effect exactly once.
+replacement booking, the damage replacement booking, recovery and restock, and
+the release and fallback refund after a refused booking. A fresh process
+recovers each effect exactly once.
 
 These are synthetic recorded-task fixtures, not installed-package,
 real-carrier or real-warehouse qualification. Open policy:
@@ -523,6 +527,7 @@ real-carrier or real-warehouse qualification. Open policy:
 ```shell
 vendor/bin/phpunit tests/Feature/V2/V2TransitIncidentMachineTest.php
 vendor/bin/phpunit tests/Feature/V2/V2TransitIncidentCancellationTest.php
+vendor/bin/phpunit tests/Feature/V2/V2TransitIncidentDamageReplacementTest.php
 vendor/bin/phpunit tests/Feature/V2/V2TransitIncidentFallbackTest.php
 ```
 
