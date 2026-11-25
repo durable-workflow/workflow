@@ -21,7 +21,7 @@ final class ResourceLimitExceeded extends LogicException
         public readonly int $limit,
     ) {
         if (! in_array($dimension, ['states', 'transitions', 'child_slots', 'rule_nodes',
-            'commands', 'history_events', 'history_bytes', 'command_depth'], true)
+            'commands', 'history_events', 'history_bytes', 'command_depth', 'child_depth'], true)
             || $observed < 0 || $limit < 0) {
             throw new InvalidArgumentException('Invalid state-machine resource refusal.');
         }

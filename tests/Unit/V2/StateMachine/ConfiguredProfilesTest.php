@@ -93,6 +93,8 @@ final class ConfiguredProfilesTest extends TestCase
         );
         $binding = Ownership::binding($execution, 'root-1', 'prepare', '2');
         $profile->definition->assertBinding($profile, $binding, Catalogue::shipment('prepare', '2'));
+        Catalogue::machines()->assertBinding($profile, $binding, Catalogue::shipment('prepare', '2'));
+        $this->assertSame(1, Catalogue::machines()->childDepth($profile->definition));
         $data = $binding->toArray();
         $data['childPolicyFingerprint'] = Catalogue::shipment('prepare', '1')->fingerprint();
         $this->expectException(LogicException::class);

@@ -104,6 +104,28 @@ The assessment is recorded host evidence, not a signature or a proof that extern
 
 `$definition->assertBinding($parentProfile, $binding, $childProfile)` checks declared slot, hosting state, child machine/version, pinned profiles and required outcome. It performs no native lookup, authorization, admission, outcome verification or compensation. The binding's original owner/generation and joint scope authorization remain required.
 
+### Child binding catalog
+
+Register the definitions that may host each other in a `Definition\MachineCatalog`. Construction resolves each slot to its registered `machine@version` and refuses an invalid graph before any profile, binding or child uses it:
+
+```php
+$catalog = new MachineCatalog([$orders, $returns, $shipments], maxChildDepth: 1);
+
+$catalog->child($orders, 'shipment');   // the registered shipments definition
+$catalog->assertBinding($parentProfile, $binding, $childProfile);
+```
+
+| Outcome | Raised when |
+| --- | --- |
+| `InvalidMachineCatalog` `state_machine_definition_duplicate` | The same machine and version is registered twice. |
+| `InvalidMachineCatalog` `state_machine_child_definition_unregistered` | A slot names a child machine/version the catalog does not register. |
+| `InvalidMachineCatalog` `state_machine_child_binding_cycle` | A machine identity recurs along a slot route, including a slot hosting its own machine or the same machine under another version. |
+| `ResourceLimitExceeded` `state_machine_child_depth_limit_exceeded` | The optional `maxChildDepth` is below the deepest slot route. `0` allows no slots. |
+
+`InvalidMachineCatalog::$path` lists the route in declaration order: the first definition as `machine@version`, then each slot as `slot:machine@version`, for example `orders@1 -> shipment:shipments@1 -> parent:orders@1`. The same child definition may be declared by several parents or hosting states; only recursion is refused. Each definition is expanded once, so shared subtrees do not multiply the work. The catalog holds at most 1,024 definitions and a depth limit of at most 64.
+
+`$catalog->assertBinding()` requires a definition-bound parent profile whose definition is the registered one, and a child profile bound to the slot's exact registered child definition. It then applies `MachineDefinition::assertBinding()`. Validation is pure: it does not authorize the binding, start a child or prove its outcome. A catalog is configuration. Each execution still pins its own definition and profile fingerprints, and replacing the catalog does not migrate an existing run. Retained compensation separately refuses shared, cyclic or nested child scopes at runtime.
+
 Selecting a definition is explicit. Existing profiles and activity runtimes without one retain their original fingerprints and payloads. Attaching a definition creates a new profile fingerprint; it does not migrate an existing run. Retain the original profile, rules and handlers for that run.
 
 Inside a V2 workflow's `handle()` method:
@@ -357,7 +379,7 @@ Tests exercise refusal/unknown outcomes, source and scope substitution, changed 
 | 14–16 | SQL cancellation/commit fencing, lost acknowledgement and verified child-first recovery | Provider-specific reconciliation and publication delivery |
 | 17 | Cold replay of transitions, child admission and retained recovery; installed 2.33.0 upgrade, rollback and downgrade journey for the examples | Real-provider qualification |
 | 18 | Joint binding/scope authorization, generation and protected SQL substitution controls | Application authentication and authorization deployment |
-| 19 | Invalid definitions and unavailable pinned handlers refuse | Budgets and explicit migration policy |
+| 19 | Invalid definitions and unavailable pinned handlers refuse; configured budgets; catalog refusal of cyclic, recursive and unregistered child bindings and of a configured child depth | Explicit migration policy |
 | 20 | Structured decisions, complete condition explanations and retained ledger inspection | Application-facing operational tooling |
 | 21–22 | Recorded two-profile example, native persistence/crash tests, existing APIs preserved | Final package, installed qualification and versioned publication |
 
