@@ -272,16 +272,38 @@ That close is the server's own work on stored state, not the worker's, so it
 runs outside the worker's meter (`HistoryTransactionMeter::unmetered()`) and
 before the early check. A budget refusal therefore never prevents a close.
 
-The close is bounded instead. An ordinary run, one without opted-in
-timeout cleanup, closes in a single transaction only when its open work fits
-one batch. The batch is the completion budget's events less one (for the
-terminal event), and at most a fifth of its rows, since a cancelled activity
-writes its execution, its task, its event and the run's position. With the
-defaults that is 4,000 open activities, timers and tasks. A larger close is
-fenced and continued:
+The close is bounded instead. Each of its transactions may write at most the
+completion budget's history events (`history_transaction_size`) and rows
+(`completion_rows`). Every kind of work is charged what it writes, including
+its projections (`DeadlineCloseBudget`; #1290):
 
-1. One transaction cancels the first batch of open work, in the order and
-   with the history the single close writes: open activities with their tasks
+| Work | Events | Rows |
+| --- | ---: | ---: |
+| The close itself: failure, run, `WorkflowTimedOut`, task, projections | 1 | 10 |
+| A pass that does not close the run: task, run, projections | 0 | 6 |
+| A cancelled activity with its task | 1 | 7 |
+| A cancelled timer | 1 | 6 |
+| Another open task | 0 | 2 |
+| A failed accepted update, with `MessageCursorAdvanced` | 2 | 11 |
+| A child closed by `terminate` or `request_cancel`, before its own work | 3 | 19 |
+| A child asked to cancel (`request_cancellation`) | 3 | 17 |
+
+A child's termination runs that child's whole close in the parent's
+transaction. It is therefore charged its own open activities, timers and
+tasks, its accepted updates, and in turn the children its own policy closes.
+The unit tests check every row of this table against the statements each
+item writes, both in the close and in a pass that takes it alone, on SQLite
+and MySQL. A run projection no longer rewrites a stored row whose JSON
+differs only in key order. MySQL reorders JSON keys, so every projection
+used to rewrite each of a run's lineage rows, one more row per child link in
+every pass.
+
+An ordinary run, one without opted-in timeout cleanup, closes in a single
+transaction only when its open work and the close fit the budget, or when no
+open work is left. A larger close is fenced and continued:
+
+1. One transaction cancels the open work that fits, in the order and with
+   the history the single close writes: open activities with their tasks
    and `ActivityCancelled`, then pending timers with `TimerCancelled`, then
    other open tasks. The run stays open and expired. Its workflow task is
    released to Ready, and the completion answers `completed: false` with
@@ -291,13 +313,13 @@ fenced and continued:
    add open work between batches. An activity that finishes between batches
    records its outcome as it would have before the close began, and later
    batches skip it.
-3. The watchdog continues the close without a worker. Each pass takes one
-   batch. When the rest fits, the existing close times the run out with the
+3. The watchdog continues the close without a worker. Each pass takes what
+   fits. When the rest fits, the existing close times the run out with the
    same `WorkflowTimedOut` and failure.
 4. The cascade after the terminal event is bounded the same way. In order,
    it fails the accepted updates and then applies parent-close policy to
-   open children. The close transaction takes what is left of its batch,
-   and each child's terminate or cancellation is that child's own write.
+   open children, in link order. The close transaction takes what is left
+   of its budget.
 5. If work remains, the run already reads Failed, with its `WorkflowTimedOut`
    recorded, while its accepted updates and children are settled over later
    passes. Its closing task is held: Leased by `deadline-close-settlement`
@@ -311,10 +333,10 @@ fenced and continued:
 6. The watchdog finds due held tasks among the open tasks, by status and
    owner. It applies its connection, queue, namespace, instance and run
    scope before its scan limit, oldest due first. That set does not grow
-   with retained closed runs. Each pass settles one more batch, updates
-   before children and children in link order, skipping any child the run
-   already recorded a policy outcome for. When nothing is left, the task is
-   Completed and the marker becomes `settled`.
+   with retained closed runs. Each pass settles what fits its budget,
+   updates before children and children in link order, skipping any child
+   the run already recorded a policy outcome for. When nothing is left, the
+   task is Completed and the marker becomes `settled`.
 7. A pass that fails rolls back. In a separate transaction, it records the
    error as the held task's `last_error`, adds one to `attempt_count` and to
    the payload's `deadline_close_settlement_failures`, and backs the task off
@@ -327,11 +349,36 @@ fenced and continued:
    (`deadline_close_settlement`) shows its state, failed attempts, last error
    and next attempt.
 
-Every pass removes at least one open item, so a close always finishes, within
-one pass per batch. The history of a batched close is the history the single
-close writes, so a run closed by an earlier version and a run closed in
-batches replay the same way. Setting both limits to 0 restores the single
-transaction.
+Every pass, a batch of open work or a settlement pass, takes at least its
+first item even when that item alone is larger than the budget, so a close
+always finishes. Such an item is taken alone. Only a child with very large
+open work of its own can be one, since its terminate is a single command on
+that child; with the default limits, a child would need about 5,000 open
+items. The close transaction itself takes cascade work only when it fits.
+The history of a batched close is the history the single close writes, so a
+run closed by an earlier version and a run closed in batches replay the same
+way. Setting both limits to 0 restores the single transaction.
+
+**A failing ordinary close.** When the watchdog's close of an ordinary
+expired run fails, it rolls back. In a separate transaction the watchdog
+records the error as that workflow task's `last_error`, adds one to its
+`attempt_count` and to the payload's `deadline_close_failures`, and moves its
+`available_at` out by the settlement's backoff (10 seconds, doubling per
+failure up to an hour). The watchdog does not select the run again until the
+task is due. Closes that keep failing therefore no longer stay at the front of
+the oldest-deadline scan and starve the other expired runs in scope (#1290).
+The run stays open and expired, and an expired run accepts no workflow
+command, so the backoff only spaces out the retries. A task held for a
+settlement or under a live lease is never changed.
+
+**No operator release.** There is deliberately no command that releases a
+held settlement without finishing it. The settlement fails accepted updates
+and applies parent-close policy. Releasing it would leave those updates
+accepted with callers waiting forever, and leave children running that the
+policy closes. A settlement pass that fails is retried with backoff, and it
+stays visible in metrics, queue visibility and run describe with its last
+error. Once the cause is fixed, the next due pass settles it, at most an
+hour later.
 
 **Selection of expired runs.** Expired runs are taken oldest deadline first,
 then by id. The watchdog used to skip an expired run with

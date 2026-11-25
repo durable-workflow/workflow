@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- A bounded deadline close charges each item the history events and rows it
+  writes. A child closed by its parent's policy is charged its whole close,
+  including its open work, accepted updates and own children, and an accepted
+  update is charged both its events. No close or settlement transaction now
+  writes more than the event and row limits, except for a single item larger
+  than the whole budget, which is taken alone. An ordinary deadline close
+  that fails records its error and attempt on the run's workflow task and
+  backs off like a failing settlement, so it no longer starves other expired
+  runs. On MySQL, a run projection no longer rewrites lineage rows whose JSON
+  differs only in key order. (#1290)
+
 ## 2.40.0 - 2026-11-25
 
 - Workflow describe, full run detail and the bounded operator observation

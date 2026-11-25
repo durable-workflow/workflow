@@ -58,8 +58,9 @@ final class IdempotentProjectionUpsert
 
         try {
             if ($existing !== null) {
-                $existing->fill($values)
-                    ->save();
+                $existing->fill($values);
+                self::keepEquivalentJson($existing);
+                $existing->save();
 
                 return $existing;
             }
@@ -106,6 +107,52 @@ final class IdempotentProjectionUpsert
 
             return self::atomicUpsert($model, $key, $values);
         }
+    }
+
+    /**
+     * Keep a stored JSON value that differs from the projected one only in
+     * the order of its object keys. MySQL stores JSON with its keys reordered,
+     * so the decoded arrays never compare equal and every projection of a run
+     * rewrote each of its rows, one write per row whatever changed (#1290).
+     */
+    private static function keepEquivalentJson(Model $row): void
+    {
+        $attributes = $row->getAttributes();
+        $kept = false;
+        foreach (array_keys($row->getDirty()) as $column) {
+            $original = $row->getRawOriginal($column);
+            $projected = $attributes[$column] ?? null;
+            if (! is_string($original) || ! is_string($projected)
+                || ! $row->hasCast($column, ['array', 'json', 'object', 'collection'])) {
+                continue;
+            }
+            try {
+                $equivalent = self::canonicalJson(json_decode($original, true, 512, JSON_THROW_ON_ERROR))
+                    === self::canonicalJson(json_decode($projected, true, 512, JSON_THROW_ON_ERROR));
+            } catch (\JsonException) {
+                continue;
+            }
+            if ($equivalent) {
+                $attributes[$column] = $original;
+                $kept = true;
+            }
+        }
+        if ($kept) {
+            $row->setRawAttributes($attributes);
+        }
+    }
+
+    private static function canonicalJson(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+        $value = array_map(self::canonicalJson(...), $value);
+        if (! array_is_list($value)) {
+            ksort($value, SORT_STRING);
+        }
+
+        return $value;
     }
 
     /**
