@@ -138,6 +138,12 @@ return [
                 // App\Exceptions\LegacyInvoiceDeclined::class => App\Exceptions\InvoiceDeclined::class,
             ],
         ],
+        // Ordered worker interceptors around workflow tasks, activities and
+        // queries run in this process. Class names resolve from the container;
+        // the first is the outermost wrapper.
+        'interceptors' => [
+            // App\Workflows\AuditInterceptor::class,
+        ],
         // Experimental (workflow issue 996): pass a domain entity to an activity
         // as a portable reference. Each logical type names an adapter that
         // turns the entity into {type, id, version} when the activity is

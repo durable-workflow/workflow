@@ -256,12 +256,12 @@ They first shipped in these steps:
   `RuleEvaluation`, `ConditionEvaluation`, `MachineAssessment`), budgets
   (`DefinitionLimits`, `ExecutionLimits`, `Execution\ResourceLimitExceeded`),
   child bindings (`Binding\*`) and native child start.
-- **Unreleased:** the child binding catalog (`Definition\MachineCatalog`,
-  `Definition\InvalidMachineCatalog`) and the `child_depth` dimension of
-  `Execution\ResourceLimitExceeded`.
-- **Unreleased:** transition diagnostics (`Execution\TransitionStage`,
-  `TransitionResult::explain()` and its `stage`, `snapshotId` and `phase`
-  properties) and `Inspection\MachineInspection`.
+- **2.41.0:** the child binding catalog (`Definition\MachineCatalog`,
+  `Definition\InvalidMachineCatalog`), the `child_depth` dimension of
+  `Execution\ResourceLimitExceeded`, transition diagnostics
+  (`Execution\TransitionStage`, `TransitionResult::explain()` and its
+  `stage`, `snapshotId` and `phase` properties) and
+  `Inspection\MachineInspection`.
 
 Members marked `@internal`, such as `Execution\ExecutionBudget`, are
 implementation details. Recorded histories of state-machine runs replay under

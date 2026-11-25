@@ -23,6 +23,9 @@ use Workflow\V2\Exceptions\ActivityTimeoutException;
 use Workflow\V2\Exceptions\PreparedLocalActivityContractException;
 use Workflow\V2\Exceptions\RestoredWorkflowException;
 use Workflow\V2\Exceptions\StructuralLimitExceededException;
+use Workflow\V2\Interceptors\ActivityInterceptorContext;
+use Workflow\V2\Interceptors\ActivityInterceptorContexts;
+use Workflow\V2\Interceptors\WorkerInterceptors;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowFailure;
@@ -715,7 +718,17 @@ final class LocalActivityExecutor
             $throwable = $mocked['throwable'];
         } elseif ($throwable === null) {
             try {
-                $result = $activity->{$entryMethod->getName()}(...$arguments);
+                $result = WorkerInterceptors::activity(
+                    static fn (): ActivityInterceptorContext => ActivityInterceptorContexts::forLocal(
+                        $run,
+                        $task,
+                        $execution,
+                        $activity,
+                        $arguments,
+                    ),
+                    $arguments,
+                    static fn (array $arguments): mixed => $activity->{$entryMethod->getName()}(...$arguments),
+                );
             } catch (Throwable $error) {
                 $throwable = $error;
             }
