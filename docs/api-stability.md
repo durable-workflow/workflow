@@ -243,7 +243,7 @@ incompatibly. That is stricter than the platform `experimental` level, which
 allows a change in any release, so it does not contradict the platform
 authority. Release notes call out every change.
 
-They first shipped in two steps:
+They first shipped in these steps:
 
 - **2.23.0:** the transition contract (`Transition\*`, `Execution\ExecutionReceipt`,
   `ExecutionReference`, `TransitionResult`, `TransitionStatus`, `TransitionRuntime`,
@@ -256,6 +256,12 @@ They first shipped in two steps:
   `RuleEvaluation`, `ConditionEvaluation`, `MachineAssessment`), budgets
   (`DefinitionLimits`, `ExecutionLimits`, `Execution\ResourceLimitExceeded`),
   child bindings (`Binding\*`) and native child start.
+- **2.41.0:** the child binding catalog (`Definition\MachineCatalog`,
+  `Definition\InvalidMachineCatalog`), the `child_depth` dimension of
+  `Execution\ResourceLimitExceeded`, transition diagnostics
+  (`Execution\TransitionStage`, `TransitionResult::explain()` and its
+  `stage`, `snapshotId` and `phase` properties) and
+  `Inspection\MachineInspection`.
 
 Members marked `@internal`, such as `Execution\ExecutionBudget`, are
 implementation details. Recorded histories of state-machine runs replay under

@@ -80,6 +80,88 @@ final class TransitionRunnerTest extends TestCase
         $this->assertSame('compensated', $runner->step('verified')->result['status']);
     }
 
+    public function testExplanationNamesTheGateAndSnapshotForEveryProtocolOutcome(): void
+    {
+        $unrelated = $this->runner([
+            'event' => 'unrelated',
+        ]);
+        $selection = $unrelated->step()
+            ->result['explanation'];
+        $this->assertSame(['selection', null, null], [
+            $selection['stage'],
+            $selection['snapshot'],
+            $selection['transitionKey'],
+        ]);
+        $ambiguous = $this->runner([
+            'ambiguous' => true,
+        ]);
+        $this->assertSame(['selection', 'ambiguous'], $this->stage($ambiguous->step()->result));
+
+        $runner = $this->runner();
+        $permission = $runner->step($this->snapshot($runner->step(), 'unsatisfied', 'unsatisfied'))
+            ->result['explanation'];
+        $this->assertSame([
+            'version' => 1,
+            'status' => 'blocked',
+            'reason' => 'permission_unsatisfied',
+            'stage' => 'permission',
+            'transitionKey' => 'process',
+            'snapshot' => [
+                'id' => 'snapshot-before',
+                'phase' => 'before',
+            ],
+            'execution' => $permission['execution'],
+            'assessment' => [
+                'verdict' => 'unsatisfied',
+                'reason' => 'permission_unsatisfied',
+                'evidence' => [],
+            ],
+        ], $permission);
+        $this->assertSame('operation-1', $permission['execution']['executionId']);
+
+        $runner = $this->runner();
+        $this->assertSame(['target', 'unknown'], $this->stage(
+            $runner->step($this->snapshot($runner->step(), 'unknown'))
+                ->result
+        ));
+        $runner = $this->runner([
+            'hasWork' => false,
+        ]);
+        $this->assertSame(['target', 'pending'], $this->stage(
+            $runner->step($this->snapshot($runner->step()))
+                ->result
+        ));
+
+        $runner = $this->runner();
+        $admit = $runner->step($this->snapshot($runner->step()));
+        $admission = $runner->step($this->admission($admit, 'unsatisfied'))
+            ->result;
+        $this->assertSame(['admission', 'blocked'], $this->stage($admission));
+        $this->assertSame('snapshot-before', $admission['explanation']['snapshot']['id']);
+
+        $runner = $this->runner();
+        $admit = $runner->step($this->snapshot($runner->step()));
+        $runner->step($this->admission($admit));
+        $runner->step('first-created');
+        $after = $runner->step('second-created');
+        $pending = $runner->step($this->snapshot($after))
+            ->result;
+        $this->assertSame(['target', 'pending'], $this->stage($pending));
+        $this->assertSame([
+            'id' => 'snapshot-after',
+            'phase' => 'after',
+        ], $pending['explanation']['snapshot']);
+
+        $runner = $this->runner([
+            'profile' => 'imported',
+        ]);
+        $commit = $runner->step($this->snapshot($runner->step(), 'satisfied', 'unsatisfied'));
+        $committed = $runner->step($this->commit($commit))
+            ->result;
+        $this->assertSame(['commit', 'committed'], $this->stage($committed));
+        $this->assertSame('before', $committed['explanation']['snapshot']['phase']);
+    }
+
     public static function decisions(): array
     {
         return [
@@ -227,7 +309,10 @@ final class TransitionRunnerTest extends TestCase
         $runner = $this->runner();
         $snapshot = $this->snapshot($runner->step(), 'satisfied');
         $snapshot['revision'] = 'revision-2';
-        $this->assertSame('conflict', $runner->step($snapshot)->result['status']);
+        $result = $runner->step($snapshot)
+            ->result;
+        $this->assertSame(['source', 'conflict'], $this->stage($result));
+        $this->assertSame('snapshot-before', $result['explanation']['snapshot']['id']);
     }
 
     public function testCancellationAtCommitDoesNotBecomeSuccess(): void
@@ -237,7 +322,29 @@ final class TransitionRunnerTest extends TestCase
         $result = $this->commit($commit);
         $result['status'] = 'cancellation_requested';
         $result['reason'] = 'cancellation_won';
-        $this->assertSame('cancellation_requested', $runner->step($result)->result['status']);
+        $this->assertSame(['commit', 'cancellation_requested'], $this->stage($runner->step($result)->result));
+    }
+
+    public function testCommitRevisionConflictIsAttributedToTheCommit(): void
+    {
+        $runner = $this->runner();
+        $commit = $runner->step($this->snapshot($runner->step(), 'satisfied'));
+        $result = $this->commit($commit);
+        $result['status'] = 'conflict';
+        $result['reason'] = 'revision_changed';
+        $this->assertSame(['commit', 'conflict'], $this->stage($runner->step($result)->result));
+    }
+
+    public function testUnknownTargetAfterWorkNamesTheAfterSnapshot(): void
+    {
+        $runner = $this->runner();
+        $admit = $runner->step($this->snapshot($runner->step()));
+        $runner->step($this->admission($admit));
+        $runner->step('first-created');
+        $result = $runner->step($this->snapshot($runner->step('second-created'), 'unknown'))
+            ->result;
+        $this->assertSame(['target', 'unknown'], $this->stage($result));
+        $this->assertSame('after', $result['explanation']['snapshot']['phase']);
     }
 
     public function testSubstitutedCommitAcknowledgementFails(): void
@@ -374,7 +481,10 @@ final class TransitionRunnerTest extends TestCase
         $after = $this->snapshot($runner->step('second-created'), 'satisfied');
         $after['state'] = 'Processing';
         $after['revision'] = 'revision-2';
-        $this->assertSame('conflict', $runner->step($after)->result['status']);
+        $result = $runner->step($after)
+            ->result;
+        $this->assertSame(['source', 'conflict'], $this->stage($result));
+        $this->assertSame('snapshot-after', $result['explanation']['snapshot']['id']);
     }
 
     private function history(array $activities): array
@@ -456,6 +566,14 @@ final class TransitionRunnerTest extends TestCase
             'status' => 'committed',
             'reason' => 'transition_committed',
         ];
+    }
+
+    /**
+     * @return array{?string, string}
+     */
+    private function stage(array $result): array
+    {
+        return [$result['explanation']['stage'], $result['explanation']['status']];
     }
 
     private function replace(array &$payload, string $field, string $value): void

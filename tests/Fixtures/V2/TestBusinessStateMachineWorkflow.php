@@ -74,6 +74,7 @@ final class TestBusinessStateMachineWorkflow extends Workflow
                 'reason' => $result->reason,
                 'transition' => $result->transitionKey,
                 'evidence' => $result->assessment?->evidence ?? [],
+                'explanation' => $result->explain(),
             ];
         } catch (Throwable $error) {
             if (! ($options['compensateOnFailure'] ?? false)) {

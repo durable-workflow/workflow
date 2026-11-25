@@ -34,6 +34,8 @@ final class MachineInvariantRunnerTest extends TestCase
         $this->assertTrue($done->completed);
         $this->assertSame($expected, $done->result['status']);
         $this->assertSame('owner_' . $invariant, $done->result['reason']);
+        $this->assertSame('invariant', $done->result['explanation']['stage']);
+        $this->assertSame('before', $done->result['explanation']['snapshot']['phase']);
         $this->assertSame(['complete_workflow'], array_column($done->commands, 'type'));
     }
 
@@ -47,6 +49,9 @@ final class MachineInvariantRunnerTest extends TestCase
         $after = $runner->step('second-created');
         $done = $runner->step($this->snapshot($after, 'satisfied', 'unsatisfied'));
         $this->assertSame('blocked', $done->result['status']);
+        // The revocation is attributed to the post-work snapshot, not the admission that preceded it.
+        $this->assertSame('invariant', $done->result['explanation']['stage']);
+        $this->assertSame('after', $done->result['explanation']['snapshot']['phase']);
         $this->assertSame(['complete_workflow'], array_column($done->commands, 'type'));
     }
 

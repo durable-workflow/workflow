@@ -104,6 +104,30 @@ The assessment is recorded host evidence, not a signature or a proof that extern
 
 `$definition->assertBinding($parentProfile, $binding, $childProfile)` checks declared slot, hosting state, child machine/version, pinned profiles and required outcome. It performs no native lookup, authorization, admission, outcome verification or compensation. The binding's original owner/generation and joint scope authorization remain required.
 
+### Child binding catalog
+
+Register the definitions that may host each other in a `Definition\MachineCatalog`. Construction resolves each slot to its registered `machine@version` and refuses an invalid graph before any profile, binding or child uses it:
+
+```php
+$catalog = new MachineCatalog([$orders, $returns, $shipments], maxChildDepth: 1);
+
+$catalog->child($orders, 'shipment');   // the registered shipments definition
+$catalog->assertBinding($parentProfile, $binding, $childProfile);
+```
+
+| Outcome | Raised when |
+| --- | --- |
+| `InvalidMachineCatalog` `state_machine_definition_duplicate` | The same machine and version is registered twice. |
+| `InvalidMachineCatalog` `state_machine_child_definition_unregistered` | A slot names a child machine/version the catalog does not register. |
+| `InvalidMachineCatalog` `state_machine_child_binding_cycle` | A machine identity recurs along a slot route, including a slot hosting its own machine or the same machine under another version. |
+| `ResourceLimitExceeded` with dimension `child_depth` and reason `state_machine_child_depth_limit_exceeded` | The optional `maxChildDepth` is below the deepest slot route, which `observed` reports. `0` allows no slots. |
+
+`InvalidMachineCatalog::$path` lists the route in declaration order: the first definition as `machine@version`, then each slot as `slot:machine@version`, for example `orders@1 -> shipment:shipments@1 -> parent:orders@1`. The same child definition may be declared by several parents or hosting states; only recursion is refused. Each definition is expanded once, so shared subtrees do not multiply the work. The catalog holds at most 1,024 definitions and a depth limit of at most 64.
+
+The catalog is opt-in: native child start, reservations and `MachineDefinition::assertBinding()` do not consult it. Build it once from trusted configuration and call `$catalog->assertBinding()` in the host's binding authorization, as the configured example does. Retained compensation supports one child level, because `DurableScope` refuses a nested child scope at runtime, so use `maxChildDepth: 1` when children participate in retained scopes.
+
+`$catalog->assertBinding()` requires a definition-bound parent profile whose definition is the registered one, and a child profile bound to the slot's exact registered child definition. It then applies `MachineDefinition::assertBinding()`. Validation is pure: it does not authorize the binding, start a child or prove its outcome. A catalog is configuration. Each execution still pins its own definition and profile fingerprints, and replacing the catalog does not migrate an existing run. Retained compensation separately refuses shared, cyclic or nested child scopes at runtime.
+
 Selecting a definition is explicit. Existing profiles and activity runtimes without one retain their original fingerprints and payloads. Attaching a definition creates a new profile fingerprint; it does not migrate an existing run. Retain the original profile, rules and handlers for that run.
 
 Inside a V2 workflow's `handle()` method:
@@ -329,6 +353,53 @@ the original terminal history. Retention across closure requires those
 The fixture does not qualify a remote provider or the full
 [consumer scenario matrix](https://github.com/durable-workflow/workflow/issues/1069#issuecomment-6889952106).
 
+## Diagnostics and inspection
+
+`TransitionResult::explain()` returns a portable, versioned explanation of one result. `toArray()` keeps its earlier shape.
+
+```php
+$result->explain();
+// ['version' => 1, 'status' => 'blocked', 'reason' => 'permission_unsatisfied',
+//  'stage' => 'permission', 'transitionKey' => 'process',
+//  'snapshot' => ['id' => 'snapshot-7', 'phase' => 'before'],
+//  'execution' => [...], 'assessment' => ['verdict' => ..., 'reason' => ..., 'evidence' => [...]]]
+```
+
+`stage` is the `Execution\TransitionStage` gate that produced the result, so the same status from different gates stays distinguishable without parsing application reasons:
+
+| Stage | Statuses | Meaning |
+| --- | --- | --- |
+| `selection` | `unavailable`, `ambiguous` | No unique event/source edge. No snapshot was recorded. |
+| `source` | `conflict` | The recorded snapshot's state or revision differs from the expected source. |
+| `invariant` | `blocked`, `unknown` | The pinned shared invariant refused, before or after work. |
+| `target` | `pending`, `unknown` | The target was unknown, had no declared work, or stayed unsatisfied after work. |
+| `permission` | `blocked`, `unknown` | The pure execution guard refused. |
+| `admission` | `blocked`, `unknown` | Recorded live admission refused. |
+| `budget` | `blocked` | A forward execution budget refused the next command. No snapshot is named. |
+| `commit` | `committed`, `conflict`, `cancellation_requested` | The protected commit acknowledged the decision. |
+
+`snapshot` names the recorded snapshot and phase the gate evaluated. For the `invariant`, `target` and `permission` stages, use its ID to find the complete `ConditionEvaluation` the host retained for that snapshot, with its reasons, evidence references and missing facts. For `admission` and `commit`, the reason comes from the recorded admission or commit acknowledgement; the snapshot only identifies the evidence that request was based on. A post-work refusal names the `after` snapshot, so a revoked invariant is not attributed to the earlier admission. Results built by application code without a stage keep `stage` and `snapshot` null.
+
+`Inspection\MachineInspection` correlates one business subject for operator tooling. The host builds it outside workflow code from values it has already authorized for that subject:
+
+```php
+$inspection = new MachineInspection(
+    $profile, $state, $revision, $execution, $result,
+    [$childBinding, $neverAdmittedChild, $childReservation],
+    [['scope' => $scopeIdentity, 'description' => $scopeRecovery->describe($scopeIdentity, $principal)]],
+);
+$inspection->toArray(); // version, machine, business, execution, transition, children, compensation
+```
+
+- `machine` gives the pinned machine, definition and profile versions with the policy and definition fingerprints.
+- `business` is the current state and revision from the application's authoritative store. It is distinct from workflow-run status.
+- `transition` is `explain()` of the inspected execution's result.
+- Each `children` entry gives `status` (`admitted`, `never_admitted` or `reserved`), the binding key, slot, generation, hosting state, child workflow type, required outcome, the parent execution that bound it, the child instance and run, a closure ID and `participation`. An admitted child is not evidence of its business outcome.
+- `participation` links a retained child to compensation: `parentScopeId`, `childScopeId` and `obligationKey` from its reservation, or null for a child without retained participation. Join them with the `scopeId` of the `compensation` entries. A `NeverAdmittedChild` carries its reservation. For an admitted child, pass its `ChildReservation` next to its `ChildBinding`; both must carry the same binding identity.
+- Each `compensation` entry is the retained scope's identity and ID followed by its `ScopeRecovery::describe()` keys, including the next action and unresolved obligations.
+
+Construction refuses a state the profile does not declare, an empty revision, an execution under another profile, a transition of another execution, child work of another subject or profile, a repeated or contradictory binding generation (admitted and never admitted, or a changed identity), a repeated scope, and a scope description that does not have the documented `describe()` keys and value types. At most 256 children and 256 scopes are accepted. The inspection performs no I/O and is not an authorization or persistence boundary. The host remains responsible for authorizing each part and for pairing scopes with the subject, because scope keys are application-defined.
+
 ## Follow-up implementation sequence
 
 1. Retain the original machine definition, profiles, rule versions and handlers across deployments; define an explicit migration policy before moving existing instances.
@@ -357,8 +428,8 @@ Tests exercise refusal/unknown outcomes, source and scope substitution, changed 
 | 14–16 | SQL cancellation/commit fencing, lost acknowledgement and verified child-first recovery | Provider-specific reconciliation and publication delivery |
 | 17 | Cold replay of transitions, child admission and retained recovery; installed 2.33.0 upgrade, rollback and downgrade journey for the examples | Real-provider qualification |
 | 18 | Joint binding/scope authorization, generation and protected SQL substitution controls | Application authentication and authorization deployment |
-| 19 | Invalid definitions and unavailable pinned handlers refuse | Budgets and explicit migration policy |
-| 20 | Structured decisions, complete condition explanations and retained ledger inspection | Application-facing operational tooling |
+| 19 | Invalid definitions and unavailable pinned handlers refuse; configured budgets; catalog refusal of cyclic, recursive and unregistered child bindings and of a configured child depth | Explicit migration policy |
+| 20 | Structured decisions, complete condition explanations, transition stages and snapshot correlation, retained ledger inspection, and the `MachineInspection` view linking the execution, child bindings and their retained scopes | Host pairing of root scopes with the subject; operator presentation (Waterline) |
 | 21–22 | Recorded two-profile example, native persistence/crash tests, existing APIs preserved | Final package, installed qualification and versioned publication |
 
 This table reports scope, not completion of the issue's unchecked acceptance criteria.
