@@ -930,13 +930,12 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
             'workflows.v2.structural_limits.completion_rows' => 0,
         ]);
         $parent = $this->createExpiredParent(children: 4, updates: 0);
+        $runs = [$parent['run']];
         foreach (WorkflowLink::query()->where('parent_workflow_run_id', $parent['run']->id)->get() as $link) {
-            $this->seedOpenWork(
-                WorkflowRun::query()->findOrFail($link->child_workflow_run_id),
-                activities: 5,
-                timers: 0
-            );
+            $runs[] = $child = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+            $this->seedOpenWork($child, activities: 5, timers: 0);
         }
+        $this->projectRuns($runs);
         config([
             'workflows.v2.structural_limits.completion_rows' => 120,
         ]);
@@ -1071,7 +1070,9 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
     /**
      * The history events and rows each top-level transaction (or statement
      * outside one) writes while $work runs, read from the statements
-     * themselves.
+     * themselves. Writes to Laravel's cache tables are not workflow storage:
+     * long-poll wake signals land there only when the application uses the
+     * database cache store on the same connection.
      *
      * @return list<array{events: int, rows: int}>
      */
@@ -1093,7 +1094,10 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
         );
         DB::listen(static function ($query) use (&$writes, &$index, &$recording): void {
             $rows = $recording ? HistoryTransactionMeter::statementRows($query->sql) : 0;
-            if ($rows === 0) {
+            if ($rows === 0 || preg_match(
+                '/^\s*(insert\s+into|update|delete\s+from)\s+[`"]?\w*cache(_locks)?[`"]?\s/i',
+                $query->sql,
+            ) === 1) {
                 return;
             }
             if ($query->connection->transactionLevel() === 0) {
