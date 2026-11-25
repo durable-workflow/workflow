@@ -22,9 +22,11 @@ interface WorkerInterceptor
      * Wrap one workflow task: the replay and run of workflow code that records
      * the task's history.
      *
-     * The hook runs for every workflow task, including tasks that replay
-     * committed history; use {@see WorkflowTaskInterceptorContext::$replaying}
-     * to avoid repeating side effects. Throwing rolls the task back, so
+     * The hook runs once per task attempt, inside the task transaction. The
+     * outcome lists only what this task appends, even when
+     * {@see WorkflowTaskInterceptorContext::$replaying} shows the code first
+     * re-ran a committed prefix. Side effects can repeat when an attempt is
+     * retried, so defer them until commit. Throwing rolls the task back, so
      * nothing is recorded, and the task is retried.
      *
      * @param callable(WorkflowTaskInterceptorContext): WorkflowTaskOutcome $next

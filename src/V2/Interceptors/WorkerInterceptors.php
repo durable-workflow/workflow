@@ -13,6 +13,7 @@ use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ConfiguredV2Models;
+use Workflow\V2\Support\EmbeddedLocalActivityScope;
 use Workflow\V2\Support\SqliteTransaction;
 use Workflow\V2\Support\TaskRepairPolicy;
 
@@ -66,12 +67,15 @@ final class WorkerInterceptors
      */
     public static function workflowTask(WorkflowRun $run, WorkflowTask $task, Closure $core): ?WorkflowTask
     {
-        $interceptors = self::resolve();
+        try {
+            $interceptors = self::resolve();
+        } catch (Throwable $failure) {
+            throw WorkflowTaskInterceptorFailed::threw($failure);
+        }
         if ($interceptors === []) {
             return $core();
         }
 
-        $context = WorkflowTaskInterceptorContext::forTask($run, $task);
         $before = (int) ($run->last_history_sequence ?? 0);
         $state = new class() {
             public int $calls = 0;
@@ -81,12 +85,19 @@ final class WorkerInterceptors
             public ?WorkflowTask $result = null;
 
             public ?Throwable $coreFailure = null;
+
+            public ?WorkflowTaskInterceptorFailed $violation = null;
+
+            /**
+             * @var array<string, mixed>|null
+             */
+            public ?array $committed = null;
         };
-        $terminal = static function () use ($core, $state, $run, $before): WorkflowTaskOutcome {
+        $terminal = static function () use ($core, $state, $run, $task, $before): WorkflowTaskOutcome {
             if (++$state->calls > 1) {
-                throw new WorkflowTaskInterceptorFailed(
+                throw $state->violation ??= new WorkflowTaskInterceptorFailed(
                     null,
-                    'A workflow task interceptor called $next more than once.'
+                    'Workflow task interceptor called $next more than once.'
                 );
             }
             try {
@@ -97,34 +108,52 @@ final class WorkerInterceptors
                 throw $failure;
             }
             $state->completed = true;
+            $state->committed = self::fingerprint($run, $task, $state->result);
 
             return self::outcome($run, $before, $state->result);
         };
 
-        $handler = $terminal;
-        foreach (array_reverse($interceptors) as $interceptor) {
-            $next = $handler;
-            $handler = static fn (): WorkflowTaskOutcome => self::guardWorkflowHook($interceptor, $context, $next);
-        }
-
         try {
+            $context = WorkflowTaskInterceptorContext::forTask($run, $task);
+            $handler = $terminal;
+            foreach (array_reverse($interceptors) as $interceptor) {
+                $next = $handler;
+                $handler = static fn (): WorkflowTaskOutcome => self::guardWorkflowHook(
+                    $interceptor,
+                    $context,
+                    $next,
+                    $state
+                );
+            }
             $handler();
         } catch (Throwable $failure) {
             if ($state->coreFailure !== null) {
                 throw $state->coreFailure;
             }
 
-            throw $failure instanceof WorkflowTaskInterceptorFailed
+            throw $state->violation ?? ($failure instanceof WorkflowTaskInterceptorFailed
                 ? $failure
-                : WorkflowTaskInterceptorFailed::threw($failure);
+                : WorkflowTaskInterceptorFailed::threw($failure));
         }
+        // A violation stays fatal even when an outer hook caught it and returned.
         if ($state->coreFailure !== null) {
             throw $state->coreFailure;
+        }
+        if ($state->violation !== null) {
+            throw $state->violation;
         }
         if (! $state->completed) {
             throw new WorkflowTaskInterceptorFailed(
                 null,
-                'A workflow task interceptor returned without calling $next.'
+                'Workflow task interceptor returned without calling $next.'
+            );
+        }
+        // A hook that rolled back a nested transaction around $next would undo
+        // the task's writes while the engine commits. Refuse that task.
+        if (self::fingerprint($run, $task, $state->result) !== $state->committed) {
+            throw new WorkflowTaskInterceptorFailed(
+                null,
+                'Workflow task interceptor changed or rolled back the task\'s recorded state.'
             );
         }
 
@@ -187,7 +216,8 @@ final class WorkerInterceptors
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
                 ->lockForUpdate()
                 ->find($taskId);
-            if ($task === null || $task->status !== TaskStatus::Leased) {
+            // Only the claim that ran the failed attempt may release it.
+            if ($task === null || ! EmbeddedLocalActivityScope::owns($task)) {
                 return null;
             }
 
@@ -251,13 +281,14 @@ final class WorkerInterceptors
         WorkerInterceptor $interceptor,
         WorkflowTaskInterceptorContext $context,
         Closure $next,
+        object $state,
     ): WorkflowTaskOutcome {
         $called = false;
         $outcome = $interceptor->executeWorkflowTask(
             $context,
-            static function () use ($interceptor, $next, &$called): WorkflowTaskOutcome {
+            static function () use ($interceptor, $next, $state, &$called): WorkflowTaskOutcome {
                 if ($called) {
-                    throw WorkflowTaskInterceptorFailed::calledNextTwice($interceptor::class);
+                    throw $state->violation ??= WorkflowTaskInterceptorFailed::calledNextTwice($interceptor::class);
                 }
                 $called = true;
 
@@ -265,10 +296,33 @@ final class WorkerInterceptors
             },
         );
         if (! $called) {
-            throw WorkflowTaskInterceptorFailed::skippedNext($interceptor::class);
+            throw $state->violation ??= WorkflowTaskInterceptorFailed::skippedNext($interceptor::class);
         }
 
         return $outcome;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function fingerprint(WorkflowRun $run, WorkflowTask $task, ?WorkflowTask $nextTask): array
+    {
+        $runRow = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+            ->whereKey($run->id)
+            ->first(['last_history_sequence', 'status']);
+        $taskRow = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+            ->whereKey($task->id)
+            ->first(['status', 'attempt_count']);
+
+        return [
+            'history' => $runRow?->getRawOriginal('last_history_sequence'),
+            'run_status' => $runRow?->getRawOriginal('status'),
+            'task_status' => $taskRow?->getRawOriginal('status'),
+            'task_attempt' => $taskRow?->getRawOriginal('attempt_count'),
+            'next_task' => $nextTask === null ? null : ConfiguredV2Models::query('task_model', WorkflowTask::class)
+                ->whereKey($nextTask->id)
+                ->exists(),
+        ];
     }
 
     private static function outcome(WorkflowRun $run, int $before, ?WorkflowTask $nextTask): WorkflowTaskOutcome

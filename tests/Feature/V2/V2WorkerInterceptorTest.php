@@ -4,7 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
-use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Foundation\Testing\DatabaseMigrations;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use InvalidArgumentException;
 use Orchestra\Testbench\TestCase;
@@ -21,6 +22,7 @@ use Workflow\V2\Interceptors\QueryTaskInterceptorContext;
 use Workflow\V2\Interceptors\WorkerInterceptor;
 use Workflow\V2\Interceptors\WorkerInterceptors;
 use Workflow\V2\Interceptors\WorkflowTaskInterceptorContext;
+use Workflow\V2\Interceptors\WorkflowTaskInterceptorFailed;
 use Workflow\V2\Interceptors\WorkflowTaskOutcome;
 use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
@@ -31,7 +33,7 @@ use Workflow\V2\WorkflowStub;
 
 final class V2WorkerInterceptorTest extends TestCase
 {
-    use RefreshDatabase;
+    use DatabaseMigrations;
 
     protected function setUp(): void
     {
@@ -195,6 +197,53 @@ final class V2WorkerInterceptorTest extends TestCase
             $this->app->call([new RunWorkflowTask($task->id), 'handle']);
             self::assertContains('ActivityScheduled', $this->historyTypes($stub->runId()));
         }
+    }
+
+    public function testSwallowedViolationAndNestedRollbackStillReleaseTheTask(): void
+    {
+        foreach ([
+            'swallowed skip' => [new SwallowingInterceptor(), new NextCallingInterceptor(0)],
+            'swallowed repeat' => [new SwallowingInterceptor(), new NextCallingInterceptor(2)],
+            'nested rollback' => [new NestedRollbackInterceptor()],
+            'unresolvable entry' => [\stdClass::class],
+        ] as $case => $interceptors) {
+            InterceptorAudit::reset();
+            $this->configure([]);
+            $stub = $this->start('Ada');
+            $task = $this->readyWorkflowTask($stub->runId());
+            $before = $this->historyTypes($stub->runId());
+            config()
+                ->set('workflows.v2.interceptors', $interceptors);
+
+            $this->app->call([new RunWorkflowTask($task->id), 'handle']);
+
+            $task->refresh();
+            self::assertSame($before, $this->historyTypes($stub->runId()), $case);
+            self::assertSame(TaskStatus::Ready, $task->status, $case);
+            self::assertSame(1, $task->repair_count, $case);
+            self::assertStringContainsString('Workflow task interceptor', (string) $task->last_error, $case);
+        }
+    }
+
+    public function testOnlyTheOriginalClaimReleasesAFailedTask(): void
+    {
+        $stub = $this->start('Ada');
+        $task = $this->readyWorkflowTask($stub->runId());
+        $task->forceFill([
+            'status' => TaskStatus::Leased,
+            'lease_owner' => $task->id,
+            'lease_expires_at' => now()
+                ->addMinute(),
+            'attempt_count' => 2,
+        ])->save();
+
+        self::assertNull(WorkerInterceptors::releaseFailedTask(
+            $task->id,
+            WorkflowTaskInterceptorFailed::threw(new RuntimeException('late failure')),
+        ));
+        $task->refresh();
+        self::assertSame(TaskStatus::Leased, $task->status);
+        self::assertSame(0, $task->repair_count);
     }
 
     public function testInterceptorClassNamesResolveFromTheContainer(): void
@@ -470,6 +519,25 @@ final class SwallowingInterceptor extends PassthroughWorkerInterceptor
 
             return new WorkflowTaskOutcome([], 'completed', null);
         }
+    }
+}
+
+final class NestedRollbackInterceptor extends PassthroughWorkerInterceptor
+{
+    public function executeWorkflowTask(WorkflowTaskInterceptorContext $context, callable $next): WorkflowTaskOutcome
+    {
+        $outcome = null;
+        try {
+            DB::transaction(static function () use ($context, $next, &$outcome): void {
+                $outcome = $next($context);
+
+                throw new RuntimeException('undo the task inside a savepoint');
+            });
+        } catch (RuntimeException) {
+            // Swallow the rollback and pretend the task succeeded.
+        }
+
+        return $outcome ?? new WorkflowTaskOutcome([], null, null);
     }
 }
 

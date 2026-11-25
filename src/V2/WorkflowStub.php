@@ -877,11 +877,25 @@ final class WorkflowStub
                 $validatedArguments['arguments'],
             ),
             $validatedArguments['arguments'],
-            static fn (array $arguments): mixed => (new QueryStateReplayer())->query(
-                $run,
-                $resolvedTarget['method'],
-                $arguments
-            ),
+            static function (array $arguments) use ($run, $resolvedTarget, $validatedArguments): mixed {
+                // Arguments an interceptor rewrote go through the same query contract.
+                if ($arguments !== $validatedArguments['arguments']) {
+                    $revalidated = WorkflowQueryContract::validatedArgumentsForRun(
+                        $run,
+                        $resolvedTarget['name'],
+                        $arguments
+                    );
+                    if ($revalidated['validation_errors'] !== []) {
+                        throw new InvalidQueryArgumentsException(
+                            $resolvedTarget['name'],
+                            $revalidated['validation_errors']
+                        );
+                    }
+                    $arguments = $revalidated['arguments'];
+                }
+
+                return (new QueryStateReplayer())->query($run, $resolvedTarget['method'], $arguments);
+            },
         );
     }
 

@@ -23,14 +23,16 @@ final class WorkflowTaskInterceptorContext
         'ActivityScheduled', 'TimerScheduled', 'ChildWorkflowScheduled', 'ServiceOperationScheduled',
         'ServiceCallStarted', 'ExternalSignalRequested', 'ConditionWaitOpened', 'SignalWaitOpened',
         'CancellationScopeOpened', 'SideEffectRecorded', 'VersionMarkerRecorded', 'MemoUpserted',
-        'SearchAttributesUpserted', 'SignalApplied', 'UpdateApplied', 'UpdateCompleted',
+        'SearchAttributesUpserted', 'SignalApplied', 'UpdateApplied', 'UpdateCompleted', 'SelectionResolved',
+        'SelectionOperationCancelled',
     ];
 
     /**
      * @param array<string, mixed> $task snapshot of the claimed task row
      * @param bool $replaying true when earlier workflow tasks already recorded commands for
      *                        this run, so the workflow code re-runs that committed prefix
-     *                        before any new execution
+     *                        before reaching new code. It is not a deduplication key: the
+     *                        outcome lists only what this task appends.
      */
     public function __construct(
         public readonly ?string $workerId,
