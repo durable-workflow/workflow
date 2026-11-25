@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 2.41.0 - 2026-11-25
+
+- Experimental state machines: `MachineCatalog` registers the definitions
+  that may host each other. It refuses a duplicate definition, a slot naming
+  an unregistered child, and a recursive or cyclic child binding with
+  `InvalidMachineCatalog`, which carries a stable reason and the slot route.
+  An optional child depth limit raises `ResourceLimitExceeded` with the
+  `child_depth` dimension (reason
+  `state_machine_child_depth_limit_exceeded`) and the deepest observed
+  depth. The catalog is opt-in: hosts call `MachineCatalog::assertBinding()`,
+  which also checks that the child profile uses the slot's registered
+  definition. (#1069, #1293)
 - Experimental state machines: `TransitionResult::explain()` names the
   `TransitionStage` gate that produced a result (selection, source,
   invariant, target, permission, admission, budget or commit) and the
@@ -12,17 +24,7 @@
   scopes each child participates in, and the retained scopes' recovery
   descriptions. It refuses a transition or child work that belongs to
   another subject or profile; the host pairs compensation scopes with the
-  subject. (#1069)
-- Experimental state machines: `MachineCatalog` registers the definitions
-  that may host each other. It refuses a duplicate definition, a slot naming
-  an unregistered child, and a recursive or cyclic child binding with
-  `InvalidMachineCatalog`, which carries a stable reason and the slot route.
-  An optional child depth limit raises `ResourceLimitExceeded` with the
-  `child_depth` dimension (reason
-  `state_machine_child_depth_limit_exceeded`) and the deepest observed
-  depth. The catalog is opt-in: hosts call `MachineCatalog::assertBinding()`,
-  which also checks that the child profile uses the slot's registered
-  definition. (#1069)
+  subject. (#1069, #1294)
 
 ## 2.40.0 - 2026-11-25
 
