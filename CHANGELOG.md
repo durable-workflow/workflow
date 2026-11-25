@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Workflows can validate an update before accepting it. Put
+  `#[Workflow\UpdateValidator('update-name')]` on a method that takes the
+  update's arguments. It runs against the run's replayed state before the
+  update is accepted. If it throws or returns `false`, the update is rejected
+  with the `update_validator_rejected` reason, and the result carries the
+  validator's message and any Laravel validation errors. A rejected update is
+  never accepted and never wakes the workflow, and its handler doesn't run.
+  Like other rejections, it records only the `UpdateRejected` audit event.
+  Validators are read-only: scheduling an activity, timer, child, signal, side
+  effect or other durable call from one throws
+  `UpdateValidatorCommandException`, which rejects the update, and a generator
+  validator is rejected because its body never runs. If the state can't be
+  replayed, or the validator hits a storage error,
+  `UpdateValidationFailedException` is thrown and nothing is recorded;
+  webhook update routes answer it with a retryable 503
+  `update_validation_failed`. (durable-workflow/.github#234)
+
 - Embedded workflows accept ordered worker interceptors, listed in
   `workflows.v2.interceptors` and resolved from the Laravel container, around
   workflow tasks, queued and local activities, and queries. Workflow-task
