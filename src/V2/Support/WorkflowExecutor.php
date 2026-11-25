@@ -98,6 +98,13 @@ final class WorkflowExecutor
      */
     private ?array $groupParentRows = null;
 
+    /**
+     * The step a warm continuation reached before this task fell back to a
+     * cold replay of the same task. The cold rerun replays that code, so the
+     * workflow logger must not observe it as new (#227).
+     */
+    private ?int $replayFloor = null;
+
     public function run(
         WorkflowRun $run,
         WorkflowTask $task,
@@ -107,6 +114,7 @@ final class WorkflowExecutor
         try {
             return $this->runTask($run, $task, $continuation);
         } finally {
+            $this->replayFloor = null;
             WorkflowExecutionProfile::finish($sample);
         }
     }
@@ -525,6 +533,11 @@ final class WorkflowExecutor
         $workflow = $frame?->workflow ?? RuntimeObjectFactory::workflow($workflowClass, $run);
         $this->taskWorkflow = $workflow;
         $run = $workflow->run;
+        $workflow->beginReplayRegion(max(
+            WorkflowReplayBoundary::committedSequence($run),
+            $frame === null ? ($this->replayFloor ?? 0) : 0,
+        ));
+        $this->replayFloor = null;
         $arguments = [];
         if ($frame === null) {
             $entryMethod = EntryMethod::forWorkflow($workflow);
@@ -603,6 +616,11 @@ final class WorkflowExecutor
             }
             $continuation = null;
             if ($resumed) {
+                // The warm frame ran the code before its current call; the cold
+                // rerun owns the code at that call, so drop the warm lines there.
+                $frame->workflow->cancelPendingWorkflowLogs($frame->sequence);
+                $this->replayFloor = $frame->sequence - 1;
+
                 return $this->run($state->run, $state->task);
             }
         }
@@ -835,6 +853,8 @@ final class WorkflowExecutor
         );
         if ($cancellationDelivery === CancellationDeliveryState::Waiting) {
             SelectionChildAwaitHistory::park($run, $task, $current, $sequence);
+            // Parked without a recorded step: this code runs again (#227).
+            $workflow->cancelPendingWorkflowLogs($sequence);
             return $this->waitForNextResumeSource($run, $task);
         }
         if ($cancellationDelivery === CancellationDeliveryState::Delivered) {
@@ -843,6 +863,8 @@ final class WorkflowExecutor
         }
         if (! $resolution['resolved']) {
             SelectionChildAwaitHistory::park($run, $task, $current, $sequence);
+            // Parked without a recorded step: this code runs again (#227).
+            $workflow->cancelPendingWorkflowLogs($sequence);
             $this->syncWorkflowCursor($workflow, $sequence);
             return $this->waitForNextResumeSource($run, $task, true);
         }
@@ -7539,6 +7561,11 @@ final class WorkflowExecutor
 
     private function restartAfterPendingUpdateFailure(WorkflowRun $run, WorkflowTask $task): WorkflowTask
     {
+        // The next task re-runs the code this one reached without a new step.
+        if ($this->taskWorkflow !== null) {
+            $this->taskWorkflow->cancelPendingWorkflowLogs($this->taskWorkflow->executionCursor());
+        }
+
         $run->forceFill([
             'status' => RunStatus::Waiting,
             'last_progress_at' => now(),
