@@ -351,6 +351,52 @@ the original terminal history. Retention across closure requires those
 The fixture does not qualify a remote provider or the full
 [consumer scenario matrix](https://github.com/durable-workflow/workflow/issues/1069#issuecomment-6889952106).
 
+## Diagnostics and inspection
+
+`TransitionResult::explain()` returns a portable, versioned explanation of one result. `toArray()` keeps its earlier shape.
+
+```php
+$result->explain();
+// ['version' => 1, 'status' => 'blocked', 'reason' => 'permission_unsatisfied',
+//  'stage' => 'permission', 'transitionKey' => 'process',
+//  'snapshot' => ['id' => 'snapshot-7', 'phase' => 'before'],
+//  'execution' => [...], 'assessment' => ['verdict' => ..., 'reason' => ..., 'evidence' => [...]]]
+```
+
+`stage` is the `Execution\TransitionStage` gate that produced the result, so the same status from different gates stays distinguishable without parsing application reasons:
+
+| Stage | Statuses | Meaning |
+| --- | --- | --- |
+| `selection` | `unavailable`, `ambiguous` | No unique event/source edge. No snapshot was recorded. |
+| `source` | `conflict` | The recorded snapshot's state or revision differs from the expected source. |
+| `invariant` | `blocked`, `unknown` | The pinned shared invariant refused, before or after work. |
+| `target` | `pending`, `unknown` | The target was unknown, had no declared work, or stayed unsatisfied after work. |
+| `permission` | `blocked`, `unknown` | The pure execution guard refused. |
+| `admission` | `blocked`, `unknown` | Recorded live admission refused. |
+| `budget` | `blocked` | A forward execution budget refused the next command. No snapshot is named. |
+| `commit` | `committed`, `conflict`, `cancellation_requested` | The protected commit acknowledged the decision. |
+
+`snapshot` names the recorded snapshot and phase the gate evaluated. Use its ID to find the complete `ConditionEvaluation` the host retained for that snapshot, with its reasons, evidence references and missing facts. A post-work refusal names the `after` snapshot, so a revoked invariant is not attributed to the earlier admission. Results built by application code without a stage keep `stage` and `snapshot` null.
+
+`Inspection\MachineInspection` correlates one business subject for operator tooling. The host builds it outside workflow code from values it has already authorized for that subject:
+
+```php
+$inspection = new MachineInspection(
+    $profile, $state, $revision, $execution, $result,
+    [$childBinding, $neverAdmittedChild, $childReservation],
+    [['scope' => $scopeIdentity, 'description' => $scopeRecovery->describe($scopeIdentity, $principal)]],
+);
+$inspection->toArray(); // version, machine, business, execution, transition, children, compensation
+```
+
+- `machine` gives the pinned machine, definition and profile versions with the policy and definition fingerprints.
+- `business` is the current state and revision from the application's authoritative store. It is distinct from workflow-run status.
+- `transition` is `explain()` of the inspected execution's result.
+- Each `children` entry gives `status` (`admitted`, `never_admitted` or `reserved`), the binding key, slot, generation, hosting state, child workflow type, required outcome, the parent execution that bound it, the child instance and run, and a closure ID. An admitted child is not evidence of its business outcome.
+- Each `compensation` entry is the retained scope's identity and ID followed by its `ScopeRecovery::describe()` keys, including the next action and unresolved obligations.
+
+Construction refuses a state the profile does not declare, an execution under another profile, a transition of another execution, child work of another subject or profile, a repeated binding generation or scope, and a malformed scope description. At most 256 children and 256 scopes are accepted. The inspection performs no I/O and is not an authorization or persistence boundary. The host remains responsible for authorizing each part and for pairing scopes with the subject, because scope keys are application-defined.
+
 ## Follow-up implementation sequence
 
 1. Retain the original machine definition, profiles, rule versions and handlers across deployments; define an explicit migration policy before moving existing instances.
@@ -380,7 +426,7 @@ Tests exercise refusal/unknown outcomes, source and scope substitution, changed 
 | 17 | Cold replay of transitions, child admission and retained recovery; installed 2.33.0 upgrade, rollback and downgrade journey for the examples | Real-provider qualification |
 | 18 | Joint binding/scope authorization, generation and protected SQL substitution controls | Application authentication and authorization deployment |
 | 19 | Invalid definitions and unavailable pinned handlers refuse; configured budgets; catalog refusal of cyclic, recursive and unregistered child bindings and of a configured child depth | Explicit migration policy |
-| 20 | Structured decisions, complete condition explanations and retained ledger inspection | Application-facing operational tooling |
+| 20 | Structured decisions, complete condition explanations, transition stages and snapshot correlation, retained ledger inspection and the correlated `MachineInspection` view | Operator presentation (Waterline) |
 | 21–22 | Recorded two-profile example, native persistence/crash tests, existing APIs preserved | Final package, installed qualification and versioned publication |
 
 This table reports scope, not completion of the issue's unchecked acceptance criteria.

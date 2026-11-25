@@ -82,9 +82,13 @@ final class TestDefinedMachineWorkflow extends Workflow
             ($options['omitRuntimeDefinition'] ?? false) ? null : self::definition()
         );
         try {
-            return (new TransitionRunner())->run($this, $profile, $execution, 'received', $runtime, [
+            $result = (new TransitionRunner())->run($this, $profile, $execution, 'received', $runtime, [
                 $profile->transitions[0]->handlerKey() => $profile->profile === 'imported' ? new ExampleImportedStep() : new ExampleBusinessStep(),
-            ])->toArray();
+            ]);
+            return [
+                ...$result->toArray(),
+                'explanation' => $result->explain(),
+            ];
         } catch (Throwable $error) {
             if (! ($options['compensateOnFailure'] ?? false)) {
                 throw $error;

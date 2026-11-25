@@ -70,6 +70,10 @@ final class V2StateMachineResourceBudgetTest extends TestCase
         $this->assertSame('state_machine_commands_limit_exceeded', $run->workflowOutput()['reason']);
         $this->assertSame(['first'], DB::table('budget_effect_journal')->pluck('action')->all());
         $this->assertSame(['compensated'], DB::table('budget_effect_journal')->pluck('status')->all());
+        $replay = app(WorkflowReplayer::class)->replay($run->fresh());
+        $this->assertInstanceOf(TestBudgetedTransitionWorkflow::class, $replay->workflow);
+        $this->assertSame('budget', $replay->workflow->explanation['stage'] ?? null);
+        $this->assertNull($replay->workflow->explanation['snapshot']);
         // Three forward commands, then the compensation snapshot and original undo.
         $this->assertSame(5, $this->scheduled($run));
         $this->assertColdReplay($run);
