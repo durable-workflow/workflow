@@ -289,6 +289,7 @@ final class RunWaitProjector
         $seen = [];
         $projected = [];
         $positions = self::openingPositions($waits);
+        $written = [];
 
         foreach (array_chunk(array_values($waits), 100, true) as $page) {
             $projectionIds = [];
@@ -312,7 +313,11 @@ final class RunWaitProjector
                     $wait,
                     $existing->get($projectionId),
                     $positions[$waitId] ?? WorkflowRunWait::OPENING_TIME_POSITION,
+                    // The page lookup already observed this key missing (#1286).
+                    knownMissing: $waitModel === WorkflowRunWait::class
+                        && ! $existing->has($projectionId) && ! isset($written[$projectionId]),
                 );
+                $written[$projectionId] = true;
 
                 if ($collectRows) {
                     $projected[] = $row;
@@ -410,6 +415,7 @@ final class RunWaitProjector
         array $wait,
         ?WorkflowRunWait $existing,
         int $position = WorkflowRunWait::OPENING_TIME_POSITION,
+        bool $knownMissing = false,
     ): WorkflowRunWait {
         /** @var WorkflowRunWait $row */
         $row = IdempotentProjectionUpsert::upsert(
@@ -448,6 +454,7 @@ final class RunWaitProjector
                 'payload' => self::normalizedPayload($wait),
             ],
             $existing,
+            $knownMissing,
         );
 
         return $row;

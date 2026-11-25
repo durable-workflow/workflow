@@ -200,6 +200,47 @@ class WorkflowHistoryEvent extends Model
     }
 
     /**
+     * Record one child start's consecutive events with one history position
+     * read and one run row write (#1286). Each event is stored as record()
+     * stores it.
+     *
+     * @internal
+     * @param non-empty-list<array{HistoryEventType, array<string, mixed>}> $events
+     * @return non-empty-list<self>
+     */
+    public static function recordChildStart(
+        WorkflowRun $run,
+        array $events,
+        WorkflowTask|string|null $task = null,
+    ): array {
+        $runLockHeld = WorkflowSignalReadScope::allowsConsistentRead($run, $run->getConnection());
+
+        return self::appendEvents($run, self::childStartEvents($events, [
+            HistoryEventType::ChildWorkflowScheduled,
+            HistoryEventType::ChildRunStarted,
+        ], $task, null), $runLockHeld);
+    }
+
+    /**
+     * Record a new child run's consecutive start events with one history
+     * position read and one run row write (#1286).
+     *
+     * @internal The caller holds the run's write lock on the history connection.
+     * @param non-empty-list<array{HistoryEventType, array<string, mixed>}> $events
+     * @return non-empty-list<self>
+     */
+    public static function recordChildRunStartWhileRunLocked(
+        WorkflowRun $run,
+        array $events,
+        ?WorkflowCommand $command = null,
+    ): array {
+        return self::appendEvents($run, self::childStartEvents($events, [
+            HistoryEventType::StartAccepted,
+            HistoryEventType::WorkflowStarted,
+        ], null, $command), runLockHeld: true);
+    }
+
+    /**
      * @param array<string, mixed> $payload
      */
     public static function recordCancellation(
@@ -295,109 +336,150 @@ class WorkflowHistoryEvent extends Model
         ?TerminalCancellationHistory $terminalHistory,
         bool $runLockHeld = false,
     ): self {
-        if ($eventType === HistoryEventType::MemoUpserted) {
-            foreach (['entries', 'merged'] as $field) {
-                if (! is_array($payload[$field] ?? null)) {
-                    throw new \InvalidArgumentException(sprintf(
-                        'MemoUpserted history field [%s] must be an Avro payload envelope.',
-                        $field,
-                    ));
+        return self::appendEvents($run, [[$eventType, $payload, $task, $command, $terminalHistory]], $runLockHeld)[0];
+    }
+
+    /**
+     * Append $events to the run's history in order. One read of the append
+     * position and one write of the run row serve the whole list; every event
+     * is stored, charged and observed exactly as a separate append stores it.
+     *
+     * @param non-empty-list<array{
+     *     HistoryEventType,
+     *     array<string, mixed>,
+     *     WorkflowTask|string|null,
+     *     WorkflowCommand|string|null,
+     *     TerminalCancellationHistory|null
+     * }> $events
+     * @return non-empty-list<self>
+     */
+    private static function appendEvents(WorkflowRun $run, array $events, bool $runLockHeld): array
+    {
+        $prepared = [];
+        foreach ($events as [$eventType, $payload, $task, $command, $terminalHistory]) {
+            if ($eventType === HistoryEventType::MemoUpserted) {
+                foreach (['entries', 'merged'] as $field) {
+                    if (! is_array($payload[$field] ?? null)) {
+                        throw new \InvalidArgumentException(sprintf(
+                            'MemoUpserted history field [%s] must be an Avro payload envelope.',
+                            $field,
+                        ));
+                    }
+
+                    $payload[$field] = MemoPayload::isInlineEnvelope($payload[$field])
+                        ? MemoPayload::canonicalMapEnvelope($payload[$field])
+                        : MemoPayload::mapEnvelope($payload[$field]);
                 }
-
-                $payload[$field] = MemoPayload::isInlineEnvelope($payload[$field])
-                    ? MemoPayload::canonicalMapEnvelope($payload[$field])
-                    : MemoPayload::mapEnvelope($payload[$field]);
             }
-        }
 
-        $taskModel = $task instanceof WorkflowTask ? $task : null;
-        $commandModel = $command instanceof WorkflowCommand ? $command : null;
-        $taskId = $taskModel?->id ?? (is_string($task) ? $task : null);
-        $commandId = $commandModel?->id ?? (is_string($command) ? $command : null);
-        HistoryEventPayloadContract::assertKnownPayloadKeys($eventType, $payload);
-
-        /** @var self $event */
-        $event = ConfiguredV2Models::query('history_event_model', self::class)
-            ->getModel()
-            ->getConnection()
-            ->transaction(static function () use (
-                $run,
+            $taskModel = $task instanceof WorkflowTask ? $task : null;
+            $commandModel = $command instanceof WorkflowCommand ? $command : null;
+            HistoryEventPayloadContract::assertKnownPayloadKeys($eventType, $payload);
+            $prepared[] = [
                 $eventType,
                 $payload,
                 $taskModel,
                 $commandModel,
-                $taskId,
-                $commandId,
+                $taskModel?->id ?? (is_string($task) ? $task : null),
+                $commandModel?->id ?? (is_string($command) ? $command : null),
                 $terminalHistory,
-                $runLockHeld,
-            ): self {
+            ];
+        }
+
+        /** @var non-empty-list<self> $recorded */
+        $recorded = ConfiguredV2Models::query('history_event_model', self::class)
+            ->getModel()
+            ->getConnection()
+            ->transaction(static function () use ($run, $prepared, $runLockHeld): array {
                 [$lockedRun, $sequence] = self::readAppendPosition($run, $runLockHeld);
-                $now = now();
-                $storedPayload = self::snapshotPayload($payload, $taskModel, $commandModel, $terminalHistory);
-                // A metered completion (#930) charges the event as stored,
+                // A metered completion (#930) charges each event as stored,
                 // and the run row whose history position it advances.
                 $meter = HistoryTransactionMeter::current();
-                $meter?->chargeEvent($eventType->value, $storedPayload);
-                $meter?->chargeRows(1);
+                $appended = [];
+                $updates = [];
 
-                $values = [
-                    'workflow_run_id' => $lockedRun->id,
-                    'sequence' => $sequence,
-                    'event_type' => $eventType->value,
-                    'payload' => $storedPayload,
-                    'workflow_task_id' => $taskId,
-                    'workflow_command_id' => $commandId,
-                    'recorded_at' => $now,
-                ];
-                $indexedActivity = false;
-                if (array_key_exists('activity_history_index_through', $lockedRun->getAttributes())) {
-                    $indexedActivity = self::activityExecutionIdForIndex($storedPayload, $taskModel, $taskId);
-                    $values['indexed_activity_execution_id'] = $indexedActivity === false ? null : $indexedActivity;
-                }
-                $hasStepIndex = array_key_exists('step_history_index_through', $lockedRun->getAttributes());
-                $stepIndexComplete = false;
-                if ($hasStepIndex) {
-                    $step = $storedPayload['sequence'] ?? null;
-                    $stepIndexComplete = $step === null || (is_int($step) && $step >= 0);
-                    $values['indexed_step_sequence'] = $stepIndexComplete ? $step : null;
+                foreach ($prepared as $offset => [
+                    $eventType,
+                    $payload,
+                    $taskModel,
+                    $commandModel,
+                    $taskId,
+                    $commandId,
+                    $terminalHistory,
+                ]) {
+                    $sequence += $offset === 0 ? 0 : 1;
+                    $now = now();
+                    $storedPayload = self::snapshotPayload($payload, $taskModel, $commandModel, $terminalHistory);
+                    $meter?->chargeEvent($eventType->value, $storedPayload);
+                    $meter?->chargeRows(1);
+
+                    $values = [
+                        'workflow_run_id' => $lockedRun->id,
+                        'sequence' => $sequence,
+                        'event_type' => $eventType->value,
+                        'payload' => $storedPayload,
+                        'workflow_task_id' => $taskId,
+                        'workflow_command_id' => $commandId,
+                        'recorded_at' => $now,
+                    ];
+                    $indexedActivity = false;
+                    if (array_key_exists('activity_history_index_through', $lockedRun->getAttributes())) {
+                        $indexedActivity = self::activityExecutionIdForIndex($storedPayload, $taskModel, $taskId);
+                        $values['indexed_activity_execution_id'] = $indexedActivity === false ? null : $indexedActivity;
+                    }
+                    $hasStepIndex = array_key_exists('step_history_index_through', $lockedRun->getAttributes());
+                    $stepIndexComplete = false;
+                    if ($hasStepIndex) {
+                        $step = $storedPayload['sequence'] ?? null;
+                        $stepIndexComplete = $step === null || (is_int($step) && $step >= 0);
+                        $values['indexed_step_sequence'] = $stepIndexComplete ? $step : null;
+                    }
+
+                    /** @var self $event */
+                    $event = ConfiguredV2Models::query('history_event_model', self::class)->create($values);
+                    ExecutionTracing::observeOutcome($lockedRun, $taskModel, $event);
+
+                    $eventUpdates = [
+                        'last_history_sequence' => $sequence,
+                    ];
+                    // An earlier unindexed append leaves a gap that later writers cannot certify.
+                    if ($indexedActivity !== false
+                        && (int) $lockedRun->activity_history_index_through === $sequence - 1) {
+                        $eventUpdates['activity_history_index_through'] = $sequence;
+                    }
+                    if ($stepIndexComplete && (int) $lockedRun->step_history_index_through === $sequence - 1) {
+                        $eventUpdates['step_history_index_through'] = $sequence;
+                    }
+                    if (OpenActivityHistoryIndex::advance($lockedRun, $event, $indexedActivity)) {
+                        $eventUpdates[OpenActivityHistoryIndex::THROUGH] = $sequence;
+                    }
+                    if ($eventType !== HistoryEventType::ActivityOutcomeRejected) {
+                        $eventUpdates['last_progress_at'] = $now;
+                    }
+                    // The next event's index checks read the advanced position.
+                    $lockedRun->forceFill($eventUpdates);
+                    $updates = array_merge($updates, $eventUpdates);
+                    $appended[] = [$event, $taskModel];
                 }
 
-                /** @var self $event */
-                $event = ConfiguredV2Models::query('history_event_model', self::class)->create($values);
-                ExecutionTracing::observeOutcome($lockedRun, $taskModel, $event);
+                $lockedRun->save();
 
-                $updates = [
-                    'last_history_sequence' => $sequence,
-                ];
-                // An earlier unindexed append leaves a gap that later writers cannot certify.
-                if ($indexedActivity !== false
-                    && (int) $lockedRun->activity_history_index_through === $sequence - 1) {
-                    $updates['activity_history_index_through'] = $sequence;
+                foreach ($appended as [$event, $taskModel]) {
+                    PendingSignalCloser::closeForTerminalEvent($lockedRun, $event, $taskModel);
                 }
-                if ($stepIndexComplete && (int) $lockedRun->step_history_index_through === $sequence - 1) {
-                    $updates['step_history_index_through'] = $sequence;
-                }
-                if (OpenActivityHistoryIndex::advance($lockedRun, $event, $indexedActivity)) {
-                    $updates[OpenActivityHistoryIndex::THROUGH] = $sequence;
-                }
-                if ($eventType !== HistoryEventType::ActivityOutcomeRejected) {
-                    $updates['last_progress_at'] = $now;
-                }
-                $lockedRun->forceFill($updates)
-                    ->save();
-
-                PendingSignalCloser::closeForTerminalEvent($lockedRun, $event, $taskModel);
 
                 $run->forceFill($updates);
                 $run->syncOriginalAttributes(array_keys($updates));
 
-                LinkedServiceCallCloser::closeForTerminalEvent($lockedRun, $event);
-                ServiceCallWorkflowDelivery::forAdmission($lockedRun, $event);
+                foreach ($appended as [$event]) {
+                    LinkedServiceCallCloser::closeForTerminalEvent($lockedRun, $event);
+                    ServiceCallWorkflowDelivery::forAdmission($lockedRun, $event);
+                }
 
-                return $event;
+                return array_column($appended, 0);
             });
 
-        return $event;
+        return $recorded;
     }
 
     /**
@@ -423,6 +505,44 @@ class WorkflowHistoryEvent extends Model
         $activityId = $subjects[0] ?? null;
         return count($subjects) > 1 || ($activityId !== null && strlen($activityId) > 26)
             ? false : $activityId;
+    }
+
+    /**
+     * Only events whose append has no terminal, update or service-call side
+     * effects may share one append; those effects run after the whole list.
+     *
+     * @param non-empty-list<array{HistoryEventType, array<string, mixed>}> $events
+     * @param list<HistoryEventType> $allowed
+     * @return non-empty-list<array{
+     *     HistoryEventType,
+     *     array<string, mixed>,
+     *     WorkflowTask|string|null,
+     *     WorkflowCommand|string|null,
+     *     null
+     * }>
+     */
+    private static function childStartEvents(
+        array $events,
+        array $allowed,
+        WorkflowTask|string|null $task,
+        ?WorkflowCommand $command,
+    ): array {
+        $prepared = [];
+        foreach ($events as [$eventType, $payload]) {
+            if (! in_array($eventType, $allowed, true)) {
+                throw new \LogicException(sprintf(
+                    'History event [%s] cannot share a child start append.',
+                    $eventType->value
+                ));
+            }
+            $prepared[] = [$eventType, $payload, $task, $command, null];
+        }
+
+        if ($prepared === []) {
+            throw new \LogicException('A child start append needs at least one event.');
+        }
+
+        return $prepared;
     }
 
     /**

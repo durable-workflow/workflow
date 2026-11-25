@@ -145,11 +145,20 @@ final class ChildWorkflowNamespaceProjection
         /** @var class-string<WorkflowInstance> $instanceModel */
         $instanceModel = ConfiguredV2Models::resolve('instance_model', WorkflowInstance::class);
 
-        $namespace = $instanceModel::query()
-            ->whereKey($parentInstanceId)
-            ->value('namespace');
+        // A run without its own namespace falls back to its instance once per
+        // task, not once per child and lineage row (#1286).
+        $namespace = TaskScopeMemo::remember(
+            'child-namespace-parent-instance:' . $parentInstanceId,
+            static function () use ($instanceModel, $parentInstanceId): string {
+                $namespace = $instanceModel::query()
+                    ->whereKey($parentInstanceId)
+                    ->value('namespace');
 
-        return is_string($namespace) && $namespace !== ''
+                return is_string($namespace) ? $namespace : '';
+            },
+        );
+
+        return $namespace !== ''
             ? $namespace
             : null;
     }

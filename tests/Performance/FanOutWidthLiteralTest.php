@@ -34,7 +34,11 @@ final class FanOutWidthLiteralTest extends TestCase
     /**
      * Seconds any one workflow task may take on a hosted runner: inside the
      * default 60-second job timeout with headroom. Starting 1,000 children,
-     * the slowest task, takes about 33 s on MySQL and 39 s on SQLite locally.
+     * the slowest task, takes about 22 s and 32,100 statements on MySQL with
+     * two local CPUs, down from 31 s and 48,300 (#1286). A worker killed at
+     * its job timeout leaves a lost lease that task repair counts and reports
+     * (WorkflowTaskLeaseLoss), so a slow host is diagnosed, not retried
+     * silently.
      */
     private const MAX_WORKFLOW_TASK_SECONDS = 50.0;
 
