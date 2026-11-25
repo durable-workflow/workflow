@@ -5,12 +5,16 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Log\Events\MessageLogged;
+use Illuminate\Queue\WorkerOptions;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Queue;
 use Psr\Log\LoggerInterface;
 use Psr\Log\LoggerTrait;
 use RuntimeException;
+use Tests\Fixtures\V2\TestLiveLoggingWorkflow;
+use Tests\Fixtures\V2\TestLoggedSelectionWorkflow;
 use Tests\Fixtures\V2\TestReplayAwareLoggingWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\TaskStatus;
@@ -44,6 +48,11 @@ final class V2ReplayAwareWorkflowLoggerTest extends TestCase
      */
     private array $logged = [];
 
+    /**
+     * @var list<array{message: string, context: array<string, mixed>}>
+     */
+    private array $allLogged = [];
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -51,8 +60,18 @@ final class V2ReplayAwareWorkflowLoggerTest extends TestCase
         TestReplayAwareLoggingWorkflow::$observedStates = [];
         $this->logged = [];
 
+        $this->allLogged = [];
+
         Event::listen(MessageLogged::class, function (MessageLogged $event): void {
-            if (str_starts_with($event->message, 'logging workflow')) {
+            $this->allLogged[] = [
+                'message' => $event->message,
+                'context' => $event->context,
+            ];
+
+            if (str_starts_with($event->message, 'logging workflow') || str_starts_with(
+                $event->message,
+                'selection '
+            )) {
                 $this->logged[] = [
                     'message' => $event->message,
                     'context' => $event->context,
@@ -222,6 +241,144 @@ final class V2ReplayAwareWorkflowLoggerTest extends TestCase
                 static fn (string $line): bool => str_contains($line, $message . ' '),
             ), sprintf('[%s] must be written exactly once: %s', $message, implode("\n", $lines)));
         }
+    }
+
+    public function testCodeBeforeAwaitingALosingHandleLogsOnce(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestLoggedSelectionWorkflow::class, 'replay-aware-logging-selection');
+        $workflow->start('Taylor');
+        $runId = $workflow->runId();
+
+        $this->runReadyTaskOfType($runId, TaskType::Workflow);
+
+        // The code after select() parked on the pending handle without
+        // recording a step, so its line waits for the task that moves past it.
+        $this->assertSame(['selection started'], array_column($this->logged, 'message'));
+
+        $this->runReadyTaskOfType($runId, TaskType::Activity);
+        $this->runReadyTaskOfType($runId, TaskType::Workflow);
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $this->assertSame(
+            ['selection started', 'selection awaiting work', 'selection finished'],
+            array_column($this->logged, 'message'),
+        );
+        $this->assertSame('deadline', $this->logged[1]['context']['winner']);
+        $this->assertSame('Hello, Taylor!', $this->logged[2]['context']['work']);
+    }
+
+    public function testRolledBackTaskWritesNothing(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestReplayAwareLoggingWorkflow::class, 'replay-aware-logging-rollback');
+        $workflow->start();
+        $instance = RuntimeObjectFactory::workflow(
+            TestReplayAwareLoggingWorkflow::class,
+            WorkflowRun::query()->findOrFail($workflow->runId()),
+        );
+        $instance->beginReplayRegion(0);
+
+        try {
+            \Workflow\V2\Support\ConfiguredV2Models::connection()->transaction(static function () use (
+                $instance
+            ): void {
+                $instance->logger()
+                    ->info('logging workflow rolled back');
+
+                throw new RuntimeException('task failed before commit');
+            });
+        } catch (RuntimeException) {
+        }
+
+        \Workflow\V2\Support\ConfiguredV2Models::connection()->transaction(static function () use ($instance): void {
+            $instance->logger()
+                ->info('logging workflow committed');
+        });
+
+        $this->assertSame(['logging workflow committed'], array_column($this->logged, 'message'));
+    }
+
+    public function testLiveContinuationFallbackDoesNotRepeatLines(): void
+    {
+        self::stopWorkers();
+        $previousQueue = Queue::getFacadeRoot();
+        $keys = ['queue.default', 'queue.connections.database', 'workflows.v2.queue',
+            'workflows.v2.task_dispatch_mode', 'workflows.v2.live_execution'];
+        $previous = array_combine($keys, array_map(static fn (string $key): mixed => config($key), $keys));
+        config([
+            'queue.default' => 'database',
+            'queue.connections.database' => [
+                'driver' => 'database',
+                'table' => 'jobs',
+                'queue' => 'logger-live',
+                'retry_after' => 90,
+            ],
+            'workflows.v2.queue' => 'logger-live',
+            'workflows.v2.task_dispatch_mode' => 'queue',
+            'workflows.v2.live_execution' => [
+                'workflows' => ['test-live-logging-workflow'],
+                'build' => 'logger-live',
+            ],
+        ]);
+        $this->app->forgetInstance('queue');
+        Queue::swap($this->app->make('queue'));
+
+        try {
+            $workflow = WorkflowStub::make(TestLiveLoggingWorkflow::class, 'replay-aware-logging-live');
+            $workflow->start();
+            $worker = $this->app->make('queue.worker');
+
+            for ($attempt = 0; $attempt < 10 && ! $workflow->refresh()->completed(); $attempt++) {
+                $worker->runNextJob('database', 'logger-live', new WorkerOptions(sleep: 0));
+            }
+
+            $this->assertTrue($workflow->refresh()->completed());
+            $this->assertSame(['Hello, live!', 'stamped'], $workflow->output());
+            // The task really resumed warm and fell back to a cold rerun.
+            $counts = app(WorkflowContinuationCache::class)->snapshot()['counts'];
+            $this->assertGreaterThanOrEqual(1, $counts['cold_unsupported_operation'] ?? 0, json_encode($counts));
+            $this->assertSame(
+                ['live started', 'live after activity', 'live after side effect'],
+                array_column($this->liveLines(), 'message'),
+            );
+        } finally {
+            Queue::swap($previousQueue);
+            config($previous);
+            DB::table('jobs')->where('queue', 'logger-live')->delete();
+        }
+    }
+
+    /**
+     * @return list<array{message: string, context: array<string, mixed>}>
+     */
+    private function liveLines(): array
+    {
+        return array_values(array_filter(
+            $this->allLogged,
+            static fn (array $line): bool => str_starts_with($line['message'], 'live '),
+        ));
+    }
+
+    private function runReadyTaskOfType(string $runId, TaskType $type): void
+    {
+        /** @var WorkflowTask $task */
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', $type->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->orderBy('created_at')
+            ->firstOrFail();
+
+        $job = match ($type) {
+            TaskType::Workflow => new RunWorkflowTask($task->id),
+            TaskType::Activity => new RunActivityTask($task->id),
+            TaskType::Timer => new RunTimerTask($task->id),
+        };
+
+        $this->app->call([$job, 'handle']);
     }
 
     private function drainReadyTasks(bool $restartBetweenTasks = false): void

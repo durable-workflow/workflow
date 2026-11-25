@@ -17,7 +17,10 @@ use Workflow\V2\Workflow;
  *
  * Writes through the application's Laravel logger only while workflow code
  * runs beyond its committed history, so each line is written once per
- * committed step instead of once per wake-up. Replays, queries and update
+ * committed step instead of once per wake-up. Lines are written after the
+ * workflow task commits: a task that rolls back writes nothing, and code that
+ * parks on a pending operation handle without recording a step logs in the
+ * task that later moves past it. Replays, queries and update
  * validators stay quiet. Every line carries the run's identity.
  *
  * This is a process logger, not an exactly-once outbox: a workflow task that
@@ -47,14 +50,23 @@ final class WorkflowLogger implements LoggerInterface
             return;
         }
 
-        try {
-            $logger = $this->channel === null ? Log::getFacadeRoot() : Log::channel($this->channel);
+        $context = array_merge($context, $this->identity());
+        $message = (string) $message;
+        $channel = $this->channel;
+        $write = static function () use ($channel, $level, $message, $context): void {
+            try {
+                $logger = $channel === null ? Log::getFacadeRoot() : Log::channel($channel);
 
-            if (! $logger instanceof LoggerInterface) {
-                return;
+                if ($logger instanceof LoggerInterface) {
+                    $logger->log($level, $message, $context);
+                }
+            } catch (Throwable) {
+                // Logging is an observation; it must never fail workflow code.
             }
+        };
 
-            $logger->log($level, $message, array_merge($context, $this->identity()));
+        try {
+            $this->workflow->deferWorkflowLog($write);
         } catch (Throwable) {
             // Logging is an observation; it must never fail workflow code.
         }

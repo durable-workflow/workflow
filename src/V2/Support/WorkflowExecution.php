@@ -157,6 +157,7 @@ final class WorkflowExecution
             WorkflowFiberContext::observeCancellationTime(null, $this->fiber);
         }
 
+        WorkflowFiberContext::markResumed($this->fiber);
         $sample = WorkflowExecutionProfile::begin('authoring_resume');
         try {
             $result = self::checkedYield(WeakReference::create($this->fiber), $this->fiber->resume($value));
@@ -196,6 +197,7 @@ final class WorkflowExecution
             WorkflowFiberContext::observeCancellationTime(null, $this->fiber);
         }
 
+        WorkflowFiberContext::markResumed($this->fiber);
         $sample = WorkflowExecutionProfile::begin('authoring_throw');
         try {
             $result = self::checkedYield(WeakReference::create($this->fiber), $this->fiber->throw($throwable));

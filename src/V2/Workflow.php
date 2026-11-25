@@ -79,6 +79,15 @@ abstract class Workflow
      */
     private bool $replayOnly = false;
 
+    /**
+     * Deferred log writes from the code since the engine last resumed it.
+     *
+     * @var list<\stdClass>
+     */
+    private array $pendingLogWrites = [];
+
+    private ?\Fiber $logFiber = null;
+
     private ?MessageReplayLedger $messageReplayLedger = null;
 
     private bool $runningLiveUpdate = false;
@@ -402,6 +411,62 @@ abstract class Workflow
     public function logger(?string $channel = null): WorkflowLogger
     {
         return new WorkflowLogger($this, $channel);
+    }
+
+    /**
+     * Write a workflow log line once the workflow task's transaction commits.
+     *
+     * A rolled-back task writes nothing. The engine cancels the lines written
+     * since its last resume when the code parks without recording a step, so
+     * they are written by the task that runs them for the last time.
+     *
+     * @internal
+     */
+    public function deferWorkflowLog(\Closure $write): void
+    {
+        $this->logFiber = \Fiber::getCurrent();
+        $epoch = WorkflowFiberContext::resumeEpoch($this->logFiber);
+        $pending = new \stdClass();
+        $pending->cancelled = false;
+        $pending->epoch = $epoch;
+        $this->pendingLogWrites = array_values(array_filter(
+            $this->pendingLogWrites,
+            static fn (\stdClass $write): bool => $write->epoch === $epoch,
+        ));
+        $this->pendingLogWrites[] = $pending;
+
+        $connection = \Workflow\V2\Support\ConfiguredV2Models::connection();
+
+        if ($connection->transactionLevel() === 0) {
+            $write();
+
+            return;
+        }
+
+        $connection->afterCommit(static function () use ($pending, $write): void {
+            if (! $pending->cancelled) {
+                $write();
+            }
+        });
+    }
+
+    /**
+     * Drop the log lines written since the last resume: the code parked
+     * without recording a step, so it runs again in a later task.
+     *
+     * @internal
+     */
+    public function cancelPendingWorkflowLogs(): void
+    {
+        $epoch = WorkflowFiberContext::resumeEpoch($this->logFiber);
+
+        foreach ($this->pendingLogWrites as $pending) {
+            if ($pending->epoch === $epoch) {
+                $pending->cancelled = true;
+            }
+        }
+
+        $this->pendingLogWrites = [];
     }
 
     /**

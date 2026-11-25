@@ -11,9 +11,12 @@
   carries `workflow_instance_id`, `workflow_run_id`, `workflow_type` and
   `namespace`. `$this->replayState()` (`Workflow\V2\Enums\WorkflowReplayState`:
   `Replaying`, `Executing` or `Unavailable`) and `$this->isReplaying()` expose
-  the same boundary for diagnostics. A task that fails before it commits runs
-  its new code again, so this is not an exactly-once outbox, and a slow log
-  handler stalls the worker. Logger failures never fail the workflow. A
+  the same boundary for diagnostics. Lines are written after the workflow
+  task commits, so a task that rolls back writes nothing, and code that parks
+  on a pending `select()` handle without recording a step logs once, in the
+  task that moves past it. A slow log handler stalls the worker, and the
+  logger is not an outbox for business effects. Logger failures never fail
+  the workflow. A
   workflow class that already defines `logger()`, `replayState()` or
   `isReplaying()` must rename it. (durable-workflow/.github#227)
 
