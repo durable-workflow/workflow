@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Embedded workflows accept ordered worker interceptors, listed in
+  `workflows.v2.interceptors` and resolved from the Laravel container, around
+  workflow tasks, queued and local activities, and queries. Workflow-task
+  interceptors see whether the task replays committed history and cannot
+  change what it records: a failing interceptor rolls the task back and
+  releases it for a retry. See
+  [worker interceptors](docs/worker-interceptors.md).
+  ([Durable Workflow #226](https://github.com/durable-workflow/.github/issues/226))
+
 ## 2.41.0 - 2026-11-25
 
 - Experimental state machines: `MachineCatalog` registers the definitions
