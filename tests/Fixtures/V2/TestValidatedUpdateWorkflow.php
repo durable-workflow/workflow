@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Fixtures\V2;
 
+use Illuminate\Database\QueryException;
 use Illuminate\Validation\ValidationException;
 use RuntimeException;
 use Workflow\QueryMethod;
@@ -76,11 +77,32 @@ final class TestValidatedUpdateWorkflow extends Workflow
             $item === 'schedule-activity' => activity(TestGreetingActivity::class, $item),
             $item === 'start-timer' => timer(60),
             $item === 'refuse' => false,
+            $item === 'storage-error' => throw new QueryException(
+                'testing',
+                'select 1',
+                [],
+                new RuntimeException('connection lost'),
+            ),
             count($this->items) >= $this->capacity => throw new RuntimeException(sprintf(
                 'The cart already holds %d items.',
                 count($this->items),
             )),
             default => null,
         };
+    }
+
+    #[UpdateMethod('note')]
+    public function note(string $note): string
+    {
+        return $note;
+    }
+
+    /**
+     * A generator validator never runs its body, so it must not approve.
+     */
+    #[UpdateValidator('note')]
+    public function validateNote(string $note): \Generator
+    {
+        yield $note;
     }
 }

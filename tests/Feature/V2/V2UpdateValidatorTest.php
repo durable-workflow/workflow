@@ -12,6 +12,7 @@ use Tests\TestCase;
 use Workflow\Serializers\Serializer;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\UpdateValidationFailedException;
 use Workflow\V2\Exceptions\UpdateValidatorCommandException;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityExecution;
@@ -19,6 +20,7 @@ use Workflow\V2\Models\WorkflowCommand;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
+use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\WorkflowDefinition;
 use Workflow\V2\WorkflowStub;
 
@@ -227,11 +229,78 @@ final class V2UpdateValidatorTest extends TestCase
         $this->assertSame(0, $this->eventCount($workflow->runId(), ['UpdateAccepted']));
     }
 
+    public function testGeneratorValidatorRejectsInsteadOfApproving(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestValidatedUpdateWorkflow::class, 'validated-update-generator');
+        $workflow->start(2);
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $result = $workflow->attemptUpdate('note', 'hello');
+
+        $this->assertTrue($result->rejectedByValidator());
+        $this->assertStringContainsString('must run synchronously', (string) $result->rejectionMessage());
+        $this->assertSame(0, $this->eventCount($workflow->runId(), ['UpdateAccepted']));
+    }
+
+    public function testStorageErrorInsideAValidatorRecordsNothing(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestValidatedUpdateWorkflow::class, 'validated-update-storage');
+        $workflow->start(2);
+        $runId = $workflow->runId();
+        $this->runReadyWorkflowTask($runId);
+        $historyBefore = $this->historyRows($runId);
+        $commandsBefore = WorkflowCommand::query()->where('workflow_run_id', $runId)->count();
+
+        try {
+            $workflow->attemptUpdate('add-item', 'storage-error');
+            $this->fail('A storage error is not a validator decision.');
+        } catch (UpdateValidationFailedException $exception) {
+            $this->assertSame('add-item', $exception->updateName());
+            $this->assertSame($runId, $exception->workflowRunId());
+            $this->assertStringContainsString('storage error', $exception->getMessage());
+        }
+
+        $this->assertSame($historyBefore, $this->historyRows($runId));
+        $this->assertSame($commandsBefore, WorkflowCommand::query()->where('workflow_run_id', $runId)->count());
+        $this->assertSame(0, WorkflowUpdate::query()->where('workflow_run_id', $runId)->count());
+    }
+
+    public function testKeyedRetryOfARejectionReturnsTheRetainedReceipt(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestValidatedUpdateWorkflow::class, 'validated-update-keyed');
+        $workflow->start(2);
+        $this->runReadyWorkflowTask($workflow->runId());
+
+        $first = $workflow->withRequestId('add-empty')
+            ->attemptUpdate('add-item', '');
+        $retry = $workflow->withRequestId('add-empty')
+            ->attemptUpdate('add-item', '');
+
+        $this->assertTrue($first->rejectedByValidator());
+        $this->assertTrue($retry->retained());
+        $this->assertTrue($retry->rejectedByValidator());
+        $this->assertSame($first->updateId(), $retry->updateId());
+        $this->assertSame('The item is required.', $retry->rejectionMessage());
+        $this->assertSame(
+            1,
+            TestValidatedUpdateWorkflow::$validatorCalls,
+            'A retained receipt does not re-run the validator.'
+        );
+        $this->assertSame(1, $this->eventCount($workflow->runId(), ['UpdateRejected']));
+    }
+
     public function testValidatorsAreDeclaredByUpdateNameOrMethod(): void
     {
         $this->assertSame(
             [
                 'add-item' => 'validateAddItem',
+                'note' => 'validateNote',
             ],
             WorkflowDefinition::updateValidators(TestValidatedUpdateWorkflow::class),
         );

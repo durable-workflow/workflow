@@ -7,6 +7,7 @@ namespace Workflow\V2;
 use BadMethodCallException;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\Queue;
@@ -14,6 +15,7 @@ use Illuminate\Support\Str;
 use Illuminate\Support\Testing\Fakes\QueueFake;
 use Illuminate\Validation\ValidationException;
 use LogicException;
+use PDOException;
 use Throwable;
 use Workflow\Serializers\AvroValueJsonProjection;
 use Workflow\Serializers\CodecRegistry;
@@ -4702,9 +4704,6 @@ final class WorkflowStub
     }
 
     /**
-     * @return array{0: WorkflowCommand, 1: WorkflowUpdate}
-     */
-    /**
      * Run the update's pre-acceptance validator against replayed state.
      *
      * Returns null when the update declares no validator or the validator
@@ -4757,6 +4756,16 @@ final class WorkflowStub
                 $updateName,
                 static fn (): mixed => $workflow->{$validatorMethod}(...$parameters),
             );
+        } catch (QueryException|PDOException $exception) {
+            // A storage failure is not the validator's decision; the admission
+            // transaction may already be aborted, so record nothing.
+            throw new UpdateValidationFailedException(
+                $run->workflow_instance_id,
+                $run->id,
+                $updateName,
+                sprintf('the update validator hit a storage error: %s', $exception->getMessage()),
+                $exception,
+            );
         } catch (Throwable $exception) {
             return [
                 'message' => $exception->getMessage() !== ''
@@ -4771,6 +4780,18 @@ final class WorkflowStub
             return [
                 'message' => sprintf('Update validator for [%s] returned false.', $updateName),
                 'exception_type' => 'false',
+                'validation_errors' => [],
+            ];
+        }
+
+        if ($result instanceof \Generator) {
+            // A generator body never ran; validators must run synchronously.
+            return [
+                'message' => sprintf(
+                    'Update validator for [%s] is a generator; update validators must run synchronously.',
+                    $updateName,
+                ),
+                'exception_type' => \Generator::class,
                 'validation_errors' => [],
             ];
         }
@@ -4804,6 +4825,12 @@ final class WorkflowStub
         return $normalized;
     }
 
+    /**
+     * @param array<int|string, mixed> $arguments
+     * @param array<string, mixed> $commandAttributes
+     * @param array<string, list<string>> $validationErrors
+     * @return array{0: WorkflowCommand, 1: WorkflowUpdate}
+     */
     private function rejectUpdateCommand(
         WorkflowInstance $instance,
         ?WorkflowRun $run,
