@@ -27,6 +27,7 @@ use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowMemo;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowSearchAttribute;
+use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
@@ -45,6 +46,19 @@ use Workflow\V2\TaskWatchdog;
  */
 final class CompletionWriteFamilyBudgetTest extends TestCase
 {
+    /**
+     * Families whose rows depend on stored state rather than on the commands:
+     * accepted updates a terminal command closes, signals continue-as-new
+     * carries, and children a closing parent's policy settles.
+     */
+    private const STATE_DRIVEN_FAMILIES = [
+        'workflow failure with accepted updates',
+        'workflow completion with accepted updates',
+        'continue as new carrying signals',
+        'workflow completion closing children',
+        'workflow completion cancelling open work',
+    ];
+
     protected function tearDown(): void
     {
         Carbon::setTestNow();
@@ -71,6 +85,10 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
             'workflow failure with accepted updates',
             'memo upsert deleting an absent key',
             'continue as new inheriting memos and search attributes',
+            'workflow completion with accepted updates',
+            'continue as new carrying signals',
+            'workflow completion closing children',
+            'workflow completion cancelling open work',
         ] as $family) {
             yield $family => [$family];
         }
@@ -101,7 +119,20 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
             ) !== 1,
         )));
         $this->assertGreaterThan(0, $rows);
-        $stateDriven = $family === 'workflow failure with accepted updates';
+        $stateDriven = in_array($family, self::STATE_DRIVEN_FAMILIES, true);
+        if ($family === 'workflow completion closing children') {
+            // The cascade ran inside the measured completion: it terminated
+            // one child and recorded a cancel request for another.
+            $this->assertSame(1, WorkflowRun::query()->where('status', RunStatus::Terminated->value)->count());
+            $this->assertSame(1, WorkflowCommand::query()->where('command_type', 'cancel')->count());
+        }
+        if ($family === 'workflow completion cancelling open work') {
+            $this->assertSame(
+                2,
+                ActivityExecution::query()->where('status', ActivityStatus::Cancelled->value)->count()
+            );
+            $this->assertSame(1, WorkflowTimer::query()->where('status', TimerStatus::Cancelled->value)->count());
+        }
         if ($stateDriven) {
             // Rows that depend on stored state are not in the command estimate.
             $this->assertLessThan($rows, $measured['estimate']);
@@ -831,10 +862,28 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
             $memo->setValue('stored');
             $memo->save();
         }
-        if ($family === 'workflow failure with accepted updates') {
+        if (in_array(
+            $family,
+            ['workflow failure with accepted updates', 'workflow completion with accepted updates'],
+            true
+        )) {
             foreach (range(1, 3) as $index) {
                 $this->acceptUpdate($run, $index);
             }
+        }
+        if ($family === 'continue as new carrying signals') {
+            foreach (range(1, 3) as $index) {
+                $this->receiveSignal($run, $index);
+            }
+        }
+        if ($family === 'workflow completion closing children') {
+            foreach (['terminate', 'request_cancel', 'abandon'] as $sequence => $policy) {
+                $this->linkOpenChild($run, $sequence + 1, $policy);
+            }
+            $run->refresh();
+        }
+        if ($family === 'workflow completion cancelling open work') {
+            $this->seedOpenWork($run, activities: 2, timers: 1);
         }
         $task = $this->createLeasedTask($run);
         $commands = $this->familyCommands($family);
@@ -953,11 +1002,96 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
                 'type' => 'continue_as_new',
                 'arguments' => Serializer::serialize(['next']),
             ]],
-            'continue as new' => [[
+            'continue as new', 'continue as new carrying signals' => [[
                 'type' => 'continue_as_new',
                 'arguments' => Serializer::serialize(['next']),
             ]],
+            'workflow completion with accepted updates',
+            'workflow completion closing children',
+            'workflow completion cancelling open work' => [[
+                'type' => 'complete_workflow',
+                'result' => Serializer::serialize('done'),
+            ]],
         };
+    }
+
+    private function receiveSignal(WorkflowRun $run, int $index): void
+    {
+        $instance = WorkflowInstance::query()->findOrFail($run->workflow_instance_id);
+        $command = WorkflowCommand::record($instance, $run, [
+            'command_type' => 'signal',
+            'target_scope' => 'instance',
+            'payload_codec' => 'avro',
+            'payload' => Serializer::serialize([
+                'name' => 'signal-' . $index,
+            ]),
+            'source' => 'api',
+            'status' => 'accepted',
+            'accepted_at' => now(),
+        ]);
+        WorkflowSignal::query()->create([
+            'workflow_command_id' => $command->id,
+            'workflow_instance_id' => $run->workflow_instance_id,
+            'workflow_run_id' => $run->id,
+            'command_sequence' => $command->command_sequence,
+            'signal_name' => 'signal-' . $index,
+            'status' => 'received',
+            'payload_codec' => 'avro',
+            'arguments' => Serializer::serialize([]),
+            'received_at' => now(),
+        ]);
+    }
+
+    private function seedOpenWork(WorkflowRun $run, int $activities, int $timers): void
+    {
+        for ($sequence = 1; $sequence <= $activities; ++$sequence) {
+            $execution = ActivityExecution::query()->create([
+                'workflow_run_id' => $run->id,
+                'sequence' => $sequence,
+                'activity_class' => 'metered-activity',
+                'activity_type' => 'metered-activity',
+                'status' => ActivityStatus::Pending->value,
+                'arguments' => Serializer::serialize([]),
+                'connection' => 'redis',
+                'queue' => 'default',
+            ]);
+            WorkflowTask::query()->create([
+                'workflow_run_id' => $run->id,
+                'task_type' => TaskType::Activity->value,
+                'status' => TaskStatus::Ready->value,
+                'available_at' => now(),
+                'payload' => [
+                    'activity_execution_id' => $execution->id,
+                ],
+                'connection' => 'redis',
+                'queue' => 'default',
+            ]);
+        }
+        for ($index = 1; $index <= $timers; ++$index) {
+            WorkflowTimer::query()->create([
+                'workflow_run_id' => $run->id,
+                'sequence' => $activities + $index,
+                'status' => TimerStatus::Pending->value,
+                'delay_seconds' => 60,
+                'fire_at' => now()
+                    ->addMinute(),
+            ]);
+        }
+    }
+
+    private function linkOpenChild(WorkflowRun $parent, int $sequence, string $parentClosePolicy): void
+    {
+        $child = $this->createWaitingRun();
+        WorkflowLink::query()->create([
+            'link_type' => 'child_workflow',
+            'sequence' => $sequence,
+            'parent_workflow_instance_id' => $parent->workflow_instance_id,
+            'parent_workflow_run_id' => $parent->id,
+            'child_workflow_instance_id' => $child->workflow_instance_id,
+            'child_workflow_run_id' => $child->id,
+            'is_primary_parent' => true,
+            'parent_close_policy' => $parentClosePolicy,
+        ]);
     }
 
     private function acceptUpdate(WorkflowRun $run, int $index): void
