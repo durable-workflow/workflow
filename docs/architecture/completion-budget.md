@@ -57,9 +57,10 @@ command list.
   The figures are measured per family, and they are exact for each one: the
   family tests check that the meter charges exactly the estimate. Rows that
   depend on stored state rather than on the commands are not in the estimate.
-  These are the accepted updates a terminal command fails, the signals
-  continue-as-new carries, and the parent-close cascade. The meter charges
-  them before each statement.
+  These are the accepted updates a terminal command closes, the signals
+  continue-as-new carries, the parent-close cascade, and the open activities
+  and timers a terminal command cancels. The meter charges them before each
+  statement.
 
 The completion-row estimate is checked against `completion_rows`. Past
 either limit, the completion is refused with `completion_budget_exceeded`
@@ -252,8 +253,11 @@ on stored state are charged by the meter before each statement. The tests in
 to learn its exact total. They then show that a limit equal to it admits the
 completion, and a limit one lower refuses it. For a command family, the
 refusal is the early `completion_budget_exceeded`, with no write statement
-run. For the state-driven family (a terminal command failing accepted
-updates), the total `completion_rows` limit still uses the meter's
+run. The state-driven families are accepted updates closed by
+`fail_workflow` or `complete_workflow`, signals carried by `continue_as_new`,
+children settled by parent-close policy (terminate, cancel request and
+abandon), and open activities and timers cancelled by `complete_workflow`.
+For them the total `completion_rows` limit still uses the meter's
 `history_transaction_limit_exceeded`. Separate cases verify that when those
 updates exceed the event or legacy history-row limit during a standalone
 failure, the bridge returns the same reason before any write. Refused
