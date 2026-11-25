@@ -84,6 +84,38 @@ final class V2TransitIncidentProcessLossTest extends TestCase
         $this->assertReplayQuiet();
     }
 
+    public function testFreshWorkersRecoverEachDamagedParcelReplacementBookingRecoveryAndRestockOnce(): void
+    {
+        $commands = $this->begin('damaged', [0]);
+        $cuts = [$this->cut(IncidentStore::BOOK_HANDLER)];
+        $this->replacementCarrier($commands, 'handed-over');
+        $this->replacementCarrier($commands, 'delivered');
+        WorkflowStub::loadRun($this->incidentRun()->id, Catalogue::NAMESPACE)->withRequestId('replacement-delivery')
+            ->signal('incident-milestone');
+        // The delivered replacement settles the remedy before the claim and the damaged-goods recovery.
+        $cuts[] = $this->cut(IncidentStore::RECOVER_HANDLER);
+        $this->warehouse($commands['recover'], 'received', [0, 1, 2]);
+        $this->warehouse($commands['recover'], 'inspected', [0, 1, 2], [0, 1], [0]);
+        WorkflowStub::loadRun($this->incidentRun()->id, Catalogue::NAMESPACE)->withRequestId('recovery-inspection')
+            ->signal('incident-milestone');
+        $cuts[] = $this->cut(IncidentStore::RESTOCK_HANDLER);
+        $this->current();
+        $this->assertSame('completed', $this->incidentRun()->status->value, $this->progress());
+
+        $this->assertRecovered($cuts);
+        $this->assertSame(
+            [...self::DELIVERED, 'reserve', 'ship-book', 'carrier-claim', 'recover-damaged-units', 'restock-units'],
+            $this->effects()
+        );
+        $this->assertSame([], $this->payouts());
+        $outcome = $this->incidentOutcome();
+        $this->assertSame('damaged', $outcome['incident']);
+        $this->assertSame('replaced', $outcome['resolution']);
+        $this->assertSame([0], $outcome['restockedUnits']);
+        $this->assertSame('remedied', $this->subjectState('order'), $this->progress());
+        $this->assertReplayQuiet();
+    }
+
     public function testFreshWorkersRecoverTheRefusedReplacementBookingReleaseAndFallbackRefundOnce(): void
     {
         $this->begin('lost', book: Status::Refused);
