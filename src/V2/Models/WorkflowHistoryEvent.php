@@ -204,6 +204,7 @@ class WorkflowHistoryEvent extends Model
      * read and one run row write (#1286). Each event is stored as record()
      * stores it.
      *
+     * @internal
      * @param non-empty-list<array{HistoryEventType, array<string, mixed>}> $events
      * @return non-empty-list<self>
      */
