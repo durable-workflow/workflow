@@ -291,6 +291,9 @@ its projections (`DeadlineCloseBudget`):
 A child's termination runs that child's whole close in the parent's
 transaction. It is therefore charged its own open activities, timers and
 tasks, its accepted updates, and in turn the children its own policy closes.
+When the timed-out run is itself a child, its close also resumes its live
+parent: the parent's child resolution and its workflow task, or a retry run
+of the child. Those writes are fixed per close and are not charged.
 The unit tests check every row of this table against the statements each
 item writes, both in the close and in a pass that takes it alone, on SQLite
 and MySQL. A run projection no longer rewrites a stored row whose JSON
