@@ -16,6 +16,7 @@ use Workflow\QueryMethod;
 use Workflow\V2\Activity;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\InvalidQueryArgumentsException;
 use Workflow\V2\Interceptors\ActivityInterceptorContext;
 use Workflow\V2\Interceptors\PassthroughWorkerInterceptor;
 use Workflow\V2\Interceptors\QueryTaskInterceptorContext;
@@ -28,6 +29,7 @@ use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowTask;
+use Workflow\V2\Support\EmbeddedLocalActivityScope;
 use Workflow\V2\Workflow;
 use Workflow\V2\WorkflowStub;
 
@@ -244,6 +246,37 @@ final class V2WorkerInterceptorTest extends TestCase
         $task->refresh();
         self::assertSame(TaskStatus::Leased, $task->status);
         self::assertSame(0, $task->repair_count);
+
+        // A registered claim for an earlier attempt is stale.
+        $failure = WorkflowTaskInterceptorFailed::threw(new RuntimeException('late failure'));
+        self::assertNull(EmbeddedLocalActivityScope::forClaim(
+            $task->id,
+            1,
+            static fn (): ?WorkflowTask => WorkerInterceptors::releaseFailedTask($task->id, $failure),
+        ));
+        self::assertSame(TaskStatus::Leased, $task->fresh()->status);
+    }
+
+    public function testQueryFailuresPassThroughAndRewrittenArgumentsAreRevalidated(): void
+    {
+        $this->configure([new AuditingInterceptor('audit')]);
+        $stub = $this->start('Ada');
+        $this->runWorkflowTask($stub->runId());
+
+        try {
+            $stub->query('explode');
+            self::fail('A throwing query method succeeded.');
+        } catch (RuntimeException $failure) {
+            self::assertSame('query method failed', $failure->getMessage());
+        }
+        self::assertSame(
+            ['audit:query:before', 'audit:query:error:query method failed'],
+            array_slice(InterceptorAudit::$events, -2)
+        );
+
+        $this->configure([new QueryArgumentInterceptor()]);
+        $this->expectException(InvalidQueryArgumentsException::class);
+        $stub->query('greeting', 'greeting');
     }
 
     public function testInterceptorClassNamesResolveFromTheContainer(): void
@@ -359,6 +392,12 @@ class InterceptedWorkflow extends Workflow
             : \Workflow\V2\activity(InterceptedActivity::class, $name);
 
         return $this->greeting;
+    }
+
+    #[QueryMethod]
+    public function explode(): string
+    {
+        throw new RuntimeException('query method failed');
     }
 
     #[QueryMethod]
@@ -480,6 +519,14 @@ final class ArgumentInterceptor extends PassthroughWorkerInterceptor
         $arguments = array_map(static fn (mixed $value): string => 'dear ' . $value, array_values($context->arguments));
 
         return strtoupper((string) $next($context->withArguments(...$arguments)));
+    }
+}
+
+final class QueryArgumentInterceptor extends PassthroughWorkerInterceptor
+{
+    public function executeQueryTask(QueryTaskInterceptorContext $context, callable $next): mixed
+    {
+        return $next($context->withArguments(['not a string']));
     }
 }
 

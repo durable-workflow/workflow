@@ -92,8 +92,9 @@ Workflow-task interceptors cannot change what a workflow records:
 
 - `executeWorkflowTask` wraps the workflow task inside its database
   transaction, once per task attempt. `replaying` is `true` when earlier
-  workflow tasks already recorded commands for the run, so the workflow code
-  re-ran that committed prefix before reaching new code. It is not a
+  workflow tasks already recorded commands for the run. A cold task re-runs
+  that committed prefix first; with live execution a warm task may resume
+  without re-running it. It is not a
   deduplication key: `historyEventTypes` lists only the events this task
   appended. Hook side effects run before the task commits and can repeat when
   an attempt is retried, so defer them with `DB::afterCommit()` or key them on
@@ -113,6 +114,9 @@ Workflow-task interceptors cannot change what a workflow records:
 - Hooks run while the run and task rows are locked, so keep them short. Local
   activities run inside the task, so a hook that keeps failing after `$next`
   makes each retry run those local activities again.
+- Hooks must not commit or roll back the surrounding transaction, and must
+  not send commands such as signals to the run they are wrapping; a change to
+  the run's recorded state fails the task on every attempt.
 - A workflow that resolves deferred entity references outside the task
   transaction runs the task in phases. The hook then runs once per phase, and
   the earlier phases see the internal deferral as an exception from `$next`.
@@ -132,6 +136,13 @@ When [embedded tracing](embedded-tracing.md) is enabled, the built-in workflow
 and activity spans stay outermost, so interceptors run inside the active span
 and can add attributes or child spans.
 
-Interceptors wrap only work this package executes in-process. Tasks handed to
-external SDK workers through the worker task bridges run under that SDK's own
-interceptors.
+Interceptors wrap the queue jobs, local activities and queries this package
+runs. Tasks handed to external SDK workers through the worker task bridges run
+under that SDK's own interceptors. The worker bridge's `execute` route, which
+runs a claimed workflow task in-process for a bridge caller, does not run
+workflow-task interceptors.
+
+An entry in `workflows.v2.interceptors` that cannot be resolved fails each
+path its own way: a queued workflow task is released and retried, an activity attempt
+fails under its retry policy, and a query throws to its caller. Check the list
+when you deploy.
