@@ -3790,6 +3790,84 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertSame($scenario['parent_result'], $parent->refresh()->output());
     }
 
+    public function testChildStartCorpusSharesOneHistoryAppendPerRunAndKeepsTheHistory(): void
+    {
+        $path = self::FIXTURE_DIR . '/child-start-shared-history-append.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The shared child start append evidence is absent from the baseline.');
+        }
+        $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $workflow = $fixture['workflow'];
+        $scenario = $fixture['child_start'];
+        config([
+            'queue.default' => 'database',
+        ]);
+        Queue::fake();
+
+        $parent = WorkflowStub::make($workflow['type'], $fixture['id']);
+        $parent->start(...$workflow['arguments']);
+        $parentRunId = $parent->runId();
+        $measuring = true;
+        $runWrites = [];
+        DB::listen(static function (QueryExecuted $query) use (&$measuring, &$runWrites): void {
+            $sql = strtolower(str_replace(['"', '`'], '', $query->sql));
+            if ($measuring && str_starts_with($sql, 'update workflow_runs set')) {
+                $runId = (string) $query->bindings[array_key_last($query->bindings)];
+                $runWrites[$runId] = ($runWrites[$runId] ?? 0) + 1;
+            }
+        });
+        try {
+            $this->runReadyTaskOfType($parentRunId, TaskType::Workflow);
+        } finally {
+            $measuring = false;
+        }
+
+        $children = WorkflowLink::query()->where('parent_workflow_run_id', $parentRunId)
+            ->where('link_type', 'child_workflow')
+            ->orderBy('sequence')
+            ->pluck('child_workflow_run_id');
+        $this->assertCount($scenario['parent_result']['members'], $children);
+        // A child start's two parent events stay adjacent and in order.
+        $parentEvents = WorkflowHistoryEvent::query()->where('workflow_run_id', $parentRunId)
+            ->whereIn('event_type', $scenario['parent_events_per_child'])
+            ->orderBy('sequence')
+            ->get();
+        foreach ($parentEvents->chunk(2) as $pair) {
+            $pair = $pair->values();
+            $this->assertSame($scenario['parent_events_per_child'], $pair->map(
+                static fn (WorkflowHistoryEvent $event): string => $event->event_type->value
+            )->all());
+            $this->assertSame($pair[0]->sequence + 1, $pair[1]->sequence);
+            $this->assertSame($pair[0]->payload['child_workflow_run_id'], $pair[1]->payload['child_workflow_run_id']);
+        }
+        $this->assertLessThanOrEqual(
+            $scenario['max_parent_run_row_writes_per_child'] * count($children) + 1,
+            $runWrites[$parentRunId] ?? 0,
+            'Each child start wrote the parent run row more than once.'
+        );
+        foreach ($children as $child) {
+            $events = WorkflowHistoryEvent::query()->where('workflow_run_id', $child)->orderBy('sequence')->get();
+            $this->assertSame([1, 2], $events->pluck('sequence')->all());
+            $this->assertSame($scenario['child_events'], $events->map(
+                static fn (WorkflowHistoryEvent $event): string => $event->event_type->value
+            )->all());
+            $command = WorkflowCommand::query()->where('workflow_run_id', $child)->sole();
+            $this->assertSame($scenario['child_start_command_sequence'], $command->command_sequence);
+            $childRun = WorkflowRun::query()->findOrFail($child);
+            $this->assertSame($scenario['child_start_command_sequence'], (int) $childRun->last_command_sequence);
+            $this->assertSame(2, (int) $childRun->last_history_sequence);
+            $this->assertLessThanOrEqual(
+                $scenario['max_child_run_row_writes'],
+                $runWrites[$child] ?? 0,
+                'A new child run row was written more than once while it started.'
+            );
+            $this->runReadyTaskOfType($child, TaskType::Workflow);
+        }
+
+        $this->runReadyTaskOfType($parentRunId, TaskType::Workflow);
+        $this->assertSame($scenario['parent_result'], $parent->refresh()->output());
+    }
+
     public function testChildClosureCorpusReadsEachSiblingRunABoundedNumberOfTimes(): void
     {
         $fixturePath = self::FIXTURE_DIR . '/child-closure-sibling-run-rows-bound.json';
