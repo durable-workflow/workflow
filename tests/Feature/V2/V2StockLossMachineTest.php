@@ -107,6 +107,77 @@ final class V2StockLossMachineTest extends TestCase
     }
 
     /**
+     * Two of three units held before capture: wait-complete waits with nothing captured, then captures and books
+     * every unit once a goods receipt completes the quantity.
+     */
+    public function testWaitBeforeCaptureCapturesOnlyAfterTheCompleteQuantityIsHeld(): void
+    {
+        $stub = $this->checkout(Catalogue::COMMON_RESERVE_FIRST, StockAllocation::WAIT, [0, 1, 2], untilWaiting: true);
+        $key = $this->order->subjectKey();
+        $this->assertWaitingBeforeCapture($key);
+
+        $this->warehouse->receive('shop-a', 'sku-1', 'delivery-note-1', 1);
+        $stub->signal('reconcile-stock');
+        $this->drain();
+        $this->assertSame('booked', $this->authority->subject($key, 'order')->state, $this->progress());
+        $plan = $this->authority->stock->recorded($key);
+        $this->assertSame(['fulfill', [0, 1, 2], []], [
+            $plan['action'], $plan['fulfillUnits'], $plan['requiredRefundUnits'],
+        ]);
+        $this->assertSame(['reserve', 'capture', 'book'], $this->effects());
+        $this->assertSame([], $this->payouts());
+        $this->assertSame(0, $this->warehouse->inventory('shop-a', 'sku-1')['available']);
+        $this->assertReplayWithoutProviderCalls($stub);
+    }
+
+    /**
+     * The original fulfilment deadline ends the wait before capture: a recorded cancel plan, no money taken and
+     * one release of the two held units.
+     */
+    public function testWaitBeforeCaptureCancelsAtTheOriginalDeadlineWithoutTakingMoney(): void
+    {
+        $stub = $this->checkout(Catalogue::COMMON_RESERVE_FIRST, StockAllocation::WAIT, null, untilWaiting: true);
+        $key = $this->order->subjectKey();
+        $this->assertWaitingBeforeCapture($key);
+
+        $this->drain();
+        $this->assertSame('cancelled', $this->authority->subject($key, 'order')->state, $this->progress());
+        $plan = $this->authority->stock->recorded($key);
+        $this->assertSame(['cancel', 'wait-complete', 'complete-order-deadline-expired', [0, 1], [], []], [
+            $plan['action'], $plan['policy'], $plan['reason'], $plan['releaseUnits'], $plan['requiredRefundUnits'],
+            $plan['fulfillUnits'],
+        ]);
+        $this->assertSame(['reserve', 'release'], $this->effects());
+        $this->assertSame([], $this->payouts());
+        $this->assertSame(0, WorkflowRun::query()->where('workflow_class', Payment::class)->count());
+        $this->assertSame(['stock-plan-complete-order-deadline-expired'], $this->cancellationKeys($key));
+        $this->assertReleasedOnce([0, 1], null);
+        $this->assertCancelledWithoutCompletion($stub);
+        $this->assertReplayWithoutProviderCalls($stub);
+    }
+
+    /**
+     * cancel-all with two of three units held before capture cancels with nothing captured.
+     */
+    public function testCancelAllShortageBeforeCaptureReleasesWithoutTakingMoney(): void
+    {
+        $stub = $this->checkout(Catalogue::COMMON_RESERVE_FIRST, StockAllocation::CANCEL, null);
+        $key = $this->order->subjectKey();
+        $this->assertSame('cancelled', $this->authority->subject($key, 'order')->state, $this->progress());
+        $plan = $this->authority->stock->recorded($key);
+        $this->assertSame(['cancel', 'original-allocation', [0, 1], [2], [], []], [
+            $plan['action'], $plan['reason'], $plan['releaseUnits'], $plan['unavailableUnits'],
+            $plan['requiredRefundUnits'], $plan['fulfillUnits'],
+        ]);
+        $this->assertSame(['reserve', 'release'], $this->effects());
+        $this->assertSame([], $this->payouts());
+        $this->assertSame(0, WorkflowRun::query()->where('workflow_class', Payment::class)->count());
+        $this->assertReleasedOnce([0, 1], null);
+        $this->assertCancelledWithoutCompletion($stub);
+        $this->assertReplayWithoutProviderCalls($stub);
+    }
+
+    /**
      * Fulfilling part of an unpaid order would need a capture smaller than the original quote. No existing
      * policy defines that, so the reserve-first grant refuses fulfill-partial before any execution.
      */
@@ -114,7 +185,9 @@ final class V2StockLossMachineTest extends TestCase
     {
         $key = $this->terms->subjectKey();
         $this->expectException(LogicException::class);
-        $this->expectExceptionMessage('reserve-first-common accepts only wait-complete or cancel-all');
+        $this->expectExceptionMessage(
+            'fulfill-partial needs a payment-first unit-money grant: before capture, reserve-first-common accepts'
+        );
         new Authority(DB::connection(), 'provider-worker', [$key], [
             $key => Catalogue::COMMON_RESERVE_FIRST,
         ], unitAmounts: [
@@ -375,7 +448,7 @@ final class V2StockLossMachineTest extends TestCase
      * The warehouse closed the original reservation with one receipt: only the suitable held units became
      * saleable again, and the lost unit stays in its own counter.
      */
-    private function assertReleasedOnce(array $units, string $condition): void
+    private function assertReleasedOnce(array $units, ?string $condition): void
     {
         $snapshot = $this->warehouse->find($this->reservation());
         $this->assertTrue($snapshot['closed']);
@@ -393,8 +466,27 @@ final class V2StockLossMachineTest extends TestCase
             static fn (string $state): bool => $state === 'held'
         ));
         $this->assertSame(count($units), $held);
-        $this->assertSame(1, $inventory[$condition]);
-        $this->assertSame($inventory['initial_quantity'] - 1, $inventory['available']);
+        $lost = $condition === null ? 0 : 1;
+        $this->assertSame(
+            [$lost, $lost],
+            [$inventory['damaged'] + $inventory['missing'], $inventory[$condition ?? 'damaged']]
+        );
+        $this->assertSame($inventory['initial_quantity'] - $lost, $inventory['available']);
+    }
+
+    /**
+     * The stock plan runs before capture: while it waits only the reservation exists, and no Payment child.
+     */
+    private function assertWaitingBeforeCapture(string $key): void
+    {
+        $this->assertSame('received', $this->authority->subject($key, 'order')->state, $this->progress());
+        $this->assertNull($this->authority->stock->recorded($key));
+        $this->assertSame(['reserve'], $this->effects());
+        $this->assertSame(0, WorkflowRun::query()->where('workflow_class', Payment::class)->count());
+        $this->assertSame(
+            ['held', 'held', 'unavailable'],
+            $this->warehouse->find($this->reservation())['allocation']['units']
+        );
     }
 
     private function assertReplayWithoutProviderCalls(WorkflowStub $stub): void

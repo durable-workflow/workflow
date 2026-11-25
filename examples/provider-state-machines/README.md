@@ -122,20 +122,23 @@ vendor/bin/phpunit tests/Feature/V2/V2PartialStockSelectionTest.php
 `cancel-all` the same way. Its stock plan runs right after the confirmed
 reservation and before capture. A plan that cancels there records no refund
 units, starts no Payment child and releases only the suitable held units.
-`fulfill-partial` is refused at the trusted grant: fulfilling part of an unpaid
+With two of three units held, `wait-complete` waits before capture: a goods
+receipt plus `reconcile-stock` then captures and books all three units, and the
+original deadline cancels with nothing captured. `cancel-all` cancels before
+capture. `fulfill-partial` is refused at the trusted grant: fulfilling part of an unpaid
 Order would need a capture smaller than the original quote, and no policy
 defines one.
 
 | Where the loss is found (STK-03) | Outcome |
 | --- | --- |
 | Damaged or missing unit at allocation, before capture (`reserve-first-common`) | Recorded cancel plan under both policies. Effects `reserve`, `release`; no capture, repayment or booking. |
-| Damaged or missing unit at allocation, after capture (`payment-first`) | Recorded cancel plan under every policy, 1499 repaid, then release (`V2PartialStockSelectionTest`). |
+| Damaged or missing unit at allocation, after capture (`payment-first`) | Recorded cancel plan, even under `fulfill-partial`; 1499 repaid, then release (`V2PartialStockSelectionTest`). |
 | Unit lost while `wait-complete` waits for the rest (`payment-first`) | The next allocation observation records a cancel plan, even though a goods receipt has completed the quantity. 1499 repaid, then release. |
 | Unit lost after booking, before handover (`payment-first`) | The recorded plan stays final; no policy re-plans a booked Order to fewer units. The warehouse observation alone changes nothing, so the host requests business cancellation. Compensation cancels the booking, repays every unit not already repaid (1000 after an earlier 499, or 1499) and then releases. |
 
 In every case the warehouse closes the original reservation with one receipt.
 Only suitable held units return to saleable stock; damaged and missing units keep
-their own counters. The Order ends `cancelled` and never publishes a booked
+their own counters. The Order ends `cancelled` and never completes with a booked
 outcome. Replay makes no provider calls. A real worker killed after the
 reservation release commits, before DW records it, is recovered by a fresh
 process on both the before-payment and after-booking routes without releasing

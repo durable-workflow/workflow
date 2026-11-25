@@ -26,6 +26,13 @@ final readonly class StockPolicy
         private array $policies,
     ) {
         foreach ($policies as $key => $policy) {
+            if (is_string($key) && $authority->unitMoney->selected($key) && $policy === StockAllocation::PARTIAL
+                && $authority->recipe($key) === Catalogue::COMMON_RESERVE_FIRST) {
+                throw new LogicException(
+                    'fulfill-partial needs a payment-first unit-money grant: before capture,'
+                    . ' reserve-first-common accepts only wait-complete or cancel-all.'
+                );
+            }
             if (! is_string($key) || ! $authority->unitMoney->selected($key) || ! in_array(
                 $policy,
                 self::policies($authority->recipe($key)),
@@ -33,7 +40,6 @@ final readonly class StockPolicy
             )) {
                 throw new LogicException(
                     'Partial-stock selection needs a payment-first unit-money grant and one explicit policy.'
-                    . ' Before payment, reserve-first-common accepts only wait-complete or cancel-all.'
                 );
             }
         }

@@ -44,12 +44,12 @@ final readonly class StockSelectionStore
         $policy = $this->authority->stock->policy($key);
         if ((bool) $this->authority->subject($key, 'order')->cancellation_requested) {
             // Cancellation already began: no plan is recorded and no unit is allocated or fulfilled.
-            return [
+            return $this->beforeCapture($key, [
                 ...StockAllocation::fromArray($this->warehouse->inspect($original)['allocation'])
                     ->decide($original, StockAllocation::CANCEL),
                 'policy' => $policy,
                 'reason' => 'business-cancellation-requested',
-            ];
+            ]);
         }
         if ($policy === StockAllocation::WAIT) {
             $this->warehouse->allocate($original);
@@ -74,11 +74,11 @@ final readonly class StockSelectionStore
                 'reason' => 'complete-order-deadline-expired',
             ];
         }
-        if ($this->authority->recipe($key) === Catalogue::COMMON_RESERVE_FIRST) {
-            // Reserve-first plans before capture: there is no paid unit to repay.
-            $decision['requiredRefundUnits'] = [];
-        }
-        return $this->requestCancellation($key, $plan->rootRun, $this->record($key, $actual, $decision));
+        return $this->requestCancellation(
+            $key,
+            $plan->rootRun,
+            $this->record($key, $actual, $this->beforeCapture($key, $decision))
+        );
     }
 
     /**
@@ -139,6 +139,17 @@ final readonly class StockSelectionStore
     public function reservation(string $key): Request
     {
         return Request::fromArray($this->authority->cart->stockObligation($key)->input['forward']);
+    }
+
+    /**
+     * Reserve-first plans before capture: there is no paid unit to repay.
+     */
+    private function beforeCapture(string $key, array $decision): array
+    {
+        if ($this->authority->recipe($key) === Catalogue::COMMON_RESERVE_FIRST) {
+            $decision['requiredRefundUnits'] = [];
+        }
+        return $decision;
     }
 
     private function root(WorkflowRun $actual): array
