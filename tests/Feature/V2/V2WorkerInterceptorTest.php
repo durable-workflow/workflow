@@ -255,6 +255,49 @@ final class V2WorkerInterceptorTest extends TestCase
             static fn (): ?WorkflowTask => WorkerInterceptors::releaseFailedTask($task->id, $failure),
         ));
         self::assertSame(TaskStatus::Leased, $task->fresh()->status);
+
+        // Positive control: the claim for the task's current attempt does release it.
+        $released = EmbeddedLocalActivityScope::forClaim(
+            $task->id,
+            2,
+            static fn (): ?WorkflowTask => WorkerInterceptors::releaseFailedTask($task->id, $failure),
+        );
+        self::assertSame($task->id, $released?->id);
+        $task->refresh();
+        self::assertSame(TaskStatus::Ready, $task->status);
+        self::assertSame(1, $task->repair_count);
+    }
+
+    public function testEngineReadFailureAfterTheCoreTakesTheTransactionFailurePath(): void
+    {
+        $this->configure([new SwallowingInterceptor()]);
+        $stub = $this->start('Ada');
+        $task = $this->readyWorkflowTask($stub->runId());
+        $before = $this->historyTypes($stub->runId());
+        $injected = false;
+        // Fail the integrity read that runs after the core, and only that read.
+        DB::listen(static function ($query) use (&$injected): void {
+            if (! $injected && str_contains($query->sql, 'last_history_sequence') && str_contains($query->sql, 'status')
+                && preg_match('/^select\s+["`]?last_history_sequence["`]?,\s*["`]?status["`]?\s+from/i', $query->sql) === 1) {
+                $injected = true;
+
+                throw new RuntimeException('injected engine read failure');
+            }
+        });
+
+        try {
+            $this->app->call([new RunWorkflowTask($task->id), 'handle']);
+            self::fail('An engine read failure was reported as success.');
+        } catch (RuntimeException $failure) {
+            self::assertSame('injected engine read failure', $failure->getMessage());
+        }
+
+        self::assertTrue($injected);
+        $task->refresh();
+        self::assertSame(TaskStatus::Failed, $task->status, 'Engine read failures are not interceptor failures.');
+        self::assertSame(0, $task->repair_count);
+        self::assertSame('injected engine read failure', $task->last_error);
+        self::assertSame($before, $this->historyTypes($stub->runId()));
     }
 
     public function testQueryFailuresPassThroughAndRewrittenArgumentsAreRevalidated(): void
@@ -526,7 +569,7 @@ final class QueryArgumentInterceptor extends PassthroughWorkerInterceptor
 {
     public function executeQueryTask(QueryTaskInterceptorContext $context, callable $next): mixed
     {
-        return $next($context->withArguments(['not a string']));
+        return $next($context->withArguments(123));
     }
 }
 
