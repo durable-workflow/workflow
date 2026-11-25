@@ -257,6 +257,10 @@ They first shipped in two steps:
   (`DefinitionLimits`, `ExecutionLimits`, `Execution\ResourceLimitExceeded`),
   child bindings (`Binding\*`) and native child start.
 
+- **Unreleased:** the child binding catalog (`Definition\MachineCatalog`,
+  `Definition\InvalidMachineCatalog`) and the `child_depth` dimension of
+  `Execution\ResourceLimitExceeded`.
+
 Members marked `@internal`, such as `Execution\ExecutionBudget`, are
 implementation details. Recorded histories of state-machine runs replay under
 the general replay contract. The API defines no migration of an in-flight

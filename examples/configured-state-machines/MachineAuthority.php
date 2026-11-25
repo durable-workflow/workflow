@@ -105,11 +105,14 @@ final class MachineAuthority
             throw new LogicException('The live business owner refused this child binding.');
         }
         $profile = $this->profile($row);
-        $profile->definition?->assertBinding(
-            $profile,
-            $binding,
-            Catalogue::shipment($row->profile, $row->profile_version)
-        );
+        if ($profile->definition !== null) {
+            // The catalog also pins the child's registered definition, not only its machine/version names.
+            Catalogue::machines()->assertBinding(
+                $profile,
+                $binding,
+                Catalogue::shipment($row->profile, $row->profile_version)
+            );
+        }
     }
 
     public function authorizeScope(ScopeIdentity $scope, string $principal, string $operation): void

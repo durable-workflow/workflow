@@ -7,6 +7,7 @@ namespace DurableWorkflow\Examples\ConfiguredStateMachines;
 use LogicException;
 use Workflow\V2\StateMachine\Definition\ChildSlot;
 use Workflow\V2\StateMachine\Definition\ConditionDefinition;
+use Workflow\V2\StateMachine\Definition\MachineCatalog;
 use Workflow\V2\StateMachine\Definition\MachineDefinition;
 use Workflow\V2\StateMachine\Definition\MachineState;
 use Workflow\V2\StateMachine\Definition\PolicyProfile;
@@ -96,6 +97,14 @@ final class Catalogue
     public static function profiles(): array
     {
         return [['prepare', '1'], ['imported', '1'], ['prepare', '2'], ['imported', '2']];
+    }
+
+    /**
+     * Version-two definitions that may host each other; construction refuses cyclic or unregistered slots.
+     */
+    public static function machines(): MachineCatalog
+    {
+        return new MachineCatalog([self::definition('orders'), self::definition('shipments')], maxChildDepth: 1);
     }
 
     public static function registry(): RuleRegistry
