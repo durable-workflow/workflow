@@ -163,8 +163,18 @@ final class WorkflowFiberRunner
     private ?string $namespace = null;
 
     /**
+     * The task's WorkerReplayClock v1 entry instant, when it validates for this run.
+     */
+    private ?CarbonImmutable $entryCarrier = null;
+
+    private ?string $entryCarrierSource = null;
+
+    /**
      * @param array<int, mixed> $arguments
      * @param list<array<string, mixed>> $historyEvents
+     * @param array<string, mixed>|null $replayClock The workflow task's `replay_clock` object
+     *     (WorkerReplayClock v1). When it validates for this run, ordinary entry uses its
+     *     `started_at`, the run's canonical start, instead of the WorkflowStarted event time.
      */
     public function __construct(
         private readonly Workflow $workflow,
@@ -172,10 +182,12 @@ final class WorkflowFiberRunner
         private readonly string $payloadCodec = 'avro',
         array $historyEvents = [],
         ?string $namespace = null,
+        ?array $replayClock = null,
     ) {
         $this->versionDecisions = new VersionDecisions([]);
         $this->namespace = self::stringValue($namespace)
             ?? self::stringValue($this->workflow->run->namespace ?? null);
+        $this->adoptReplayClock($replayClock);
         $this->loadHistoryEvents($historyEvents);
     }
 
@@ -197,6 +209,7 @@ final class WorkflowFiberRunner
         string $payloadCodec = 'avro',
         array $historyEvents = [],
         ?string $namespace = null,
+        ?array $replayClock = null,
     ): self {
         $run = new WorkflowRun();
         $run->id = $runId;
@@ -215,7 +228,7 @@ final class WorkflowFiberRunner
             ));
         }
 
-        return new self($workflow, $arguments, $payloadCodec, $historyEvents, $namespace);
+        return new self($workflow, $arguments, $payloadCodec, $historyEvents, $namespace, $replayClock);
     }
 
     /**
@@ -1403,7 +1416,7 @@ final class WorkflowFiberRunner
         $this->appliedUpdateEvents = [];
         $this->hasReplayHistory = $this->historyEvents !== [];
         $this->syncRunReplayMetadata($this->historyEvents);
-        $this->startedAt = self::workflowStartedAt($this->historyEvents);
+        $this->startedAt = $this->entryInstant($this->historyEvents);
         $this->historySequencesByPosition = self::indexHistorySequencesByPosition($this->historyEvents);
         $this->recordedActivityOutcomes = self::indexRecordedActivityOutcomes(
             $this->historyEvents,
@@ -1539,6 +1552,78 @@ final class WorkflowFiberRunner
         return SourceFingerprint::versionOf(
             self::workflowStartedPayload($this->historyEvents)['workflow_definition_fingerprint'] ?? null,
         );
+    }
+
+    /**
+     * Validate the task's WorkerReplayClock v1 object (Server #1156, .github#215).
+     * Anything unproved is ignored, and no other time is substituted for it.
+     *
+     * @param array<string, mixed>|null $replayClock
+     */
+    private function adoptReplayClock(?array $replayClock): void
+    {
+        if ($replayClock === null) {
+            return;
+        }
+
+        $keys = array_keys($replayClock);
+        sort($keys);
+        $runId = self::stringValue($this->workflow->run->id ?? null);
+        $startedAt = $replayClock['started_at'] ?? null;
+        $source = $replayClock['source'] ?? null;
+
+        if ($keys !== ['schema', 'source', 'started_at', 'workflow_run_id']
+            || ($replayClock['schema'] ?? null) !== 'durable-workflow.worker-replay-clock/v1'
+            || $runId === null
+            || ($replayClock['workflow_run_id'] ?? null) !== $runId
+            || ! in_array($source, ['run_started_at', 'redrive_replayed_started_at'], true)
+            || ! is_string($startedAt)
+            || preg_match('/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z\z/', $startedAt) !== 1
+        ) {
+            return;
+        }
+
+        $instant = CarbonImmutable::createFromFormat('Y-m-d\\TH:i:s.u\\Z', $startedAt, 'UTC');
+
+        if (! $instant instanceof CarbonImmutable
+            || $instant->format('Y-m-d\\TH:i:s.u\\Z') !== $startedAt
+        ) {
+            return;
+        }
+
+        $this->entryCarrier = $instant;
+        $this->entryCarrierSource = $source;
+    }
+
+    /**
+     * Ordinary entry uses the carrier's canonical run start. A redrive anchor
+     * the history proves is kept, and a carrier whose source disagrees with the
+     * history's start kind is ignored. Without a carrier, entry keeps the
+     * WorkflowStarted event time, so runs already in flight replay unchanged.
+     *
+     * @param list<array<string, mixed>> $historyEvents
+     */
+    private function entryInstant(array $historyEvents): ?CarbonInterface
+    {
+        $recorded = self::workflowStartedAt($historyEvents);
+
+        if ($this->entryCarrier === null) {
+            return $recorded;
+        }
+
+        $started = self::workflowStartedPayload($historyEvents);
+        $redrive = ($started['recovery_kind'] ?? null) === 'redrive'
+            || ($started['replayed_started_at'] ?? null) !== null;
+
+        if ($redrive) {
+            $anchor = self::eventTime($started['replayed_started_at'] ?? null);
+
+            return $anchor === null && $this->entryCarrierSource === 'redrive_replayed_started_at'
+                ? $this->entryCarrier
+                : $recorded;
+        }
+
+        return $this->entryCarrierSource === 'run_started_at' ? $this->entryCarrier : $recorded;
     }
 
     /**

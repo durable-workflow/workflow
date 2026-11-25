@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- The worker-protocol runner (`WorkflowFiberRunner`, used by external PHP
+  workers) accepts the workflow task's `replay_clock` object
+  (`WorkerReplayClock` v1, sent by Server 3.6.0 and later) as a new optional
+  `replayClock` argument to its constructor and `forClass()`. When the object
+  validates for the run, `Workflow::now()` at ordinary entry returns its
+  `started_at`. That is the run's canonical start, the instant the embedded
+  executor already uses. Without it, entry keeps the `WorkflowStarted` event
+  time, which is written separately and can differ by microseconds, so runs
+  already in flight replay unchanged. The object must have exactly the four v1
+  keys, name the runner's run and carry strict six-digit UTC with `Z`, and its
+  source must agree with the history's start kind. A redrive anchor the
+  history proves is never replaced. (durable-workflow/.github#215)
+
 - Workflow code can log without repeating itself. `$this->logger()` returns a
   PSR-3 logger that writes through the Laravel logger (or the channel you
   pass) only when the code runs for the first time. The engine replays a

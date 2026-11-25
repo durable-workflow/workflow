@@ -6804,6 +6804,7 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             $workflow['arguments'],
             $workflow['payload_codec'],
             $fixture['history'] ?? [],
+            replayClock: $fixture['worker_task']['replay_clock'] ?? null,
         );
         $step = $runner->step();
 
