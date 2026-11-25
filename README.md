@@ -125,6 +125,13 @@ Tracing is disabled by default and uses the application's OpenTelemetry
 provider. See [embedded tracing](docs/embedded-tracing.md) for migrations,
 configuration, the log tap, exporter limits and measured overhead.
 
+## Worker interceptors
+
+List ordered interceptor classes in `workflows.v2.interceptors` to wrap
+workflow tasks, activities and queries with audit logging, metric tags, tenant
+context or tracing. They resolve from the Laravel container and cannot change
+what a workflow task records. See [worker interceptors](docs/worker-interceptors.md).
+
 ## Your First Workflow
 
 ```php

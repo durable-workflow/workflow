@@ -10,6 +10,9 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Throwable;
+use Workflow\V2\Interceptors\ActivityInterceptorContext;
+use Workflow\V2\Interceptors\ActivityInterceptorContexts;
+use Workflow\V2\Interceptors\WorkerInterceptors;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Support\ActivityEntryArguments;
@@ -164,7 +167,15 @@ final class RunActivityTask implements ShouldQueue
             $throwable = $mocked['throwable'];
         } elseif ($throwable === null) {
             try {
-                $result = $activity->{$entryMethod->getName()}(...$arguments);
+                $result = WorkerInterceptors::activity(
+                    static fn (): ActivityInterceptorContext => ActivityInterceptorContexts::forClaim(
+                        $claim,
+                        $activity,
+                        $arguments,
+                    ),
+                    $arguments,
+                    static fn (array $arguments): mixed => $activity->{$entryMethod->getName()}(...$arguments),
+                );
             } catch (Throwable $error) {
                 $throwable = $error;
             }
