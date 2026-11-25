@@ -48,7 +48,7 @@ class WorkflowTaskObserver
         }
 
         /** @var WorkflowRun|null $run */
-        $run = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+        $run = $task->creatingRun() ?? ConfiguredV2Models::query('run_model', WorkflowRun::class)
             ->find($task->workflow_run_id);
 
         if (! $run instanceof WorkflowRun || ! StickyExecution::shouldInherit($run)) {

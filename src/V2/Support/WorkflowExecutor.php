@@ -53,7 +53,9 @@ use Workflow\V2\Models\WorkflowFailure;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowInstance;
 use Workflow\V2\Models\WorkflowLink;
+use Workflow\V2\Models\WorkflowMemo;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowSearchAttribute;
 use Workflow\V2\Models\WorkflowSignal;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
@@ -87,6 +89,14 @@ final class WorkflowExecutor
      * @var WeakMap<WorkflowTask, WorkflowExecution>|null
      */
     private ?WeakMap $dispatchedExecutions = null;
+
+    /**
+     * Whether the run dispatching a parallel group has memos or search
+     * attributes for its new children to inherit. Null outside a dispatch.
+     *
+     * @var array{run: string, models: array<class-string, bool>}|null
+     */
+    private ?array $groupParentRows = null;
 
     public function run(
         WorkflowRun $run,
@@ -2318,10 +2328,18 @@ final class WorkflowExecutor
         }
         $group = new WorkflowParallelDispatch($sequence, $current->failurePolicy === AllCall::PROPAGATE);
         $group->conditionInputOrder = $conditionInputOrder;
-        foreach ($dispatchDescriptors as $descriptor) {
-            if (! $this->dispatchParallelMember($run, $task, $descriptor, $group)) {
-                return null;
+        $this->groupParentRows = [
+            'run' => $run->id,
+            'models' => [],
+        ];
+        try {
+            foreach ($dispatchDescriptors as $descriptor) {
+                if (! $this->dispatchParallelMember($run, $task, $descriptor, $group)) {
+                    return null;
+                }
             }
+        } finally {
+            $this->groupParentRows = null;
         }
         return $this->finishParallelDispatch($run, $task, $frame, $leafDescriptors, $group);
     }
@@ -3483,6 +3501,10 @@ final class WorkflowExecutor
         );
         StructuralLimits::guardPayloadSize($storedChildArguments);
 
+        // Choosing the run's id first lets the instance's one write name its
+        // current run (#1286).
+        $childRunId = (new WorkflowRun())->newUniqueId();
+
         /** @var WorkflowInstance $childInstance */
         $childInstance = $reservedChild ?? WorkflowInstance::query()->create([
             'workflow_class' => $childWorkflowCall->workflow,
@@ -3491,16 +3513,19 @@ final class WorkflowExecutor
             'reserved_at' => $now,
             'started_at' => $now,
             'run_count' => 1,
+            'current_run_id' => $childRunId,
         ]);
         if ($reservedChild !== null) {
             $childInstance->forceFill([
                 'started_at' => $now,
                 'run_count' => 1,
+                'current_run_id' => $childRunId,
             ])->save();
         }
 
         /** @var WorkflowRun $childRun */
         $childRun = WorkflowRun::query()->create([
+            'id' => $childRunId,
             'workflow_instance_id' => $childInstance->id,
             'run_number' => 1,
             'observability_context' => TraceCarrier::fromRun($run),
@@ -3520,13 +3545,12 @@ final class WorkflowExecutor
             'started_at' => $now,
             'last_progress_at' => $now,
             'last_history_sequence' => 0,
+            // The start command below is this new run's first command.
+            'last_command_sequence' => 1,
         ]);
 
         $this->inheritTypedVisibilityMetadata($run, $childRun);
 
-        $childInstance->forceFill([
-            'current_run_id' => $childRun->id,
-        ])->save();
         $childCallId = (string) Str::ulid();
 
         $startCommand = $this->recordWorkflowStartCommand(
@@ -3537,6 +3561,7 @@ final class WorkflowExecutor
             $metadata->arguments,
             $now,
             $childCallId,
+            commandSequence: 1,
         );
 
         $parentClosePolicy = $childWorkflowCall->options?->parentClosePolicy
@@ -3584,7 +3609,7 @@ final class WorkflowExecutor
             'parallel_group_path' => self::parallelGroupPath($parallelMetadata),
         ]);
 
-        WorkflowHistoryEvent::record($run, HistoryEventType::ChildWorkflowScheduled, array_merge([
+        WorkflowHistoryEvent::recordChildStart($run, [[HistoryEventType::ChildWorkflowScheduled, array_merge([
             'sequence' => $sequence,
             ...($childWorkflowCall->reservation === null ? [] : [
                 'child_reservation' => $childWorkflowCall->reservation->toArray(),
@@ -3600,9 +3625,7 @@ final class WorkflowExecutor
             'child_workflow_type' => $childRun->workflow_type,
             'parent_close_policy' => $parentClosePolicy->value,
             'cancellation_policy' => $cancellationPolicy->value,
-        ], $parallelMetadata ?? []), $task);
-
-        WorkflowHistoryEvent::record($run, HistoryEventType::ChildRunStarted, array_merge([
+        ], $parallelMetadata ?? [])], [HistoryEventType::ChildRunStarted, array_merge([
             'sequence' => $sequence,
             ...($childWorkflowCall->reservation === null ? [] : [
                 'child_reservation' => $childWorkflowCall->reservation->toArray(),
@@ -3616,18 +3639,16 @@ final class WorkflowExecutor
             'child_run_number' => $childRun->run_number,
             'parent_close_policy' => $parentClosePolicy->value,
             'cancellation_policy' => $cancellationPolicy->value,
-        ], $parallelMetadata ?? []), $task);
+        ], $parallelMetadata ?? [])]], $task);
 
-        WorkflowHistoryEvent::recordWhileRunLocked($childRun, HistoryEventType::StartAccepted, [
+        WorkflowHistoryEvent::recordChildRunStartWhileRunLocked($childRun, [[HistoryEventType::StartAccepted, [
             'workflow_command_id' => $startCommand->id,
             'workflow_instance_id' => $childRun->workflow_instance_id,
             'workflow_run_id' => $childRun->id,
             'workflow_class' => $childRun->workflow_class,
             'workflow_type' => $childRun->workflow_type,
             'outcome' => $startCommand->outcome?->value,
-        ], $startCommand);
-
-        WorkflowHistoryEvent::recordWhileRunLocked($childRun, HistoryEventType::WorkflowStarted, [
+        ]], [HistoryEventType::WorkflowStarted, [
             'workflow_class' => $childRun->workflow_class,
             'workflow_type' => $childRun->workflow_type,
             'workflow_instance_id' => $childRun->workflow_instance_id,
@@ -3648,10 +3669,15 @@ final class WorkflowExecutor
             'declared_entry_method' => $commandContract['entry_method'],
             'declared_entry_mode' => $commandContract['entry_mode'],
             'declared_entry_declaring_class' => $commandContract['entry_declaring_class'],
-        ], $startCommand);
+        ]]], $startCommand);
+
+        $role = $this->historyProjectionRole();
+        // The child's stored row is final before its task exists: one read
+        // serves the task's run inheritance and the child's projection.
+        $storedChildRun = $role instanceof DefaultHistoryProjectionRole ? $childRun->fresh() : null;
 
         /** @var WorkflowTask $childTask */
-        $childTask = WorkflowTask::query()->create([
+        $childTask = WorkflowTask::query()->newModelInstance([
             'workflow_run_id' => $childRun->id,
             'namespace' => $childRun->namespace,
             'task_type' => TaskType::Workflow->value,
@@ -3662,12 +3688,16 @@ final class WorkflowExecutor
             'queue' => $childRun->queue,
             'compatibility' => $childRun->compatibility,
         ]);
+        if ($storedChildRun instanceof WorkflowRun) {
+            $childTask->setRelation('run', $storedChildRun);
+        }
+        $childTask->save();
+        $childTask->unsetRelation('run');
 
         if ($parkRun) {
             $this->markRunWaiting($run, $task);
         }
 
-        $role = $this->historyProjectionRole();
         $relations = $role instanceof DefaultHistoryProjectionRole ? [] : [
             'instance',
             'tasks',
@@ -3678,7 +3708,7 @@ final class WorkflowExecutor
             'childLinks.childRun.instance.currentRun',
             'childLinks.childRun.failures',
         ];
-        $role->projectRun($childRun->fresh($relations));
+        $role->projectRun($storedChildRun ?? $childRun->fresh($relations));
 
         if ($childWorkflowCall->reservation !== null) {
             ChildReservationStore::recordAdmission(
@@ -5048,6 +5078,7 @@ final class WorkflowExecutor
         array $arguments,
         mixed $recordedAt,
         ?string $childCallId = null,
+        ?int $commandSequence = null,
     ): WorkflowCommand {
         $startCommandCodec = Serializer::chooseCodecForData(
             $sourceRun->payload_codec ?? CodecRegistry::defaultCodec(),
@@ -5082,6 +5113,9 @@ final class WorkflowExecutor
                     'applied_at' => $recordedAt,
                     'created_at' => $recordedAt,
                     'updated_at' => $recordedAt,
+                ],
+                $commandSequence === null ? [] : [
+                    'command_sequence' => $commandSequence,
                 ],
             ),
         );
@@ -8261,10 +8295,35 @@ final class WorkflowExecutor
 
     private function inheritTypedVisibilityMetadata(WorkflowRun $sourceRun, WorkflowRun $targetRun): void
     {
-        app(MemoUpsertService::class)->inheritFromParent($sourceRun, $targetRun, 1);
-        app(SearchAttributeUpsertService::class)->inheritFromParent($sourceRun, $targetRun, 1);
+        $memos = app(MemoUpsertService::class);
+        // A replacement service may inherit more than the parent's rows.
+        if ($memos::class !== MemoUpsertService::class || $this->groupParentHas($sourceRun, WorkflowMemo::class)) {
+            $memos->inheritFromParent($sourceRun, $targetRun, 1);
+        }
+        if ($this->groupParentHas($sourceRun, WorkflowSearchAttribute::class)) {
+            app(SearchAttributeUpsertService::class)->inheritFromParent($sourceRun, $targetRun, 1);
+        }
 
         $targetRun->unsetRelation('memos');
         $targetRun->unsetRelation('searchAttributes');
+    }
+
+    /**
+     * Whether $run may have $model rows for a new child to inherit. Members of
+     * a parallel group run no workflow code between their dispatches, so the
+     * parent's rows cannot change: one read per group replaces one per child
+     * (#1286). Outside a group dispatch the inheriting service reads them.
+     *
+     * @param class-string<WorkflowMemo|WorkflowSearchAttribute> $model
+     */
+    private function groupParentHas(WorkflowRun $run, string $model): bool
+    {
+        if ($this->groupParentRows === null || $this->groupParentRows['run'] !== $run->id) {
+            return true;
+        }
+
+        return $this->groupParentRows['models'][$model] ??= $model::query()
+            ->where('workflow_run_id', $run->id)
+            ->exists();
     }
 }

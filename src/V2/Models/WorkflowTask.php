@@ -60,6 +60,32 @@ class WorkflowTask extends Model
     }
 
     /**
+     * The stored run its creator attached before this task's first save. A
+     * fan-out creates each child's task right after reading the child's row,
+     * so creation hooks reuse that row instead of reading it again (#1286).
+     *
+     * @internal
+     */
+    public function creatingRun(): ?WorkflowRun
+    {
+        if ($this->exists || ! $this->relationLoaded('run')) {
+            return null;
+        }
+
+        $run = $this->getRelation('run');
+        $runId = $this->getAttribute('workflow_run_id');
+
+        return $run instanceof WorkflowRun
+            && $run::class === ConfiguredV2Models::resolve('run_model', WorkflowRun::class)
+            && $run->exists
+            && is_string($runId)
+            && $run->getKey() === $runId
+            && $run->getConnectionName() === $this->getConnectionName()
+            ? $run
+            : null;
+    }
+
+    /**
      * Registered in boot() rather than booted() so a configured task model
      * that defines its own booted() callbacks keeps run-scheduling inheritance.
      */
@@ -95,7 +121,7 @@ class WorkflowTask extends Model
         }
 
         // The relation resolves on this task's storage connection.
-        $run = $this->run()
+        $run = $this->creatingRun() ?? $this->run()
             ->first();
 
         if (! $run instanceof WorkflowRun) {
