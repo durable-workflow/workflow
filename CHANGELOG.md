@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Workflow code can log without repeating itself. `$this->logger()` returns a
+  PSR-3 logger that writes through the Laravel logger (or the channel you
+  pass) only when the code runs for the first time. The engine replays a
+  workflow from its history on every wake-up, so `Log::info()` in workflow
+  code repeats for every completed step; the workflow logger writes each line
+  once. Replays, queries and update validators stay quiet, and each line
+  carries `workflow_instance_id`, `workflow_run_id`, `workflow_type` and
+  `namespace`. `$this->replayState()` (`Workflow\V2\Enums\WorkflowReplayState`:
+  `Replaying`, `Executing` or `Unavailable`) and `$this->isReplaying()` expose
+  the same boundary for diagnostics. A task that fails before it commits runs
+  its new code again, so this is not an exactly-once outbox, and a slow log
+  handler stalls the worker. Logger failures never fail the workflow. A
+  workflow class that already defines `logger()`, `replayState()` or
+  `isReplaying()` must rename it. (durable-workflow/.github#227)
+
 - Workflows can validate an update before accepting it. Put
   `#[Workflow\UpdateValidator('update-name')]` on a method that takes the
   update's arguments. It runs against the run's replayed state before the
