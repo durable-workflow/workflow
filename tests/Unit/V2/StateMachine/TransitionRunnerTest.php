@@ -322,7 +322,29 @@ final class TransitionRunnerTest extends TestCase
         $result = $this->commit($commit);
         $result['status'] = 'cancellation_requested';
         $result['reason'] = 'cancellation_won';
-        $this->assertSame('cancellation_requested', $runner->step($result)->result['status']);
+        $this->assertSame(['commit', 'cancellation_requested'], $this->stage($runner->step($result)->result));
+    }
+
+    public function testCommitRevisionConflictIsAttributedToTheCommit(): void
+    {
+        $runner = $this->runner();
+        $commit = $runner->step($this->snapshot($runner->step(), 'satisfied'));
+        $result = $this->commit($commit);
+        $result['status'] = 'conflict';
+        $result['reason'] = 'revision_changed';
+        $this->assertSame(['commit', 'conflict'], $this->stage($runner->step($result)->result));
+    }
+
+    public function testUnknownTargetAfterWorkNamesTheAfterSnapshot(): void
+    {
+        $runner = $this->runner();
+        $admit = $runner->step($this->snapshot($runner->step()));
+        $runner->step($this->admission($admit));
+        $runner->step('first-created');
+        $result = $runner->step($this->snapshot($runner->step('second-created'), 'unknown'))
+            ->result;
+        $this->assertSame(['target', 'unknown'], $this->stage($result));
+        $this->assertSame('after', $result['explanation']['snapshot']['phase']);
     }
 
     public function testSubstitutedCommitAcknowledgementFails(): void
@@ -459,7 +481,10 @@ final class TransitionRunnerTest extends TestCase
         $after = $this->snapshot($runner->step('second-created'), 'satisfied');
         $after['state'] = 'Processing';
         $after['revision'] = 'revision-2';
-        $this->assertSame('conflict', $runner->step($after)->result['status']);
+        $result = $runner->step($after)
+            ->result;
+        $this->assertSame(['source', 'conflict'], $this->stage($result));
+        $this->assertSame('snapshot-after', $result['explanation']['snapshot']['id']);
     }
 
     private function history(array $activities): array

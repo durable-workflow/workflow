@@ -12,6 +12,7 @@ use Workflow\V2\StartedChildWorkflow;
 use Workflow\V2\StateMachine\Binding\BindingIdentity;
 use Workflow\V2\StateMachine\Binding\ChildBinding;
 use Workflow\V2\StateMachine\Binding\ChildReservation;
+use Workflow\V2\StateMachine\Binding\ChildScopeParticipation;
 use Workflow\V2\StateMachine\Binding\NeverAdmittedChild;
 use Workflow\V2\StateMachine\Definition\ChildSlot;
 use Workflow\V2\StateMachine\Definition\ConditionDefinition;
@@ -60,6 +61,8 @@ final class MachineInspectionTest extends TestCase
         $closed = new NeverAdmittedChild(self::reservation(self::binding($begin, 'entry-2')), 'closure-1');
         $reserved = self::reservation(self::binding($begin, 'entry-3'));
         $scope = new ScopeIdentity('orders', 'namespace', 'subject-1', 'order-run');
+        $childScope = new ScopeIdentity('orders', 'namespace', 'subject-1.shipment', 'entry-1');
+        $participating = self::reservation($admitted, new ChildScopeParticipation($scope, $childScope, 'shipment'));
         $description = self::description();
 
         $inspection = new MachineInspection(
@@ -68,9 +71,12 @@ final class MachineInspectionTest extends TestCase
             '2',
             $finish,
             $blocked,
-            [new ChildBinding($admitted, $receipt), $closed, $reserved],
+            [new ChildBinding($admitted, $receipt), $closed, $reserved, $participating],
             [[
                 'scope' => $scope,
+                'description' => $description,
+            ], [
+                'scope' => $childScope,
                 'description' => $description,
             ]],
         );
@@ -104,7 +110,15 @@ final class MachineInspectionTest extends TestCase
             'childInstanceId' => 'shipment-instance',
             'childRunId' => 'shipment-run',
             'closureId' => null,
+            // The admitted child's own reservation links it to the listed parent and child scopes.
+            'participation' => [
+                'parentScopeId' => $scope->id(),
+                'childScopeId' => $childScope->id(),
+                'obligationKey' => 'shipment',
+            ],
         ], $view['children'][0]);
+        $this->assertCount(3, $view['children']);
+        $this->assertSame([$scope->id(), $childScope->id()], array_column($view['compensation'], 'scopeId'));
         $this->assertSame(
             ['never_admitted', $closed->reservation->childInstanceId(), null, 'closure-1'],
             [
@@ -114,9 +128,10 @@ final class MachineInspectionTest extends TestCase
                 $view['children'][1]['closureId'],
             ]
         );
-        $this->assertSame(['reserved', $reserved->childInstanceId()], [
+        $this->assertSame(['reserved', $reserved->childInstanceId(), null], [
             $view['children'][2]['status'],
             $view['children'][2]['childInstanceId'],
+            $view['children'][2]['participation'],
         ]);
         $this->assertSame([
             'scopeId' => $scope->id(),
@@ -151,9 +166,15 @@ final class MachineInspectionTest extends TestCase
             'child of another subject' => ['child-subject'],
             'child under another profile' => ['child-profile'],
             'repeated child generation' => ['child-repeat'],
+            'admitted and never-admitted generation' => ['child-contradiction'],
+            'closure next to its reservation' => ['child-closure-reservation'],
+            'reservation with a changed identity' => ['child-changed'],
             'untyped child' => ['child-untyped'],
             'child map' => ['child-map'],
             'malformed scope description' => ['scope-description'],
+            'non-portable scope description value' => ['scope-object'],
+            'malformed refusal' => ['scope-refusal'],
+            'malformed unresolved obligation' => ['scope-unresolved'],
             'untyped scope' => ['scope-untyped'],
             'repeated scope' => ['scope-repeat'],
         ];
@@ -193,6 +214,30 @@ final class MachineInspectionTest extends TestCase
                 'entry-1'
             ))],
             'child-repeat' => $children = [self::reservation($child), self::reservation($child)],
+            'child-contradiction' => $children = [
+                new ChildBinding($child, new StartedChildWorkflow(
+                    'namespace',
+                    'order-instance',
+                    'order-run',
+                    3,
+                    'shipment-instance',
+                    'shipment-run',
+                    'call-1',
+                    'example.shipment',
+                )),
+                new NeverAdmittedChild(self::reservation($child), 'closure-1'),
+            ],
+            'child-closure-reservation' => $children = [
+                new NeverAdmittedChild(self::reservation($child), 'closure-1'),
+                self::reservation($child),
+            ],
+            'child-changed' => $children = [
+                self::reservation($child),
+                self::reservation(BindingIdentity::fromArray([
+                    ...$child->toArray(),
+                    'inputFingerprint' => str_repeat('c', 64),
+                ])),
+            ],
             'child-untyped' => $children = [$child],
             'child-map' => $children = [
                 'shipment' => self::reservation($child),
@@ -202,6 +247,32 @@ final class MachineInspectionTest extends TestCase
                 'description' => [
                     ...self::description(),
                     'extra' => true,
+                ],
+            ]],
+            'scope-object' => $compensation = [[
+                'scope' => $scope['scope'],
+                'description' => [
+                    ...self::description(),
+                    'recoveryRunId' => new \stdClass(),
+                ],
+            ]],
+            'scope-refusal' => $compensation = [[
+                'scope' => $scope['scope'],
+                'description' => [
+                    ...self::description(),
+                    'refusal' => [
+                        'code' => 'recovery_authorization_failed',
+                    ],
+                ],
+            ]],
+            'scope-unresolved' => $compensation = [[
+                'scope' => $scope['scope'],
+                'description' => [
+                    ...self::description(),
+                    'unresolved' => [[
+                        'key' => 'shipment',
+                        'status' => 'pending',
+                    ]],
                 ],
             ]],
             'scope-untyped' => $compensation = [[
@@ -288,8 +359,17 @@ final class MachineInspectionTest extends TestCase
         );
     }
 
-    private static function reservation(BindingIdentity $identity): ChildReservation
-    {
-        return new ChildReservation($identity, 'App\\Shipment', 'sha256:' . str_repeat('b', 64), 'policy-1');
+    private static function reservation(
+        BindingIdentity $identity,
+        ?ChildScopeParticipation $participation = null
+    ): ChildReservation {
+        return new ChildReservation(
+            $identity,
+            'App\\Shipment',
+            'sha256:' . str_repeat('b', 64),
+            'policy-1',
+            $participation,
+            $participation === null ? null : 'joint-policy-1',
+        );
     }
 }

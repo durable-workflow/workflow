@@ -25,7 +25,7 @@ enum TransitionStage: string
     /** The pinned shared machine invariant was unsatisfied or unknown. */
     case Invariant = 'invariant';
 
-    /** The target condition was unknown, or remained unsatisfied without further work. */
+    /** The target was unknown, had no declared work, or was still unsatisfied after work. */
     case Target = 'target';
 
     /** The pure execution guard refused or could not decide. */

@@ -378,7 +378,7 @@ $result->explain();
 | `budget` | `blocked` | A forward execution budget refused the next command. No snapshot is named. |
 | `commit` | `committed`, `conflict`, `cancellation_requested` | The protected commit acknowledged the decision. |
 
-`snapshot` names the recorded snapshot and phase the gate evaluated. Use its ID to find the complete `ConditionEvaluation` the host retained for that snapshot, with its reasons, evidence references and missing facts. A post-work refusal names the `after` snapshot, so a revoked invariant is not attributed to the earlier admission. Results built by application code without a stage keep `stage` and `snapshot` null.
+`snapshot` names the recorded snapshot and phase the gate evaluated. For the `invariant`, `target` and `permission` stages, use its ID to find the complete `ConditionEvaluation` the host retained for that snapshot, with its reasons, evidence references and missing facts. For `admission` and `commit`, the reason comes from the recorded admission or commit acknowledgement; the snapshot only identifies the evidence that request was based on. A post-work refusal names the `after` snapshot, so a revoked invariant is not attributed to the earlier admission. Results built by application code without a stage keep `stage` and `snapshot` null.
 
 `Inspection\MachineInspection` correlates one business subject for operator tooling. The host builds it outside workflow code from values it has already authorized for that subject:
 
@@ -394,10 +394,11 @@ $inspection->toArray(); // version, machine, business, execution, transition, ch
 - `machine` gives the pinned machine, definition and profile versions with the policy and definition fingerprints.
 - `business` is the current state and revision from the application's authoritative store. It is distinct from workflow-run status.
 - `transition` is `explain()` of the inspected execution's result.
-- Each `children` entry gives `status` (`admitted`, `never_admitted` or `reserved`), the binding key, slot, generation, hosting state, child workflow type, required outcome, the parent execution that bound it, the child instance and run, and a closure ID. An admitted child is not evidence of its business outcome.
+- Each `children` entry gives `status` (`admitted`, `never_admitted` or `reserved`), the binding key, slot, generation, hosting state, child workflow type, required outcome, the parent execution that bound it, the child instance and run, a closure ID and `participation`. An admitted child is not evidence of its business outcome.
+- `participation` links a retained child to compensation: `parentScopeId`, `childScopeId` and `obligationKey` from its reservation, or null for a child without retained participation. Join them with the `scopeId` of the `compensation` entries. A `NeverAdmittedChild` carries its reservation. For an admitted child, pass its `ChildReservation` next to its `ChildBinding`; both must carry the same binding identity.
 - Each `compensation` entry is the retained scope's identity and ID followed by its `ScopeRecovery::describe()` keys, including the next action and unresolved obligations.
 
-Construction refuses a state the profile does not declare, an execution under another profile, a transition of another execution, child work of another subject or profile, a repeated binding generation or scope, and a malformed scope description. At most 256 children and 256 scopes are accepted. The inspection performs no I/O and is not an authorization or persistence boundary. The host remains responsible for authorizing each part and for pairing scopes with the subject, because scope keys are application-defined.
+Construction refuses a state the profile does not declare, an empty revision, an execution under another profile, a transition of another execution, child work of another subject or profile, a repeated or contradictory binding generation (admitted and never admitted, or a changed identity), a repeated scope, and a scope description that does not have the documented `describe()` keys and value types. At most 256 children and 256 scopes are accepted. The inspection performs no I/O and is not an authorization or persistence boundary. The host remains responsible for authorizing each part and for pairing scopes with the subject, because scope keys are application-defined.
 
 ## Follow-up implementation sequence
 
@@ -428,7 +429,7 @@ Tests exercise refusal/unknown outcomes, source and scope substitution, changed 
 | 17 | Cold replay of transitions, child admission and retained recovery; installed 2.33.0 upgrade, rollback and downgrade journey for the examples | Real-provider qualification |
 | 18 | Joint binding/scope authorization, generation and protected SQL substitution controls | Application authentication and authorization deployment |
 | 19 | Invalid definitions and unavailable pinned handlers refuse; configured budgets; catalog refusal of cyclic, recursive and unregistered child bindings and of a configured child depth | Explicit migration policy |
-| 20 | Structured decisions, complete condition explanations, transition stages and snapshot correlation, retained ledger inspection and the correlated `MachineInspection` view | Operator presentation (Waterline) |
+| 20 | Structured decisions, complete condition explanations, transition stages and snapshot correlation, retained ledger inspection, and the `MachineInspection` view linking the execution, child bindings and their retained scopes | Host pairing of root scopes with the subject; operator presentation (Waterline) |
 | 21–22 | Recorded two-profile example, native persistence/crash tests, existing APIs preserved | Final package, installed qualification and versioned publication |
 
 This table reports scope, not completion of the issue's unchecked acceptance criteria.

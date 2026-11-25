@@ -8,9 +8,11 @@
   recorded snapshot and phase it evaluated. `toArray()` is unchanged.
   `MachineInspection` gives operator tooling one versioned view of a
   business subject: pinned profile, current business state, the transition
-  explanation, admitted, closed and reserved child work, and retained
-  compensation scopes. It refuses parts that belong to another subject or
-  profile. (#1069)
+  explanation, admitted, closed and reserved child work with the retained
+  scopes each child participates in, and the retained scopes' recovery
+  descriptions. It refuses a transition or child work that belongs to
+  another subject or profile; the host pairs compensation scopes with the
+  subject. (#1069)
 - Experimental state machines: `MachineCatalog` registers the definitions
   that may host each other. It refuses a duplicate definition, a slot naming
   an unregistered child, and a recursive or cyclic child binding with
