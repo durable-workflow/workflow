@@ -140,7 +140,8 @@ Interceptors wrap the queue jobs, local activities and queries this package
 runs. Tasks handed to external SDK workers through the worker task bridges run
 under that SDK's own interceptors. The worker bridge's `execute` route, which
 runs a claimed workflow task in-process for a bridge caller, does not run
-workflow-task interceptors.
+workflow-task interceptors; local activities that task runs still go through
+activity interceptors.
 
 An entry in `workflows.v2.interceptors` that cannot be resolved fails each
 path its own way: a queued workflow task is released and retried, an activity attempt
