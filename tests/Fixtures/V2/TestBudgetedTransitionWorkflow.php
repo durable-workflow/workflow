@@ -31,6 +31,11 @@ final class TestBudgetedTransitionWorkflow extends Workflow
 {
     public array $decision = [];
 
+    /**
+     * Kept outside the returned decision, whose shape the replay regression corpus pins.
+     */
+    public ?array $explanation = null;
+
     public function handle(
         int $commands,
         ?int $events = null,
@@ -66,6 +71,7 @@ final class TestBudgetedTransitionWorkflow extends Workflow
         if ($compensate && $result->status === TransitionStatus::Blocked) {
             $this->compensate();
         }
+        $this->explanation = $result->explain();
         return $this->decision = $result->toArray();
     }
 

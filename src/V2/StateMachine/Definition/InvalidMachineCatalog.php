@@ -9,8 +9,9 @@ use InvalidArgumentException;
 /**
  * A configured machine catalog cannot host its declared child slots.
  *
- * The reason is a stable code; the path names each `machine@version` (and, for an unregistered
- * child, the slot key) in declaration order, so configuration tooling can report the exact edge.
+ * The reason is a stable code. The path starts with the registered `machine@version` and names
+ * each following slot step as `slot:machine@version`, so configuration tooling can report the
+ * exact edge.
  *
  * @experimental Part of the business state-machine API, which may change in a minor release.
  * See docs/api-stability.md#state-machines.

@@ -13,6 +13,7 @@ use Workflow\V2\StateMachine\Execution\ExecutionReference;
 use Workflow\V2\StateMachine\Execution\ResourceLimitExceeded;
 use Workflow\V2\StateMachine\Execution\TransitionResult;
 use Workflow\V2\StateMachine\Execution\TransitionRuntime;
+use Workflow\V2\StateMachine\Execution\TransitionStage;
 use Workflow\V2\StateMachine\Execution\TransitionStatus;
 use Workflow\V2\StateMachine\Rules\Decision;
 use Workflow\V2\StateMachine\Rules\Verdict;
@@ -61,7 +62,8 @@ final class TransitionRunner
                 $execution,
                 TransitionStatus::Blocked,
                 $error->reason(),
-                transitionKey: count($candidates) === 1 ? $candidates[0]->key : null
+                transitionKey: count($candidates) === 1 ? $candidates[0]->key : null,
+                stage: TransitionStage::Budget,
             );
         }
     }
@@ -88,7 +90,8 @@ final class TransitionRunner
             return new TransitionResult(
                 $execution,
                 $candidates === [] ? TransitionStatus::Unavailable : TransitionStatus::Ambiguous,
-                $candidates === [] ? 'transition_unavailable' : 'transition_ambiguous'
+                $candidates === [] ? 'transition_unavailable' : 'transition_ambiguous',
+                stage: TransitionStage::Selection,
             );
         }
         $transition = $candidates[0];
@@ -119,16 +122,31 @@ final class TransitionRunner
     private function workRefusal(TransitionStep $step, TransitionContext $context): ?TransitionResult
     {
         if ($context->snapshot->target->verdict === Verdict::Unknown) {
-            return $this->decision($context, $context->snapshot->target, TransitionStatus::Unknown);
+            return $this->decision(
+                $context,
+                $context->snapshot->target,
+                TransitionStatus::Unknown,
+                TransitionStage::Target
+            );
         }
         if (! $context->transition->hasWork) {
-            return $this->decision($context, $context->snapshot->target, TransitionStatus::Pending);
+            return $this->decision(
+                $context,
+                $context->snapshot->target,
+                TransitionStatus::Pending,
+                TransitionStage::Target
+            );
         }
         $permitted = $step->canExecute($context);
         if ($permitted !== $context->snapshot->permission->satisfied()) {
             throw new LogicException('The execution guard disagrees with its recorded assessment.');
         }
-        return $permitted ? null : $this->decision($context, $context->snapshot->permission, TransitionStatus::Blocked);
+        return $permitted ? null : $this->decision(
+            $context,
+            $context->snapshot->permission,
+            TransitionStatus::Blocked,
+            TransitionStage::Permission
+        );
     }
 
     private function admitAndExecute(
@@ -140,7 +158,7 @@ final class TransitionRunner
     ): TransitionResult {
         $admission = $runtime->admit($context);
         if (! $admission->satisfied()) {
-            return $this->decision($context, $admission, TransitionStatus::Blocked);
+            return $this->decision($context, $admission, TransitionStatus::Blocked, TransitionStage::Admission);
         }
         $execution = $context->execution();
         $transition = $context->transition;
@@ -163,7 +181,7 @@ final class TransitionRunner
             return $refusal;
         }
         return $this->targetSatisfied($step, $fresh) ? $this->commit($runtime, $fresh)
-            : $this->decision($fresh, $fresh->snapshot->target, TransitionStatus::Pending);
+            : $this->decision($fresh, $fresh->snapshot->target, TransitionStatus::Pending, TransitionStage::Target);
     }
 
     private function snapshotRefusal(TransitionContext $context): ?TransitionResult
@@ -173,7 +191,10 @@ final class TransitionRunner
                 $context->execution(),
                 TransitionStatus::Conflict,
                 'source_changed',
-                transitionKey: $context->transition->key
+                transitionKey: $context->transition->key,
+                stage: TransitionStage::Source,
+                snapshotId: $context->snapshot->snapshotId,
+                phase: $context->snapshot->phase,
             );
     }
 
@@ -189,7 +210,10 @@ final class TransitionRunner
             $commit->status,
             $commit->reason,
             $context->snapshot->target,
-            $context->transition->key
+            $context->transition->key,
+            TransitionStage::Commit,
+            $context->snapshot->snapshotId,
+            $context->snapshot->phase,
         );
     }
 
@@ -220,7 +244,7 @@ final class TransitionRunner
     {
         $assessment = $context->snapshot->machineAssessment;
         return $assessment === null || $assessment->decision->satisfied() ? null
-            : $this->decision($context, $assessment->decision, TransitionStatus::Blocked);
+            : $this->decision($context, $assessment->decision, TransitionStatus::Blocked, TransitionStage::Invariant);
     }
 
     private function sourceMatches(TransitionContext $context): bool
@@ -243,14 +267,18 @@ final class TransitionRunner
     private function decision(
         TransitionContext $context,
         Decision $decision,
-        TransitionStatus $status
+        TransitionStatus $status,
+        TransitionStage $stage,
     ): TransitionResult {
         return new TransitionResult(
             $context->execution(),
             $decision->verdict === Verdict::Unknown ? TransitionStatus::Unknown : $status,
             $decision->reason,
             $decision,
-            $context->transition->key
+            $context->transition->key,
+            $stage,
+            $context->snapshot->snapshotId,
+            $context->snapshot->phase,
         );
     }
 }
