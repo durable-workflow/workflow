@@ -3177,6 +3177,11 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 continue; // The offline replay report is asserted in the dedicated corpus test.
             }
 
+            if ($fixture['id'] === 'replay-aware-logger-committed-prefix') {
+                $this->assertReplayAwareLoggerSkipsTheCommittedPrefix($fixture);
+                continue;
+            }
+
             if ($fixture['id'] === 'embedded-parallel-propagate-same-millisecond') {
                 $this->assertEmbeddedParallelPropagateReplay($fixture);
                 continue;
@@ -6958,6 +6963,55 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         )->step();
         $this->assertTrue($cold->completed);
         $this->assertSame($fixture['expected']['result'], $cold->result);
+    }
+
+    /**
+     * The fixture's committed prefix replays without logging; each workflow
+     * task logs only the code past its committed history (#227).
+     *
+     * @param array<string, mixed> $fixture
+     */
+    private function assertReplayAwareLoggerSkipsTheCommittedPrefix(array $fixture): void
+    {
+        $logged = [];
+        $listener = static function (\Illuminate\Log\Events\MessageLogged $event) use (&$logged): void {
+            if (str_starts_with($event->message, 'logged steps')) {
+                $logged[] = $event->message;
+            }
+        };
+        \Illuminate\Support\Facades\Event::listen(\Illuminate\Log\Events\MessageLogged::class, $listener);
+
+        $stub = WorkflowStub::make($fixture['workflow']['type'], 'regression-corpus-' . $fixture['id']);
+        $stub->start(...$fixture['workflow']['arguments']);
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+
+        $this->runReadyWorkflowTask($run);
+        $this->assertSame(['logged steps started'], $logged);
+
+        $this->runReadyTaskOfType($run->id, TaskType::Activity);
+        $this->runReadyWorkflowTask($run);
+        $this->assertSame(['logged steps started', 'logged steps first done'], $logged);
+
+        // The task replayed exactly the fixture's committed prefix before
+        // scheduling the second activity, as the cold replay above did.
+        $completed = $run->historyEvents()
+            ->where('event_type', HistoryEventType::ActivityCompleted->value)
+            ->orderBy('sequence')
+            ->first();
+        $this->assertSame(1, $completed?->payload['sequence'] ?? null);
+        $this->assertSame(2, ActivityExecution::query()->where('workflow_run_id', $run->id)->count());
+
+        $this->runReadyTaskOfType($run->id, TaskType::Activity);
+        $this->runReadyWorkflowTask($run);
+        $this->assertSame(
+            ['logged steps started', 'logged steps first done', 'logged steps second done'],
+            $logged,
+        );
+        $this->assertSame(['Hello, first!', 'Hello, second!'], $stub->refresh()->output());
+
+        // A cold replay of the closed run, and the offline replayer, stay quiet.
+        (new WorkflowReplayer())->replay($run->fresh(['historyEvents']));
+        $this->assertCount(3, $logged);
     }
 
     /**
