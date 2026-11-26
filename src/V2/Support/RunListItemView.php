@@ -81,9 +81,9 @@ final class RunListItemView
                 : null,
             // Additive (#863): the timeout cleanup state describe returns
             // under run.timeout_cleanup; null when none was recorded.
-            'timeout_cleanup' => array_key_exists('timeout_cleanup', $summary->getAttributes())
-                && is_array($summary->timeout_cleanup)
-                ? $summary->timeout_cleanup
+            'timeout_cleanup' => array_key_exists(TimeoutCleanup::SUMMARY_COLUMN, $summary->getAttributes())
+                && is_array($summary->getAttribute(TimeoutCleanup::SUMMARY_COLUMN))
+                ? $summary->getAttribute(TimeoutCleanup::SUMMARY_COLUMN)
                 : null,
             'task_problem' => (bool) $summary->task_problem,
             'task_problem_badge' => WorkflowTaskProblem::metadata(

@@ -54,7 +54,7 @@ final class WorkflowTaskLeaseLoss
      * Run-summary columns added after the table, which a schema rollback can
      * remove again.
      */
-    private const ADDITIVE_SUMMARY_COLUMNS = ['task_attention', 'timeout_cleanup'];
+    private const ADDITIVE_SUMMARY_COLUMNS = ['task_attention', TimeoutCleanup::SUMMARY_COLUMN];
 
     /**
      * @var array<string, array{tracked: bool, checked_at: int}>

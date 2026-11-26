@@ -38,6 +38,11 @@ final class TimeoutCleanup
      */
     public const STARTED_KEY = 'timeout_cleanup';
 
+    /**
+     * The additive `workflow_run_summaries` column and list-item field.
+     */
+    public const SUMMARY_COLUMN = 'timeout_cleanup';
+
     public static function assertEmbeddedAdmission(?int $allowanceSeconds): void
     {
         if ($allowanceSeconds !== null && config('workflows.v2.task_dispatch_mode') === 'poll') {
@@ -262,11 +267,11 @@ final class TimeoutCleanup
      * returns, so run lists match describe and the run observation. None
      * when the summary table has no such column.
      *
-     * @return array{timeout_cleanup?: array<string, string>|null}
+     * @return array<string, array<string, string>|null>
      */
     public static function summaryAttributes(WorkflowRun $run): array
     {
-        if (! WorkflowTaskLeaseLoss::summaryHasColumn(self::STARTED_KEY)) {
+        if (! WorkflowTaskLeaseLoss::summaryHasColumn(self::SUMMARY_COLUMN)) {
             return [];
         }
 
@@ -277,7 +282,7 @@ final class TimeoutCleanup
             : null;
 
         return [
-            self::STARTED_KEY => self::observe($run, $started?->payload),
+            self::SUMMARY_COLUMN => self::observe($run, $started?->payload),
         ];
     }
 

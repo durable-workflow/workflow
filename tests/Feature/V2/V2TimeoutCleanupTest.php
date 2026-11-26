@@ -746,6 +746,50 @@ final class V2TimeoutCleanupTest extends TestCase
         $this->assertTimedOutAfterCleanup($workflow, $runId, $started, 'completed');
     }
 
+    public function testABoundedProjectionAfterACleanupActivityKeepsTheListedValue(): void
+    {
+        $this->travelTo(now()->startOfSecond());
+        $workflow = WorkflowStub::make(TestTimeoutCleanupCompensationWorkflow::class, 'timeout-cleanup-bounded');
+        $workflow->start(new StartOptions(executionTimeoutSeconds: 70, timeoutCleanupSeconds: 10));
+        $runId = $workflow->runId();
+        $this->runReadyWorkflowTask($runId);
+        $this->travel(61)
+            ->seconds();
+        TaskWatchdog::runPass(runIds: [$runId]);
+        // The cleanup turn schedules the compensation activity.
+        $this->runReadyWorkflowTask($runId);
+        $started = $this->soleEvent($runId, HistoryEventType::WorkflowTimeoutCleanupStarted);
+        $running = [
+            'outcome' => 'running',
+            'cause' => 'timeout',
+            'timeout_kind' => 'execution',
+            'started_at' => $started->payload['detected_at'],
+            'work_deadline_at' => $started->payload['work_deadline_at'],
+            'cleanup_deadline_at' => $started->payload['cleanup_deadline_at'],
+        ];
+        $this->assertVisibleTimeoutCleanup(WorkflowRun::query()->findOrFail($runId), $running);
+        $before = WorkflowRunSummary::query()->findOrFail($runId);
+
+        // The activity outcome opens the resume workflow task, and the bounded
+        // open-workflow-task projection is the summary's last writer. It
+        // writes only the task, wait and history columns.
+        $this->runReadyActivityTask($runId);
+        $completed = $this->soleEvent($runId, HistoryEventType::ActivityCompleted);
+        $after = WorkflowRunSummary::query()->findOrFail($runId);
+        $resume = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+        $this->assertSame($resume->id, $after->next_task_id);
+        $this->assertSame((int) $completed->sequence, (int) $after->history_event_count);
+        $this->assertGreaterThan((int) $before->history_event_count, (int) $after->history_event_count);
+        $this->assertVisibleTimeoutCleanup(WorkflowRun::query()->findOrFail($runId), $running);
+
+        $this->runReadyWorkflowTask($runId);
+        $this->assertTimedOutAfterCleanup($workflow, $runId, $started, 'completed');
+    }
+
     /**
      * @return iterable<string, array{bool, string}>
      */
@@ -909,6 +953,8 @@ final class V2TimeoutCleanupTest extends TestCase
             $started->payload['cleanup_deadline_at'],
             $terminal->payload['timeout_cleanup']['cleanup_deadline_at'],
         );
+        // Describe, observation, detail, the summary and the list item agree.
+        $this->assertVisibleTimeoutCleanup($run, $terminal->payload['timeout_cleanup']);
     }
 
     /**
