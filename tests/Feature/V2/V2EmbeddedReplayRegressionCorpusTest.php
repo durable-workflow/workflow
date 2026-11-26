@@ -6806,7 +6806,9 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             $fixture['history'] ?? [],
             // Only a fixture that carries the task's replay_clock passes it.
             ...(isset($fixture['worker_task']['replay_clock'])
-                ? ['replayClock' => $fixture['worker_task']['replay_clock']]
+                ? [
+                    'replayClock' => $fixture['worker_task']['replay_clock'],
+                ]
                 : []),
         );
         $step = $runner->step();
