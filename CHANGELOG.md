@@ -11,12 +11,14 @@ carrier, and bounds deadline-close child cascades.
 
 **Upgrade notes:**
 
-- `Workflow\V2\Workflow` gains three public instance methods: `logger()`,
-  `replayState()` and `isReplaying()` (#1296). A workflow class that already
-  defines a method with one of these names breaks: PHP refuses a signature or
-  visibility that doesn't match the base method, so the class fails to load,
-  and a matching one silently replaces the base method. Rename the method
-  before upgrading.
+- `Workflow\V2\Workflow` gains three public instance methods, `logger()`,
+  `replayState()` and `isReplaying()`, plus four `@internal` engine hooks,
+  `deferWorkflowLog()`, `cancelPendingWorkflowLogs()`, `beginReplayRegion()`
+  and `markReplayOnly()` (#1296). A workflow class that already defines a
+  method with one of these names breaks: PHP refuses a signature or
+  visibility that isn't compatible with the base method, so the class fails
+  to load, and a compatible one silently replaces the base method. Rename the
+  method before upgrading.
 - The worker-protocol runner (`WorkflowFiberRunner`, used by external PHP
   workers) accepts the workflow task's `replay_clock` entry carrier through a
   new optional `replayClock` argument (#1307). Nothing changes until the code
@@ -90,9 +92,10 @@ carrier, and bounds deadline-close child cascades.
   arguments and the validator's `UpdateValidationOutcome`, but cannot change
   the decision. A hook that throws, skips `$next` or calls it twice refuses
   the update with `UpdateValidationFailedException`, and nothing is recorded.
-  It runs inside the admission transaction while the run is locked. Every
-  context's `replayState()` returns a `WorkflowReplayState`: a workflow task
-  reports `Replaying` when earlier tasks recorded commands for the run and
+  It runs inside the admission transaction while the run is locked. The
+  workflow-task, query and update-validation contexts' `replayState()`
+  returns a `WorkflowReplayState`: a workflow task reports `Replaying` when
+  earlier tasks recorded commands for the run and
   `Executing` otherwise, and a query or update validation always reports
   `Replaying`. Tasks that external SDK workers claim through the task
   bridges use that SDK's interceptors, and the worker bridge's in-process
@@ -127,9 +130,9 @@ carrier, and bounds deadline-close child cascades.
   workflow task and backs off like a failing settlement (10 s, doubling, up
   to 1 h), so it no longer starves other expired runs. A held settlement has
   no operator release; `docs/architecture/completion-budget.md` explains why.
-  `WorkflowExecutor::deadlineCloseBatchSize()` is removed; the budget replaces
-  it. On MySQL, a run projection no longer rewrites lineage rows whose JSON
-  differs only in key order. (#1290, #1292)
+  The internal `WorkflowExecutor::deadlineCloseBatchSize()` helper is removed;
+  the budget replaces it. On MySQL, a run projection no longer rewrites
+  lineage rows whose JSON differs only in key order. (#1290, #1292)
 - Tests and documentation: new state-machine example tests cover business
   cancellation racing a bound child's completion (TECH-03), replacement after
   transport damage (SHP-08) and stock loss before payment and before handover
