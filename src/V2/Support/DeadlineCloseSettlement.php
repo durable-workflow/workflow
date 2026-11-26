@@ -16,8 +16,8 @@ use Workflow\V2\Models\WorkflowTask;
 /**
  * The cascade after a bounded deadline close's terminal event (#1116): the
  * accepted updates it fails and the children its parent-close policy acts
- * on. Each transaction takes at most one batch, updates first and then
- * children, in the order a single close takes them.
+ * on. Each transaction takes what fits its {@see DeadlineCloseBudget},
+ * updates first and then children, in the order a single close takes them.
  *
  * While work is left, the run already reads Failed and its closing workflow
  * task is held: Leased by {@see self::OWNER} with no lease expiry, so no
@@ -38,6 +38,12 @@ final class DeadlineCloseSettlement
     public const MARKER = 'deadline_close_settlement';
 
     public const FAILURES = 'deadline_close_settlement_failures';
+
+    /**
+     * Failed ordinary deadline closes on the run's open workflow task, before
+     * the run reads Failed (#1290).
+     */
+    public const CLOSE_FAILURES = 'deadline_close_failures';
 
     public const PENDING = 'pending';
 
@@ -74,16 +80,23 @@ final class DeadlineCloseSettlement
     }
 
     /**
-     * Settle at most $budget updates and children. Returns true when nothing
-     * is left, completing the held task; otherwise the task stays held.
+     * Settle the updates and children that fit one transaction's budget, at
+     * least one of them. Returns true when nothing is left, completing the
+     * held task; otherwise the task stays held.
      */
-    public static function settle(WorkflowRun $run, WorkflowTask $task, int $budget): bool
+    public static function settle(WorkflowRun $run, WorkflowTask $task, ?DeadlineCloseBudget $budget = null): bool
     {
-        $budget -= PendingUpdateCloser::closeForTerminalRun($run, $task, $budget);
+        $budget ??= DeadlineCloseBudget::forTransaction() ?? DeadlineCloseBudget::unlimited();
+        $budget->progressing()
+            ->reserve(DeadlineCloseBudget::PASS);
+        $budget->charge(
+            DeadlineCloseBudget::UPDATE,
+            PendingUpdateCloser::closeForTerminalRun($run, $task, $budget->room(DeadlineCloseBudget::UPDATE)),
+        );
         $settled = false;
         if (! PendingUpdateCloser::hasAccepted($run)) {
             $childrenSettled = true;
-            ParentClosePolicyEnforcer::enforce($run, max(0, $budget), $childrenSettled);
+            ParentClosePolicyEnforcer::enforce($run, $budget, $childrenSettled);
             $settled = $childrenSettled;
         }
 
@@ -138,6 +151,52 @@ final class DeadlineCloseSettlement
                 ],
             ])->save();
         });
+    }
+
+    /**
+     * Record a failed ordinary deadline close, after it rolled back, on the
+     * open workflow task the watchdog closed the run with (#1290): the error,
+     * one more attempt, and the settlement's backoff before the watchdog
+     * selects the run again. The run stays open and expired, and an expired
+     * run accepts no workflow command, so the backoff only spaces out the
+     * retries. Without it a close that keeps failing stays at the front of
+     * the oldest-deadline scan and starves every other expired run in scope.
+     * A task held for a settlement or under a live lease is left alone.
+     */
+    public static function recordCloseFailure(string $taskId, Throwable $error): void
+    {
+        ConfiguredV2Models::connection()->transaction(static function () use ($taskId, $error): void {
+            /** @var WorkflowTask|null $task */
+            $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)
+                ->lockForUpdate()
+                ->find($taskId);
+            if ($task === null
+                || $task->task_type !== TaskType::Workflow
+                || self::holds($task)
+                || ! in_array($task->status, [TaskStatus::Ready, TaskStatus::Leased], true)
+                || ($task->status === TaskStatus::Leased
+                    && ($task->lease_expires_at === null || $task->lease_expires_at->isFuture()))) {
+                return;
+            }
+            $failures = self::closeFailures($task) + 1;
+            $task->forceFill([
+                'attempt_count' => (int) $task->attempt_count + 1,
+                'last_error' => mb_substr($error->getMessage(), 0, 4000),
+                'available_at' => now()
+                    ->addSeconds(self::backoffSeconds($failures)),
+                'payload' => [
+                    ...(is_array($task->payload) ? $task->payload : []),
+                    self::CLOSE_FAILURES => $failures,
+                ],
+            ])->save();
+        });
+    }
+
+    public static function closeFailures(WorkflowTask $task): int
+    {
+        $failures = is_array($task->payload) ? ($task->payload[self::CLOSE_FAILURES] ?? 0) : 0;
+
+        return is_int($failures) ? $failures : 0;
     }
 
     public static function backoffSeconds(int $failures): int

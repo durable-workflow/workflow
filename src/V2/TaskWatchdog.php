@@ -730,12 +730,24 @@ final class TaskWatchdog
                     // expired, no longer hides it (#1116). Runs with pending
                     // cancellation or timeout cleanup keep their own close and
                     // are not selected for it, so they cannot fill the scan.
+                    // A close that failed waits out its backoff (#1290).
                     $ordinary->whereNull('cancellation_request_command_id')
                         ->whereNull('timeout_cleanup_work_deadline_at')
                         ->whereDoesntHave('tasks', static function ($task) use ($now): void {
                             $task->where('task_type', TaskType::Workflow->value)
-                                ->where('status', TaskStatus::Leased->value)
-                                ->where('lease_expires_at', '>', $now);
+                                ->where(static function ($deferred) use ($now): void {
+                                    $deferred->where(static function ($leased) use ($now): void {
+                                        $leased->where('status', TaskStatus::Leased->value)
+                                            ->where('lease_expires_at', '>', $now);
+                                    })->orWhere(static function ($backoff) use ($now): void {
+                                        $backoff->whereIn('status', [
+                                            TaskStatus::Ready->value,
+                                            TaskStatus::Leased->value,
+                                        ])
+                                            ->where('available_at', '>', $now)
+                                            ->whereNotNull('payload->' . DeadlineCloseSettlement::CLOSE_FAILURES);
+                                    });
+                                });
                         });
                 })->orWhere(static function ($cancellation) use ($now): void {
                     $cancellation->whereNotNull('cancellation_request_command_id')
@@ -825,7 +837,7 @@ final class TaskWatchdog
                 if ($run === null || $task === null || ! DeadlineCloseSettlement::holds($task)) {
                     return;
                 }
-                DeadlineCloseSettlement::settle($run, $task, WorkflowExecutor::deadlineCloseBatchSize() ?? PHP_INT_MAX);
+                DeadlineCloseSettlement::settle($run, $task);
                 self::historyProjectionRole()->projectRun(
                     $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
                 );
@@ -876,14 +888,17 @@ final class TaskWatchdog
     {
         $cancellationEnforced = false;
         $acquiringTask = false;
+        $closingTaskId = null;
 
         try {
             $task = ConfiguredV2Models::connection()->transaction(static function () use (
                 $runId,
                 &$cancellationEnforced,
                 &$acquiringTask,
+                &$closingTaskId,
             ): ?WorkflowTask {
                 $cancellationEnforced = false;
+                $closingTaskId = null;
 
                 /** @var WorkflowRun|null $run */
                 $run = WorkflowRun::query()
@@ -965,6 +980,7 @@ final class TaskWatchdog
                     // needs no workflow code, so an unclaimed or abandoned
                     // task must not hold it open (#1116). The close is
                     // bounded: an oversized one cancels a batch per pass.
+                    $closingTaskId = $existingWorkflowTask->id;
                     $cancellationEnforced = app(WorkflowExecutor::class)
                         ->closeExpiredDeadline($run, $existingWorkflowTask) !== WorkflowExecutor::DEADLINE_NOT_EXPIRED;
 
@@ -1019,6 +1035,14 @@ final class TaskWatchdog
                 ];
             }
             report($throwable);
+            if (is_string($closingTaskId)) {
+                // The ordinary close failed and rolled back: back it off.
+                try {
+                    DeadlineCloseSettlement::recordCloseFailure($closingTaskId, $throwable);
+                } catch (Throwable $recording) {
+                    report($recording);
+                }
+            }
 
             return [
                 'task' => null,

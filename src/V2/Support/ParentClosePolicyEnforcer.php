@@ -7,8 +7,12 @@ namespace Workflow\V2\Support;
 use Illuminate\Support\Facades\Log;
 use LogicException;
 use Workflow\V2\CommandContext;
+use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\ParentClosePolicy;
+use Workflow\V2\Enums\TaskStatus;
+use Workflow\V2\Enums\TimerStatus;
+use Workflow\V2\Enums\UpdateStatus;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowLink;
 use Workflow\V2\Models\WorkflowRun;
@@ -35,40 +39,47 @@ final class ParentClosePolicyEnforcer
      *
      * @return list<string> Instance IDs of children that had policy applied
      */
-    public static function enforce(WorkflowRun $run, ?int $limit = null, ?bool &$complete = null): array
-    {
+    public static function enforce(
+        WorkflowRun $run,
+        ?DeadlineCloseBudget $budget = null,
+        ?bool &$complete = null,
+    ): array {
         $complete = true;
 
         return $run->getConnection()
-            ->transaction(static function () use ($run, $limit, &$complete): array {
+            ->transaction(static function () use ($run, $budget, &$complete): array {
                 /** @var WorkflowRun $lockedRun */
                 $lockedRun = ConfiguredV2Models::query('run_model', WorkflowRun::class)
                     ->lockForUpdate()
                     ->findOrFail($run->id);
 
-                return self::enforceLocked($lockedRun, $limit, $complete);
+                return self::enforceLocked($lockedRun, $budget, $complete);
             }, 3);
     }
 
     /**
      * Apply policies while the caller holds the parent run's write lock.
      *
-     * With a limit (a bounded deadline close, #1116), at most that many
-     * children are acted on, in link order. A child this run already
-     * recorded a policy outcome for is skipped, so a later transaction
-     * continues where this one stopped; $complete reports whether any
-     * child is left.
+     * With a budget (a bounded deadline close, #1116), children are acted on
+     * in link order while each one's whole outcome fits what is left of the
+     * budget (#1290): a terminated or cancelled child is charged its own
+     * close with its open work, accepted updates and the children its own
+     * policy closes. A child this run already recorded a policy outcome for
+     * is skipped, so a later transaction continues where this one stopped;
+     * $complete reports whether any child is left.
      *
      * @internal
      * @return list<string>
      */
-    public static function enforceLocked(WorkflowRun $run, ?int $limit = null, bool &$complete = true): array
-    {
+    public static function enforceLocked(
+        WorkflowRun $run,
+        ?DeadlineCloseBudget $budget = null,
+        bool &$complete = true,
+    ): array {
         $appliedTo = [];
-        $acted = 0;
         $complete = true;
         // Children this run already recorded a policy outcome for, read once.
-        $settled = $limit === null ? [] : array_flip(array_filter(
+        $settled = $budget === null ? [] : array_flip(array_filter(
             $run->historyEvents()
                 ->whereIn('event_type', [
                     HistoryEventType::ParentClosePolicyApplied->value,
@@ -93,13 +104,11 @@ final class ParentClosePolicyEnforcer
                 continue;
             }
 
-            if ($limit !== null && $acted >= $limit) {
+            if ($budget !== null && ! $budget->take(self::cost($childRun, $policy, $budget))) {
                 $complete = false;
 
                 break;
             }
-
-            ++$acted;
 
             if (self::applyTarget($run, $target, $childRun, $policy)) {
                 $appliedTo[] = $target['child_instance_id'];
@@ -107,6 +116,84 @@ final class ParentClosePolicyEnforcer
         }
 
         return $appliedTo;
+    }
+
+    /**
+     * What one child's policy outcome writes in the parent's transaction. A
+     * cancellation request leaves the child open. A terminate or
+     * request_cancel runs the child's whole close: its open tasks, activities
+     * and timers, its accepted updates, and in turn the open children its own
+     * policy closes. Counting stops once the total no longer fits $budget,
+     * since the child is then taken only as a pass's first item.
+     *
+     * @param array{int, int} $total the cost counted so far
+     * @return array{int, int}
+     */
+    private static function cost(
+        WorkflowRun $childRun,
+        ParentClosePolicy $policy,
+        DeadlineCloseBudget $budget,
+        array $total = [0, 0],
+    ): array {
+        if ($policy === ParentClosePolicy::RequestCancellation) {
+            return DeadlineCloseBudget::plus($total, DeadlineCloseBudget::CANCELLATION_REQUEST);
+        }
+        $total = DeadlineCloseBudget::plus($total, DeadlineCloseBudget::CHILD);
+        if ($budget->unbounded()) {
+            return $total;
+        }
+
+        $open = ConfiguredV2Models::query('run_model', WorkflowRun::class)
+            ->whereKey($childRun->id)
+            ->withCount([
+                'tasks as open_tasks' => static fn ($tasks) => $tasks->whereIn(
+                    'status',
+                    [TaskStatus::Ready->value, TaskStatus::Leased->value],
+                ),
+                'activityExecutions as open_activities' => static fn ($activities) => $activities->whereIn(
+                    'status',
+                    [ActivityStatus::Pending->value, ActivityStatus::Running->value],
+                ),
+                'timers as open_timers' => static fn ($timers) => $timers->where(
+                    'status',
+                    TimerStatus::Pending->value,
+                ),
+                'updates as accepted_updates' => static fn ($updates) => $updates->where(
+                    'status',
+                    UpdateStatus::Accepted->value,
+                ),
+            ])
+            ->toBase()
+            ->first();
+        $activities = (int) ($open->open_activities ?? 0);
+        // An activity's cost includes its task.
+        $total = DeadlineCloseBudget::plus($total, DeadlineCloseBudget::ACTIVITY, $activities);
+        $total = DeadlineCloseBudget::plus(
+            $total,
+            DeadlineCloseBudget::TASK,
+            max(0, (int) ($open->open_tasks ?? 0) - $activities),
+        );
+        $total = DeadlineCloseBudget::plus($total, DeadlineCloseBudget::TIMER, (int) ($open->open_timers ?? 0));
+        $total = DeadlineCloseBudget::plus(
+            $total,
+            DeadlineCloseBudget::UPDATE,
+            (int) ($open->accepted_updates ?? 0),
+        );
+
+        foreach (self::targets($childRun) as $target) {
+            if (! $budget->fits($total)) {
+                break;
+            }
+            $grandchildPolicy = ParentClosePolicy::tryFrom($target['policy']);
+            $grandchild = $target['child_run'];
+            if ($grandchildPolicy === null || $grandchildPolicy === ParentClosePolicy::Abandon
+                || ! $grandchild instanceof WorkflowRun || ChildSupervision::isTerminal($grandchild)) {
+                continue;
+            }
+            $total = self::cost($grandchild, $grandchildPolicy, $budget, $total);
+        }
+
+        return $total;
     }
 
     /**
