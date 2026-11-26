@@ -11,6 +11,14 @@
   recorded. The hook runs inside the admission transaction while the run is
   locked. Classes that implement `WorkerInterceptor` directly must add the
   method. (durable-workflow/.github#226, #234)
+- The workflow logger also works when an external worker cold-replays a run
+  through the bridge's replay runner. The runner sets the replay boundary
+  from the history it is given, so code before the last recorded step is
+  replayed quietly and a closed run's replay writes nothing. When the code
+  parks on a pending `select()` handle inside the worker's transaction, its
+  lines are dropped and written later by the replay that moves past it.
+  Outside a transaction, lines are written as soon as the code runs.
+  (durable-workflow/.github#227)
 
 - Workflow code can log without repeating itself. `$this->logger()` returns a
   PSR-3 logger that writes through the Laravel logger (or the channel you
