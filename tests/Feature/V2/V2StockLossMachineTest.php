@@ -171,6 +171,7 @@ final class V2StockLossMachineTest extends TestCase
         ]);
         $this->assertSame(['reserve', 'release'], $this->effects());
         $this->assertSame([], $this->payouts());
+        $this->assertSame(['stock-plan-original-allocation'], $this->cancellationKeys($key));
         $this->assertSame(0, WorkflowRun::query()->where('workflow_class', Payment::class)->count());
         $this->assertReleasedOnce([0, 1], null);
         $this->assertCancelledWithoutCompletion($stub);
