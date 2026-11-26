@@ -79,6 +79,12 @@ final class RunListItemView
             'task_attention' => array_key_exists('task_attention', $summary->getAttributes())
                 ? $summary->task_attention
                 : null,
+            // Additive (#863): the timeout cleanup state describe returns
+            // under run.timeout_cleanup; null when none was recorded.
+            'timeout_cleanup' => array_key_exists('timeout_cleanup', $summary->getAttributes())
+                && is_array($summary->timeout_cleanup)
+                ? $summary->timeout_cleanup
+                : null,
             'task_problem' => (bool) $summary->task_problem,
             'task_problem_badge' => WorkflowTaskProblem::metadata(
                 (bool) $summary->task_problem,
@@ -149,6 +155,7 @@ final class RunListItemView
             'repair_blocked_reason',
             'repair_blocked',
             'task_attention',
+            'timeout_cleanup',
             'task_problem',
             'task_problem_badge',
             'declared_entry_mode',

@@ -160,6 +160,17 @@ history export. When no cleanup was recorded, the response omits the field.
 An expired outcome can omit `started_at` if the first detection was already
 past the hard deadline.
 
+Run lists carry the same value. The run summary (`workflow_run_summaries`)
+stores it in a nullable `timeout_cleanup` JSON column, written whenever the
+whole run is projected, which includes cleanup entry and every close, so
+Waterline's run list and `RunListItemView` return `timeout_cleanup`, null
+when no cleanup was recorded. The column is added without a backfill. A
+summary projected before the upgrade gains the value the next time its run is
+projected; an already closed opted-in run (`workflow_runs` with
+`timeout_cleanup_work_deadline_at` set) keeps null until
+`workflow:v2:rebuild-projections --run-id=...` rebuilds it. Describe, run
+detail and the observation read history and are correct either way.
+
 ## Defaults and compatibility
 
 - Without `withTimeoutCleanup()`, nothing changes: the hard timeout closes

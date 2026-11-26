@@ -258,6 +258,30 @@ final class TimeoutCleanup
     }
 
     /**
+     * The run summary's additive `timeout_cleanup` attribute: what `observe`
+     * returns, so run lists match describe and the run observation. None
+     * when the summary table has no such column.
+     *
+     * @return array{timeout_cleanup?: array<string, string>|null}
+     */
+    public static function summaryAttributes(WorkflowRun $run): array
+    {
+        if (! WorkflowTaskLeaseLoss::summaryHasColumn(self::STARTED_KEY)) {
+            return [];
+        }
+
+        $started = $run->relationLoaded('historyEvents')
+            ? $run->historyEvents->first(
+                static fn (WorkflowHistoryEvent $event): bool => $event->event_type === HistoryEventType::WorkflowStarted
+            )
+            : null;
+
+        return [
+            self::STARTED_KEY => self::observe($run, $started?->payload),
+        ];
+    }
+
+    /**
      * @return array{0: string|null, 1: CarbonInterface|null}
      */
     public static function earliestHardDeadline(WorkflowRun $run): array
