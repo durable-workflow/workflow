@@ -561,6 +561,9 @@ final class RunSummaryProjector
                 'repair_blocked_reason' => $repairBlockedReason,
                 'repair_attention' => RepairBlockedReason::needsAttention($repairBlockedReason),
                 ...WorkflowTaskLeaseLoss::summaryAttributes($run),
+                // Cleanup is entered and closed only by transitions that
+                // project the whole run, so bounded projections keep it.
+                ...TimeoutCleanup::summaryAttributes($run),
                 'task_problem' => $taskProblem,
                 'exception_count' => count($failureSnapshots),
                 'history_event_count' => $historyBudget['history_event_count'],

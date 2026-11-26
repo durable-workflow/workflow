@@ -43,6 +43,7 @@ class WorkflowRunSummary extends Model
         'is_current_run' => 'bool',
         'repair_attention' => 'bool',
         'task_attention' => 'array',
+        'timeout_cleanup' => 'array',
         'task_problem' => 'bool',
         'visibility_labels' => 'array',
         'projection_schema_version' => 'integer',

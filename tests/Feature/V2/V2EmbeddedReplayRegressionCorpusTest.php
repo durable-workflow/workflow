@@ -498,6 +498,47 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
         $this->assertEquals($scenario['terminal'], $observer->runDetail($run)['timeout_cleanup'] ?? null);
     }
 
+    public function testTimeoutCleanupSummaryCorpusListsTheRecordedOutcome(): void
+    {
+        $path = self::FIXTURE_DIR . '/timeout-cleanup-summary-listed.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The timeout cleanup summary evidence is absent.');
+        }
+        $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['summary'];
+        config([
+            'queue.default' => 'database',
+        ]);
+        Queue::fake();
+        $this->travelTo(Carbon::parse($fixture['history'][0]['recorded_at']));
+        $stub = WorkflowStub::make($fixture['workflow']['type'], $fixture['id']);
+        $stub->start($fixture['workflow']['arguments'][0], new StartOptions(
+            executionTimeoutSeconds: $scenario['execution_timeout_seconds'],
+            timeoutCleanupSeconds: $scenario['timeout_cleanup_seconds'],
+        ));
+        $runId = $stub->runId();
+        $this->runReadyTaskOfType($runId, TaskType::Workflow);
+        $observer = $this->app->make(OperatorObservabilityRepository::class);
+        $listed = static fn (): mixed => $observer->listItem(
+            WorkflowRunSummary::query()->findOrFail($runId)
+        )['timeout_cleanup'];
+        $this->assertNull($listed());
+
+        // The watchdog enters cleanup and projects the run.
+        $this->travel($scenario['detect_after_seconds'])->seconds();
+        TaskWatchdog::runPass(runIds: [$runId]);
+        $this->assertEquals($scenario['running'], $listed());
+
+        // The cleanup turn returns; the close projects the recorded outcome.
+        $this->runReadyTaskOfType($runId, TaskType::Workflow);
+        $this->assertSame(RunStatus::Failed, WorkflowRun::query()->findOrFail($runId)->status);
+        $this->assertEquals($scenario['terminal'], $listed());
+        $this->assertEquals(
+            $scenario['terminal'],
+            WorkflowRunSummary::query()->findOrFail($runId)->toArray()['timeout_cleanup']
+        );
+    }
+
     public function testTimeoutCleanupTaskExpiryCorpusKeepsTheOutcome(): void
     {
         $path = self::FIXTURE_DIR . '/timeout-cleanup-task-expiry.json';
@@ -3300,6 +3341,11 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
 
             if ($fixture['id'] === 'timeout-cleanup-observation-preempted') {
                 // The live timeout and terminal readback run in the dedicated corpus test.
+                continue;
+            }
+
+            if ($fixture['id'] === 'timeout-cleanup-summary-listed') {
+                // The live projection at entry and close runs in the dedicated corpus test.
                 continue;
             }
 

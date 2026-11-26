@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace Tests\Feature\V2;
 
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
+use Illuminate\Support\Facades\Schema;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\Fixtures\V2\TestTimeoutCleanupCompensationWorkflow;
 use Tests\Fixtures\V2\TestTimeoutCleanupSameTurnWorkflow;
@@ -29,8 +31,11 @@ use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
+use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\StartOptions;
+use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\WorkflowTaskLeaseLoss;
 use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub;
 
@@ -72,6 +77,8 @@ final class V2TimeoutCleanupTest extends TestCase
         $runId = $workflow->runId();
         $this->runReadyWorkflowTask($runId);
         $this->assertSame(RunStatus::Waiting, WorkflowRun::query()->findOrFail($runId)->status);
+        // Armed, not entered: nothing to report yet.
+        $this->assertVisibleTimeoutCleanup(WorkflowRun::query()->findOrFail($runId), null);
 
         // Past the work deadline, before the hard deadline: the watchdog wakes it.
         $this->travel(61)
@@ -509,6 +516,37 @@ final class V2TimeoutCleanupTest extends TestCase
         $this->assertSame($count, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->count());
     }
 
+    public function testASummaryColumnRollbackKeepsProjectingWithoutTheListValue(): void
+    {
+        [, $run] = $this->enterCleanupAt(61);
+        $this->assertTrue(WorkflowTaskLeaseLoss::summaryHasColumn('timeout_cleanup'));
+
+        // The process still believes the summary column exists.
+        Schema::table('workflow_run_summaries', static function (Blueprint $table): void {
+            $table->dropColumn('timeout_cleanup');
+        });
+
+        try {
+            $summary = RunSummaryProjector::project($run->refresh());
+            $this->assertSame($run->id, $summary->id);
+            $this->assertFalse(WorkflowTaskLeaseLoss::summaryHasColumn('timeout_cleanup'));
+            $item = $this->app->make(OperatorObservabilityRepository::class)
+                ->listItem(WorkflowRunSummary::query()->findOrFail($run->id));
+            $this->assertNull($item['timeout_cleanup']);
+            // Describe still reads history.
+            $this->assertSame('running', $this->app->make(WorkflowControlPlane::class)
+                ->describe($run->workflow_instance_id, [
+                    'run_id' => $run->id,
+                ])['run']['timeout_cleanup']['outcome'] ?? null);
+        } finally {
+            Schema::table('workflow_run_summaries', static function (Blueprint $table): void {
+                $table->json('timeout_cleanup')
+                    ->nullable();
+            });
+            WorkflowTaskLeaseLoss::summaryHasColumn('timeout_cleanup', true);
+        }
+    }
+
     public function testExpiryWhileWaitingOnASignalInterruptsTheWaitAndALateSignalNeverApplies(): void
     {
         $this->travelTo(now()->startOfSecond());
@@ -708,6 +746,50 @@ final class V2TimeoutCleanupTest extends TestCase
         $this->assertTimedOutAfterCleanup($workflow, $runId, $started, 'completed');
     }
 
+    public function testABoundedProjectionAfterACleanupActivityKeepsTheListedValue(): void
+    {
+        $this->travelTo(now()->startOfSecond());
+        $workflow = WorkflowStub::make(TestTimeoutCleanupCompensationWorkflow::class, 'timeout-cleanup-bounded');
+        $workflow->start(new StartOptions(executionTimeoutSeconds: 70, timeoutCleanupSeconds: 10));
+        $runId = $workflow->runId();
+        $this->runReadyWorkflowTask($runId);
+        $this->travel(61)
+            ->seconds();
+        TaskWatchdog::runPass(runIds: [$runId]);
+        // The cleanup turn schedules the compensation activity.
+        $this->runReadyWorkflowTask($runId);
+        $started = $this->soleEvent($runId, HistoryEventType::WorkflowTimeoutCleanupStarted);
+        $running = [
+            'outcome' => 'running',
+            'cause' => 'timeout',
+            'timeout_kind' => 'execution',
+            'started_at' => $started->payload['detected_at'],
+            'work_deadline_at' => $started->payload['work_deadline_at'],
+            'cleanup_deadline_at' => $started->payload['cleanup_deadline_at'],
+        ];
+        $this->assertVisibleTimeoutCleanup(WorkflowRun::query()->findOrFail($runId), $running);
+        $before = WorkflowRunSummary::query()->findOrFail($runId);
+
+        // The activity outcome opens the resume workflow task, and the bounded
+        // open-workflow-task projection is the summary's last writer. It
+        // writes only the task, wait and history columns.
+        $this->runReadyActivityTask($runId);
+        $completed = $this->soleEvent($runId, HistoryEventType::ActivityCompleted);
+        $after = WorkflowRunSummary::query()->findOrFail($runId);
+        $resume = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+        $this->assertSame($resume->id, $after->next_task_id);
+        $this->assertSame((int) $completed->sequence, (int) $after->history_event_count);
+        $this->assertGreaterThan((int) $before->history_event_count, (int) $after->history_event_count);
+        $this->assertVisibleTimeoutCleanup(WorkflowRun::query()->findOrFail($runId), $running);
+
+        $this->runReadyWorkflowTask($runId);
+        $this->assertTimedOutAfterCleanup($workflow, $runId, $started, 'completed');
+    }
+
     /**
      * @return iterable<string, array{bool, string}>
      */
@@ -871,6 +953,8 @@ final class V2TimeoutCleanupTest extends TestCase
             $started->payload['cleanup_deadline_at'],
             $terminal->payload['timeout_cleanup']['cleanup_deadline_at'],
         );
+        // Describe, observation, detail, the summary and the list item agree.
+        $this->assertVisibleTimeoutCleanup($run, $terminal->payload['timeout_cleanup']);
     }
 
     /**
@@ -941,6 +1025,25 @@ final class V2TimeoutCleanupTest extends TestCase
                 $this->assertArrayNotHasKey('timeout_cleanup', $surface);
             } else {
                 $this->assertSame($expected, $surface['timeout_cleanup'] ?? null);
+            }
+        }
+
+        // Run lists: the projected summary (Waterline serializes the model)
+        // and the list item carry the same value, null when none. A JSON
+        // column may reorder keys, so only the members are compared.
+        $summary = WorkflowRunSummary::query()->findOrFail($run->id);
+        $item = $observer->listItem($summary);
+        $this->assertArrayHasKey('timeout_cleanup', $item);
+        foreach ([
+            $summary->timeout_cleanup,
+            $summary->toArray()['timeout_cleanup'],
+            $item['timeout_cleanup'],
+        ] as $listed) {
+            if ($expected === null) {
+                $this->assertNull($listed);
+            } else {
+                $this->assertIsArray($listed);
+                $this->assertEquals($expected, $listed);
             }
         }
     }

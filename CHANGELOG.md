@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Run lists show the timeout cleanup outcome (#863). The run summary gains a
+  nullable `timeout_cleanup` JSON column holding what describe returns under
+  `run.timeout_cleanup` (`outcome: running` while cleanup is open, then the
+  recorded `completed`, `failed`, `expired` or `preempted` outcome), and
+  `RunListItemView` returns it, null when no cleanup was recorded. Migration
+  `2026_11_26_000100_add_timeout_cleanup_to_workflow_run_summaries` adds the
+  column outside the migrator transaction under the schema lock budget, with
+  no backfill. To fill it for opted-in runs that closed before the upgrade,
+  rebuild them with `workflow:v2:rebuild-projections --run-id=...`.
+
 ## 2.42.0 - 2026-11-26
 
 2.42.0 has no database migration. It adds a replay-aware workflow logger,

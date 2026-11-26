@@ -51,6 +51,12 @@ final class WorkflowTaskLeaseLoss
     private const SCHEMA_RECHECK_SECONDS = 60;
 
     /**
+     * Run-summary columns added after the table, which a schema rollback can
+     * remove again.
+     */
+    private const ADDITIVE_SUMMARY_COLUMNS = ['task_attention', TimeoutCleanup::SUMMARY_COLUMN];
+
+    /**
      * @var array<string, array{tracked: bool, checked_at: int}>
      */
     private static array $schemas = [];
@@ -284,7 +290,16 @@ final class WorkflowTaskLeaseLoss
      */
     public static function summaryTracked(bool $fresh = false): bool
     {
-        return self::hasColumn(self::summaryModel(), 'task_attention', $fresh);
+        return self::summaryHasColumn('task_attention', $fresh);
+    }
+
+    /**
+     * Whether the configured run-summary table has an additive column, with
+     * the same cached, rollback-aware check as `task_attention`.
+     */
+    public static function summaryHasColumn(string $column, bool $fresh = false): bool
+    {
+        return self::hasColumn(self::summaryModel(), $column, $fresh);
     }
 
     /**
@@ -317,11 +332,12 @@ final class WorkflowTaskLeaseLoss
     }
 
     /**
-     * Write a run summary whose values may carry task_attention.
+     * Write a run summary whose values may carry an additive column
+     * (`task_attention`, `timeout_cleanup`).
      *
-     * A schema rollback can drop the column while the cached check still
+     * A schema rollback can drop such a column while the cached check still
      * reports it. On that error the cache is forgotten and $write runs again
-     * without task_attention. A failed statement aborts a caller's open
+     * without the additive columns. A failed statement aborts a caller's open
      * PostgreSQL transaction, so there the error is rethrown instead and the
      * caller's retry sees the current schema.
      *
@@ -332,7 +348,7 @@ final class WorkflowTaskLeaseLoss
      */
     public static function writeSummary(array $values, callable $write): mixed
     {
-        if (! array_key_exists('task_attention', $values)) {
+        if (array_intersect_key($values, array_flip(self::ADDITIVE_SUMMARY_COLUMNS)) === []) {
             return $write($values);
         }
 
@@ -350,9 +366,7 @@ final class WorkflowTaskLeaseLoss
                 throw $exception;
             }
 
-            unset($values['task_attention']);
-
-            return $write($values);
+            return $write(array_diff_key($values, array_flip(self::ADDITIVE_SUMMARY_COLUMNS)));
         }
     }
 
