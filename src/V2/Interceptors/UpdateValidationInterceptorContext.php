@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Interceptors;
 
+use Workflow\V2\Enums\WorkflowReplayState;
 use Workflow\V2\Models\WorkflowRun;
 
 /**
@@ -49,5 +50,13 @@ final class UpdateValidationInterceptorContext
             (string) $run->id,
             $arguments,
         );
+    }
+
+    /**
+     * Update validators always answer from replayed state.
+     */
+    public function replayState(): WorkflowReplayState
+    {
+        return WorkflowReplayState::Replaying;
     }
 }

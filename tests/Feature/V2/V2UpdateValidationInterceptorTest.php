@@ -64,6 +64,7 @@ final class V2UpdateValidationInterceptorTest extends TestCase
         $context = ValidationAudit::$contexts[0];
         $this->assertNull($context->workerId);
         $this->assertSame('add-item', $context->updateName);
+        $this->assertSame(\Workflow\V2\Enums\WorkflowReplayState::Replaying, $context->replayState());
         $this->assertSame('test-validated-update-workflow', $context->workflowType);
         $this->assertSame('validation-interceptor-observe', $context->workflowId);
         $this->assertSame($workflow->runId(), $context->runId);

@@ -79,10 +79,10 @@ singleton when it must keep state between tasks.
 
 | Hook | Context | `$next` returns |
 | --- | --- | --- |
-| `executeWorkflowTask($context, $next)` | `workerId`, `connection`, `taskQueue`, `namespace`, `task`, `taskId`, `workflowType`, `workflowId`, `runId`, `workflowTaskAttempt`, `historyLength`, `replaying` | `WorkflowTaskOutcome` with `historyEventTypes`, `runStatus`, `nextTaskId` |
+| `executeWorkflowTask($context, $next)` | `workerId`, `connection`, `taskQueue`, `namespace`, `task`, `taskId`, `workflowType`, `workflowId`, `runId`, `workflowTaskAttempt`, `historyLength`, `replaying` (also `replayState()`) | `WorkflowTaskOutcome` with `historyEventTypes`, `runStatus`, `nextTaskId` |
 | `executeActivity($context, $next)` | `workerId`, `connection`, `taskQueue`, `namespace`, `task`, `activityType`, `activityClass`, `arguments`, `attemptNumber`, `taskId`, `activityExecutionId`, `activityAttemptId`, `workflowId`, `runId`, `local`, `activity` | the activity result |
-| `executeQueryTask($context, $next)` | `workerId` (always null), `connection`, `taskQueue`, `namespace`, `task`, `queryName`, `workflowType`, `workflowId`, `runId`, `arguments` | the query result |
-| `executeUpdateValidation($context, $next)` | `workerId` (always null), `connection`, `taskQueue`, `namespace`, `updateName`, `workflowType`, `workflowId`, `runId`, `arguments` | `UpdateValidationOutcome` with `approved`, `rejectionMessage`, `exceptionType`, `validationErrors` |
+| `executeQueryTask($context, $next)` | `workerId` (always null), `connection`, `taskQueue`, `namespace`, `task`, `queryName`, `workflowType`, `workflowId`, `runId`, `arguments`, `replayState()` (always `Replaying`) | the query result |
+| `executeUpdateValidation($context, $next)` | `workerId` (always null), `connection`, `taskQueue`, `namespace`, `updateName`, `workflowType`, `workflowId`, `runId`, `arguments`, `replayState()` (always `Replaying`) | `UpdateValidationOutcome` with `approved`, `rejectionMessage`, `exceptionType`, `validationErrors` |
 
 `task` is an array snapshot of the claimed task row, never the model itself.
 `workerId` identifies the queue worker process by host and process ID. Queries
@@ -96,7 +96,9 @@ Workflow-task interceptors cannot change what a workflow records:
   transaction, once per task attempt. `replaying` is `true` when earlier
   workflow tasks already recorded commands for the run. A cold task re-runs
   that committed prefix first; with live execution a warm task may resume
-  without re-running it. It is not a
+  without re-running it. `replayState()` gives the same answer as a
+  `Workflow\V2\Enums\WorkflowReplayState`, the enum `Workflow::replayState()`
+  uses; the interceptor's value is fixed for the task. It is not a
   deduplication key: `historyEventTypes` lists only the events this task
   appended. Hook side effects run before the task commits and can repeat when
   an attempt is retried, so defer them with `DB::afterCommit()` or key them on
