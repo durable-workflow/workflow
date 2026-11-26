@@ -352,9 +352,11 @@ final class V2FinallyCleanupTest extends TestCase
         // cursor the update saw when it was applied.
         $this->runReadyTask($runId, TaskType::Workflow);
 
+        $memo = $workflow->refresh()
+            ->memo();
         $this->assertSame([
             'marked_at' => 2,
-        ], $workflow->refresh() ->memo());
+        ], $memo);
         $this->assertSame([
             'StartAccepted',
             'WorkflowStarted',
