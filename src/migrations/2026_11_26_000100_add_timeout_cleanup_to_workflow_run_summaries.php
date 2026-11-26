@@ -3,12 +3,15 @@
 declare(strict_types=1);
 
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Database\Schema\Builder;
 use Illuminate\Support\Facades\Schema;
 use Workflow\Support\WorkflowMigration;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Support\ConfiguredV2Models;
 
 return new class() extends WorkflowMigration {
+    private const COLUMN = 'timeout_cleanup';
+
     /**
      * Deadline-triggered cleanup (#863): the run summary's additive
      * `timeout_cleanup` field, the same portable shape describe and the run
@@ -23,40 +26,46 @@ return new class() extends WorkflowMigration {
 
     public function up(): void
     {
-        $schema = Schema::connection($this->getConnection());
+        $schema = $this->schema();
 
-        foreach (self::summaryTables() as $table) {
-            if ($schema->hasTable($table) && ! $schema->hasColumn($table, 'timeout_cleanup')) {
-                $this->withSchemaLockBudget(static function () use ($schema, $table): void {
-                    $schema->table($table, static function (Blueprint $blueprint): void {
-                        $blueprint->json('timeout_cleanup')
-                            ->nullable();
-                    });
-                });
-            }
+        foreach ($this->summaryTables($schema, withColumn: false) as $table) {
+            $this->withSchemaLockBudget(static fn () => $schema->table(
+                $table,
+                static fn (Blueprint $blueprint) => $blueprint->json(self::COLUMN)
+                    ->nullable(),
+            ));
         }
     }
 
     public function down(): void
     {
-        $schema = Schema::connection($this->getConnection());
+        $schema = $this->schema();
 
-        foreach (self::summaryTables() as $table) {
-            if ($schema->hasTable($table) && $schema->hasColumn($table, 'timeout_cleanup')) {
-                $schema->table($table, static function (Blueprint $blueprint): void {
-                    $blueprint->dropColumn('timeout_cleanup');
-                });
-            }
+        foreach ($this->summaryTables($schema, withColumn: true) as $table) {
+            $schema->table($table, static fn (Blueprint $blueprint) => $blueprint->dropColumn(self::COLUMN));
         }
     }
 
+    private function schema(): Builder
+    {
+        return Schema::connection($this->getConnection());
+    }
+
     /**
+     * The existing run-summary tables (the package table and a configured
+     * model's table) that have, or lack, the column.
+     *
      * @return list<string>
      */
-    private static function summaryTables(): array
+    private function summaryTables(Builder $schema, bool $withColumn): array
     {
         $model = ConfiguredV2Models::resolve('run_summary_model', WorkflowRunSummary::class);
+        $tables = array_unique(['workflow_run_summaries', (new $model())->getTable()]);
 
-        return array_values(array_unique(['workflow_run_summaries', (new $model())->getTable()]));
+        return array_values(array_filter(
+            $tables,
+            static fn (string $table): bool => $schema->hasTable($table)
+                && $schema->hasColumn($table, self::COLUMN) === $withColumn,
+        ));
     }
 };

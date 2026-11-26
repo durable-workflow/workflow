@@ -1,0 +1,57 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "timeout-cleanup-summary-listed",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestTimeoutCleanupWorkflow",
+    "arguments": ["complete"],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {
+        "timeout_cleanup": {
+          "allowance_seconds": 10,
+          "work_deadlines": {
+            "execution": "2026-11-24T00:01:00+00:00"
+          }
+        }
+      },
+      "recorded_at": "2026-11-24T00:00:00.000000Z"
+    },
+    {
+      "sequence": 2,
+      "event_type": "TimerScheduled",
+      "payload": {"timer_id": "timeout-cleanup-summary-timer", "sequence": 1, "delay_seconds": 3600},
+      "recorded_at": "2026-11-24T00:00:00.000000Z"
+    }
+  ],
+  "expected": {"completed": false, "result": null, "commands": []},
+  "summary": {
+    "issue": "durable-workflow/workflow#863",
+    "execution_timeout_seconds": 70,
+    "timeout_cleanup_seconds": 10,
+    "detect_after_seconds": 61,
+    "running": {
+      "outcome": "running",
+      "cause": "timeout",
+      "timeout_kind": "execution",
+      "started_at": "2026-11-24T00:01:01+00:00",
+      "work_deadline_at": "2026-11-24T00:01:00+00:00",
+      "cleanup_deadline_at": "2026-11-24T00:01:10+00:00"
+    },
+    "terminal": {
+      "outcome": "completed",
+      "timeout_kind": "execution",
+      "started_at": "2026-11-24T00:01:01+00:00",
+      "cleanup_deadline_at": "2026-11-24T00:01:10+00:00",
+      "finished_at": "2026-11-24T00:01:01+00:00"
+    },
+    "note": "The run summary and list item carry what describe returns under run.timeout_cleanup: null while armed, outcome running from the projection at cleanup entry, then the recorded outcome from the projection at close."
+  }
+}
