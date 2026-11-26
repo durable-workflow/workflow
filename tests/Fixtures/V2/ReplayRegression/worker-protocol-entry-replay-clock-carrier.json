@@ -1,0 +1,88 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "worker-protocol-entry-replay-clock-carrier",
+  "protocol_version": "1.20",
+  "bindings": [
+    "php"
+  ],
+  "consumers": [
+    "workflow-fiber-runner"
+  ],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestReplayClockEntryWorkflow",
+    "arguments": [],
+    "payload_codec": "avro"
+  },
+  "worker_task": {
+    "replay_clock": {
+      "schema": "durable-workflow.worker-replay-clock/v1",
+      "workflow_run_id": "regression-corpus-run-worker-protocol-entry-replay-clock-carrier",
+      "started_at": "2026-11-01T00:00:00.000000Z",
+      "source": "run_started_at"
+    }
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-01T00:00:00.123456Z"
+    },
+    {
+      "sequence": 2,
+      "event_type": "ActivityScheduled",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "activity-1",
+        "activity_type": "demo.step"
+      },
+      "recorded_at": "2026-11-01T00:00:00.200000Z"
+    },
+    {
+      "sequence": 3,
+      "event_type": "ActivityCompleted",
+      "payload": {
+        "sequence": 1,
+        "activity_execution_id": "activity-1",
+        "activity_type": "demo.step",
+        "result": "wwHioz3/VYAiNwoKZmlyc3Q=",
+        "payload_codec": "avro"
+      },
+      "recorded_at": "2026-11-01T00:00:03.123456Z"
+    },
+    {
+      "sequence": 4,
+      "event_type": "TimerScheduled",
+      "payload": {
+        "sequence": 2,
+        "timer_id": "timer-2",
+        "delay_seconds": 2
+      },
+      "recorded_at": "2026-11-01T00:00:03.200000Z"
+    },
+    {
+      "sequence": 5,
+      "event_type": "TimerFired",
+      "payload": {
+        "sequence": 2,
+        "timer_id": "timer-2",
+        "delay_seconds": 2
+      },
+      "recorded_at": "2026-11-01T00:00:05.654321Z"
+    }
+  ],
+  "expected": {
+    "completed": true,
+    "result": {
+      "entry": "2026-11-01T00:00:00.000000+00:00",
+      "after_activity": "2026-11-01T00:00:03.123456+00:00",
+      "after_timer": "2026-11-01T00:00:05.654321+00:00"
+    },
+    "commands": [
+      {
+        "type": "complete_workflow"
+      }
+    ]
+  }
+}
