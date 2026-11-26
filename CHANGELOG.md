@@ -2,67 +2,69 @@
 
 ## Unreleased
 
-- Worker interceptor contexts expose `replayState()` as a
-  `Workflow\V2\Enums\WorkflowReplayState`, the enum the replay-aware logger
-  added: a workflow task reports `Replaying` when earlier tasks recorded
-  commands for the run and `Executing` otherwise, and a query or update
-  validation always reports `Replaying`. ([Durable Workflow #226](https://github.com/durable-workflow/.github/issues/226))
-- Worker interceptors also wrap update validation. The new
-  `executeUpdateValidation($context, $next)` hook (passthrough in
-  `PassthroughWorkerInterceptor`) sees the update name, run and arguments,
-  and the validator's `UpdateValidationOutcome`. Hooks observe the decision
-  but cannot change it. A hook that throws, skips `$next` or calls it twice
-  refuses the update with `UpdateValidationFailedException`, and nothing is
-  recorded. The hook runs inside the admission transaction while the run is
-  locked. Classes that implement `WorkerInterceptor` directly must add the
-  method. (durable-workflow/.github#226, #234)
-- The workflow logger also works when an external worker cold-replays a run
-  through the bridge's replay runner. The runner sets the replay boundary
-  from the history it is given, so code before the last recorded step is
-  replayed quietly and a closed run's replay writes nothing. When the code
-  parks on a pending `select()` handle inside the worker's transaction, its
-  lines are dropped and written later by the replay that moves past it.
-  Outside a transaction, lines are written as soon as the code runs.
-  (durable-workflow/.github#227)
+## 2.42.0 - 2026-11-26
+
+2.42.0 has no database migration. It adds a replay-aware workflow logger,
+pre-acceptance update validators and ordered worker interceptors to embedded
+workflows, lets the worker-protocol runner read the `replay_clock` entry
+carrier, and bounds deadline-close child cascades.
+
+**Upgrade notes:**
+
+- `Workflow\V2\Workflow` gains three public instance methods: `logger()`,
+  `replayState()` and `isReplaying()` (#1296). A workflow class that already
+  defines a method with one of these names breaks: PHP refuses a signature or
+  visibility that doesn't match the base method, so the class fails to load,
+  and a matching one silently replaces the base method. Rename the method
+  before upgrading.
 - The worker-protocol runner (`WorkflowFiberRunner`, used by external PHP
-  workers) accepts the workflow task's `replay_clock` object
-  (`WorkerReplayClock` v1, sent by Server 3.6.0 and later) as a new optional
-  `replayClock` argument to its constructor and `forClass()`. When the object
-  validates for the run, `Workflow::now()` at ordinary entry returns its
-  `started_at`. That is the run's canonical start, the instant the embedded
-  executor already uses. Without it, entry keeps the `WorkflowStarted` event
-  time, which is written separately and can differ by microseconds, so runs
-  already in flight replay unchanged. The object must have exactly the four v1
-  keys, name the runner's run and carry strict six-digit UTC with `Z`, and its
-  source must agree with the history's start kind. A redrive anchor the
-  history proves is never replaced. (durable-workflow/.github#215)
+  workers) accepts the workflow task's `replay_clock` entry carrier through a
+  new optional `replayClock` argument (#1307). Nothing changes until the code
+  that builds the runner passes the carrier, which native Server 3.6.0 and
+  later sends. From then on, `Workflow::now()` at ordinary entry returns the
+  run's canonical start instead of the `WorkflowStarted` event time. A run
+  that started without a carrier and later replays on a worker that receives
+  one sees entry `Workflow::now()` move back by the gap between the run's
+  start and its `WorkflowStarted` time, microseconds to milliseconds. That
+  matters only if the value feeds a decision that replay re-checks. Put code
+  that branches on the entry clock behind workflow versioning (`getVersion()`
+  or `patched()`), or let those runs finish before upgrading the workers.
 
 - Workflow code can log without repeating itself. `$this->logger()` returns a
-  PSR-3 logger that writes through the Laravel logger (or the channel you
-  pass) only when the code runs for the first time. The engine replays a
-  workflow from its history on every wake-up, so `Log::info()` in workflow
-  code repeats for every completed step; the workflow logger writes each line
-  once. Replays, queries and update validators stay quiet, and each line
-  carries `workflow_instance_id`, `workflow_run_id`, `workflow_type` and
-  `namespace`. `$this->replayState()` (`Workflow\V2\Enums\WorkflowReplayState`:
-  `Replaying`, `Executing` or `Unavailable`) and `$this->isReplaying()` expose
-  the same boundary for diagnostics. Lines are written after the workflow
-  task commits, so a task that rolls back writes nothing, and code that parks
-  on a pending `select()` handle without recording a step logs once, in the
-  task that moves past it. A slow log handler stalls the worker, and the
-  logger is not an outbox for business effects. Logger failures never fail
-  the workflow. A
-  workflow class that already defines `logger()`, `replayState()` or
-  `isReplaying()` must rename it. (durable-workflow/.github#227)
-
+  PSR-3 logger (`Workflow\V2\Support\WorkflowLogger`) that writes through the
+  Laravel logger (or the channel you pass) only when the code runs for the
+  first time. The engine replays a workflow from its history on every
+  wake-up, so `Log::info()` in workflow code repeats for every completed step;
+  the workflow logger writes each line once. Replays, queries and update
+  validators stay quiet, and each line carries `workflow_instance_id`,
+  `workflow_run_id`, `workflow_type` and `namespace`. `$this->replayState()`
+  (`Workflow\V2\Enums\WorkflowReplayState`: `Replaying`, `Executing` or
+  `Unavailable`) and `$this->isReplaying()` expose the same boundary for
+  diagnostics; durable commands must not branch on them. Lines are written
+  after the workflow task commits, so a task that rolls back writes nothing,
+  and code that parks on a pending `select()` handle without recording a step
+  logs once, in the task that moves past it. It is a process logger, not an
+  outbox: a task that fails before it commits logs its new lines again when
+  it is retried, and a slow log handler stalls the worker. Logger failures
+  never fail the workflow. See the upgrade note about existing methods with
+  these names. (durable-workflow/.github#227, #1296)
+- The workflow logger also works when an external worker cold-replays a run
+  through the worker-protocol runner (`WorkflowFiberRunner`). The runner sets
+  the replay boundary from the history it is given, so code before the last
+  recorded step is replayed quietly and a closed run's replay writes nothing.
+  When the code parks on a pending `select()` handle inside the worker's
+  transaction, its lines are dropped and written later by the replay that
+  moves past it. Outside a transaction, lines are written as soon as the code
+  runs. (durable-workflow/.github#227, #1305)
 - Workflows can validate an update before accepting it. Put
   `#[Workflow\UpdateValidator('update-name')]` on a method that takes the
   update's arguments. It runs against the run's replayed state before the
   update is accepted. If it throws or returns `false`, the update is rejected
   with the `update_validator_rejected` reason, and the result carries the
-  validator's message and any Laravel validation errors. A rejected update is
-  never accepted and never wakes the workflow, and its handler doesn't run.
-  Like other rejections, it records only the `UpdateRejected` audit event.
+  validator's message (`UpdateResult::rejectionMessage()`) and any Laravel
+  validation errors (`validationErrors()`). A rejected update is never
+  accepted and never wakes the workflow, and its handler doesn't run. Like
+  other rejections, it records only the `UpdateRejected` audit event.
   Validators are read-only: scheduling an activity, timer, child, signal, side
   effect or other durable call from one throws
   `UpdateValidatorCommandException`, which rejects the update, and a generator
@@ -70,17 +72,50 @@
   replayed, or the validator hits a storage error,
   `UpdateValidationFailedException` is thrown and nothing is recorded;
   webhook update routes answer it with a retryable 503
-  `update_validation_failed`. (durable-workflow/.github#234)
-
+  `update_validation_failed`. A validator for an undeclared update, a second
+  validator for the same update, or a validator on the update method itself
+  is a definition error, and the workflow can't start.
+  (durable-workflow/.github#234, #1297)
 - Embedded workflows accept ordered worker interceptors, listed in
-  `workflows.v2.interceptors` and resolved from the Laravel container, around
-  workflow tasks, queued and local activities, and queries. Workflow-task
-  interceptors see whether the task replays committed history and cannot
-  change what it records: a failing interceptor rolls the task back and
-  releases it for a retry. See
+  `workflows.v2.interceptors` and resolved from the Laravel container. The
+  first entry is the outermost wrapper.
+  `Workflow\V2\Interceptors\WorkerInterceptor` (with
+  `PassthroughWorkerInterceptor` as a base) wraps workflow tasks,
+  queued and local activities, queries and update validation run in this
+  process. Activity and query hooks may change arguments and results.
+  Workflow-task hooks see whether the task replays committed history and
+  cannot change what it records: a hook that throws, skips `$next` or calls
+  it twice rolls the task back and releases it for a retry.
+  `executeUpdateValidation($context, $next)` sees the update name, run and
+  arguments and the validator's `UpdateValidationOutcome`, but cannot change
+  the decision. A hook that throws, skips `$next` or calls it twice refuses
+  the update with `UpdateValidationFailedException`, and nothing is recorded.
+  It runs inside the admission transaction while the run is locked. Every
+  context's `replayState()` returns a `WorkflowReplayState`: a workflow task
+  reports `Replaying` when earlier tasks recorded commands for the run and
+  `Executing` otherwise, and a query or update validation always reports
+  `Replaying`. Tasks that external SDK workers claim through the task
+  bridges use that SDK's interceptors, and the worker bridge's in-process
+  `execute` route doesn't run workflow-task interceptors. See
   [worker interceptors](docs/worker-interceptors.md).
-  ([Durable Workflow #226](https://github.com/durable-workflow/.github/issues/226))
-
+  (durable-workflow/.github#226, #1295, #1299, #1306, #1310)
+- The worker-protocol runner (`WorkflowFiberRunner`, used by external PHP
+  workers) accepts the workflow task's `replay_clock` object
+  (`WorkerReplayClock` v1, sent by native Server 3.6.0 and later) as a new
+  optional `replayClock` argument to its constructor and `forClass()`. When
+  the object validates for the run, `Workflow::now()` at ordinary entry
+  returns its `started_at`. That is the run's canonical start, the instant
+  the embedded executor already uses. Without it, entry keeps the
+  `WorkflowStarted` event time, which is written separately and can differ by
+  microseconds, so runs already in flight replay unchanged. A run that
+  started without a carrier and later replays on a worker that receives one
+  sees entry `Workflow::now()` move back by the microseconds-to-milliseconds
+  gap between the run's start and its `WorkflowStarted` time. That matters
+  only if the value feeds a decision that replay re-checks; see the upgrade
+  note above. The object must have exactly the four v1 keys, name the
+  runner's run and carry strict six-digit UTC with `Z`, and its source must
+  agree with the history's start kind. A redrive anchor the history proves is
+  never replaced. (durable-workflow/.github#215, #1307)
 - A bounded deadline close charges each item the history events and rows it
   writes. A child closed by its parent's policy is charged its whole close,
   including its open work, accepted updates and own children, and an accepted
@@ -89,9 +124,19 @@
   larger than the whole budget is taken alone, and a timed-out child's close
   still resumes its live parent in the same transaction. An ordinary
   deadline close that fails records its error and attempt on the run's
-  workflow task and backs off like a failing settlement, so it no longer
-  starves other expired runs. On MySQL, a run projection no longer rewrites lineage rows whose JSON
-  differs only in key order. (#1290)
+  workflow task and backs off like a failing settlement (10 s, doubling, up
+  to 1 h), so it no longer starves other expired runs. A held settlement has
+  no operator release; `docs/architecture/completion-budget.md` explains why.
+  `WorkflowExecutor::deadlineCloseBatchSize()` is removed; the budget replaces
+  it. On MySQL, a run projection no longer rewrites lineage rows whose JSON
+  differs only in key order. (#1290, #1292)
+- Tests and documentation: new state-machine example tests cover business
+  cancellation racing a bound child's completion (TECH-03), replacement after
+  transport damage (SHP-08) and stock loss before payment and before handover
+  (STK-03), including process loss (#1069, #1300, #1301, #1302, #1308). The
+  timeout-cleanup contract states the service-mode
+  `interruption: "timeout_cleanup"` marker rule and asks that every worker on
+  an opted-in queue support it; embedded behavior is unchanged (#863, #1304).
 
 ## 2.41.0 - 2026-11-25
 
