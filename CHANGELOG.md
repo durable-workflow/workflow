@@ -2,6 +2,42 @@
 
 ## Unreleased
 
+- Worker interceptors also wrap update validation. The new
+  `executeUpdateValidation($context, $next)` hook (passthrough in
+  `PassthroughWorkerInterceptor`) sees the update name, run and arguments,
+  and the validator's `UpdateValidationOutcome`. Hooks observe the decision
+  but cannot change it. A hook that throws, skips `$next` or calls it twice
+  refuses the update with `UpdateValidationFailedException`, and nothing is
+  recorded. The hook runs inside the admission transaction while the run is
+  locked. Classes that implement `WorkerInterceptor` directly must add the
+  method. (durable-workflow/.github#226, #234)
+- The workflow logger also works when an external worker cold-replays a run
+  through the bridge's replay runner. The runner sets the replay boundary
+  from the history it is given, so code before the last recorded step is
+  replayed quietly and a closed run's replay writes nothing. When the code
+  parks on a pending `select()` handle inside the worker's transaction, its
+  lines are dropped and written later by the replay that moves past it.
+  Outside a transaction, lines are written as soon as the code runs.
+  (durable-workflow/.github#227)
+
+- Workflow code can log without repeating itself. `$this->logger()` returns a
+  PSR-3 logger that writes through the Laravel logger (or the channel you
+  pass) only when the code runs for the first time. The engine replays a
+  workflow from its history on every wake-up, so `Log::info()` in workflow
+  code repeats for every completed step; the workflow logger writes each line
+  once. Replays, queries and update validators stay quiet, and each line
+  carries `workflow_instance_id`, `workflow_run_id`, `workflow_type` and
+  `namespace`. `$this->replayState()` (`Workflow\V2\Enums\WorkflowReplayState`:
+  `Replaying`, `Executing` or `Unavailable`) and `$this->isReplaying()` expose
+  the same boundary for diagnostics. Lines are written after the workflow
+  task commits, so a task that rolls back writes nothing, and code that parks
+  on a pending `select()` handle without recording a step logs once, in the
+  task that moves past it. A slow log handler stalls the worker, and the
+  logger is not an outbox for business effects. Logger failures never fail
+  the workflow. A
+  workflow class that already defines `logger()`, `replayState()` or
+  `isReplaying()` must rename it. (durable-workflow/.github#227)
+
 - Workflows can validate an update before accepting it. Put
   `#[Workflow\UpdateValidator('update-name')]` on a method that takes the
   update's arguments. It runs against the run's replayed state before the

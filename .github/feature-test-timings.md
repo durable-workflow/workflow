@@ -13,3 +13,14 @@ The first complete main [build 44024863937](https://github.com/durable-workflow/
 The new class used a non-coverage MySQL duration in the covered profile. Give it a conservative **1,200-second scheduling weight**, the upper bound of that combined run, so the existing allocator places it alone. This is not a measured per-class duration and does not extend the process limit. Other MySQL weights, the complete test inventory, all 16 coverage shards and coverage gates are unchanged. Replace this reservation with the next complete covered class measurement when refreshing the profile.
 
 The current PostgreSQL class measurement is 362.791408 seconds in [build 44022117686](https://github.com/durable-workflow/workflow/actions/runs/44022117686). The conservative 427.403490-second PostgreSQL hint remains unchanged in this correction, preserving its passing allocation.
+
+## State machine gap classes
+
+These weights are measured per-file JUnit durations from main [build 45724736573](https://github.com/durable-workflow/workflow/actions/runs/45724736573) at `2ee257881cfa550329039c9fef74a7e8230eff56`, which replace the provisional estimates added with #1300, #1301 and #1302:
+
+| Class | PostgreSQL (s) | MySQL (s) |
+| --- | --- | --- |
+| `V2ConfiguredChildCompletionRaceTest` | 122.648429 | 225.266820 |
+| `V2StockLossMachineTest` | 223.557722 | 579.038868 |
+| `V2TransitIncidentDamageReplacementTest` | 58.678768 | 65.491891 |
+| `V2TransitIncidentProcessLossTest` | 230.585781 | 495.613196 |

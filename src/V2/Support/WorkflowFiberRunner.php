@@ -403,6 +403,9 @@ final class WorkflowFiberRunner
 
                 if (! $resolution['resolved']) {
                     $this->waitingForHistory = true;
+                    // Parked without a recorded step: this code runs again once
+                    // the handle resolves, so its deferred log lines are dropped.
+                    $this->workflow->cancelPendingWorkflowLogs($this->sequence);
 
                     return WorkflowStep::waiting($current)
                         ->withPrependedCommands($immediateCommands);
@@ -1405,6 +1408,13 @@ final class WorkflowFiberRunner
         $this->syncRunReplayMetadata($this->historyEvents);
         $this->startedAt = self::workflowStartedAt($this->historyEvents);
         $this->historySequencesByPosition = self::indexHistorySequencesByPosition($this->historyEvents);
+        // Positions 1..N are recorded in this history, so code whose next call
+        // is at or before N is being replayed; a closed run replays entirely
+        // (#227). Workflow::replayState() compares this with the cursor the
+        // runner syncs before every resume.
+        $this->workflow->beginReplayRegion(self::closesRun($this->historyEvents)
+            ? PHP_INT_MAX
+            : count($this->historySequencesByPosition));
         $this->recordedActivityOutcomes = self::indexRecordedActivityOutcomes(
             $this->historyEvents,
             $this->payloadCodec,
@@ -1692,6 +1702,27 @@ final class WorkflowFiberRunner
         }
 
         return $positions;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $historyEvents
+     */
+    private static function closesRun(array $historyEvents): bool
+    {
+        foreach ($historyEvents as $event) {
+            if (in_array(self::eventType($event), [
+                'WorkflowCompleted',
+                'WorkflowFailed',
+                'WorkflowCancelled',
+                'WorkflowTerminated',
+                'WorkflowTimedOut',
+                'WorkflowContinuedAsNew',
+            ], true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static function hasWorkflowCommandSequence(?string $type): bool

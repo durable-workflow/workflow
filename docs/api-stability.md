@@ -740,7 +740,8 @@ It exposes two surfaces, both covered by the semver guarantee:
   `workflowId()`, `runId()`, `scheduleOrigin()`, `lastChild()`,
   `children()`, `historyLength()`, `historySize()`,
   `historyFanOut()`, `shouldContinueAsNew()`, `historyBudgetPressure()`,
-  `messages()`, `inbox()`, `outbox()`,
+  `messages()`, `inbox()`, `outbox()`, `logger()`, `replayState()`,
+  `isReplaying()`,
   `addCompensation()`, `setParallelCompensation()`,
   `setContinueWithError()`, `compensate()`, and the public properties
   `$run`, `$connection`, `$queue`.
@@ -793,6 +794,15 @@ the workflow and let it execute the cleanup before completing.
 
 Adding new static methods to the facade is an additive (non-breaking)
 change. Removing or renaming a documented method is a major change.
+
+`logger()` returns `Workflow\V2\Support\WorkflowLogger`, a PSR-3
+`LoggerInterface` that writes only while `replayState()` is
+`Workflow\V2\Enums\WorkflowReplayState::Executing`. The enum's cases and
+string values (`replaying`, `executing`, `unavailable`) and the identity
+context keys the logger adds (`workflow_instance_id`, `workflow_run_id`,
+`workflow_type`, `namespace`) are part of the v2 authoring API. Replay state is
+an observation for logging and diagnostics; durable commands must not branch on
+it.
 
 Local-activity authoring uses stable support value objects:
 `Workflow\V2\Support\LocalActivityCall` and

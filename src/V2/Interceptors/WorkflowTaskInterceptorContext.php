@@ -30,9 +30,9 @@ final class WorkflowTaskInterceptorContext
     /**
      * @param array<string, mixed> $task snapshot of the claimed task row
      * @param bool $replaying true when earlier workflow tasks already recorded commands for
-     *                        this run, so the workflow code re-runs that committed prefix
-     *                        before reaching new code. It is not a deduplication key: the
-     *                        outcome lists only what this task appends.
+     *                        this run. A cold task re-runs that committed prefix first; a
+     *                        live continuation may resume without re-running it. It is not
+     *                        a deduplication key: the outcome lists only what this task appends.
      */
     public function __construct(
         public readonly ?string $workerId,

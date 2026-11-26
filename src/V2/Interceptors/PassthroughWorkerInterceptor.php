@@ -23,4 +23,11 @@ class PassthroughWorkerInterceptor implements WorkerInterceptor
     {
         return $next($context);
     }
+
+    public function executeUpdateValidation(
+        UpdateValidationInterceptorContext $context,
+        callable $next,
+    ): UpdateValidationOutcome {
+        return $next($context);
+    }
 }

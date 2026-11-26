@@ -79,9 +79,10 @@ $store = MachineStore::configure($app, $authority, $provider, unitRefunds: $refu
 
 The policy is part of the immutable business grant. Workflow arguments and
 signals cannot select or replace it. `wait-complete` requires the original
-`fulfillmentDeadline`; a missing deadline is refused at `seed()`. Other recipes,
-including `reserve-first-common`, refuse a stock policy instead of silently
-reinterpreting their route.
+`fulfillmentDeadline`; a missing deadline is refused at `seed()`. Other recipes
+refuse a stock policy instead of silently reinterpreting their route.
+`reserve-first-common` accepts only `wait-complete` or `cancel-all`; see
+[Stock lost before payment or before handover](#stock-lost-before-payment-or-before-handover).
 
 The original reservation is registered as `provider.stock`. After the original
 reservation command confirms, the same native activity records the physical
@@ -113,6 +114,38 @@ real warehouse remain outside this booking-only source example.
 
 ```shell
 vendor/bin/phpunit tests/Feature/V2/V2PartialStockSelectionTest.php
+```
+
+### Stock lost before payment or before handover
+
+`reserve-first-common` with unit money can opt into `wait-complete` or
+`cancel-all` the same way. Its stock plan runs right after the confirmed
+reservation and before capture. A plan that cancels there records no refund
+units, starts no Payment child and releases only the suitable held units.
+With two of three units held, `wait-complete` waits before capture: a goods
+receipt plus `reconcile-stock` then captures and books all three units, and the
+original deadline cancels with nothing captured. `cancel-all` cancels before
+capture. `fulfill-partial` is refused at the trusted grant: fulfilling part of an unpaid
+Order would need a capture smaller than the original quote, and no policy
+defines one.
+
+| Where the loss is found (STK-03) | Outcome |
+| --- | --- |
+| Damaged or missing unit at allocation, before capture (`reserve-first-common`) | Recorded cancel plan under both policies. Effects `reserve`, `release`; no capture, repayment or booking. |
+| Damaged or missing unit at allocation, after capture (`payment-first`) | Recorded cancel plan, even under `fulfill-partial`; 1499 repaid, then release (`V2PartialStockSelectionTest`). |
+| Unit lost while `wait-complete` waits for the rest (`payment-first`) | The next allocation observation records a cancel plan, even though a goods receipt has completed the quantity. 1499 repaid, then release. |
+| Unit lost after booking, before handover (`payment-first`) | The recorded plan stays final; no policy re-plans a booked Order to fewer units. The warehouse observation alone changes nothing, so the host requests business cancellation. Compensation cancels the booking, repays every unit not already repaid (1000 after an earlier 499, or 1499) and then releases. |
+
+In every case the warehouse closes the original reservation with one receipt.
+Only suitable held units return to saleable stock; damaged and missing units keep
+their own counters. The Order ends `cancelled` and never completes with a booked
+outcome. Replay makes no provider calls. A real worker killed after the
+reservation release commits, before DW records it, is recovered by a fresh
+process on both the before-payment and after-booking routes without releasing
+stock again.
+
+```shell
+vendor/bin/phpunit tests/Feature/V2/V2StockLossMachineTest.php
 ```
 
 ## Authorization and physical fulfillment
@@ -494,12 +527,15 @@ cancellation would either leave compensation unknown or pay a second remedy.
 The refusal keeps every payout single. A customer who no longer wants a
 delivered replacement needs a separate return policy.
 
-`V2TransitIncidentMachineTest`, `V2TransitIncidentCancellationTest` and
-`V2TransitIncidentFallbackTest` cover (split so each fits one CI shard):
+`V2TransitIncidentMachineTest`, `V2TransitIncidentCancellationTest`,
+`V2TransitIncidentDamageReplacementTest` and `V2TransitIncidentFallbackTest`
+cover (split so each fits one CI shard):
 - both loss policies, unavailable replacement, and damage with recovery;
+- damage with a delivered replacement, a separate rejected claim and an
+  inspected recovery restocking only saleable units;
 - a tracking delay and a refused claim;
-- cancellation refused during a pending replacement, during a processing
-  refund and after settlement;
+- cancellation refused during a pending loss or damage replacement, during a
+  processing refund, during a pending damage recovery and after settlement;
 - a refused replacement booking and a failed replacement delivery;
 - the unresolved-replacement and refused-refund owed outcomes;
 - a refund still processing when the bounded wait ends (`refund-unresolved`),
@@ -509,8 +545,9 @@ delivered replacement needs a separate return policy.
 
 `V2TransitIncidentProcessLossTest` kills real workers after each of these
 commits: the refund, claim, recovery, restock, replacement reservation and
-replacement booking, and the release and fallback refund after a refused
-booking. A fresh process recovers each effect exactly once.
+replacement booking, the damage replacement booking, recovery and restock, and
+the release and fallback refund after a refused booking. A fresh process
+recovers each effect exactly once.
 
 These are synthetic recorded-task fixtures, not installed-package,
 real-carrier or real-warehouse qualification. Open policy:
@@ -523,6 +560,7 @@ real-carrier or real-warehouse qualification. Open policy:
 ```shell
 vendor/bin/phpunit tests/Feature/V2/V2TransitIncidentMachineTest.php
 vendor/bin/phpunit tests/Feature/V2/V2TransitIncidentCancellationTest.php
+vendor/bin/phpunit tests/Feature/V2/V2TransitIncidentDamageReplacementTest.php
 vendor/bin/phpunit tests/Feature/V2/V2TransitIncidentFallbackTest.php
 ```
 
