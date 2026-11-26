@@ -188,6 +188,9 @@ final class SignalWaits
                     self::closeOpenWaits($waits, $openWaitIdsByName, $event);
                 }
                 break;
+            default:
+                // Other events don't change a signal wait.
+                break;
         }
     }
 
