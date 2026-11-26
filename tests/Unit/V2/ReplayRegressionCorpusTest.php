@@ -198,7 +198,10 @@ final class ReplayRegressionCorpusTest extends TestCase
             $workflow['arguments'],
             $workflow['payload_codec'],
             $fixture['history'] ?? [],
-            replayClock: $fixture['worker_task']['replay_clock'] ?? null,
+            // Only a fixture that carries the task's replay_clock passes it.
+            ...(isset($fixture['worker_task']['replay_clock'])
+                ? ['replayClock' => $fixture['worker_task']['replay_clock']]
+                : []),
         );
 
         if ($fixture['id'] === 'replay-unrelated-payload-read-budget') {
