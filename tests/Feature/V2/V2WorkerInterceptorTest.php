@@ -16,6 +16,7 @@ use Workflow\QueryMethod;
 use Workflow\V2\Activity;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Enums\WorkflowReplayState;
 use Workflow\V2\Exceptions\InvalidQueryArgumentsException;
 use Workflow\V2\Interceptors\ActivityInterceptorContext;
 use Workflow\V2\Interceptors\PassthroughWorkerInterceptor;
@@ -70,6 +71,8 @@ final class V2WorkerInterceptorTest extends TestCase
         $second = InterceptorAudit::$workflowContexts[2][1];
         self::assertFalse($first->replaying);
         self::assertTrue($second->replaying);
+        self::assertSame(WorkflowReplayState::Executing, $first->replayState());
+        self::assertSame(WorkflowReplayState::Replaying, $second->replayState());
         self::assertSame($stub->runId(), $first->runId);
         self::assertSame($stub->id(), $first->workflowId);
         self::assertSame('intercepted-workflow', $first->workflowType);
@@ -98,6 +101,7 @@ final class V2WorkerInterceptorTest extends TestCase
         self::assertSame('greeting', $query->queryName);
         self::assertSame($stub->runId(), $query->runId);
         self::assertNull($query->workerId);
+        self::assertSame(WorkflowReplayState::Replaying, $query->replayState());
     }
 
     public function testActivityInterceptorsWrapLocalActivitiesAndMayTransformArguments(): void
