@@ -5,11 +5,19 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use PHPUnit\Framework\Attributes\DataProvider;
+use Tests\Fixtures\V2\TestTimeoutCleanupCompensationWorkflow;
+use Tests\Fixtures\V2\TestTimeoutCleanupSameTurnWorkflow;
+use Tests\Fixtures\V2\TestTimeoutCleanupSelectionWorkflow;
+use Tests\Fixtures\V2\TestTimeoutCleanupSignalWorkflow;
 use Tests\Fixtures\V2\TestTimeoutCleanupWorkflow;
+use Tests\Support\WorkerLossControl;
 use Tests\TestCase;
+use Workflow\Serializers\Serializer;
+use Workflow\V2\Contracts\ActivityTaskBridge;
 use Workflow\V2\Contracts\OperatorObservabilityRepository;
 use Workflow\V2\Contracts\WorkflowControlPlane;
 use Workflow\V2\Contracts\WorkflowTaskBridge;
@@ -17,6 +25,9 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\WorkflowTimeoutCleanupRequested;
+use Workflow\V2\Jobs\RunActivityTask;
+use Workflow\V2\Jobs\RunTimerTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
@@ -33,6 +44,8 @@ use Workflow\V2\WorkflowStub;
  */
 final class V2TimeoutCleanupTest extends TestCase
 {
+    use WorkerLossControl;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -532,6 +545,421 @@ final class V2TimeoutCleanupTest extends TestCase
             });
             WorkflowTaskLeaseLoss::summaryHasColumn('timeout_cleanup', true);
         }
+    }
+
+    public function testExpiryWhileWaitingOnASignalInterruptsTheWaitAndALateSignalNeverApplies(): void
+    {
+        $this->travelTo(now()->startOfSecond());
+        $workflow = WorkflowStub::make(TestTimeoutCleanupSignalWorkflow::class, 'timeout-cleanup-signal-wait');
+        $workflow->start(new StartOptions(executionTimeoutSeconds: 70, timeoutCleanupSeconds: 10));
+        $runId = $workflow->runId();
+        $this->runReadyWorkflowTask($runId);
+        $opened = $this->soleEvent($runId, HistoryEventType::SignalWaitOpened);
+        $this->assertSame(RunStatus::Waiting, WorkflowRun::query()->findOrFail($runId)->status);
+
+        $this->travel(61)
+            ->seconds();
+        TaskWatchdog::runPass(runIds: [$runId]);
+        $this->runReadyWorkflowTask($runId);
+
+        // The interruption reached workflow code at the signal wait itself.
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $started = $this->assertTimeoutInterruptionDelivered($workflow, $run, 'signal', $opened->payload['sequence']);
+
+        // A signal that arrives during cleanup is recorded but never satisfies
+        // the interrupted wait, even when its own workflow task runs first.
+        $late = $workflow->refresh()
+            ->attemptSignal('approve', 'late');
+        $this->assertTrue($late->accepted());
+        $this->runReadyWorkflowTask($runId);
+        $this->assertSame(0, $this->eventCount($runId, HistoryEventType::SignalApplied));
+        $this->assertArrayNotHasKey('business', $workflow->refresh()->memo());
+        $this->assertFalse(WorkflowRun::query()->findOrFail($runId)->status->isTerminal());
+
+        $this->runReadyActivityTask($runId);
+        $this->runReadyWorkflowTask($runId);
+
+        $this->assertTimedOutAfterCleanup($workflow, $runId, $started, 'completed');
+        $rejected = $this->soleEvent($runId, HistoryEventType::SignalRejected);
+        $this->assertSame($late->commandId(), $rejected->payload['workflow_command_id']);
+        $this->assertSame('run_closed_before_signal_applied', $rejected->payload['rejection_reason']);
+        $this->assertSame(0, $this->eventCount($runId, HistoryEventType::SignalApplied));
+        $this->assertArrayNotHasKey('business', $workflow->refresh()->memo());
+        $this->assertSame('Hello, cleanup!', $workflow->memo()['cleanup']);
+
+        // After the run closes, a signal is refused outright.
+        $closed = $workflow->refresh()
+            ->attemptSignal('approve', 'after-close');
+        $this->assertTrue($closed->rejected());
+        $this->assertSame(0, $this->eventCount($runId, HistoryEventType::SignalApplied));
+    }
+
+    public function testExpiryWhileWaitingOnASelectionCancelsEveryBranchAndNoBranchCommits(): void
+    {
+        $this->travelTo(now()->startOfSecond());
+        $workflow = WorkflowStub::make(TestTimeoutCleanupSelectionWorkflow::class, 'timeout-cleanup-selection-wait');
+        $workflow->start(new StartOptions(executionTimeoutSeconds: 70, timeoutCleanupSeconds: 10));
+        $runId = $workflow->runId();
+        $this->runReadyWorkflowTask($runId);
+        $opened = $this->soleEvent($runId, HistoryEventType::SignalWaitOpened);
+        $this->assertSame('select', $opened->payload['parallel_group_mode']);
+        $scheduled = $this->soleEvent($runId, HistoryEventType::ActivityScheduled);
+
+        // The selection's activity branch is already running on a worker.
+        $activities = $this->app->make(ActivityTaskBridge::class);
+        $workTask = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Activity->value)
+            ->sole();
+        $claim = $activities->claimStatus($workTask->id, 'business-worker');
+        $this->assertTrue($claim['claimed']);
+
+        $this->travel(61)
+            ->seconds();
+        TaskWatchdog::runPass(runIds: [$runId]);
+        $this->runReadyWorkflowTask($runId);
+
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $started = $this->assertTimeoutInterruptionDelivered(
+            $workflow,
+            $run,
+            'parallel',
+            $opened->payload['parallel_group_base_sequence'],
+        );
+        $this->assertSame(0, $this->eventCount($runId, HistoryEventType::SelectionResolved));
+
+        // The running branch was cancelled under the timeout request, and its
+        // worker can neither keep going nor record a late result.
+        $cancelled = $this->soleEvent($runId, HistoryEventType::ActivityCancelled);
+        $this->assertSame($scheduled->payload['activity_execution_id'], $cancelled->payload['activity_execution_id']);
+        $this->assertSame($started->payload['workflow_command_id'], $cancelled->payload['workflow_command_id']);
+        $heartbeat = $activities->heartbeat($claim['activity_attempt_id']);
+        $this->assertFalse($heartbeat['can_continue']);
+        $this->assertTrue($heartbeat['cancel_requested']);
+        $outcome = $activities->complete($claim['activity_attempt_id'], Serializer::serialize('late-work'));
+        $this->assertFalse($outcome['recorded']);
+
+        // The signal branch can't win the selection after cleanup started.
+        $late = $workflow->refresh()
+            ->attemptSignal('approve', 'late');
+        $this->assertTrue($late->accepted());
+        $this->runReadyWorkflowTask($runId);
+        $this->assertSame(0, $this->eventCount($runId, HistoryEventType::SignalApplied));
+        $this->assertSame(0, $this->eventCount($runId, HistoryEventType::SelectionResolved));
+
+        $this->runReadyActivityTask($runId);
+        $this->runReadyWorkflowTask($runId);
+
+        $this->assertTimedOutAfterCleanup($workflow, $runId, $started, 'completed');
+        $this->assertSame(0, $this->eventCount($runId, HistoryEventType::SelectionResolved));
+        $this->assertSame(0, $this->eventCount($runId, HistoryEventType::SignalApplied));
+        $this->assertSame(
+            'run_closed_before_signal_applied',
+            $this->soleEvent($runId, HistoryEventType::SignalRejected)->payload['rejection_reason'],
+        );
+        $this->assertSame(0, WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::ActivityCompleted->value)
+            ->where('payload->activity_execution_id', $scheduled->payload['activity_execution_id'])
+            ->count());
+        $this->assertArrayNotHasKey('business', $workflow->refresh()->memo());
+        $this->assertSame('Hello, cleanup!', $workflow->memo()['cleanup']);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function resultsAtTheWorkDeadline(): iterable
+    {
+        yield 'timer fires at the work deadline' => ['timer'];
+        yield 'activity completes after the work deadline' => ['activity'];
+    }
+
+    /**
+     * Contract: a result that is in history before cleanup starts wins the
+     * cooperative delivery, as for any cooperative cancellation. The workflow
+     * returns in the same task in which the engine notices the work deadline,
+     * so cleanup is entered once and the run still ends timed out with
+     * outcome completed. The business result is discarded, and the cleanup
+     * branch never runs, because no interruption was delivered.
+     */
+    #[DataProvider('resultsAtTheWorkDeadline')]
+    public function testCompletingInTheTaskThatNoticesTheWorkDeadlineEndsTimedOut(string $wait): void
+    {
+        $this->travelTo(now()->startOfSecond());
+        $workflow = WorkflowStub::make(TestTimeoutCleanupSameTurnWorkflow::class, 'timeout-cleanup-same-turn-' . $wait);
+        $workflow->start($wait, 60, new StartOptions(executionTimeoutSeconds: 70, timeoutCleanupSeconds: 10));
+        $runId = $workflow->runId();
+        $this->runReadyWorkflowTask($runId);
+        $workDeadline = WorkflowRun::query()->findOrFail($runId)->timeout_cleanup_work_deadline_at;
+
+        if ($wait === 'timer') {
+            $this->travel(60)
+                ->seconds();
+            $this->assertTrue(now()->equalTo($workDeadline));
+            $this->runReadyTask($runId, TaskType::Timer, static fn (string $id): RunTimerTask => new RunTimerTask($id));
+        } else {
+            $this->travel(61)
+                ->seconds();
+            $this->runReadyActivityTask($runId);
+        }
+
+        // The result is in history and nothing has noticed the deadline yet.
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $this->assertFalse($run->status->isTerminal());
+        $this->assertNull($run->cancellation_request_command_id);
+        $this->assertSame(0, $this->eventCount($runId, HistoryEventType::WorkflowTimeoutCleanupStarted));
+
+        $this->runReadyWorkflowTask($runId);
+
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $started = $this->soleEvent($runId, HistoryEventType::WorkflowTimeoutCleanupStarted);
+        $this->assertSame(now()->toIso8601String(), $started->payload['detected_at']);
+        $this->assertSame($run->execution_deadline_at->toIso8601String(), $started->payload['cleanup_deadline_at']);
+        $this->assertSame(0, $this->eventCount($runId, HistoryEventType::CooperativeCancellationDelivered));
+        $this->assertTimedOutAfterCleanup($workflow, $runId, $started, 'completed');
+        $this->assertSame([], $workflow->refresh()->memo());
+    }
+
+    public function testAnActivityResultRecordedAfterCleanupStartsIsDiscardedForTheInterruption(): void
+    {
+        $this->travelTo(now()->startOfSecond());
+        $workflow = WorkflowStub::make(TestTimeoutCleanupSameTurnWorkflow::class, 'timeout-cleanup-late-result');
+        $workflow->start('activity', 60, new StartOptions(executionTimeoutSeconds: 70, timeoutCleanupSeconds: 10));
+        $runId = $workflow->runId();
+        $this->runReadyWorkflowTask($runId);
+
+        $this->travel(61)
+            ->seconds();
+        TaskWatchdog::runPass(runIds: [$runId]);
+        $started = $this->soleEvent($runId, HistoryEventType::WorkflowTimeoutCleanupStarted);
+        $this->travel(1)
+            ->seconds();
+        $this->runReadyActivityTask($runId);
+        $completed = $this->soleEvent($runId, HistoryEventType::ActivityCompleted);
+        $this->assertGreaterThan($started->sequence, $completed->sequence);
+
+        $this->runReadyWorkflowTaskIfAny($runId);
+        $this->runReadyWorkflowTaskIfAny($runId);
+
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $this->assertTimeoutInterruptionDelivered($workflow, $run, 'activity', $completed->payload['sequence']);
+        $this->assertTimedOutAfterCleanup($workflow, $runId, $started, 'completed');
+    }
+
+    /**
+     * @return iterable<string, array{bool, string}>
+     */
+    public static function replacementWorkers(): iterable
+    {
+        yield 'replacement resumes inside the cleanup window' => [false, 'completed'];
+        yield 'replacement first runs after the hard deadline' => [true, 'expired'];
+    }
+
+    /**
+     * Contract vector 6 under real worker loss: the process holding the
+     * cleanup turn dies by SIGKILL before that turn commits, and a fresh
+     * process finishes the run from persisted history.
+     */
+    #[DataProvider('replacementWorkers')]
+    public function testAWorkerKilledMidCleanupIsReplacedFromHistoryWithoutRestartingCleanup(
+        bool $afterHardDeadline,
+        string $outcome,
+    ): void {
+        $this->requireWorkerLossSupport();
+        $this->travelTo(now()->startOfSecond());
+        $workflow = WorkflowStub::make(
+            TestTimeoutCleanupCompensationWorkflow::class,
+            'timeout-cleanup-worker-loss-' . $outcome,
+        );
+        // The cleanup window outlasts one abandoned workflow-task lease.
+        $workflow->start(new StartOptions(executionTimeoutSeconds: 3600, timeoutCleanupSeconds: 1200));
+        $runId = $workflow->runId();
+        $this->runReadyWorkflowTask($runId);
+        $this->travel(2401)
+            ->seconds();
+        TaskWatchdog::runPass(runIds: [$runId]);
+        $started = $this->soleEvent($runId, HistoryEventType::WorkflowTimeoutCleanupStarted);
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $cleanupDeadline = $run->cancellation_deadline_at;
+        $this->assertTrue($cleanupDeadline->equalTo($run->execution_deadline_at));
+
+        [$cut, $resumed] = $this->loseWorkerThenRecover(
+            'tests/Support/TimeoutCleanupProcessLossProcessTest.php',
+            'DWF_TIMEOUT_CLEANUP_PROCESS_INPUT',
+            [
+                'run_id' => $runId,
+                'clock' => now()
+                    ->toISOString(),
+            ],
+            function (array $cut, array $data) use ($runId, $run, $afterHardDeadline): array {
+                // The dead worker still holds the cleanup turn, and nothing it
+                // did inside that turn committed.
+                $task = WorkflowTask::query()->findOrFail($cut['task_id']);
+                $this->assertSame(TaskStatus::Leased, $task->status);
+                $this->assertSame($cut['lease_owner'], $task->lease_owner);
+                $this->assertFalse(WorkflowRun::query()->findOrFail($runId)->status->isTerminal());
+                $this->assertSame(1, $this->eventCount($runId, HistoryEventType::WorkflowTimeoutCleanupStarted));
+                $this->assertSame(1, $this->eventCount($runId, HistoryEventType::ActivityCompleted));
+                $this->assertSame(0, $this->eventCount($runId, HistoryEventType::MemoUpserted));
+                $resumeAt = $afterHardDeadline
+                    ? $run->execution_deadline_at->copy()
+                        ->addSecond()
+                    : Carbon::parse($cut['lease_expires_at'])->addSecond();
+                $this->assertSame(! $afterHardDeadline, $resumeAt->lt($run->execution_deadline_at));
+
+                return [
+                    ...$data,
+                    'clock' => $resumeAt->toISOString(),
+                ];
+            },
+        );
+        Carbon::setTestNow($resumed['clock']);
+
+        // One cleanup transition with its original deadline; the completed
+        // compensation was replayed, not repeated.
+        $this->assertSame(
+            $started->id,
+            $this->soleEvent($runId, HistoryEventType::WorkflowTimeoutCleanupStarted)->id
+        );
+        $run->refresh();
+        $this->assertTrue($run->cancellation_deadline_at->equalTo($cleanupDeadline));
+        $this->assertSame(1, $this->eventCount($runId, HistoryEventType::CooperativeCancellationDelivered));
+        $this->assertSame(1, $this->eventCount($runId, HistoryEventType::ActivityScheduled));
+        $this->assertSame(1, $this->eventCount($runId, HistoryEventType::ActivityCompleted));
+        $this->assertTimedOutAfterCleanup($workflow, $runId, $started, $outcome);
+        $this->assertSame($cleanupDeadline->toIso8601String(), $started->payload['cleanup_deadline_at']);
+        if ($outcome === 'completed') {
+            $this->assertSame([
+                'cause' => 'timeout',
+                'compensation' => 'Hello, compensation!',
+            ], $this->sorted($workflow->refresh()->memo()));
+            $this->assertSame(1, $this->eventCount($runId, HistoryEventType::MemoUpserted));
+        } else {
+            $this->assertSame([], $workflow->refresh()->memo());
+            $this->assertSame(0, $this->eventCount($runId, HistoryEventType::MemoUpserted));
+        }
+    }
+
+    /**
+     * Cleanup was entered once for this run, and workflow code received the
+     * typed timeout interruption at the given wait with the original
+     * identities (#863).
+     */
+    private function assertTimeoutInterruptionDelivered(
+        WorkflowStub $workflow,
+        WorkflowRun $run,
+        string $callKind,
+        int $sequence,
+    ): WorkflowHistoryEvent {
+        $started = $this->soleEvent($run->id, HistoryEventType::WorkflowTimeoutCleanupStarted);
+        $requestId = $started->payload['workflow_command_id'];
+        $this->assertSame($requestId, $run->cancellation_request_command_id);
+        $this->assertSame('execution', $started->payload['timeout_kind']);
+        $this->assertSame($run->execution_deadline_at->toIso8601String(), $started->payload['cleanup_deadline_at']);
+        $this->assertTrue($run->cancellation_deadline_at->equalTo($run->execution_deadline_at));
+        $this->assertSame(
+            $requestId,
+            $this->soleEvent($run->id, HistoryEventType::CooperativeCancellationRequested)->workflow_command_id,
+        );
+
+        $delivered = $this->soleEvent($run->id, HistoryEventType::CooperativeCancellationDelivered);
+        $this->assertSame($requestId, $delivered->payload['workflow_command_id']);
+        $this->assertSame($callKind, $delivered->payload['call_kind']);
+        $this->assertSame($sequence, $delivered->payload['sequence']);
+        $this->assertSame('timeout', $delivered->payload['cancellation']['cause']);
+
+        $this->assertSame([
+            'cause' => 'timeout',
+            'class' => WorkflowTimeoutCleanupRequested::class,
+            'cleanup_deadline_at' => $started->payload['cleanup_deadline_at'],
+            'parent_request_id' => null,
+            'request_id' => $requestId,
+            'root_request_id' => $requestId,
+            'root_workflow_instance_id' => $run->workflow_instance_id,
+            'root_workflow_run_id' => $run->id,
+        ], $this->sorted($workflow->refresh()->memo()['interruption'] ?? null));
+
+        // Still the original instance and run: no new run carries cleanup.
+        $this->assertSame($run->id, $workflow->runId());
+        $this->assertSame(1, WorkflowRun::query()->where('workflow_instance_id', $run->workflow_instance_id)->count());
+
+        return $started;
+    }
+
+    private function assertTimedOutAfterCleanup(
+        WorkflowStub $workflow,
+        string $runId,
+        WorkflowHistoryEvent $started,
+        string $outcome,
+    ): void {
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $this->assertSame(RunStatus::Failed, $run->status);
+        $this->assertSame('timed_out', $run->closed_reason);
+        $this->assertNull($run->output);
+        $this->assertNull($workflow->refresh()->output());
+        $this->assertSame(0, $this->eventCount($runId, HistoryEventType::WorkflowCompleted));
+        $this->assertSame(1, $this->eventCount($runId, HistoryEventType::WorkflowTimeoutCleanupStarted));
+        $terminal = WorkflowHistoryEvent::query()->where('workflow_run_id', $runId)->orderByDesc('sequence')
+            ->where('event_type', HistoryEventType::WorkflowTimedOut->value)
+            ->sole();
+        $this->assertSame('execution_timeout', $terminal->payload['timeout_kind']);
+        $this->assertSame($outcome, $terminal->payload['timeout_cleanup']['outcome']);
+        $this->assertSame($started->payload['detected_at'], $terminal->payload['timeout_cleanup']['started_at']);
+        $this->assertSame(
+            $started->payload['cleanup_deadline_at'],
+            $terminal->payload['timeout_cleanup']['cleanup_deadline_at'],
+        );
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function sorted(mixed $values): ?array
+    {
+        if (! is_array($values)) {
+            return null;
+        }
+        ksort($values);
+
+        return $values;
+    }
+
+    private function soleEvent(string $runId, HistoryEventType $type): WorkflowHistoryEvent
+    {
+        return WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', $type->value)
+            ->sole();
+    }
+
+    private function eventCount(string $runId, HistoryEventType $type): int
+    {
+        return WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', $type->value)
+            ->count();
+    }
+
+    private function runReadyActivityTask(string $runId): void
+    {
+        $this->runReadyTask(
+            $runId,
+            TaskType::Activity,
+            static fn (string $id): RunActivityTask => new RunActivityTask($id)
+        );
+    }
+
+    /**
+     * @param \Closure(string): object $job
+     */
+    private function runReadyTask(string $runId, TaskType $type, \Closure $job): void
+    {
+        $task = WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', $type->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->sole();
+        $this->app->call([$job($task->id), 'handle']);
     }
 
     /**

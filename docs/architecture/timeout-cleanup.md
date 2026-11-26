@@ -131,6 +131,22 @@ outcome:
 An unavailable worker can't guarantee cleanup. If no worker runs the cleanup
 turn before the cleanup deadline, the outcome is `expired`.
 
+`completed` means workflow code returned or rethrew before the cleanup
+deadline. It doesn't guarantee that cleanup code ran. The interruption is
+delivered at the next durable wait (activity, timer, child, signal, condition or
+selection) whose result was not already in history when cleanup started; side
+effects and code inside `cancellationShield()` never receive it. If the wait
+the workflow is blocked on resolved before the engine noticed the work
+deadline, for example a timer that fired or an activity that completed, that
+call returns its result normally and workflow code can return without waiting
+again. Then the interruption is never delivered and no cleanup branch runs, but
+the outcome is still `completed`. History shows this case as a
+`WorkflowTimeoutCleanupStarted` with no `CooperativeCancellationDelivered` after
+it. Make compensation that must always run idempotent, and run it on every path
+that can return after the work deadline, for example by comparing workflow time
+with the deadline the run was admitted with, not only in the interruption
+handler.
+
 In service mode, a worker reports an uncaught or rethrown interruption with
 `fail_workflow.failure.interruption: "timeout_cleanup"`. It marks only the
 delivered interruption for the run's root request: the exception or error the
@@ -250,6 +266,12 @@ tail and outcome. `T` is the start time.
   (no parent, no scope), and an escaped scoped child of the timeout request
   records `failed`. Every worker on an opted-in queue should advertise the
   capability; admission stays a single-worker check.
+
+- **General (2026-11-26, from the embedded proofs in [workflow pull request 1312](https://github.com/durable-workflow/workflow/pull/1312)):**
+  `completed` doesn't guarantee that cleanup code ran. A result already in history
+  when the work deadline is noticed can let workflow code return without
+  receiving the interruption. This matches ordinary cooperative cancellation
+  and is stated above rather than changed.
 
 All open questions are decided. The embedded implementation follows this
 contract; native and the SDKs follow through the `timeout_cleanup` capability.
