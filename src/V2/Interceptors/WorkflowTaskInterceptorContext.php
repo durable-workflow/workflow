@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Workflow\V2\Interceptors;
 
+use Workflow\V2\Enums\WorkflowReplayState;
 use Workflow\V2\Models\WorkflowHistoryEvent;
 use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowTask;
@@ -48,6 +49,17 @@ final class WorkflowTaskInterceptorContext
         public readonly int $historyLength,
         public readonly bool $replaying,
     ) {
+    }
+
+    /**
+     * The task-level replay state, in the terms of {@see WorkflowReplayState}:
+     * `Replaying` when earlier tasks recorded commands for this run, `Executing`
+     * when none did. It is fixed for the task, unlike `Workflow::replayState()`,
+     * which moves as workflow code runs. It is not a deduplication key.
+     */
+    public function replayState(): WorkflowReplayState
+    {
+        return $this->replaying ? WorkflowReplayState::Replaying : WorkflowReplayState::Executing;
     }
 
     /**

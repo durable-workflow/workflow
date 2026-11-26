@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Worker interceptor contexts expose `replayState()` as a
+  `Workflow\V2\Enums\WorkflowReplayState`, the enum the replay-aware logger
+  added: a workflow task reports `Replaying` when earlier tasks recorded
+  commands for the run and `Executing` otherwise, and a query or update
+  validation always reports `Replaying`. ([Durable Workflow #226](https://github.com/durable-workflow/.github/issues/226))
 - Worker interceptors also wrap update validation. The new
   `executeUpdateValidation($context, $next)` hook (passthrough in
   `PassthroughWorkerInterceptor`) sees the update name, run and arguments,
