@@ -133,14 +133,19 @@ turn before the cleanup deadline, the outcome is `expired`.
 
 `completed` means workflow code returned or rethrew before the cleanup
 deadline. It doesn't guarantee that cleanup code ran. The interruption is
-delivered at the next blocking call. If a timer or activity result is already
-in history when the engine notices the work deadline, workflow code may take
-that result and return without blocking again. Then the interruption is never
-delivered and no cleanup branch runs, but the outcome is still `completed`.
-History shows this case as a `WorkflowTimeoutCleanupStarted` with no
-`CooperativeCancellationDelivered` after it. Compensation that must always run
-belongs on every path that can return after the work deadline, not only in the
-interruption handler.
+delivered at the next durable wait (activity, timer, child, signal, condition or
+selection) whose result was not already in history when cleanup started; side
+effects and code inside `cancellationShield()` never receive it. If the wait
+the workflow is blocked on resolved before the engine noticed the work
+deadline, for example a timer that fired or an activity that completed, that
+call returns its result normally and workflow code can return without waiting
+again. Then the interruption is never delivered and no cleanup branch runs, but
+the outcome is still `completed`. History shows this case as a
+`WorkflowTimeoutCleanupStarted` with no `CooperativeCancellationDelivered` after
+it. Make compensation that must always run idempotent, and run it on every path
+that can return after the work deadline, for example by comparing workflow time
+with the deadline the run was admitted with, not only in the interruption
+handler.
 
 In service mode, a worker reports an uncaught or rethrown interruption with
 `fail_workflow.failure.interruption: "timeout_cleanup"`. It marks only the
