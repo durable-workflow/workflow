@@ -14,6 +14,13 @@ The new class used a non-coverage MySQL duration in the covered profile. Give it
 
 The current PostgreSQL class measurement is 362.791408 seconds in [build 44022117686](https://github.com/durable-workflow/workflow/actions/runs/44022117686). The conservative 427.403490-second PostgreSQL hint remains unchanged in this correction, preserving its passing allocation.
 
-## Configured child-completion race class
+## State machine gap classes
 
-`V2ConfiguredChildCompletionRaceTest` has no CI measurement yet. Its weights are **provisional estimates**: 212 seconds on PostgreSQL and 422 seconds on MySQL. On a local PostgreSQL run, the class took 135.5 seconds and `V2ConfiguredStateMachineExampleTest` took 157.7 seconds. Each estimate scales the 135.5 seconds by the example class's CI-to-local ratio on that database (246.483415 and 491.275492 seconds). Replace both entries with measured durations from the next complete reports.
+These weights are measured per-file JUnit durations from main [build 45724736573](https://github.com/durable-workflow/workflow/actions/runs/45724736573) at `2ee257881cfa550329039c9fef74a7e8230eff56`, which replace the provisional estimates added with #1300, #1301 and #1302:
+
+| Class | PostgreSQL (s) | MySQL (s) |
+| --- | --- | --- |
+| `V2ConfiguredChildCompletionRaceTest` | 122.648429 | 225.266820 |
+| `V2StockLossMachineTest` | 223.557722 | 579.038868 |
+| `V2TransitIncidentDamageReplacementTest` | 58.678768 | 65.491891 |
+| `V2TransitIncidentProcessLossTest` | 230.585781 | 495.613196 |

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Worker interceptors also wrap update validation. The new
+  `executeUpdateValidation($context, $next)` hook (passthrough in
+  `PassthroughWorkerInterceptor`) sees the update name, run and arguments,
+  and the validator's `UpdateValidationOutcome`. Hooks observe the decision
+  but cannot change it. A hook that throws, skips `$next` or calls it twice
+  refuses the update with `UpdateValidationFailedException`, and nothing is
+  recorded. The hook runs inside the admission transaction while the run is
+  locked. Classes that implement `WorkerInterceptor` directly must add the
+  method. (durable-workflow/.github#226, #234)
 - External PHP workers read the same `Workflow::now()` right after a side
   effect, memo upsert or search-attribute upsert on first execution and on
   replay. The worker-protocol runner (`WorkflowFiberRunner`) runs those steps
