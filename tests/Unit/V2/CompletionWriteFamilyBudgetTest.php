@@ -32,11 +32,11 @@ use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\Models\WorkflowTimer;
 use Workflow\V2\Models\WorkflowUpdate;
 use Workflow\V2\Support\CompletionRowEstimate;
+use Workflow\V2\Support\DeadlineCloseBudget;
 use Workflow\V2\Support\DeadlineCloseSettlement;
 use Workflow\V2\Support\HistoryTransactionMeter;
 use Workflow\V2\Support\MemoPayload;
 use Workflow\V2\Support\NamespaceScope;
-use Workflow\V2\Support\WorkflowExecutor;
 use Workflow\V2\TaskWatchdog;
 
 /**
@@ -438,16 +438,11 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
             ->complete($single['task']->id, [$this->startTimer()]);
         $this->assertSame('run_timed_out', $singleResult['reason']);
 
-        // A batch of two open items per close transaction.
+        // Two open items per close transaction: a batch pass writes six rows
+        // of its own, a cancelled activity seven more and a timer six.
         config([
-            'workflows.v2.structural_limits.history_transaction_size' => 1,
-            'workflows.v2.structural_limits.completion_rows' => 10,
+            'workflows.v2.structural_limits.completion_rows' => 20,
         ]);
-        $this->assertSame(1, WorkflowExecutor::deadlineCloseBatchSize());
-        config([
-            'workflows.v2.structural_limits.history_transaction_size' => 0,
-        ]);
-        $this->assertSame(2, WorkflowExecutor::deadlineCloseBatchSize());
         $batched = $this->createExpiredRunWithOpenWork(activities: 3, timers: 4);
 
         $first = $this->bridge()
@@ -474,7 +469,7 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
         }
 
         // Seven open items, two per transaction: three more passes, the last
-        // of which closes the run.
+        // of which cancels the seventh with the close.
         $this->assertSame(3, $passes);
         $this->assertSame(RunStatus::Failed, $batched['run']->fresh()->status);
         $this->assertSame('timed_out', $batched['run']->fresh()->closed_reason);
@@ -491,14 +486,18 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
 
     /**
      * The terminal cascade of a bounded close is bounded too: accepted updates
-     * and then children are settled at most one batch per transaction, and
-     * the watchdog continues from the closing task's marker. The run's
+     * and then children are settled as far as one transaction's budget allows,
+     * and the watchdog continues from the closing task's marker. The run's
      * history equals a single close's.
      *
-     * 200 children and 300 updates over batches of 100 take five bounded
-     * transactions. (A thousand children work the same way, but each child's
-     * termination is a full command on that child, which makes a thousand of
-     * them, twice, take ten minutes on SQLite.)
+     * With a limit of 201 events, the close writes its WorkflowTimedOut and
+     * fails 100 updates, each with UpdateCompleted and MessageCursorAdvanced
+     * (#1290: the batch used to count one event per update and wrote about
+     * twice the limit). Each pass then fails 100 updates or terminates 67
+     * children, each of which writes three events. (A thousand children work
+     * the same way, but each child's termination is a full command on that
+     * child, which makes a thousand of them, twice, take ten minutes on
+     * SQLite.)
      */
     public function testABoundedCloseSettlesUpdatesAndChildrenAcrossPassesWithTheSingleCloseHistory(): void
     {
@@ -518,20 +517,21 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
         $this->assertNull($single['task']->fresh()->payload['deadline_close_settlement'] ?? null);
 
         $batched = $this->createExpiredParent(children: 200, updates: 300);
-        // 100 items per close transaction.
         config([
-            'workflows.v2.structural_limits.completion_rows' => 500,
+            'workflows.v2.structural_limits.history_transaction_size' => 201,
         ]);
-        $this->assertSame(100, WorkflowExecutor::deadlineCloseBatchSize());
 
-        $closed = $this->bridge()
-            ->complete($batched['task']->id, [$this->startTimer()]);
+        $writes = $this->transactionWrites(function () use ($batched, &$closed): void {
+            $closed = $this->bridge()
+                ->complete($batched['task']->id, [$this->startTimer()]);
+        });
 
         $this->assertSame('run_timed_out', $closed['reason']);
         $this->assertSame(RunStatus::Failed, $batched['run']->fresh()->status);
         // The close took the first 100 updates and left the rest.
         $this->assertSame(200, $this->acceptedUpdates($batched['run']));
         $this->assertSame(200, $this->openChildren($batched['run']));
+        $this->assertSame(201, max(array_column($writes, 'events')));
         $this->assertSame('pending', $batched['task']->fresh()->payload['deadline_close_settlement'] ?? null);
         // The run already reads Failed while its closing task is held for
         // the settlement: Leased by the settlement owner, with no expiry.
@@ -546,20 +546,23 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
         $this->assertTrue(DeadlineCloseSettlement::holds($batched['task']->fresh()));
 
         $passes = 0;
+        $settled = [];
         while (($batched['task']->fresh()->payload['deadline_close_settlement'] ?? null) === 'pending' && $passes < 20) {
             $updates = $this->acceptedUpdates($batched['run']);
             $children = $this->openChildren($batched['run']);
-            TaskWatchdog::runPass(runIds: [$batched['run']->id]);
+            $writes = $this->transactionWrites(static function () use ($batched): void {
+                TaskWatchdog::runPass(runIds: [$batched['run']->id]);
+            });
             ++$passes;
-            // No pass settles more than one batch.
-            $this->assertLessThanOrEqual(
-                100,
-                $updates - $this->acceptedUpdates($batched['run']) + $children - $this->openChildren($batched['run'])
-            );
+            // No transaction writes more history than the limit.
+            $this->assertLessThanOrEqual(201, max(array_column($writes, 'events')));
+            $settled[] = [
+                $updates - $this->acceptedUpdates($batched['run']),
+                $children - $this->openChildren($batched['run']),
+            ];
         }
 
-        // 200 updates and 200 children left, 100 per pass.
-        $this->assertSame(4, $passes);
+        $this->assertSame([[100, 0], [100, 0], [0, 67], [0, 67], [0, 66]], $settled);
         $this->assertSame('settled', $batched['task']->fresh()->payload['deadline_close_settlement']);
         $this->assertSame(TaskStatus::Completed, $batched['task']->fresh()->status);
         $this->assertSame(0, $this->openChildren($batched['run']));
@@ -625,7 +628,7 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
                     ->addMinute(),
             ]);
         }
-        // Ten items per close transaction.
+        // Seven timers per batch, the rest of the cascade over later passes.
         config([
             'workflows.v2.structural_limits.completion_rows' => 50,
         ]);
@@ -660,7 +663,7 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
             $this->assertStringContainsString('held for a deadline close settlement', $refused->getMessage());
         }
 
-        for ($passes = 0; DeadlineCloseSettlement::holds($parent['task']->fresh()) && $passes < 10; ++$passes) {
+        for ($passes = 0; DeadlineCloseSettlement::holds($parent['task']->fresh()) && $passes < 20; ++$passes) {
             TaskWatchdog::runPass(runIds: [$parent['run']->id]);
         }
         $this->assertSame(TaskStatus::Completed, $parent['task']->fresh()->status);
@@ -713,8 +716,9 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
         $parent['task']->forceFill([
             'namespace' => 'default',
         ])->save();
+        // The close and each pass fail ten updates, eleven rows each.
         config([
-            'workflows.v2.structural_limits.completion_rows' => 50,
+            'workflows.v2.structural_limits.completion_rows' => 120,
         ]);
         $this->assertSame(
             'run_timed_out',
@@ -781,6 +785,268 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
         );
     }
 
+    /**
+     * @return iterable<string, array{string, array{int, int}}>
+     */
+    public static function deadlineCloseItems(): iterable
+    {
+        yield 'open activity' => ['activity', DeadlineCloseBudget::ACTIVITY];
+        yield 'pending timer' => ['timer', DeadlineCloseBudget::TIMER];
+        yield 'other open task' => ['task', DeadlineCloseBudget::TASK];
+        yield 'accepted update' => ['update', DeadlineCloseBudget::UPDATE];
+        yield 'terminated child' => ['terminate', DeadlineCloseBudget::CHILD];
+        yield 'cancelled child' => ['request_cancel', DeadlineCloseBudget::CHILD];
+        yield 'child asked to cancel' => ['request_cancellation', DeadlineCloseBudget::CANCELLATION_REQUEST];
+        yield 'child with an open task' => [
+            'child task',
+            DeadlineCloseBudget::plus(DeadlineCloseBudget::CHILD, DeadlineCloseBudget::TASK),
+        ];
+        yield 'child with an open activity' => [
+            'child activity',
+            DeadlineCloseBudget::plus(DeadlineCloseBudget::CHILD, DeadlineCloseBudget::ACTIVITY),
+        ];
+        yield 'child with an accepted update' => [
+            'child update',
+            DeadlineCloseBudget::plus(DeadlineCloseBudget::CHILD, DeadlineCloseBudget::UPDATE),
+        ];
+        yield 'child with a terminated child' => [
+            'grandchild',
+            DeadlineCloseBudget::plus(DeadlineCloseBudget::CHILD, DeadlineCloseBudget::CHILD),
+        ];
+    }
+
+    /**
+     * Workflow #1290: the bounded close charges each kind of work at least the
+     * history events and rows it writes, with its projections, both in the
+     * close and in a pass that takes it alone, so a statement added to any of
+     * them shows up here before it can push a close past its limits.
+     *
+     * @param array{int, int} $charged
+     */
+    #[DataProvider('deadlineCloseItems')]
+    public function testEachDeadlineCloseItemIsChargedWhatItWrites(string $item, array $charged): void
+    {
+        Queue::fake();
+        Carbon::setTestNow(now()->startOfSecond());
+
+        $without = $this->deadlineCloseWrites(null, alone: false);
+        $with = $this->deadlineCloseWrites($item, alone: false);
+        $alone = $this->deadlineCloseWrites($item, alone: true);
+
+        $message = json_encode([
+            'close' => $without,
+            'close with the item' => $with,
+            'pass with the item alone' => $alone,
+        ], JSON_THROW_ON_ERROR);
+        foreach ([0, 1] as $dimension) {
+            $this->assertLessThanOrEqual(DeadlineCloseBudget::CLOSE[$dimension], $without[$dimension], $message);
+            $this->assertLessThanOrEqual($charged[$dimension], $with[$dimension] - $without[$dimension], $message);
+            $this->assertLessThanOrEqual(
+                DeadlineCloseBudget::PASS[$dimension] + $charged[$dimension],
+                $alone[$dimension],
+                $message,
+            );
+        }
+        // The charge is what the item writes, not a blanket allowance.
+        $this->assertGreaterThanOrEqual($charged[1] - 1, $with[1] - $without[1], $message);
+    }
+
+    /**
+     * @return iterable<string, array{int, int}>
+     */
+    public static function deadlineCloseLimits(): iterable
+    {
+        yield 'event limit' => [12, 0];
+        yield 'row limit' => [0, 70];
+        yield 'both limits' => [12, 70];
+    }
+
+    /**
+     * No transaction of a bounded close writes more history events or rows
+     * than the limits, whatever mix of open work, accepted updates and
+     * children it settles (#1290), and the batched close writes the single
+     * close's history.
+     */
+    #[DataProvider('deadlineCloseLimits')]
+    public function testEveryTransactionOfABoundedCloseStaysWithinTheLimits(int $events, int $rows): void
+    {
+        Queue::fake();
+        Carbon::setTestNow(now()->startOfSecond());
+        config([
+            'workflows.v2.structural_limits.history_transaction_size' => 0,
+            'workflows.v2.structural_limits.completion_rows' => 0,
+        ]);
+        $single = $this->createMixedExpiredParent();
+        $this->assertSame(
+            'run_timed_out',
+            $this->bridge()
+                ->complete($single['task']->id, [$this->startTimer()])['reason']
+        );
+
+        $batched = $this->createMixedExpiredParent();
+        config([
+            'workflows.v2.structural_limits.history_transaction_size' => $events,
+            'workflows.v2.structural_limits.completion_rows' => $rows,
+        ]);
+        $transactions = $this->transactionWrites(function () use ($batched): void {
+            $this->bridge()
+                ->complete($batched['task']->id, [$this->startTimer()]);
+            for ($passes = 0; $passes < 40 && ($batched['run']->fresh()->status === RunStatus::Waiting
+                || DeadlineCloseSettlement::holds($batched['task']->fresh())); ++$passes) {
+                TaskWatchdog::runPass(runIds: [$batched['run']->id]);
+            }
+        });
+
+        $this->assertSame(TaskStatus::Completed, $batched['task']->fresh()->status);
+        // The abandoned child and the one asked to cancel stay open.
+        $this->assertSame(2, $this->openChildren($single['run']));
+        $this->assertSame(2, $this->openChildren($batched['run']));
+        $this->assertSame(0, $this->acceptedUpdates($batched['run']));
+        $this->assertSame($this->closeHistory($single['run']), $this->closeHistory($batched['run']));
+        $this->assertGreaterThan(5, count($transactions));
+        foreach ($transactions as $transaction) {
+            if ($events > 0) {
+                $this->assertLessThanOrEqual($events, $transaction['events']);
+            }
+            if ($rows > 0) {
+                $this->assertLessThanOrEqual($rows, $transaction['rows']);
+            }
+        }
+    }
+
+    /**
+     * Workflow #1290: a child's termination runs that child's whole close in
+     * the parent's transaction, so it is charged that close, not one item. A
+     * child with five open activities writes 8 events and 54 rows: two fit
+     * the 110 rows the close leaves of a 120-row limit, and two more fit the
+     * next pass. Counted as one item each, all four landed in the close.
+     */
+    public function testAChildIsChargedItsWholeTerminate(): void
+    {
+        Queue::fake();
+        Carbon::setTestNow(now()->startOfSecond());
+        config([
+            'workflows.v2.structural_limits.history_transaction_size' => 0,
+            'workflows.v2.structural_limits.completion_rows' => 0,
+        ]);
+        $parent = $this->createExpiredParent(children: 4, updates: 0);
+        $runs = [$parent['run']];
+        foreach (WorkflowLink::query()->where('parent_workflow_run_id', $parent['run']->id)->get() as $link) {
+            $runs[] = $child = WorkflowRun::query()->findOrFail($link->child_workflow_run_id);
+            $this->seedOpenWork($child, activities: 5, timers: 0);
+        }
+        $this->projectRuns($runs);
+        config([
+            'workflows.v2.structural_limits.completion_rows' => 120,
+        ]);
+
+        $close = $this->transactionWrites(function () use ($parent): void {
+            $this->assertSame(
+                'run_timed_out',
+                $this->bridge()
+                    ->complete($parent['task']->id, [$this->startTimer()])['reason']
+            );
+        });
+
+        $this->assertSame(2, $this->openChildren($parent['run']));
+        $this->assertTrue(DeadlineCloseSettlement::holds($parent['task']->fresh()));
+        $this->assertLessThanOrEqual(120, max(array_column($close, 'rows')));
+
+        $pass = $this->transactionWrites(static function () use ($parent): void {
+            TaskWatchdog::runPass(runIds: [$parent['run']->id]);
+        });
+
+        $this->assertSame(0, $this->openChildren($parent['run']));
+        $this->assertSame(TaskStatus::Completed, $parent['task']->fresh()->status);
+        $this->assertLessThanOrEqual(120, max(array_column($pass, 'rows')));
+        $this->assertSame(
+            0,
+            ActivityExecution::query()
+                ->whereIn('status', [ActivityStatus::Pending->value, ActivityStatus::Running->value])
+                ->count(),
+        );
+    }
+
+    /**
+     * Workflow #1290: an ordinary deadline close that fails rolls back, then
+     * records its error, one more attempt and the settlement's backoff on the
+     * run's workflow task. The run is skipped until due, so closes that keep
+     * failing no longer fill the oldest-deadline scan and starve the rest,
+     * and it is retried until it closes.
+     */
+    public function testAFailingOrdinaryCloseBacksOffAndCannotStarveOtherCloses(): void
+    {
+        Carbon::setTestNow(now()->startOfSecond());
+        config([
+            'workflows.v2.task_repair.scan_limit' => 3,
+        ]);
+        $failing = [];
+        $tasks = [];
+        foreach (range(1, 3) as $index) {
+            $run = $this->createWaitingRun();
+            $run->forceFill([
+                'execution_deadline_at' => now()
+                    ->subHours(2),
+            ])->save();
+            $failing[] = $run->id;
+            $tasks[] = $this->createTask($run, TaskStatus::Ready);
+        }
+        $healthy = $this->createWaitingRun();
+        $healthy->forceFill([
+            'execution_deadline_at' => now()
+                ->subMinute(),
+        ])->save();
+        $this->createTask($healthy, TaskStatus::Ready);
+        $broken = true;
+        \Illuminate\Support\Facades\Event::listen(
+            'eloquent.creating: ' . \Workflow\V2\Models\WorkflowFailure::class,
+            static function ($failure) use (&$broken, $failing): void {
+                if ($broken && in_array($failure->workflow_run_id, $failing, true)) {
+                    throw new \RuntimeException('forced close failure');
+                }
+            }
+        );
+
+        $first = TaskWatchdog::runPass();
+
+        $this->assertSame(3, $first['deadline_expired_candidates']);
+        $this->assertCount(3, $first['deadline_expired_failures']);
+        $this->assertSame(RunStatus::Waiting, $healthy->fresh()->status);
+        foreach ($tasks as $task) {
+            $task = $task->fresh();
+            $this->assertSame(TaskStatus::Ready, $task->status);
+            $this->assertSame('forced close failure', $task->last_error);
+            $this->assertSame(1, $task->attempt_count);
+            $this->assertSame(1, DeadlineCloseSettlement::closeFailures($task));
+            $this->assertSame(now()->addSeconds(10)->toJSON(), $task->available_at->toJSON());
+        }
+
+        // The failing runs wait out their backoff; the next pass closes the
+        // healthy run behind them.
+        $second = TaskWatchdog::runPass();
+
+        $this->assertSame(1, $second['deadline_expired_candidates']);
+        $this->assertSame(RunStatus::Failed, $healthy->fresh()->status);
+        $this->assertSame(1, DeadlineCloseSettlement::closeFailures($tasks[0]->fresh()));
+
+        // Due again and still failing: the backoff doubles.
+        Carbon::setTestNow(now()->addSeconds(11));
+        TaskWatchdog::runPass();
+        $this->assertSame(2, DeadlineCloseSettlement::closeFailures($tasks[0]->fresh()));
+        $this->assertSame(2, $tasks[0]->fresh()->attempt_count);
+        $this->assertSame(now()->addSeconds(20)->toJSON(), $tasks[0]->fresh()->available_at->toJSON());
+
+        // Once due and healthy, the retry closes every run.
+        $broken = false;
+        Carbon::setTestNow(now()->addSeconds(21));
+        TaskWatchdog::runPass();
+
+        foreach ($failing as $index => $runId) {
+            $this->assertSame(RunStatus::Failed, WorkflowRun::query()->findOrFail($runId)->status);
+            $this->assertSame(TaskStatus::Completed, $tasks[$index]->fresh()->status);
+        }
+    }
+
     public function testADeleteOfAKeyWrittenEarlierInTheCompletionCountsItsRow(): void
     {
         $run = $this->createWaitingRun();
@@ -799,6 +1065,208 @@ final class CompletionWriteFamilyBudgetTest extends TestCase
                 ],
             ]])
         );
+    }
+
+    /**
+     * The history events and rows each top-level transaction (or statement
+     * outside one) writes while $work runs, read from the statements
+     * themselves. Writes to Laravel's cache tables are not workflow storage:
+     * long-poll wake signals land there only when the application uses the
+     * database cache store on the same connection.
+     *
+     * @return list<array{events: int, rows: int}>
+     */
+    private function transactionWrites(callable $work): array
+    {
+        $writes = [];
+        $index = -1;
+        $recording = true;
+        \Illuminate\Support\Facades\Event::listen(
+            \Illuminate\Database\Events\TransactionBeginning::class,
+            static function ($began) use (&$writes, &$index, &$recording): void {
+                if ($recording && $began->connection->transactionLevel() === 1) {
+                    $writes[++$index] = [
+                        'events' => 0,
+                        'rows' => 0,
+                    ];
+                }
+            }
+        );
+        DB::listen(static function ($query) use (&$writes, &$index, &$recording): void {
+            $rows = $recording ? HistoryTransactionMeter::statementRows($query->sql) : 0;
+            if ($rows === 0 || preg_match(
+                '/^\s*(insert\s+into|update|delete\s+from)\s+[`"]?\w*cache(_locks)?[`"]?\s/i',
+                $query->sql,
+            ) === 1) {
+                return;
+            }
+            if ($query->connection->transactionLevel() === 0) {
+                $writes[++$index] = [
+                    'events' => 0,
+                    'rows' => 0,
+                ];
+            }
+            $writes[$index]['rows'] += $rows;
+            if (preg_match('/^\s*insert\s+into\s+[`"]?\w*workflow_history_events[`"]?\s/i', $query->sql) === 1) {
+                $writes[$index]['events'] += $rows;
+            }
+        });
+        try {
+            $work();
+        } finally {
+            $recording = false;
+        }
+
+        return array_values(array_filter(
+            $writes,
+            static fn (array $transaction): bool => $transaction['rows'] > 0,
+        ));
+    }
+
+    /**
+     * The events and rows of a deadline close of a projected run with one
+     * item of a kind, or none: the unbounded close's transaction, or with
+     * $alone the pass that takes the item alone under a one-row limit.
+     *
+     * @return array{int, int}
+     */
+    private function deadlineCloseWrites(?string $item, bool $alone): array
+    {
+        config([
+            'workflows.v2.structural_limits.history_transaction_size' => 0,
+            'workflows.v2.structural_limits.completion_rows' => 0,
+        ]);
+        $run = $this->createWaitingRun();
+        $run->forceFill([
+            'execution_deadline_at' => now()
+                ->subMinute(),
+        ])->save();
+        $runs = [$run];
+        match ($item) {
+            null => null,
+            'activity' => $this->seedOpenWork($run, activities: 1, timers: 0),
+            'timer' => $this->seedOpenWork($run, activities: 0, timers: 1),
+            'task' => $this->createTask($run, TaskStatus::Ready)
+                ->forceFill([
+                    'task_type' => TaskType::Activity->value,
+                ])->save(),
+            'update' => $this->acceptUpdate($run, 1),
+            'terminate', 'request_cancel', 'request_cancellation' => $this->linkOpenChild($run, 1, $item),
+            default => $this->linkOpenChild($run, 1, 'terminate'),
+        };
+        $childId = WorkflowLink::query()->where('parent_workflow_run_id', $run->id)->value('child_workflow_run_id');
+        if (is_string($childId)) {
+            $child = WorkflowRun::query()->findOrFail($childId);
+            $runs[] = $child;
+            match ($item) {
+                'child task' => $this->createTask($child, TaskStatus::Ready),
+                'child activity' => $this->seedOpenWork($child, activities: 1, timers: 0),
+                'child update' => $this->acceptUpdate($child, 1),
+                'grandchild' => $this->linkOpenChild($child, 1, 'terminate'),
+                default => null,
+            };
+            $grandchildId = WorkflowLink::query()->where('parent_workflow_run_id', $child->id)
+                ->value('child_workflow_run_id');
+            if (is_string($grandchildId)) {
+                $runs[] = WorkflowRun::query()->findOrFail($grandchildId);
+            }
+        }
+        $task = $this->createLeasedTask($run->refresh());
+        $this->projectRuns($runs);
+        if ($alone) {
+            config([
+                'workflows.v2.structural_limits.completion_rows' => 1,
+            ]);
+        }
+
+        $writes = $this->transactionWrites(function () use ($task, &$result): void {
+            $result = $this->bridge()
+                ->complete($task->id, [$this->startTimer()]);
+        });
+        if ($alone && in_array($item, ['activity', 'timer', 'task'], true)) {
+            // The first batch takes the open item alone.
+            $this->assertSame('run_deadline_closing', $result['reason']);
+        } elseif ($alone) {
+            // Nothing of the cascade fits the close; the first settlement
+            // pass takes the item alone.
+            $this->assertSame('run_timed_out', $result['reason']);
+            $this->assertTrue(DeadlineCloseSettlement::holds($task->fresh()));
+            $writes = $this->transactionWrites(static function () use ($run): void {
+                TaskWatchdog::runPass(runIds: [$run->id]);
+            });
+            $this->assertSame(TaskStatus::Completed, $task->fresh()->status);
+        } else {
+            $this->assertSame('run_timed_out', $result['reason']);
+        }
+        $largest = collect($writes)
+            ->sortByDesc('rows')
+            ->first();
+
+        return [$largest['events'], $largest['rows']];
+    }
+
+    /**
+     * Project runs as their last workflow task would have, so a close
+     * updates existing projections instead of creating them all.
+     *
+     * @param list<WorkflowRun> $runs
+     */
+    private function projectRuns(array $runs): void
+    {
+        $projections = $this->app->make(\Workflow\V2\Contracts\HistoryProjectionRole::class);
+        foreach ($runs as $run) {
+            $projections->projectRun(
+                $run->fresh(['instance', 'tasks', 'activityExecutions', 'timers', 'failures', 'historyEvents'])
+            );
+        }
+    }
+
+    /**
+     * An expired parent with every kind of close work: open activities,
+     * timers and another task, accepted updates, and children closed by
+     * terminate and request_cancel with their own open work, updates and
+     * children, a child asked to cancel, and an abandoned child.
+     *
+     * @return array{run: WorkflowRun, task: WorkflowTask}
+     */
+    private function createMixedExpiredParent(): array
+    {
+        $parent = $this->createExpiredParent(children: 0, updates: 7);
+        $run = $parent['run'];
+        $this->seedOpenWork($run, activities: 6, timers: 4);
+        $this->createTask($run, TaskStatus::Ready)
+            ->forceFill([
+                'task_type' => TaskType::Activity->value,
+            ])->save();
+        foreach ([
+            'terminate',
+            'request_cancel',
+            'terminate',
+            'request_cancellation',
+            'abandon',
+            'terminate',
+        ] as $sequence => $policy) {
+            $this->linkOpenChild($run, 100 + $sequence, $policy);
+        }
+        $children = WorkflowLink::query()
+            ->where('parent_workflow_run_id', $run->id)
+            ->orderBy('sequence')
+            ->get()
+            ->map(static fn (WorkflowLink $link): WorkflowRun => WorkflowRun::query()->findOrFail(
+                $link->child_workflow_run_id
+            ))
+            ->all();
+        $this->seedOpenWork($children[0], activities: 2, timers: 1);
+        $this->acceptUpdate($children[1], 1);
+        $this->acceptUpdate($children[1], 2);
+        $this->linkOpenChild($children[2], 1, 'terminate');
+        $this->createTask($children[5], TaskStatus::Ready);
+        $this->projectRuns([$run, ...$children]);
+
+        return [
+            'run' => $run->refresh(),
+            'task' => $parent['task'],
+        ];
     }
 
     /**

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://raw.githubusercontent.com/durable-workflow/.github/main/regression-corpus/evidence-schema.json",
+  "fixture_schema": "durable-workflow.replay-regression/v1",
+  "id": "deadline-close-child-charged-its-terminate",
+  "protocol_version": "1.20",
+  "bindings": ["php"],
+  "consumers": ["workflow-fiber-runner"],
+  "workflow": {
+    "type": "Tests\\Fixtures\\V2\\TestParentWithClosePolicyWorkflow",
+    "arguments": ["terminate"],
+    "payload_codec": "avro"
+  },
+  "history": [
+    {
+      "sequence": 1,
+      "event_type": "WorkflowStarted",
+      "payload": {},
+      "recorded_at": "2026-11-25T00:00:00.000000Z"
+    }
+  ],
+  "expected": {
+    "completed": false,
+    "result": null,
+    "commands": [
+      {"type": "start_child_workflow"}
+    ]
+  },
+  "deadline_close_child_cascade": {
+    "issue": "durable-workflow/workflow#1290",
+    "execution_timeout_seconds": 60,
+    "completion_rows": 20,
+    "parent_history_after_settlement": [
+      "WorkflowStarted",
+      "ChildWorkflowScheduled",
+      "ChildRunStarted",
+      "WorkflowTimedOut",
+      "ParentClosePolicyApplied"
+    ],
+    "child_terminal_event": "WorkflowTerminated",
+    "note": "A parent with a terminate-policy child times out under a 20-row limit. The close writes 10 rows of its own; the child's terminate writes 19 more in the parent's transaction. Before #1290 the child counted as one item, so the close terminated it in its own transaction. Now the close leaves it to the settlement, whose first pass takes it alone in a later transaction. The parent's history is the single close's."
+  }
+}

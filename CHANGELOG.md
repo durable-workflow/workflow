@@ -69,6 +69,18 @@
   [worker interceptors](docs/worker-interceptors.md).
   ([Durable Workflow #226](https://github.com/durable-workflow/.github/issues/226))
 
+- A bounded deadline close charges each item the history events and rows it
+  writes. A child closed by its parent's policy is charged its whole close,
+  including its open work, accepted updates and own children, and an accepted
+  update is charged both its events. A close or settlement transaction now
+  stays within the event and row limits. Two exceptions remain: a single item
+  larger than the whole budget is taken alone, and a timed-out child's close
+  still resumes its live parent in the same transaction. An ordinary
+  deadline close that fails records its error and attempt on the run's
+  workflow task and backs off like a failing settlement, so it no longer
+  starves other expired runs. On MySQL, a run projection no longer rewrites lineage rows whose JSON
+  differs only in key order. (#1290)
+
 ## 2.41.0 - 2026-11-25
 
 - Experimental state machines: `MachineCatalog` registers the definitions

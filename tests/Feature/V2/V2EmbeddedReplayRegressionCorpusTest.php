@@ -604,6 +604,98 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
     }
 
     /**
+     * A terminate-policy child's whole terminate is charged to the deadline
+     * close that runs it (#1290): under a 20-row limit the close records the
+     * parent's timeout alone and the settlement terminates the child, with
+     * the single close's history.
+     */
+    public function testDeadlineCloseCorpusChargesAChildItsTerminate(): void
+    {
+        $path = self::FIXTURE_DIR . '/deadline-close-child-charged-its-terminate.json';
+        if (! is_file($path)) {
+            $this->markTestSkipped('The deadline close child cascade evidence is absent from the baseline.');
+        }
+        $fixture = json_decode((string) file_get_contents($path), true, flags: JSON_THROW_ON_ERROR);
+        $scenario = $fixture['deadline_close_child_cascade'];
+        config([
+            'queue.default' => 'database',
+        ]);
+        Queue::fake();
+        $this->travelTo(now()->startOfSecond());
+        $parent = WorkflowStub::make($fixture['workflow']['type'], $fixture['id']);
+        $parent->start(...[
+            ...$fixture['workflow']['arguments'],
+            new StartOptions(executionTimeoutSeconds: $scenario['execution_timeout_seconds']),
+        ]);
+        $parentRunId = $parent->runId();
+        $this->runReadyTaskOfType($parentRunId, TaskType::Workflow);
+        $childRunId = (string) WorkflowLink::query()->where('parent_workflow_run_id', $parentRunId)
+            ->where('link_type', 'child_workflow')
+            ->value('child_workflow_run_id');
+        $this->runReadyTaskOfType($childRunId, TaskType::Workflow);
+        $this->travel($scenario['execution_timeout_seconds'] + 1)->seconds();
+        config([
+            'workflows.v2.structural_limits.history_transaction_size' => 0,
+            'workflows.v2.structural_limits.completion_rows' => $scenario['completion_rows'],
+        ]);
+        $history = static fn (string $runId): array => WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', '!=', HistoryEventType::StartAccepted->value)
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn (HistoryEventType $type): string => $type->value)
+            ->all();
+
+        // Which top-level transaction wrote each of the parent's close events.
+        $transaction = 0;
+        $writtenIn = [];
+        $recording = true;
+        Event::listen(
+            \Illuminate\Database\Events\TransactionBeginning::class,
+            static function ($began) use (&$transaction, &$recording): void {
+                if ($recording && $began->connection->transactionLevel() === 1) {
+                    ++$transaction;
+                }
+            }
+        );
+        DB::listen(static function (QueryExecuted $query) use (&$transaction, &$writtenIn, &$recording): void {
+            if (! $recording || ! str_contains(strtolower($query->sql), 'insert into')
+                || ! str_contains($query->sql, 'workflow_history_events')) {
+                return;
+            }
+            foreach (['WorkflowTimedOut', 'ParentClosePolicyApplied'] as $type) {
+                if (in_array($type, $query->bindings, true)) {
+                    $writtenIn[$type] = $transaction;
+                }
+            }
+        });
+
+        // The watchdog closes the parent, first giving it a workflow task if
+        // it has none, and continues the held settlement.
+        try {
+            for ($passes = 0; $passes < 3 && count($writtenIn) < 2; ++$passes) {
+                TaskWatchdog::runPass(runIds: [$parentRunId]);
+            }
+        } finally {
+            $recording = false;
+        }
+
+        $this->assertSame(RunStatus::Failed, WorkflowRun::query()->findOrFail($parentRunId)->status);
+        $this->assertSame($scenario['parent_history_after_settlement'], $history($parentRunId));
+        // The close did not terminate the child: its terminate does not fit
+        // what the close leaves of the limit, so a settlement pass took it.
+        $this->assertCount(2, $writtenIn);
+        $this->assertGreaterThan($writtenIn['WorkflowTimedOut'], $writtenIn['ParentClosePolicyApplied']);
+        $this->assertSame(RunStatus::Terminated, WorkflowRun::query()->findOrFail($childRunId)->status);
+        $this->assertSame(
+            $scenario['child_terminal_event'],
+            $history($childRunId)[array_key_last($history($childRunId))]
+        );
+        $this->assertSame(0, WorkflowTask::query()->where('workflow_run_id', $parentRunId)
+            ->whereIn('status', [TaskStatus::Ready->value, TaskStatus::Leased->value])->count());
+    }
+
+    /**
      * An all() whose member is over payload_size_bytes is refused before its
      * first member is written (#1232): the run's history is exactly the
      * evidence, the typed refusal and no member event.

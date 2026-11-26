@@ -818,6 +818,18 @@ jobs:
         QUEUE_CONNECTION: redis
         XDEBUG_MODE: off
 
+    - name: Run bounded deadline close cost cases
+      run: >-
+        vendor/bin/phpunit tests/Unit/V2/CompletionWriteFamilyBudgetTest.php
+        tests/Unit/V2/IdempotentProjectionUpsertTest.php
+        --testsuite unit
+        --filter '/DeadlineClose|BoundedClose|ChildIsCharged|OrdinaryClose|SettlementPass|KeyOrder/'
+        --fail-on-warning --log-junit build/test-results/pr-deadline-close-cost.xml
+      env:
+        DB_CONNECTION: mysql
+        QUEUE_CONNECTION: redis
+        XDEBUG_MODE: off
+
     - name: Run scoped Activity fencing and original stop receipt cases
       run: >-
         vendor/bin/phpunit tests/Feature/V2/V2ScopedActivityCancellationTest.php

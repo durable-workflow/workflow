@@ -141,6 +141,65 @@ final class IdempotentProjectionUpsertTest extends TestCase
             str_starts_with(strtolower($query['query']), 'select')));
     }
 
+    /**
+     * MySQL stores JSON with its object keys reordered. A projected payload
+     * that differs from the stored one only in key order is not written again
+     * (#1290); a real change, including a reordered list, still is.
+     */
+    public function testPrefetchedRowKeepsAPayloadThatDiffersOnlyInKeyOrder(): void
+    {
+        $run = $this->seedRun();
+        $id = hash('sha256', $run->id . '|reordered');
+        $payload = [
+            'status' => 'waiting',
+            'nested' => [
+                'zeta' => 1,
+                'alpha' => [3, 1, 2],
+            ],
+            'id' => 'one',
+        ];
+        IdempotentProjectionUpsert::upsert(WorkflowTimelineEntry::class, [
+            'id' => $id,
+        ], [
+            ...$this->timelineAttributes($run, 'reordered', 'summary'),
+            'payload' => $payload,
+        ]);
+        // What MySQL hands back for the stored payload.
+        WorkflowTimelineEntry::query()->whereKey($id)->toBase()->update([
+            'payload' => '{"id": "one", "nested": {"zeta": 1, "alpha": [3, 1, 2]}, "status": "waiting"}',
+        ]);
+        $connection = (new WorkflowTimelineEntry())->getConnection();
+        $connection->flushQueryLog();
+        $connection->enableQueryLog();
+
+        try {
+            IdempotentProjectionUpsert::upsert(WorkflowTimelineEntry::class, [
+                'id' => $id,
+            ], [
+                'payload' => $payload,
+            ], WorkflowTimelineEntry::query()->findOrFail($id));
+            $unchanged = $connection->getQueryLog();
+            $connection->flushQueryLog();
+            $payload['nested']['alpha'] = [1, 2, 3];
+            IdempotentProjectionUpsert::upsert(WorkflowTimelineEntry::class, [
+                'id' => $id,
+            ], [
+                'payload' => $payload,
+            ], WorkflowTimelineEntry::query()->findOrFail($id));
+            $changed = $connection->getQueryLog();
+        } finally {
+            $connection->disableQueryLog();
+        }
+
+        $writes = static fn (array $queries): array => array_values(array_filter(
+            $queries,
+            static fn (array $query): bool => str_starts_with(strtolower($query['query']), 'update'),
+        ));
+        $this->assertSame([], $writes($unchanged));
+        $this->assertCount(1, $writes($changed));
+        $this->assertSame([1, 2, 3], WorkflowTimelineEntry::query()->findOrFail($id)->payload['nested']['alpha']);
+    }
+
     public function testRejectsPrefetchedRowWithDifferentIdentity(): void
     {
         $run = $this->seedRun();
