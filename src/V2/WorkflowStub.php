@@ -45,6 +45,7 @@ use Workflow\V2\Exceptions\StructuralLimitExceededException;
 use Workflow\V2\Exceptions\UpdateValidationFailedException;
 use Workflow\V2\Exceptions\WorkflowExecutionUnavailableException;
 use Workflow\V2\Interceptors\QueryTaskInterceptorContext;
+use Workflow\V2\Interceptors\UpdateValidationInterceptorContext;
 use Workflow\V2\Interceptors\WorkerInterceptors;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityExecution;
@@ -4733,6 +4734,52 @@ final class WorkflowStub
             return null;
         }
 
+        return WorkerInterceptors::updateValidation(
+            static function () use (
+                $run,
+                $updateName,
+                $codec,
+                $serializedArguments
+            ): UpdateValidationInterceptorContext {
+                $arguments = Serializer::unserializeWithCodec($codec, $serializedArguments);
+
+                return UpdateValidationInterceptorContext::forRun(
+                    $run,
+                    $updateName,
+                    is_array($arguments) ? array_values($arguments) : [],
+                );
+            },
+            fn (): ?array => $this->runUpdateValidator(
+                $run,
+                $updateName,
+                $validatorMethod,
+                $codec,
+                $serializedArguments
+            ),
+            static fn (string $reason, ?Throwable $previous): Throwable => new UpdateValidationFailedException(
+                $run->workflow_instance_id,
+                $run->id,
+                $updateName,
+                $previous instanceof Throwable && $previous->getMessage() !== ''
+                    ? sprintf('%s: %s', $reason, $previous->getMessage())
+                    : $reason,
+                $previous,
+            ),
+        );
+    }
+
+    /**
+     * Replay the run's state and call only the update's validator.
+     *
+     * @return array{message: string, exception_type: string, validation_errors: array<string, list<string>>}|null
+     */
+    private function runUpdateValidator(
+        WorkflowRun $run,
+        string $updateName,
+        string $validatorMethod,
+        string $codec,
+        string $serializedArguments,
+    ): ?array {
         try {
             $workflow = (new QueryStateReplayer())->replay($run);
             $workflow->setCommandDispatchEnabled(false);

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Worker interceptors also wrap update validation. The new
+  `executeUpdateValidation($context, $next)` hook (passthrough in
+  `PassthroughWorkerInterceptor`) sees the update name, run and arguments,
+  and the validator's `UpdateValidationOutcome`. Hooks observe the decision
+  but cannot change it. A hook that throws, skips `$next` or calls it twice
+  refuses the update with `UpdateValidationFailedException`, and nothing is
+  recorded. The hook runs inside the admission transaction while the run is
+  locked. Classes that implement `WorkerInterceptor` directly must add the
+  method. (durable-workflow/.github#226, #234)
 - The workflow logger also works when an external worker cold-replays a run
   through the bridge's replay runner. The runner sets the replay boundary
   from the history it is given, so code before the last recorded step is
