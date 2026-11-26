@@ -8,6 +8,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
 use Tests\Fixtures\V2\TestDeterministicDeadlineWorkflow;
 use Tests\Fixtures\V2\TestReplayDeterministicTimeWorkflow;
+use Tests\Fixtures\V2\TestSideEffectClockWorkflow;
 use Tests\TestCase;
 use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\TaskStatus;
@@ -116,6 +117,37 @@ final class V2DeterministicTimeReplayTest extends TestCase
             $state->workflow->observedAfterActivityMs,
             'Replay must not read ambient wall-clock time after an activity completes.',
         );
+    }
+
+    public function testSideEffectClockAgreesOnFirstExecutionAndReplay(): void
+    {
+        $startedAt = Carbon::parse('2026-02-01T12:00:00Z');
+        Carbon::setTestNow($startedAt);
+        $workflow = WorkflowStub::make(TestSideEffectClockWorkflow::class, 'side-effect-clock');
+        $workflow->start('Taylor');
+        $this->runReadyTaskOfType(TaskType::Workflow);
+
+        Carbon::setTestNow($startedAt->copy()->addMinutes(5));
+        $this->runReadyTaskOfType(TaskType::Activity);
+        // The executor records the side effect in the resuming task, at this time.
+        Carbon::setTestNow($startedAt->copy()->addMinutes(9));
+        $this->runReadyTaskOfType(TaskType::Workflow);
+        Carbon::setTestNow(null);
+
+        $this->assertTrue($workflow->refresh()->completed());
+        $output = $workflow->output();
+        $this->assertSame('2026-02-01T12:05:00.000000+00:00', $output['after_activity']);
+        $this->assertSame('2026-02-01T12:09:00.000000+00:00', $output['after_side_effect']);
+
+        Carbon::setTestNow(Carbon::parse('2099-12-31T23:59:59Z'));
+        try {
+            $replay = (new WorkflowReplayer())->replay(WorkflowRun::query()->findOrFail($workflow->runId()));
+        } finally {
+            Carbon::setTestNow(null);
+        }
+
+        $this->assertInstanceOf(TestSideEffectClockWorkflow::class, $replay->workflow);
+        $this->assertSame($output['after_side_effect'], $replay->workflow->afterSideEffect);
     }
 
     public function testDerivedDeadlineWaitsForDurableTimeAcrossFreshDatabaseReplays(): void

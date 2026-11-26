@@ -528,11 +528,10 @@ final class WorkflowFiberRunner
 
                 if ($recorded !== null) {
                     ++$this->sequence;
-                    $this->sendToWorkflow(
-                        $recorded['result'],
-                        $recorded['recorded_at'],
-                        advanceCancellationTime: false
-                    );
+                    // Inline steps have no Server-assigned time when this runner
+                    // first executes them, so replay keeps the previous boundary
+                    // time too instead of the time the step was later recorded.
+                    $this->sendToWorkflow($recorded['result'], advanceCancellationTime: false);
 
                     continue;
                 }
@@ -570,6 +569,10 @@ final class WorkflowFiberRunner
                     ++$this->sequence;
                 }
 
+                // Version decisions keep advancing to the marker time on
+                // replay: repeated-version-legacy-clock-boundaries pins that
+                // parity with the embedded executor, which records the marker
+                // synchronously.
                 $this->sendToWorkflow(
                     $current->resolveValue($resolution->version),
                     RedriveReplayClock::recordedAt($versionMarkerEvent),
@@ -635,7 +638,7 @@ final class WorkflowFiberRunner
                     );
 
                     ++$this->sequence;
-                    $this->sendToWorkflow(null, $recorded['recorded_at'], advanceCancellationTime: false);
+                    $this->sendToWorkflow(null, advanceCancellationTime: false);
 
                     continue;
                 }
@@ -663,7 +666,7 @@ final class WorkflowFiberRunner
                     );
 
                     ++$this->sequence;
-                    $this->sendToWorkflow(null, $recorded['recorded_at'], advanceCancellationTime: false);
+                    $this->sendToWorkflow(null, advanceCancellationTime: false);
 
                     continue;
                 }

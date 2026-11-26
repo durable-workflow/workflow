@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- External PHP workers read the same `Workflow::now()` right after a side
+  effect, memo upsert or search-attribute upsert on first execution and on
+  replay. The worker-protocol runner (`WorkflowFiberRunner`) runs those steps
+  inline before the Server records them, so its first execution kept the
+  previous boundary time. Replay used to move to the time the step was recorded
+  later, so code that read the clock right after such a step could decide
+  differently on replay. Replay now keeps the previous boundary time too. The
+  embedded executor records these steps synchronously and was already
+  consistent, and is unchanged. Version decisions keep their existing replay
+  time, which the repeated-version-legacy-clock-boundaries corpus fixture pins.
+  (durable-workflow/.github#215)
+
 - Workflow code can log without repeating itself. `$this->logger()` returns a
   PSR-3 logger that writes through the Laravel logger (or the channel you
   pass) only when the code runs for the first time. The engine replays a
