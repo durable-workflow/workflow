@@ -3102,7 +3102,7 @@ final class DefaultWorkflowTaskBridge implements CooperativeWorkflowTaskBridge, 
         }
 
         $run->unsetRelation('historyEvents');
-        foreach (SignalWaits::forRun($run) as $wait) {
+        foreach (SignalWaits::forRun($run, replayCompatible: true) as $wait) {
             if (($wait['sequence'] ?? null) === $sequence && ($wait['status'] ?? null) === 'open') {
                 return true;
             }

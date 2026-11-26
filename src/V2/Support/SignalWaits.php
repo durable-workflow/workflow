@@ -36,8 +36,20 @@ final class SignalWaits
      *     command_status: string|null,
      *     command_outcome: string|null
      * }>
+     *
+     * A cooperative cancellation delivered at a signal wait, or at a group
+     * containing one, ends that wait: workflow code was interrupted there and
+     * can never resume it with a signal. A workflow timeout closes open waits
+     * like every other terminal event. Signals accepted afterwards therefore
+     * do not resolve, and are not attributed to, the interrupted wait.
+     *
+     * Pass $replayCompatible to read the states replay decisions have always
+     * read, in which neither a delivered cancellation nor a workflow timeout
+     * closes a wait. Execution paths that derive replay cursors or
+     * history-writing decisions from these states use it, so that a history
+     * recorded before these closures existed replays unchanged.
      */
-    public static function forRun(WorkflowRun $run): array
+    public static function forRun(WorkflowRun $run, bool $replayCompatible = false): array
     {
         $run->loadMissing('historyEvents');
 
@@ -158,6 +170,14 @@ final class SignalWaits
                 continue;
             }
 
+            if ($event->event_type === HistoryEventType::CooperativeCancellationDelivered) {
+                if (! $replayCompatible) {
+                    self::closeInterruptedWaits($waits, $openWaitIdsByName, $event);
+                }
+
+                continue;
+            }
+
             if (in_array($event->event_type, [
                 HistoryEventType::SignalReceived,
                 HistoryEventType::SignalApplied,
@@ -209,7 +229,7 @@ final class SignalWaits
                 HistoryEventType::WorkflowCancelled,
                 HistoryEventType::WorkflowTerminated,
                 HistoryEventType::WorkflowContinuedAsNew,
-            ], true)) {
+            ], true) || (! $replayCompatible && $event->event_type === HistoryEventType::WorkflowTimedOut)) {
                 self::closeOpenWaits($waits, $openWaitIdsByName, $event);
             }
         }
@@ -217,10 +237,13 @@ final class SignalWaits
         return array_values($waits);
     }
 
-    public static function openWaitIdForName(WorkflowRun $run, string $signalName): ?string
-    {
+    public static function openWaitIdForName(
+        WorkflowRun $run,
+        string $signalName,
+        bool $replayCompatible = false,
+    ): ?string {
         $openWaits = array_values(array_filter(
-            self::forRun($run),
+            self::forRun($run, $replayCompatible),
             static fn (array $wait): bool => $wait['signal_name'] === $signalName && $wait['status'] === 'open',
         ));
 
@@ -289,6 +312,49 @@ final class SignalWaits
             }
         }
         unset($wait);
+    }
+
+    /**
+     * Close the open signal waits a delivered cooperative cancellation
+     * interrupted: the wait at a signal delivery, or the member waits of a
+     * delivered parallel or selection group. A delivery at a durable handle
+     * await or a started child await leaves the operation itself awaitable,
+     * so it closes nothing here.
+     *
+     * @param array<string, array<string, mixed>> $waits
+     * @param array<string, list<string>> $openWaitIdsByName
+     */
+    private static function closeInterruptedWaits(
+        array &$waits,
+        array &$openWaitIdsByName,
+        WorkflowHistoryEvent $event,
+    ): void {
+        $callKind = self::stringValue($event->payload['call_kind'] ?? null);
+        $baseSequence = self::intValue($event->payload['sequence'] ?? null);
+        $span = match ($callKind) {
+            'signal' => 1,
+            'parallel' => self::intValue($event->payload['sequence_span'] ?? null) ?? 1,
+            default => null,
+        };
+
+        if ($baseSequence === null || $span === null || $span < 1) {
+            return;
+        }
+
+        foreach ($waits as $waitId => $wait) {
+            $sequence = self::intValue($wait['sequence'] ?? null);
+            if ($sequence === null
+                || $sequence < $baseSequence
+                || $sequence - $baseSequence >= $span
+                || ($wait['status'] ?? null) !== 'open') {
+                continue;
+            }
+
+            $waits[$waitId]['status'] = 'cancelled';
+            $waits[$waitId]['source_status'] = 'cancellation_delivered';
+            $waits[$waitId]['resolved_at'] = $event->recorded_at ?? $event->created_at;
+            self::consumeOpenWaitId($openWaitIdsByName, $wait['signal_name'], (string) $waitId);
+        }
     }
 
     /**

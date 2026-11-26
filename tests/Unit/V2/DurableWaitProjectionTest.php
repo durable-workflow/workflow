@@ -445,7 +445,87 @@ final class DurableWaitProjectionTest extends TestCase
         $this->assertNull(SignalWaits::openWaitIdForName($run, 'missing'));
     }
 
-    #[DataProvider('terminalEventProvider')]
+    public function testDeliveredCancellationEndsTheInterruptedSignalWait(): void
+    {
+        $run = $this->runWithHistoryEvents([
+            $this->historyEvent(HistoryEventType::SignalWaitOpened, 1, [
+                'signal_wait_id' => 'interrupted',
+                'signal_name' => 'approval',
+                'sequence' => 1,
+            ]),
+            $this->historyEvent(HistoryEventType::CooperativeCancellationDelivered, 2, [
+                'workflow_command_id' => 'cancel-1',
+                'sequence' => 1,
+                'call_kind' => 'signal',
+            ], '2026-08-27T15:00:00Z'),
+            // A history recorded before this closure attributed a later
+            // signal to the interrupted wait. It must not resolve that wait.
+            $this->historyEvent(HistoryEventType::SignalReceived, 3, [
+                'signal_name' => 'approval',
+                'signal_wait_id' => 'interrupted',
+                'signal_id' => 'late-signal',
+            ], null, 'late-command'),
+            $this->historyEvent(HistoryEventType::SignalWaitOpened, 4, [
+                'signal_wait_id' => 'cleanup-wait',
+                'signal_name' => 'approval',
+                'sequence' => 3,
+            ]),
+        ]);
+
+        $waits = $this->indexBy(SignalWaits::forRun($run), 'signal_wait_id');
+        $this->assertSame('cancelled', $waits['interrupted']['status']);
+        $this->assertSame('cancellation_delivered', $waits['interrupted']['source_status']);
+        $this->assertSame('2026-08-27T15:00:00+00:00', $this->timestamp($waits['interrupted']['resolved_at']));
+        $this->assertNull($waits['interrupted']['signal_id']);
+        $this->assertNull($waits['interrupted']['command_id']);
+        $this->assertSame('open', $waits['cleanup-wait']['status']);
+        $this->assertSame('cleanup-wait', SignalWaits::openWaitIdForName($run, 'approval'));
+
+        // Replay decisions keep reading the states they always read.
+        $legacy = $this->indexBy(SignalWaits::forRun($run, replayCompatible: true), 'signal_wait_id');
+        $this->assertSame('resolved', $legacy['interrupted']['status']);
+        $this->assertSame('received', $legacy['interrupted']['source_status']);
+    }
+
+    public function testDeliveredGroupCancellationEndsOnlyItsMemberSignalWaits(): void
+    {
+        $opened = static fn (string $id, int $sequence): array => [
+            'signal_wait_id' => $id,
+            'signal_name' => 'approval',
+            'sequence' => $sequence,
+        ];
+        $groupRun = $this->runWithHistoryEvents([
+            $this->historyEvent(HistoryEventType::SignalWaitOpened, 1, $opened('before', 1)),
+            $this->historyEvent(HistoryEventType::SignalWaitOpened, 2, $opened('first-member', 2)),
+            $this->historyEvent(HistoryEventType::SignalWaitOpened, 3, $opened('second-member', 3)),
+            $this->historyEvent(HistoryEventType::SignalWaitOpened, 4, $opened('after', 4)),
+            $this->historyEvent(HistoryEventType::CooperativeCancellationDelivered, 5, [
+                'sequence' => 2,
+                'call_kind' => 'parallel',
+                'sequence_span' => 2,
+            ]),
+        ]);
+
+        $waits = $this->indexBy(SignalWaits::forRun($groupRun), 'signal_wait_id');
+        $this->assertSame('open', $waits['before']['status']);
+        $this->assertSame('cancellation_delivered', $waits['first-member']['source_status']);
+        $this->assertSame('cancellation_delivered', $waits['second-member']['source_status']);
+        $this->assertSame('open', $waits['after']['status']);
+
+        // A durable handle await leaves the awaited operation itself open.
+        $handleRun = $this->runWithHistoryEvents([
+            $this->historyEvent(HistoryEventType::SignalWaitOpened, 1, $opened('handle-operation', 1)),
+            $this->historyEvent(HistoryEventType::CooperativeCancellationDelivered, 2, [
+                'sequence' => 2,
+                'call_kind' => 'selection_handle',
+                'operation_sequence' => 1,
+            ]),
+        ]);
+
+        $this->assertSame('open', SignalWaits::forRun($handleRun)[0]['status']);
+    }
+
+    #[DataProvider('signalTerminalEventProvider')]
     public function testSignalWaitProjectionClosesOpenWaitsWithTerminalSourceStatus(
         HistoryEventType $eventType,
         string $sourceStatus,
@@ -463,6 +543,10 @@ final class DurableWaitProjectionTest extends TestCase
 
         $this->assertSame('cancelled', $wait['status']);
         $this->assertSame($sourceStatus, $wait['source_status']);
+
+        if ($eventType === HistoryEventType::WorkflowTimedOut) {
+            $this->assertSame('open', SignalWaits::forRun($run, replayCompatible: true)[0]['status']);
+        }
     }
 
     /**
@@ -475,6 +559,15 @@ final class DurableWaitProjectionTest extends TestCase
         yield 'cancelled' => [HistoryEventType::WorkflowCancelled, 'cancelled'];
         yield 'terminated' => [HistoryEventType::WorkflowTerminated, 'terminated'];
         yield 'continued as new' => [HistoryEventType::WorkflowContinuedAsNew, 'continued'];
+    }
+
+    /**
+     * @return iterable<string, array{HistoryEventType, string}>
+     */
+    public static function signalTerminalEventProvider(): iterable
+    {
+        yield from self::terminalEventProvider();
+        yield 'timed out' => [HistoryEventType::WorkflowTimedOut, 'closed'];
     }
 
     /**

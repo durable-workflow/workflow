@@ -34,7 +34,9 @@ use Workflow\V2\Models\WorkflowRun;
 use Workflow\V2\Models\WorkflowRunSummary;
 use Workflow\V2\Models\WorkflowTask;
 use Workflow\V2\StartOptions;
+use Workflow\V2\Support\RunDetailView;
 use Workflow\V2\Support\RunSummaryProjector;
+use Workflow\V2\Support\SignalWaits;
 use Workflow\V2\Support\WorkflowTaskLeaseLoss;
 use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub;
@@ -566,16 +568,33 @@ final class V2TimeoutCleanupTest extends TestCase
         $run = WorkflowRun::query()->findOrFail($runId);
         $started = $this->assertTimeoutInterruptionDelivered($workflow, $run, 'signal', $opened->payload['sequence']);
 
+        // Delivery ended the wait: it is reported as interrupted, not open.
+        $waitId = $opened->payload['signal_wait_id'];
+        $this->assertInterruptedSignalWait($runId, $waitId);
+
         // A signal that arrives during cleanup is recorded but never satisfies
-        // the interrupted wait, even when its own workflow task runs first.
+        // the interrupted wait. No wait is open, so it is buffered under its
+        // own command identity, as any signal without an open wait is, and
+        // it schedules no workflow task of its own.
         $late = $workflow->refresh()
             ->attemptSignal('approve', 'late');
         $this->assertTrue($late->accepted());
-        $this->runReadyWorkflowTask($runId);
+        $bufferedWaitId = SignalWaits::bufferedWaitIdForCommandId($late->commandId());
+        $received = $this->soleEvent($runId, HistoryEventType::SignalReceived);
+        $this->assertSame($late->commandId(), $received->payload['workflow_command_id']);
+        $this->assertSame($bufferedWaitId, $received->payload['signal_wait_id']);
+        $this->assertSame(0, WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('task_type', TaskType::Workflow->value)
+            ->where('status', TaskStatus::Ready->value)
+            ->count());
+        $this->assertInterruptedSignalWait($runId, $waitId);
         $this->assertSame(0, $this->eventCount($runId, HistoryEventType::SignalApplied));
         $this->assertArrayNotHasKey('business', $workflow->refresh()->memo());
         $this->assertFalse(WorkflowRun::query()->findOrFail($runId)->status->isTerminal());
 
+        // The cleanup's workflow task runs with the signal pending and still
+        // does not apply it.
         $this->runReadyActivityTask($runId);
         $this->runReadyWorkflowTask($runId);
 
@@ -583,6 +602,8 @@ final class V2TimeoutCleanupTest extends TestCase
         $rejected = $this->soleEvent($runId, HistoryEventType::SignalRejected);
         $this->assertSame($late->commandId(), $rejected->payload['workflow_command_id']);
         $this->assertSame('run_closed_before_signal_applied', $rejected->payload['rejection_reason']);
+        $this->assertSame($bufferedWaitId, $rejected->payload['signal_wait_id']);
+        $this->assertInterruptedSignalWait($runId, $waitId);
         $this->assertSame(0, $this->eventCount($runId, HistoryEventType::SignalApplied));
         $this->assertArrayNotHasKey('business', $workflow->refresh()->memo());
         $this->assertSame('Hello, cleanup!', $workflow->memo()['cleanup']);
@@ -639,11 +660,19 @@ final class V2TimeoutCleanupTest extends TestCase
         $outcome = $activities->complete($claim['activity_attempt_id'], Serializer::serialize('late-work'));
         $this->assertFalse($outcome['recorded']);
 
-        // The signal branch can't win the selection after cleanup started.
+        // The signal branch can't win the selection after cleanup started:
+        // its wait ended at delivery, and a late signal is buffered.
+        $waitId = $opened->payload['signal_wait_id'];
+        $this->assertInterruptedSignalWait($runId, $waitId);
         $late = $workflow->refresh()
             ->attemptSignal('approve', 'late');
         $this->assertTrue($late->accepted());
-        $this->runReadyWorkflowTask($runId);
+        $this->assertSame(
+            SignalWaits::bufferedWaitIdForCommandId($late->commandId()),
+            $this->soleEvent($runId, HistoryEventType::SignalReceived)->payload['signal_wait_id'],
+        );
+        $this->runReadyWorkflowTaskIfAny($runId);
+        $this->assertInterruptedSignalWait($runId, $waitId);
         $this->assertSame(0, $this->eventCount($runId, HistoryEventType::SignalApplied));
         $this->assertSame(0, $this->eventCount($runId, HistoryEventType::SelectionResolved));
 
@@ -968,6 +997,30 @@ final class V2TimeoutCleanupTest extends TestCase
         ksort($values);
 
         return $values;
+    }
+
+    /**
+     * The derived wait views report a wait interrupted by cancellation
+     * delivery as ended there, never as received or resolved.
+     */
+    private function assertInterruptedSignalWait(string $runId, string $waitId): void
+    {
+        $run = WorkflowRun::query()->findOrFail($runId);
+        $wait = collect(SignalWaits::forRun($run))->firstWhere('signal_wait_id', $waitId);
+        $this->assertIsArray($wait);
+        $this->assertSame('cancelled', $wait['status']);
+        $this->assertSame('cancellation_delivered', $wait['source_status']);
+        $this->assertNull($wait['signal_id']);
+        $this->assertNull($wait['command_id']);
+        $this->assertNotSame($waitId, SignalWaits::openWaitIdForName($run, 'approve'));
+
+        $detail = collect(RunDetailView::forRun($run->fresh())['waits'])
+            ->first(static fn (array $wait): bool => ($wait['kind'] ?? null) === 'signal'
+                && ($wait['id'] ?? null) === $waitId);
+        $this->assertIsArray($detail);
+        $this->assertSame('cancelled', $detail['status']);
+        $this->assertSame('cancellation_delivered', $detail['source_status']);
+        $this->assertNull($detail['command_id']);
     }
 
     private function soleEvent(string $runId, HistoryEventType $type): WorkflowHistoryEvent
