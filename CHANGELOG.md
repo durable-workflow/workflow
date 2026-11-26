@@ -23,6 +23,10 @@
   other terminal events. History is unchanged and replay keeps its earlier
   view of these waits; runs recorded before the upgrade show the corrected
   wait state on their next projection.
+  One upgrade edge case: on an external (bridge) worker, an in-flight run
+  whose late signal an earlier engine attributed to the interrupted wait, and
+  which then opens a new wait for that signal, may not schedule a task for it
+  until another task runs. Embedded runs are unaffected.
 
 ## 2.42.0 - 2026-11-26
 

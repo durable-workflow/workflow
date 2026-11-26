@@ -8,6 +8,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 use Symfony\Component\Process\Process;
+use Tests\Fixtures\V2\TestCancelledSignalReawaitWorkflow;
 use Tests\Fixtures\V2\TestCooperativeActivityCleanupWorkflow;
 use Tests\Fixtures\V2\TestCooperativeChildCleanupWorkflow;
 use Tests\Fixtures\V2\TestCooperativeNormalCleanupWorkflow;
@@ -285,6 +286,103 @@ final class V2FinallyCleanupTest extends TestCase
                 ->where('event_type', HistoryEventType::CooperativeCancellationDelivered->value)
                 ->count());
         }
+    }
+
+    /**
+     * #1315: the derived signal-wait view treats a wait interrupted by
+     * cancellation delivery as ended, but the executor's step cursor keeps
+     * reading it as it always has. Workflow code here catches the delivery
+     * at a signal wait and waits for the same signal again. An update applied
+     * while the first wait was open records its handler's step cursor; every
+     * later replay re-applies it at that wait, and must see the same cursor.
+     */
+    public function testReplayKeepsTheStepCursorAtASignalWaitInterruptedByDelivery(): void
+    {
+        Queue::fake();
+
+        $workflow = WorkflowStub::make(TestCancelledSignalReawaitWorkflow::class);
+        $workflow->start();
+        $runId = $workflow->runId();
+        $this->assertIsString($runId);
+        $this->runReadyTask($runId, TaskType::Workflow);
+
+        $mark = $workflow->submitUpdate('mark');
+        $this->assertTrue($mark->accepted());
+        $this->runReadyTask($runId, TaskType::Workflow);
+        $this->assertSame(2, $workflow->inspectUpdate($mark->updateId())->result());
+
+        $this->assertTrue($workflow->requestCancellation('stop', 60)->accepted());
+        $this->runReadyTask($runId, TaskType::Workflow);
+        $opened = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::SignalWaitOpened->value)
+            ->orderBy('sequence')
+            ->get();
+        $this->assertSame(
+            [1, 2],
+            $opened->map(static fn (WorkflowHistoryEvent $event): int => $event->payload['sequence'])
+                ->all()
+        );
+        $delivered = WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->where('event_type', HistoryEventType::CooperativeCancellationDelivered->value)
+            ->sole();
+        $this->assertSame('signal', $delivered->payload['call_kind']);
+        $this->assertSame(1, $delivered->payload['sequence']);
+
+        // The second wait is a new occurrence, so a signal now resolves it
+        // and not the interrupted wait.
+        $this->assertNotSame($opened[0]->payload['signal_wait_id'], $opened[1]->payload['signal_wait_id']);
+        $signal = $workflow->refresh()
+            ->attemptSignal('approve', 'yes');
+        $this->assertTrue($signal->accepted());
+        $this->assertSame(
+            $opened[1]->payload['signal_wait_id'],
+            WorkflowHistoryEvent::query()
+                ->where('workflow_run_id', $runId)
+                ->where('event_type', HistoryEventType::SignalReceived->value)
+                ->sole()
+                ->payload['signal_wait_id'],
+        );
+        $this->runReadyTask($runId, TaskType::Workflow);
+        $this->runReadyTask($runId, TaskType::Activity);
+
+        // Neither wait is open or has a pending signal when this task
+        // replays the interrupted one, so only the replay view keeps the
+        // cursor the update saw when it was applied.
+        $this->runReadyTask($runId, TaskType::Workflow);
+
+        $this->assertSame([
+            'marked_at' => 2,
+        ], $workflow->refresh() ->memo());
+        $this->assertSame([
+            'StartAccepted',
+            'WorkflowStarted',
+            'SignalWaitOpened',
+            'UpdateAccepted',
+            'UpdateApplied',
+            'UpdateCompleted',
+            'MessageCursorAdvanced',
+            'CooperativeCancellationRequested',
+            'CooperativeCancellationDelivered',
+            'SignalWaitOpened',
+            'SignalReceived',
+            'MessageCursorAdvanced',
+            'SignalApplied',
+            'ActivityScheduled',
+            'ActivityStarted',
+            'ActivityCompleted',
+            'MemoUpserted',
+        ], array_slice(WorkflowHistoryEvent::query()
+            ->where('workflow_run_id', $runId)
+            ->orderBy('sequence')
+            ->pluck('event_type')
+            ->map(static fn (mixed $type): string => $type instanceof HistoryEventType ? $type->value : (string) $type)
+            ->all(), 0, 17));
+        $this->assertSame(0, WorkflowTask::query()
+            ->where('workflow_run_id', $runId)
+            ->where('status', TaskStatus::Failed->value)
+            ->count());
     }
 
     public function testCooperativeCancellationInterruptsChildWaitAndAppliesParentClosePolicy(): void
