@@ -11,6 +11,22 @@
   column outside the migrator transaction under the schema lock budget, with
   no backfill. To fill it for opted-in runs that closed before the upgrade,
   rebuild them with `workflow:v2:rebuild-projections --run-id=...`.
+- A signal wait interrupted by a delivered cooperative cancellation, including
+  timeout cleanup, is no longer reported as received by a later signal
+  (#1315). `SignalWaits`, run detail and the projected waits show it as
+  `cancelled` with source status `cancellation_delivered`, also for the member
+  waits of a delivered group. A signal accepted after delivery is buffered
+  under its own command identity, as any signal without an open wait is: its
+  `SignalReceived` and `SignalRejected` no longer carry the interrupted wait's
+  `signal_wait_id`, and it no longer schedules a workflow task that could not
+  apply it. A `WorkflowTimedOut` run now closes its open signal waits like the
+  other terminal events. History is unchanged and replay keeps its earlier
+  view of these waits; runs recorded before the upgrade show the corrected
+  wait state on their next projection.
+  One upgrade edge case: on an external (bridge) worker, an in-flight run
+  whose late signal an earlier engine attributed to the interrupted wait, and
+  which then opens a new wait for that signal, may not schedule a task for it
+  until another task runs. Embedded runs are unaffected.
 
 ## 2.42.0 - 2026-11-26
 

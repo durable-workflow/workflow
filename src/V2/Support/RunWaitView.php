@@ -293,6 +293,10 @@ final class RunWaitView
                     ),
                 'cancelled' => match ($wait['source_status']) {
                     'timeout_cancelled' => sprintf('Signal %s timeout was cancelled.', $wait['signal_name']),
+                    'cancellation_delivered' => sprintf(
+                        'Signal %s wait ended when cancellation was delivered to it.',
+                        $wait['signal_name'],
+                    ),
                     'cancelled' => 'Signal wait ended when the run was cancelled.',
                     'terminated' => 'Signal wait ended when the run was terminated.',
                     'continued' => 'Signal wait ended when the run continued as new.',

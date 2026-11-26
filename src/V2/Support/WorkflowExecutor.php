@@ -8112,7 +8112,7 @@ final class WorkflowExecutor
 
         if ($call instanceof SignalCall) {
             $run->unsetRelation('historyEvents');
-            $open = collect(SignalWaits::forRun($run))
+            $open = collect(SignalWaits::forRun($run, replayCompatible: true))
                 ->contains(static fn (array $wait): bool => ($wait['sequence'] ?? null) === $sequence
                     && ($wait['status'] ?? null) === 'open');
 
@@ -8215,7 +8215,7 @@ final class WorkflowExecutor
             $current instanceof SignalCall => (
                 $this->appliedSignalEvent($run, $sequence, $current) !== null
                 || $this->pendingSignalCommand($run, $current) !== null
-                || SignalWaits::openWaitIdForName($run, $current->name) !== null
+                || SignalWaits::openWaitIdForName($run, $current->name, replayCompatible: true) !== null
             ) ? $sequence + 1 : $sequence,
             $current instanceof ChildWorkflowCall => (
                 ChildRunHistory::scheduledEventForSequence($run, $sequence) !== null

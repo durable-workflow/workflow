@@ -36,8 +36,20 @@ final class SignalWaits
      *     command_status: string|null,
      *     command_outcome: string|null
      * }>
+     *
+     * A cooperative cancellation delivered at a signal wait, or at a group
+     * containing one, ends that wait: workflow code was interrupted there and
+     * can never resume it with a signal. A workflow timeout closes open waits
+     * like every other terminal event. Signals accepted afterwards therefore
+     * do not resolve, and are not attributed to, the interrupted wait.
+     *
+     * Pass $replayCompatible to read the states replay decisions have always
+     * read, in which neither a delivered cancellation nor a workflow timeout
+     * closes a wait. Execution paths that derive replay cursors or
+     * history-writing decisions from these states use it, so that a history
+     * recorded before these closures existed replays unchanged.
      */
-    public static function forRun(WorkflowRun $run): array
+    public static function forRun(WorkflowRun $run, bool $replayCompatible = false): array
     {
         $run->loadMissing('historyEvents');
 
@@ -45,182 +57,21 @@ final class SignalWaits
         $openWaitIdsByName = [];
 
         foreach ($run->historyEvents->sortBy('sequence') as $event) {
-            if (! $event instanceof WorkflowHistoryEvent) {
-                continue;
-            }
-
-            $signalName = self::stringValue($event->payload['signal_name'] ?? null);
-
-            if ($event->event_type === HistoryEventType::SignalWaitOpened) {
-                if ($signalName === null) {
-                    continue;
-                }
-
-                $waitId = self::waitIdForOpenedEvent($event);
-
-                if ($waitId === null) {
-                    continue;
-                }
-
-                $waits[$waitId] = [
-                    'id' => $waitId,
-                    'signal_wait_id' => $waitId,
-                    'signal_id' => null,
-                    'signal_name' => $signalName,
-                    'sequence' => self::intValue($event->payload['sequence'] ?? null),
-                    'status' => 'open',
-                    'source_status' => 'waiting',
-                    'opened_at' => $event->recorded_at ?? $event->created_at,
-                    'deadline_at' => null,
-                    'resolved_at' => null,
-                    'timeout_fired_at' => null,
-                    'timeout_seconds' => self::intValue($event->payload['timeout_seconds'] ?? null),
-                    'timer_id' => null,
-                    'command_id' => null,
-                    'command_sequence' => null,
-                    'command_status' => null,
-                    'command_outcome' => null,
-                ];
-
-                $openWaitIdsByName[$signalName] ??= [];
-                $openWaitIdsByName[$signalName][] = $waitId;
-
-                continue;
-            }
-
-            if (
-                in_array($event->event_type, [
-                    HistoryEventType::TimerScheduled,
-                    HistoryEventType::TimerFired,
-                    HistoryEventType::TimerCancelled,
-                ], true)
-                && self::stringValue($event->payload['timer_kind'] ?? null) === 'signal_timeout'
-            ) {
-                if ($signalName === null) {
-                    continue;
-                }
-
-                $explicitWaitId = self::stringValue($event->payload['signal_wait_id'] ?? null);
-                $waitId = $event->event_type === HistoryEventType::TimerScheduled
-                    ? $explicitWaitId
-                    : self::consumeOpenWaitId($openWaitIdsByName, $signalName, $explicitWaitId);
-
-                if ($waitId === null || ! isset($waits[$waitId])) {
-                    continue;
-                }
-
-                $waits[$waitId]['timer_id'] = self::stringValue($event->payload['timer_id'] ?? null)
-                    ?? $waits[$waitId]['timer_id'];
-                $waits[$waitId]['timeout_seconds'] = self::intValue($event->payload['delay_seconds'] ?? null)
-                    ?? self::intValue($event->payload['timeout_seconds'] ?? null)
-                    ?? $waits[$waitId]['timeout_seconds'];
-                $waits[$waitId]['deadline_at'] = self::timestamp($event->payload['fire_at'] ?? null)
-                    ?? $waits[$waitId]['deadline_at'];
-
-                if ($event->event_type === HistoryEventType::TimerScheduled) {
-                    continue;
-                }
-
-                if (($waits[$waitId]['status'] ?? null) !== 'open') {
-                    continue;
-                }
-
-                $waits[$waitId]['status'] = $event->event_type === HistoryEventType::TimerFired
-                    ? 'resolved'
-                    : 'cancelled';
-                $waits[$waitId]['source_status'] = $event->event_type === HistoryEventType::TimerFired
-                    ? 'timed_out'
-                    : 'timeout_cancelled';
-                $waits[$waitId]['resolved_at'] = $event->recorded_at ?? $event->created_at;
-                $waits[$waitId]['timeout_fired_at'] = $event->event_type === HistoryEventType::TimerFired
-                    ? self::timestamp(
-                        $event->payload['fired_at'] ?? null
-                    ) ?? ($event->recorded_at ?? $event->created_at)
-                    : $waits[$waitId]['timeout_fired_at'];
-
-                continue;
-            }
-
-            if ($event->event_type === HistoryEventType::SignalWaitCancelled) {
-                $waitId = self::stringValue($event->payload['signal_wait_id'] ?? null);
-                if ($waitId !== null && isset($waits[$waitId]) && $waits[$waitId]['status'] === 'open') {
-                    $waits[$waitId]['status'] = 'cancelled';
-                    $waits[$waitId]['source_status'] = 'scope_cancelled';
-                    $waits[$waitId]['resolved_at'] = $event->recorded_at ?? $event->created_at;
-                    self::consumeOpenWaitId($openWaitIdsByName, $waits[$waitId]['signal_name'], $waitId);
-                }
-                continue;
-            }
-
-            if ($event->event_type === HistoryEventType::SelectionOperationCancelled) {
-                self::closeCancelledSelectionWaits($waits, $openWaitIdsByName, $event);
-
-                continue;
-            }
-
-            if (in_array($event->event_type, [
-                HistoryEventType::SignalReceived,
-                HistoryEventType::SignalApplied,
-            ], true)) {
-                if ($signalName === null) {
-                    continue;
-                }
-
-                $waitId = self::consumeOpenWaitId(
-                    $openWaitIdsByName,
-                    $signalName,
-                    self::stringValue($event->payload['signal_wait_id'] ?? null),
-                );
-
-                if ($waitId === null || ! isset($waits[$waitId])) {
-                    continue;
-                }
-
-                $currentStatus = $waits[$waitId]['status'] ?? null;
-                $currentSourceStatus = $waits[$waitId]['source_status'] ?? null;
-                $canApplyReceivedSignal = $event->event_type === HistoryEventType::SignalApplied
-                    && $currentStatus === 'resolved'
-                    && $currentSourceStatus === 'received';
-
-                if ($currentStatus !== 'open' && ! $canApplyReceivedSignal) {
-                    continue;
-                }
-
-                $waits[$waitId]['status'] = 'resolved';
-                $waits[$waitId]['source_status'] = $event->event_type === HistoryEventType::SignalApplied
-                    ? 'applied'
-                    : 'received';
-                $waits[$waitId]['signal_id'] = self::stringValue($event->payload['signal_id'] ?? null)
-                    ?? $waits[$waitId]['signal_id'];
-                $waits[$waitId]['resolved_at'] = $event->recorded_at ?? $event->created_at;
-                $waits[$waitId]['command_id'] = self::stringValue($event->workflow_command_id)
-                    ?? self::stringValue($event->payload['workflow_command_id'] ?? null)
-                    ?? self::stringValue(self::commandSnapshot($event)['id'] ?? null);
-                $waits[$waitId]['command_sequence'] = self::commandSequence($event);
-                $waits[$waitId]['command_status'] = self::commandStatus($event);
-                $waits[$waitId]['command_outcome'] = self::commandOutcome($event);
-
-                continue;
-            }
-
-            if (in_array($event->event_type, [
-                HistoryEventType::WorkflowCompleted,
-                HistoryEventType::WorkflowFailed,
-                HistoryEventType::WorkflowCancelled,
-                HistoryEventType::WorkflowTerminated,
-                HistoryEventType::WorkflowContinuedAsNew,
-            ], true)) {
-                self::closeOpenWaits($waits, $openWaitIdsByName, $event);
+            if ($event instanceof WorkflowHistoryEvent) {
+                self::applyEvent($waits, $openWaitIdsByName, $event, $replayCompatible);
             }
         }
 
         return array_values($waits);
     }
 
-    public static function openWaitIdForName(WorkflowRun $run, string $signalName): ?string
-    {
+    public static function openWaitIdForName(
+        WorkflowRun $run,
+        string $signalName,
+        bool $replayCompatible = false,
+    ): ?string {
         $openWaits = array_values(array_filter(
-            self::forRun($run),
+            self::forRun($run, $replayCompatible),
             static fn (array $wait): bool => $wait['signal_name'] === $signalName && $wait['status'] === 'open',
         ));
 
@@ -289,6 +140,251 @@ final class SignalWaits
             }
         }
         unset($wait);
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $waits
+     * @param array<string, list<string>> $openWaitIdsByName
+     */
+    private static function applyEvent(
+        array &$waits,
+        array &$openWaitIdsByName,
+        WorkflowHistoryEvent $event,
+        bool $replayCompatible,
+    ): void {
+        switch ($event->event_type) {
+            case HistoryEventType::SignalWaitOpened:
+                self::openWait($waits, $openWaitIdsByName, $event);
+                break;
+            case HistoryEventType::TimerScheduled:
+            case HistoryEventType::TimerFired:
+            case HistoryEventType::TimerCancelled:
+                self::applySignalTimeoutEvent($waits, $openWaitIdsByName, $event);
+                break;
+            case HistoryEventType::SignalWaitCancelled:
+                self::closeScopeCancelledWait($waits, $openWaitIdsByName, $event);
+                break;
+            case HistoryEventType::SelectionOperationCancelled:
+                self::closeCancelledSelectionWaits($waits, $openWaitIdsByName, $event);
+                break;
+            case HistoryEventType::SignalReceived:
+            case HistoryEventType::SignalApplied:
+                self::applySignalEvent($waits, $openWaitIdsByName, $event);
+                break;
+            case HistoryEventType::WorkflowCompleted:
+            case HistoryEventType::WorkflowFailed:
+            case HistoryEventType::WorkflowCancelled:
+            case HistoryEventType::WorkflowTerminated:
+            case HistoryEventType::WorkflowContinuedAsNew:
+                self::closeOpenWaits($waits, $openWaitIdsByName, $event);
+                break;
+            case HistoryEventType::CooperativeCancellationDelivered:
+                if (! $replayCompatible) {
+                    self::closeInterruptedWaits($waits, $openWaitIdsByName, $event);
+                }
+                break;
+            case HistoryEventType::WorkflowTimedOut:
+                if (! $replayCompatible) {
+                    self::closeOpenWaits($waits, $openWaitIdsByName, $event);
+                }
+                break;
+            default:
+                // Other events don't change a signal wait.
+                break;
+        }
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $waits
+     * @param array<string, list<string>> $openWaitIdsByName
+     */
+    private static function openWait(array &$waits, array &$openWaitIdsByName, WorkflowHistoryEvent $event): void
+    {
+        $signalName = self::stringValue($event->payload['signal_name'] ?? null);
+        $waitId = $signalName === null ? null : self::waitIdForOpenedEvent($event);
+
+        if ($signalName === null || $waitId === null) {
+            return;
+        }
+
+        $waits[$waitId] = [
+            'id' => $waitId,
+            'signal_wait_id' => $waitId,
+            'signal_id' => null,
+            'signal_name' => $signalName,
+            'sequence' => self::intValue($event->payload['sequence'] ?? null),
+            'status' => 'open',
+            'source_status' => 'waiting',
+            'opened_at' => $event->recorded_at ?? $event->created_at,
+            'deadline_at' => null,
+            'resolved_at' => null,
+            'timeout_fired_at' => null,
+            'timeout_seconds' => self::intValue($event->payload['timeout_seconds'] ?? null),
+            'timer_id' => null,
+            'command_id' => null,
+            'command_sequence' => null,
+            'command_status' => null,
+            'command_outcome' => null,
+        ];
+
+        $openWaitIdsByName[$signalName] ??= [];
+        $openWaitIdsByName[$signalName][] = $waitId;
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $waits
+     * @param array<string, list<string>> $openWaitIdsByName
+     */
+    private static function applySignalTimeoutEvent(
+        array &$waits,
+        array &$openWaitIdsByName,
+        WorkflowHistoryEvent $event,
+    ): void {
+        $signalName = self::stringValue($event->payload['signal_name'] ?? null);
+
+        if (self::stringValue($event->payload['timer_kind'] ?? null) !== 'signal_timeout' || $signalName === null) {
+            return;
+        }
+
+        $explicitWaitId = self::stringValue($event->payload['signal_wait_id'] ?? null);
+        $waitId = $event->event_type === HistoryEventType::TimerScheduled
+            ? $explicitWaitId
+            : self::consumeOpenWaitId($openWaitIdsByName, $signalName, $explicitWaitId);
+
+        if ($waitId === null || ! isset($waits[$waitId])) {
+            return;
+        }
+
+        $waits[$waitId]['timer_id'] = self::stringValue($event->payload['timer_id'] ?? null)
+            ?? $waits[$waitId]['timer_id'];
+        $waits[$waitId]['timeout_seconds'] = self::intValue($event->payload['delay_seconds'] ?? null)
+            ?? self::intValue($event->payload['timeout_seconds'] ?? null)
+            ?? $waits[$waitId]['timeout_seconds'];
+        $waits[$waitId]['deadline_at'] = self::timestamp($event->payload['fire_at'] ?? null)
+            ?? $waits[$waitId]['deadline_at'];
+
+        if ($event->event_type === HistoryEventType::TimerScheduled
+            || ($waits[$waitId]['status'] ?? null) !== 'open') {
+            return;
+        }
+
+        $fired = $event->event_type === HistoryEventType::TimerFired;
+        $waits[$waitId]['status'] = $fired ? 'resolved' : 'cancelled';
+        $waits[$waitId]['source_status'] = $fired ? 'timed_out' : 'timeout_cancelled';
+        $waits[$waitId]['resolved_at'] = $event->recorded_at ?? $event->created_at;
+        $waits[$waitId]['timeout_fired_at'] = $fired
+            ? self::timestamp($event->payload['fired_at'] ?? null) ?? ($event->recorded_at ?? $event->created_at)
+            : $waits[$waitId]['timeout_fired_at'];
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $waits
+     * @param array<string, list<string>> $openWaitIdsByName
+     */
+    private static function closeScopeCancelledWait(
+        array &$waits,
+        array &$openWaitIdsByName,
+        WorkflowHistoryEvent $event,
+    ): void {
+        $waitId = self::stringValue($event->payload['signal_wait_id'] ?? null);
+
+        if ($waitId !== null && isset($waits[$waitId]) && $waits[$waitId]['status'] === 'open') {
+            $waits[$waitId]['status'] = 'cancelled';
+            $waits[$waitId]['source_status'] = 'scope_cancelled';
+            $waits[$waitId]['resolved_at'] = $event->recorded_at ?? $event->created_at;
+            self::consumeOpenWaitId($openWaitIdsByName, $waits[$waitId]['signal_name'], $waitId);
+        }
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $waits
+     * @param array<string, list<string>> $openWaitIdsByName
+     */
+    private static function applySignalEvent(
+        array &$waits,
+        array &$openWaitIdsByName,
+        WorkflowHistoryEvent $event,
+    ): void {
+        $signalName = self::stringValue($event->payload['signal_name'] ?? null);
+
+        if ($signalName === null) {
+            return;
+        }
+
+        $waitId = self::consumeOpenWaitId(
+            $openWaitIdsByName,
+            $signalName,
+            self::stringValue($event->payload['signal_wait_id'] ?? null),
+        );
+
+        if ($waitId === null || ! isset($waits[$waitId])) {
+            return;
+        }
+
+        $applied = $event->event_type === HistoryEventType::SignalApplied;
+        $currentStatus = $waits[$waitId]['status'] ?? null;
+        $canApplyReceivedSignal = $applied
+            && $currentStatus === 'resolved'
+            && ($waits[$waitId]['source_status'] ?? null) === 'received';
+
+        if ($currentStatus !== 'open' && ! $canApplyReceivedSignal) {
+            return;
+        }
+
+        $waits[$waitId]['status'] = 'resolved';
+        $waits[$waitId]['source_status'] = $applied ? 'applied' : 'received';
+        $waits[$waitId]['signal_id'] = self::stringValue($event->payload['signal_id'] ?? null)
+            ?? $waits[$waitId]['signal_id'];
+        $waits[$waitId]['resolved_at'] = $event->recorded_at ?? $event->created_at;
+        $waits[$waitId]['command_id'] = self::stringValue($event->workflow_command_id)
+            ?? self::stringValue($event->payload['workflow_command_id'] ?? null)
+            ?? self::stringValue(self::commandSnapshot($event)['id'] ?? null);
+        $waits[$waitId]['command_sequence'] = self::commandSequence($event);
+        $waits[$waitId]['command_status'] = self::commandStatus($event);
+        $waits[$waitId]['command_outcome'] = self::commandOutcome($event);
+    }
+
+    /**
+     * Close the open signal waits a delivered cooperative cancellation
+     * interrupted: the wait at a signal delivery, or the member waits of a
+     * delivered parallel or selection group. A delivery at a durable handle
+     * await or a started child await leaves the operation itself awaitable,
+     * so it closes nothing here.
+     *
+     * @param array<string, array<string, mixed>> $waits
+     * @param array<string, list<string>> $openWaitIdsByName
+     */
+    private static function closeInterruptedWaits(
+        array &$waits,
+        array &$openWaitIdsByName,
+        WorkflowHistoryEvent $event,
+    ): void {
+        $callKind = self::stringValue($event->payload['call_kind'] ?? null);
+        $baseSequence = self::intValue($event->payload['sequence'] ?? null);
+        $span = match ($callKind) {
+            'signal' => 1,
+            'parallel' => self::intValue($event->payload['sequence_span'] ?? null) ?? 1,
+            default => null,
+        };
+
+        if ($baseSequence === null || $span === null || $span < 1) {
+            return;
+        }
+
+        foreach ($waits as $waitId => $wait) {
+            $sequence = self::intValue($wait['sequence'] ?? null);
+            if ($sequence === null
+                || $sequence < $baseSequence
+                || $sequence - $baseSequence >= $span
+                || ($wait['status'] ?? null) !== 'open') {
+                continue;
+            }
+
+            $waits[$waitId]['status'] = 'cancelled';
+            $waits[$waitId]['source_status'] = 'cancellation_delivered';
+            $waits[$waitId]['resolved_at'] = $event->recorded_at ?? $event->created_at;
+            self::consumeOpenWaitId($openWaitIdsByName, $wait['signal_name'], (string) $waitId);
+        }
     }
 
     /**

@@ -117,6 +117,7 @@ use Workflow\V2\Support\RunWaitProjector;
 use Workflow\V2\Support\ScheduleManager;
 use Workflow\V2\Support\ServiceCallPrincipal;
 use Workflow\V2\Support\ServiceCallScheduler;
+use Workflow\V2\Support\SignalWaits;
 use Workflow\V2\Support\TaskRepairPolicy;
 use Workflow\V2\Support\VersionUsageQuery;
 use Workflow\V2\Support\WorkflowCommandNormalizer;
@@ -3326,6 +3327,10 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
             }
             if ($fixture['id'] === 'selection-cancelled-signal-occurrence') {
                 $this->assertLaterSignalBelongsToItsCurrentSelection($fixture);
+                continue;
+            }
+            if ($fixture['id'] === 'cooperative-delivery-ends-signal-wait-attribution') {
+                $this->assertDeliveredCancellationEndsTheSignalWait($fixture);
                 continue;
             }
 
@@ -7221,6 +7226,80 @@ final class V2EmbeddedReplayRegressionCorpusTest extends TestCase
                 ->all()
         );
         $this->assertSame(0, $run->tasks()->where('status', TaskStatus::Failed)->count());
+    }
+
+    /**
+     * A cooperative cancellation delivered at a signal wait ends that wait.
+     * The retained history attributed a later signal to the interrupted wait,
+     * as engines before #1315 did; it still replays, but the derived views
+     * report the wait as ended at delivery. A live run then attributes a
+     * signal accepted after delivery to no wait.
+     *
+     * @param array<string, mixed> $fixture
+     */
+    private function assertDeliveredCancellationEndsTheSignalWait(array $fixture): void
+    {
+        $expected = $fixture['interrupted_wait'];
+        $assertInterrupted = function (WorkflowRun $run, string $waitId) use ($expected): void {
+            $run = $run->fresh(['historyEvents']);
+            $wait = collect(SignalWaits::forRun($run))->firstWhere('signal_wait_id', $waitId);
+            $this->assertIsArray($wait);
+            $this->assertSame('cancelled', $wait['status']);
+            $this->assertSame($expected['source_status'], $wait['source_status']);
+            $this->assertNull($wait['signal_id']);
+            $this->assertNull(SignalWaits::openWaitIdForName($run, $expected['signal_name']));
+            $detail = collect(RunDetailView::forRun($run)['waits'])
+                ->first(static fn (array $row): bool => ($row['kind'] ?? null) === 'signal'
+                    && ($row['id'] ?? null) === $waitId);
+            $this->assertIsArray($detail);
+            $this->assertSame('cancelled', $detail['status']);
+            $this->assertSame($expected['source_status'], $detail['source_status']);
+        };
+
+        $retained = $this->createRunFromFixture($fixture);
+        $assertInterrupted($retained, $expected['signal_wait_id']);
+
+        $stub = WorkflowStub::make(
+            $fixture['workflow']['type'],
+            sprintf('regression-corpus-embedded-%d', ++$this->workflowNumber),
+        );
+        $stub->start(...$fixture['workflow']['arguments']);
+        $run = WorkflowRun::query()->findOrFail($stub->runId());
+        $this->runReadyWorkflowTask($run);
+        $opened = $run->historyEvents()
+            ->where('event_type', HistoryEventType::SignalWaitOpened)->sole();
+        $request = WorkflowStub::loadRun($run->id)->requestCancellation('interrupt the signal wait', 30);
+        $this->runReadyWorkflowTask($run);
+        $delivery = $run->historyEvents()
+            ->where('event_type', HistoryEventType::CooperativeCancellationDelivered)->sole();
+        $this->assertSame($request->commandId(), $delivery->workflow_command_id);
+        $this->assertSame('signal', $delivery->payload['call_kind']);
+        $this->assertSame($opened->payload['sequence'], $delivery->payload['sequence']);
+        $assertInterrupted($run, $opened->payload['signal_wait_id']);
+
+        $late = $stub->refresh()
+            ->attemptSignal($expected['signal_name']);
+        $this->assertTrue($late->accepted());
+        $bufferedWaitId = SignalWaits::bufferedWaitIdForCommandId($late->commandId());
+        $received = $run->historyEvents()
+            ->where('event_type', HistoryEventType::SignalReceived)->sole();
+        $this->assertSame($bufferedWaitId, $received->payload['signal_wait_id']);
+        $this->assertSame(
+            $bufferedWaitId,
+            WorkflowSignal::query()->where('workflow_command_id', $late->commandId())->sole()->signal_wait_id,
+        );
+        $assertInterrupted($run, $opened->payload['signal_wait_id']);
+        $this->assertSame(0, $run->historyEvents()->where('event_type', HistoryEventType::SignalApplied)->count());
+
+        // The retained history still replays to its cleanup unchanged.
+        $before = $retained->historyEvents()
+            ->orderBy('sequence')
+            ->get()
+            ->toArray();
+        $state = (new QueryStateReplayer())->replayState($retained->fresh(['historyEvents']));
+        $this->assertSame(2, $state->sequence);
+        $this->assertInstanceOf(ActivityCall::class, $state->current);
+        $this->assertSame($before, $retained->historyEvents()->orderBy('sequence')->get()->toArray());
     }
 
     /**
