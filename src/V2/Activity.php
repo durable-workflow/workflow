@@ -5,11 +5,14 @@ declare(strict_types=1);
 namespace Workflow\V2;
 
 use Illuminate\Container\Container;
+use LogicException;
 use Workflow\Traits\ResolvesMethodDependencies;
 use Workflow\V2\Enums\ActivityAttemptStatus;
 use Workflow\V2\Enums\ActivityStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\ActivityHeartbeatResumeUnavailable;
+use Workflow\V2\Exceptions\ActivityLeaseExpiredException;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowRun;
@@ -20,10 +23,12 @@ use Workflow\V2\Support\ActivityAttemptNormalizer;
 use Workflow\V2\Support\ActivityHeartbeatHistory;
 use Workflow\V2\Support\ActivityLease;
 use Workflow\V2\Support\ActivityRowLockOrder;
+use Workflow\V2\Support\ActivityTaskClaim;
 use Workflow\V2\Support\ActivityTimeoutEnforcer;
 use Workflow\V2\Support\HeartbeatProgress;
 use Workflow\V2\Support\LocalActivityRuntime;
 use Workflow\V2\Support\SqliteTransaction;
+use Workflow\V2\Support\StructuralLimits;
 
 abstract class Activity
 {
@@ -43,6 +48,8 @@ abstract class Activity
 
     private Container $container;
 
+    private ?ActivityTaskClaim $heartbeatClaim = null;
+
     /**
      * Attach engine-owned context after Laravel constructs the activity.
      *
@@ -52,6 +59,7 @@ abstract class Activity
         ActivityExecution $execution,
         WorkflowRun $run,
         ?string $taskId = null,
+        ?ActivityTaskClaim $claim = null,
     ): void {
         if (isset($this->execution) || isset($this->run)) {
             throw new \LogicException(sprintf(
@@ -63,6 +71,7 @@ abstract class Activity
         $this->execution = $execution;
         $this->run = $run;
         $this->taskId = $taskId;
+        $this->heartbeatClaim = $claim;
         $this->container = Container::getInstance();
     }
 
@@ -108,20 +117,79 @@ abstract class Activity
      */
     public function heartbeat(array $progress = []): void
     {
-        $normalizedProgress = HeartbeatProgress::normalizeForWrite($progress);
+        $this->writeHeartbeat(HeartbeatProgress::normalizeForWrite($progress));
+    }
 
-        SqliteTransaction::run(function () use ($normalizedProgress): void {
+    /**
+     * The checkpoint contract version for a claimed embedded activity, or null when unavailable.
+     */
+    public function heartbeatResumeVersion(): ?int
+    {
+        return $this->heartbeatClaim?->supportsHeartbeatResume() === true
+            ? ActivityHeartbeatCheckpoint::VERSION : null;
+    }
+
+    /**
+     * Read the immutable checkpoint received with this attempt. A supported
+     * attempt without a prior checkpoint returns null.
+     */
+    public function lastHeartbeatCheckpoint(): ?ActivityHeartbeatCheckpoint
+    {
+        return $this->checkpointClaim()
+            ->receivedHeartbeatCheckpoint();
+    }
+
+    /**
+     * Renew the heartbeat and durably checkpoint application details.
+     * A successful return acknowledges the storage commit.
+     *
+     * @param array<array-key, mixed> $details JSON-compatible values.
+     */
+    public function heartbeatCheckpoint(array $details): void
+    {
+        $this->checkpointClaim();
+        $encoded = json_encode($details, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION);
+        StructuralLimits::guardPayloadSize($encoded);
+        $connection = $this->execution->getConnection();
+        if ($connection->transactionLevel() !== 0 || $connection->getPdo()->inTransaction()) {
+            throw new LogicException(
+                'An activity checkpoint must commit outside an existing workflow storage transaction.'
+            );
+        }
+
+        if (! $this->writeHeartbeat(null, $encoded)) {
+            throw new ActivityLeaseExpiredException('The activity attempt no longer owns its heartbeat checkpoint.');
+        }
+    }
+
+    private function checkpointClaim(): ActivityTaskClaim
+    {
+        if ($this->heartbeatClaim?->supportsHeartbeatResume() !== true) {
+            throw new ActivityHeartbeatResumeUnavailable(
+                'Activity heartbeat checkpoint recovery is unavailable in this context.'
+            );
+        }
+
+        return $this->heartbeatClaim;
+    }
+
+    /**
+     * @param array<string, mixed>|null $normalizedProgress
+     */
+    private function writeHeartbeat(?array $normalizedProgress, ?string $checkpoint = null): bool
+    {
+        return SqliteTransaction::run(function () use ($normalizedProgress, $checkpoint): bool {
             $lockedRows = ActivityRowLockOrder::lockForExecution($this->execution->id);
             $execution = $lockedRows['execution'];
 
             if (! $execution instanceof ActivityExecution) {
                 ActivityExecution::query()->findOrFail($this->execution->id);
 
-                return;
+                return false;
             }
 
             if ($execution->status !== ActivityStatus::Running) {
-                return;
+                return false;
             }
 
             /** @var WorkflowRun $run */
@@ -130,7 +198,7 @@ abstract class Activity
                 ->findOrFail($execution->workflow_run_id);
 
             if ($run->status->isTerminal()) {
-                return;
+                return false;
             }
 
             /** @var WorkflowTask|null $task */
@@ -141,24 +209,25 @@ abstract class Activity
                     ->find($this->taskId);
 
             if (! $this->ownsHeartbeatAttempt($execution, $task)) {
-                return;
+                return false;
             }
 
             $expired = $task instanceof WorkflowTask
                 ? ActivityAttemptAuthority::expiredReason($task, $execution, now(), $run) !== null
                 : ActivityTimeoutEnforcer::hasExpiredDeadline($execution, now());
             if ($expired) {
-                return;
+                return false;
             }
 
-            $attempt = ActivityAttemptNormalizer::ensureCurrentAttempt($execution, $task);
-
-            if (! $attempt instanceof ActivityAttempt) {
-                return;
+            $attempt = $checkpoint === null
+                ? ActivityAttemptNormalizer::ensureCurrentAttempt($execution, $task)
+                : $lockedRows['attempt'];
+            if (! $attempt instanceof ActivityAttempt || ! $this->ownsNormalizedAttempt($execution, $attempt, $task)) {
+                return false;
             }
 
-            if (! $this->ownsNormalizedAttempt($execution, $attempt, $task)) {
-                return;
+            if ($checkpoint !== null && ! $this->ownsCheckpointClaim($run, $execution, $attempt, $task)) {
+                return false;
             }
 
             $heartbeatAt = now();
@@ -181,8 +250,19 @@ abstract class Activity
                 $executionUpdate['heartbeat_deadline_at'] = $heartbeatDeadlineAt;
             }
 
-            $execution->forceFill($executionUpdate)
+            if ($checkpoint !== null) {
+                $executionUpdate['last_heartbeat_checkpoint'] = json_encode([
+                    'version' => ActivityHeartbeatCheckpoint::VERSION,
+                    'acknowledged_at' => $heartbeatAt->toJSON(),
+                    'details_json' => $checkpoint,
+                ], JSON_THROW_ON_ERROR);
+            }
+
+            $executionSaved = $execution->forceFill($executionUpdate)
                 ->save();
+            if ($checkpoint !== null && ! $executionSaved) {
+                throw new LogicException('The activity checkpoint update was refused by the storage model.');
+            }
 
             if (
                 $attempt->activity_execution_id === $execution->id
@@ -202,7 +282,7 @@ abstract class Activity
             if (! $task instanceof WorkflowTask) {
                 $this->recordHeartbeat($run, $execution, $attempt, null, $heartbeatAt, null, $normalizedProgress);
 
-                return;
+                return true;
             }
 
             if ($this->ownsLocalWorkflowTask($execution, $attempt, $task)) {
@@ -225,7 +305,7 @@ abstract class Activity
                     $normalizedProgress
                 );
 
-                return;
+                return true;
             }
 
             if (
@@ -234,7 +314,7 @@ abstract class Activity
                 || ($task->payload['activity_execution_id'] ?? null) !== $execution->id
                 || $task->attempt_count !== $this->attemptCount()
             ) {
-                return;
+                return false;
             }
 
             $task->forceFill([
@@ -267,7 +347,30 @@ abstract class Activity
                 $leaseExpiresAt,
                 $normalizedProgress
             );
-        });
+
+            return true;
+        }, connection: $checkpoint === null ? null : $this->execution->getConnection());
+    }
+
+    private function ownsCheckpointClaim(
+        WorkflowRun $run,
+        ActivityExecution $execution,
+        ActivityAttempt $attempt,
+        ?WorkflowTask $task,
+    ): bool {
+        $identity = $this->checkpointClaim()
+            ->identity();
+
+        return $task instanceof WorkflowTask
+            && $task->task_type === TaskType::Activity
+            && $task->id === $identity['workflow_task_id']
+            && $run->id === $identity['workflow_run_id']
+            && $execution->id === $identity['activity_execution_id']
+            && array_key_exists('last_heartbeat_checkpoint', $execution->getAttributes())
+            && $attempt->id === $identity['activity_attempt_id']
+            && $attempt->workflow_run_id === $run->id
+            && $attempt->lease_owner === $identity['lease_owner']
+            && $task->lease_owner === $identity['lease_owner'];
     }
 
     private function ownsHeartbeatAttempt(ActivityExecution $execution, ?WorkflowTask $task): bool

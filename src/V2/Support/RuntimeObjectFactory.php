@@ -50,6 +50,7 @@ final class RuntimeObjectFactory
         ActivityExecution $execution,
         WorkflowRun $run,
         ?string $taskId = null,
+        ?ActivityTaskClaim $claim = null,
     ): Activity {
         $activity = Container::getInstance()->make($activityClass);
 
@@ -61,7 +62,7 @@ final class RuntimeObjectFactory
             ));
         }
 
-        $activity->bindRuntime($execution, $run, $taskId);
+        $activity->bindRuntime($execution, $run, $taskId, $claim);
 
         return $activity;
     }

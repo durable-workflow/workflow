@@ -7,10 +7,13 @@ namespace Tests\Feature\V2;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
+use LogicException;
 use PHPUnit\Framework\Attributes\DataProvider;
+use RuntimeException;
 use Tests\Fixtures\V2\TestActivityTimeoutCleanupWorkflow;
 use Tests\Fixtures\V2\TestGreetingActivity;
 use Tests\Fixtures\V2\TestGreetingWorkflow;
+use Tests\Fixtures\V2\TestHeartbeatCheckpointActivity;
 use Tests\TestCase;
 use Throwable;
 use Workflow\Serializers\Serializer;
@@ -23,6 +26,9 @@ use Workflow\V2\Enums\HistoryEventType;
 use Workflow\V2\Enums\RunStatus;
 use Workflow\V2\Enums\TaskStatus;
 use Workflow\V2\Enums\TaskType;
+use Workflow\V2\Exceptions\ActivityHeartbeatResumeUnavailable;
+use Workflow\V2\Exceptions\ActivityLeaseExpiredException;
+use Workflow\V2\Jobs\RunActivityTask;
 use Workflow\V2\Jobs\RunWorkflowTask;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
@@ -40,6 +46,7 @@ use Workflow\V2\Support\FailureSnapshots;
 use Workflow\V2\Support\RunActivityView;
 use Workflow\V2\Support\RuntimeObjectFactory;
 use Workflow\V2\Support\TaskRepair;
+use Workflow\V2\Support\TypeRegistry;
 use Workflow\V2\TaskWatchdog;
 use Workflow\V2\WorkflowStub;
 
@@ -728,6 +735,155 @@ final class V2ActivityTimeoutTest extends TestCase
         $this->assertSame('stale_attempt', $failure['reason']);
 
         Carbon::setTestNow();
+    }
+
+    public function testEmbeddedRetryReceivesTheLastCommittedCheckpoint(): void
+    {
+        Queue::fake();
+        Carbon::setTestNow('2026-01-15 10:00:00');
+
+        try {
+            $policy = [
+                'snapshot_version' => 1,
+                'max_attempts' => 3,
+                'backoff_seconds' => [0, 0],
+                'start_to_close_timeout' => 30,
+                'schedule_to_start_timeout' => null,
+                'schedule_to_close_timeout' => 60,
+                'heartbeat_timeout' => 5,
+            ];
+            [$run, $execution, $task] = $this->createPendingActivity(
+                instanceId: 'embedded-heartbeat-checkpoint',
+                retryPolicy: $policy,
+            );
+            $absoluteDeadline = now()
+                ->addSeconds(60);
+            $execution->forceFill([
+                'activity_class' => TestHeartbeatCheckpointActivity::class,
+                'activity_type' => TypeRegistry::for(TestHeartbeatCheckpointActivity::class),
+                'schedule_to_close_deadline_at' => $absoluteDeadline,
+            ])->save();
+
+            [$firstClaim] = ActivityTaskClaimer::claim($task->id, 'initial-worker');
+            $this->assertNotNull($firstClaim);
+            $first = RuntimeObjectFactory::activity(
+                TestHeartbeatCheckpointActivity::class,
+                $firstClaim->execution,
+                $firstClaim->run,
+                $task->id,
+                $firstClaim,
+            );
+            $this->assertSame(1, $first->heartbeatResumeVersion());
+            $this->assertNull($first->lastHeartbeatCheckpoint());
+            $details = [
+                'cursor' => 42,
+                'nested' => [true, null, '42', 42.0],
+            ];
+            $ackTime = now()
+                ->toJSON();
+            $first->heartbeatCheckpoint($details);
+            $this->assertNull($first->lastHeartbeatCheckpoint());
+
+            // Losing the worker before it submits an outcome leaves the
+            // committed checkpoint available to the ordinary timeout retry.
+            $first->heartbeat([
+                'message' => 'operator progress',
+                'details' => [
+                    'cursor' => 999,
+                ],
+            ]);
+            $storage = $execution->fresh()
+                ->getRawOriginal('last_heartbeat_checkpoint');
+            $this->assertIsString($storage);
+            $this->assertArrayNotHasKey('last_heartbeat_checkpoint', $execution->fresh()->toArray());
+            Carbon::setTestNow(now()->addSeconds(6));
+            $timeout = ActivityTimeoutEnforcer::enforce($execution->id);
+            $this->assertTrue($timeout['enforced']);
+            $retry = $timeout['next_task'];
+            $this->assertInstanceOf(WorkflowTask::class, $retry);
+
+            [$secondClaim] = ActivityTaskClaimer::claim($retry->id, 'replacement-worker');
+            $this->assertNotNull($secondClaim);
+            $this->assertSame($firstClaim->execution->id, $secondClaim->execution->id);
+            $this->assertNotSame($firstClaim->attemptId(), $secondClaim->attemptId());
+            try {
+                $first->heartbeatCheckpoint([
+                    'cursor' => 999,
+                ]);
+                $this->fail('The worker from the timed-out attempt was allowed to checkpoint.');
+            } catch (ActivityLeaseExpiredException) {
+                $this->assertSame($storage, $execution->fresh()->getRawOriginal('last_heartbeat_checkpoint'));
+            }
+
+            $second = RuntimeObjectFactory::activity(
+                TestHeartbeatCheckpointActivity::class,
+                $secondClaim->execution,
+                $secondClaim->run,
+                $retry->id,
+                $secondClaim,
+            );
+            $checkpoint = $second->lastHeartbeatCheckpoint();
+            $this->assertNotNull($checkpoint);
+            $this->assertSame(1, $checkpoint->contractVersion);
+            $this->assertSame($details, $checkpoint->details());
+            $this->assertSame($ackTime, $checkpoint->acknowledgedAt);
+            $copy = $checkpoint->details();
+            $copy['cursor'] = 999;
+            $this->assertSame($details, $checkpoint->details());
+
+            // An inner savepoint cannot acknowledge durability while its
+            // enclosing application transaction can still roll back.
+            $connection = $secondClaim->execution->getConnection();
+            $connection->beginTransaction();
+            try {
+                $second->heartbeatCheckpoint([
+                    'cursor' => 100,
+                ]);
+                $this->fail('The worker acknowledged a checkpoint inside an open transaction.');
+            } catch (LogicException) {
+                $this->assertSame($storage, $execution->fresh()->getRawOriginal('last_heartbeat_checkpoint'));
+            } finally {
+                $connection->rollBack();
+            }
+
+            $next = ActivityOutcomeRecorder::record(
+                $retry->id,
+                $secondClaim->attemptId(),
+                2,
+                null,
+                new RuntimeException('planned retry'),
+                3,
+                0,
+            );
+            $this->assertTrue($next['recorded']);
+            $thirdTask = $next['next_task'];
+            $this->assertInstanceOf(WorkflowTask::class, $thirdTask);
+            (new RunActivityTask($thirdTask->id))->handle();
+
+            $execution->refresh();
+            $this->assertSame(ActivityStatus::Completed, $execution->status);
+            $this->assertSame($run->id, $execution->workflow_run_id);
+            $this->assertSameJsonObject($policy, $execution->retry_policy);
+            $this->assertTrue($absoluteDeadline->equalTo($execution->schedule_to_close_deadline_at));
+            $this->assertSame([
+                'execution_id' => $execution->id,
+                'attempt_id' => $execution->current_attempt_id,
+                'version' => 1,
+                'details' => $details,
+                'acknowledged_at' => $ackTime,
+                'name' => 'Taylor',
+            ], $execution->activityResult());
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function testAnUnclaimedActivityReportsCheckpointSupportUnavailable(): void
+    {
+        $activity = new TestHeartbeatCheckpointActivity();
+        $this->assertNull($activity->heartbeatResumeVersion());
+        $this->expectException(ActivityHeartbeatResumeUnavailable::class);
+        $activity->lastHeartbeatCheckpoint();
     }
 
     /**

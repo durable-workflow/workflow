@@ -6,6 +6,7 @@ namespace Workflow\V2\Support;
 
 use DateTimeImmutable;
 use DateTimeZone;
+use Workflow\V2\ActivityHeartbeatCheckpoint;
 use Workflow\V2\Models\ActivityAttempt;
 use Workflow\V2\Models\ActivityExecution;
 use Workflow\V2\Models\WorkflowRun;
@@ -14,6 +15,10 @@ use Workflow\V2\Models\WorkflowTask;
 final class ActivityTaskClaim
 {
     private readonly int $claimedAt;
+
+    private readonly bool $heartbeatResumeSupported;
+
+    private readonly ?string $receivedHeartbeatCheckpoint;
 
     /**
      * @var array<string, mixed>
@@ -48,6 +53,10 @@ final class ActivityTaskClaim
     ) {
         $monotonic = hrtime(true);
         $this->claimedAt = $monotonic;
+        $this->heartbeatResumeSupported = array_key_exists('last_heartbeat_checkpoint', $execution->getAttributes());
+        $checkpoint = $execution->getRawOriginal('last_heartbeat_checkpoint');
+        $this->receivedHeartbeatCheckpoint = $this->attemptNumber() > 1 && is_string($checkpoint)
+            ? $checkpoint : null;
         $this->identity = [
             'workflow_task_id' => $task->getKey(),
             'workflow_run_id' => $run->getKey(),
@@ -86,6 +95,17 @@ final class ActivityTaskClaim
         }
         $this->businessAdmissionDeadline = $businessRemaining === null
             ? null : $monotonic + (int) ($businessRemaining * 1_000);
+    }
+
+    public function supportsHeartbeatResume(): bool
+    {
+        return $this->heartbeatResumeSupported;
+    }
+
+    public function receivedHeartbeatCheckpoint(): ?ActivityHeartbeatCheckpoint
+    {
+        return $this->receivedHeartbeatCheckpoint === null
+            ? null : ActivityHeartbeatCheckpoint::fromStorage($this->receivedHeartbeatCheckpoint);
     }
 
     /**
