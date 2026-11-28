@@ -796,7 +796,10 @@ final class TaskDispatcher
      */
     private static function refreshDeferredRunSummary(string $runId, array $entries): void
     {
-        if (count($entries) === 1) {
+        // Only the bounded projection uses the published task's status and
+        // type. A full projection reads fresh state from the run recorded
+        // when the dispatcher queued this refresh.
+        if (count($entries) === 1 && $entries[0]['bounded']) {
             /** @var WorkflowTask|null $task */
             $task = ConfiguredV2Models::query('task_model', WorkflowTask::class)->find($entries[0]['task_id']);
 
