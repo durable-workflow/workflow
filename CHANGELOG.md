@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+## 2.43.0 - 2026-11-28
+
+2.43.0 adds acknowledged heartbeat checkpoints to queued embedded V2
+activities and exposes timeout cleanup outcomes in run lists. Apply the two
+package migrations before starting updated workers.
+
+**Upgrade notes**
+
+- The new public methods on `Workflow\V2\Activity` are
+  `heartbeatCheckpoint()`, `lastHeartbeatCheckpoint()` and
+  `heartbeatResumeVersion()`. Rename any application methods using those
+  names before upgrading to avoid inherited method conflicts.
+- Migration `2026_11_28_000100_add_heartbeat_checkpoint_to_activity_executions`
+  adds nullable checkpoint storage. Existing executions start without a
+  checkpoint. The rollback refuses to drop the column while it contains
+  retained checkpoints. Checkpoints follow activity execution retention.
+
+**Changes**
+
+- Queued embedded V2 activities can call `heartbeatCheckpoint($details)`
+  with a JSON-compatible PHP array. A successful return acknowledges the
+  committed write on the logical activity execution. A later attempt can
+  read the original acknowledgement time and typed details from
+  `lastHeartbeatCheckpoint()`. The accessor returns `null` when a supported
+  attempt starts without a checkpoint and throws
+  `ActivityHeartbeatResumeUnavailable` when the context lacks the contract.
+  Ordinary `heartbeat()` still reports operator progress. Use stable provider
+  idempotency keys to reconcile external work after an uncertain outcome.
+  (durable-workflow/.github#218, #1317)
 - Run lists show the timeout cleanup outcome (#863). The run summary gains a
   nullable `timeout_cleanup` JSON column holding what describe returns under
   `run.timeout_cleanup` (`outcome: running` while cleanup is open, then the
@@ -13,7 +42,7 @@
   rebuild them with `workflow:v2:rebuild-projections --run-id=...`.
 - A signal wait interrupted by a delivered cooperative cancellation, including
   timeout cleanup, is no longer reported as received by a later signal
-  (#1315). `SignalWaits`, run detail and the projected waits show it as
+  (#1315, #1316). `SignalWaits`, run detail and the projected waits show it as
   `cancelled` with source status `cancellation_delivered`, also for the member
   waits of a delivered group. A signal accepted after delivery is buffered
   under its own command identity, as any signal without an open wait is: its
