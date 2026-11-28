@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Tests\Feature\V2;
 
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Queue\CallQueuedHandler;
 use Illuminate\Queue\Events\WorkerStarting;
+use Illuminate\Queue\TimeoutExceededException;
 use Illuminate\Queue\WorkerOptions;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
@@ -206,6 +208,38 @@ final class V2WorkflowTaskLostLeaseTest extends TestCase
         $workflow = WorkflowStub::make(TestGreetingWorkflow::class, 'lost-lease-job-timeout-set');
         $workflow->start('Taylor');
         Queue::assertPushed(RunWorkflowTask::class, static fn (RunWorkflowTask $job): bool => $job->timeout === 120);
+    }
+
+    public function testQueueFailureReportsTheWorkflowTaskAndItsTimeoutSource(): void
+    {
+        Log::spy();
+        $handler = $this->app->make(CallQueuedHandler::class);
+
+        foreach ([null, 80] as $timeout) {
+            $taskId = $timeout === null ? 'worker-timeout-task' : 'job-timeout-task';
+            $job = (new RunWorkflowTask($taskId))->onConnection('redis')
+                ->onQueue('workflows');
+            $job->timeout = $timeout;
+            $data = [
+                'command' => serialize($job),
+            ];
+
+            $handler->failed($data, new TimeoutExceededException('Queue timeout.'), $taskId);
+            Log::shouldHaveReceived('warning')
+                ->with('Workflow task queue job reached its execution timeout.', [
+                    'workflow_task_id' => $taskId,
+                    'queue_connection' => 'redis',
+                    'queue' => 'workflows',
+                    'timeout_source' => $timeout === null ? 'worker' : 'job',
+                    'job_timeout_seconds' => $timeout,
+                ])->once();
+        }
+
+        $job = new RunWorkflowTask('ordinary-failure-task');
+        $handler->failed([
+            'command' => serialize($job),
+        ], new InvalidArgumentException('Ordinary failure.'), 'ordinary-failure');
+        Log::shouldHaveReceived('warning')->twice();
     }
 
     public function testWorkerStartWarnsWorkflowQueueWorkersWhoseTimeoutIsBelowTheLease(): void

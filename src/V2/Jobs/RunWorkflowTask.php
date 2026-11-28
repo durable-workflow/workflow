@@ -9,6 +9,8 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Queue\TimeoutExceededException;
+use Illuminate\Support\Facades\Log;
 use Throwable;
 use Workflow\V2\Contracts\HistoryProjectionRole;
 use Workflow\V2\Enums\TaskStatus;
@@ -68,6 +70,25 @@ final class RunWorkflowTask implements ShouldQueue
         public readonly string $taskId,
     ) {
         $this->afterCommit();
+    }
+
+    public function failed(?Throwable $failure): void
+    {
+        if (! $failure instanceof TimeoutExceededException) {
+            return;
+        }
+
+        try {
+            Log::warning('Workflow task queue job reached its execution timeout.', [
+                'workflow_task_id' => $this->taskId,
+                'queue_connection' => $this->connection,
+                'queue' => $this->queue,
+                'timeout_source' => $this->timeout === null ? 'worker' : 'job',
+                'job_timeout_seconds' => $this->timeout,
+            ]);
+        } catch (Throwable) {
+            // A logging failure must leave the queue worker's timeout handling in control.
+        }
     }
 
     public function handle(WorkflowExecutor $executor): void
