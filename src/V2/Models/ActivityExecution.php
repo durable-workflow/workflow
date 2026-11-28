@@ -28,6 +28,8 @@ class ActivityExecution extends Model
 
     protected $keyType = 'string';
 
+    protected $hidden = ['last_heartbeat_checkpoint'];
+
     protected $dateFormat = 'Y-m-d H:i:s.u';
 
     protected $casts = [

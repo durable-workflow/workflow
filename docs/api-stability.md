@@ -582,6 +582,33 @@ heartbeat deadline. Timeout enforcement rechecks the latest durable state under
 locks, so a stale scanner candidate cannot undo that valid renewal. Timeout and
 repair remain responsible for recovering work after refused late outcomes.
 
+## Embedded activity heartbeat checkpoints
+
+A queued embedded V2 activity can call `$this->heartbeatCheckpoint($details)`
+with a JSON-compatible PHP array. A successful return acknowledges a durable
+write tied to the original activity execution. The same call renews the
+application heartbeat within the existing lease and deadline limits. Ordinary
+`heartbeat()` calls still report operator progress independently.
+
+`$this->lastHeartbeatCheckpoint()` gives the attempt's immutable received
+snapshot. It returns `null` on a supported claim without a prior checkpoint.
+`ActivityHeartbeatResumeUnavailable` distinguishes activity contexts without
+the contract. `heartbeatResumeVersion()` returns version 1 for supported
+claims and `null` otherwise. Version 1 supplies the original acknowledgement
+time and typed details. The version identifies the contract.
+
+Checkpoint writes require the current attempt and a workflow storage
+transaction that can commit before the method returns. An expired or replaced
+attempt cannot write a checkpoint. If a process stops during the call, the
+replacement reads whichever checkpoint storage committed before the stop.
+The snapshot held by the running attempt stays fixed. The package migration
+adds the durable field to the activity execution, so existing executions
+start with empty checkpoint state.
+
+A heartbeat acknowledgement does not commit an external effect atomically.
+Use stable provider idempotency keys and reconcile external outcomes before
+repeating work.
+
 ## Cooperative workflow-task bridge
 
 `Workflow\V2\Contracts\CooperativeWorkflowTaskBridge` extends

@@ -132,7 +132,7 @@ final class RunActivityTask implements ShouldQueue
         $execution->setRelation('run', $claim->run);
 
         $activityClass = TypeRegistry::resolveActivityClass($execution->activity_class, $execution->activity_type);
-        $activity = RuntimeObjectFactory::activity($activityClass, $execution, $execution->run, $this->taskId);
+        $activity = RuntimeObjectFactory::activity($activityClass, $execution, $claim->run, $this->taskId, $claim);
         $entryMethod = EntryMethod::forActivity($activity);
         $activityArguments = $execution->activityArguments();
 
